@@ -112,15 +112,17 @@ public struct MetalRendererOptions: Sendable {
 
 // MARK: - Metal Renderer
 
-/// Baseline Metal renderer for executing RenderCommand lists.
-/// Supports DrawImage with transforms and scissor clipping.
-/// Masks and mattes are ignored (no-op) in this baseline implementation.
+/// Metal renderer for executing RenderCommand lists.
+/// Supports DrawImage with transforms, scissor clipping, and mask rendering.
+/// Mattes are ignored (no-op) in the current implementation.
 public final class MetalRenderer {
     // MARK: - Properties
 
     let device: MTLDevice
     let resources: MetalRendererResources
     let options: MetalRendererOptions
+    let texturePool: TexturePool
+    let maskCache: MaskCache
 
     // MARK: - Initialization
 
@@ -138,6 +140,15 @@ public final class MetalRenderer {
         self.device = device
         self.options = options
         self.resources = try MetalRendererResources(device: device, colorPixelFormat: colorPixelFormat)
+        self.texturePool = TexturePool(device: device)
+        self.maskCache = MaskCache(device: device)
+    }
+
+    /// Clears pooled textures to free memory.
+    /// Call this when the renderer won't be used for a while.
+    public func clearCaches() {
+        texturePool.clear()
+        maskCache.clear()
     }
 
     // MARK: - Public API

@@ -27,16 +27,45 @@ struct QuadUniforms {
 
 /// Manages Metal resources for quad rendering.
 final class MetalRendererResources {
+    // MARK: - Base Pipeline
+
     let pipelineState: MTLRenderPipelineState
     let samplerState: MTLSamplerState
     let quadIndexBuffer: MTLBuffer
     let quadIndexCount: Int = 6
+
+    // MARK: - Stencil Mask Resources
+
+    /// Pipeline for rendering with stencil test (composite masked content)
+    let stencilCompositePipelineState: MTLRenderPipelineState
+
+    /// Pipeline for writing mask alpha to stencil buffer
+    let maskWritePipelineState: MTLRenderPipelineState
+
+    /// Depth stencil state for writing 0xFF to stencil where mask > 0
+    let stencilWriteDepthStencilState: MTLDepthStencilState
+
+    /// Depth stencil state for testing stencil == 0xFF
+    let stencilTestDepthStencilState: MTLDepthStencilState
 
     init(device: MTLDevice, colorPixelFormat: MTLPixelFormat) throws {
         let library = try Self.makeShaderLibrary(device: device)
         pipelineState = try Self.makePipelineState(device: device, library: library, colorPixelFormat: colorPixelFormat)
         samplerState = try Self.makeSamplerState(device: device)
         quadIndexBuffer = try Self.makeIndexBuffer(device: device)
+
+        // Stencil mask resources
+        stencilCompositePipelineState = try Self.makeStencilCompositePipeline(
+            device: device,
+            library: library,
+            colorPixelFormat: colorPixelFormat
+        )
+        maskWritePipelineState = try Self.makeMaskWritePipeline(
+            device: device,
+            library: library
+        )
+        stencilWriteDepthStencilState = try Self.makeStencilWriteDepthStencilState(device: device)
+        stencilTestDepthStencilState = try Self.makeStencilTestDepthStencilState(device: device)
     }
 
     func makeQuadVertexBuffer(device: MTLDevice, width: Float, height: Float) -> MTLBuffer? {
@@ -140,6 +169,112 @@ extension MetalRendererResources {
     }
 }
 
+// MARK: - Stencil Pipeline Creation
+
+extension MetalRendererResources {
+    private static func makeStencilCompositePipeline(
+        device: MTLDevice,
+        library: MTLLibrary,
+        colorPixelFormat: MTLPixelFormat
+    ) throws -> MTLRenderPipelineState {
+        guard let vertexFunc = library.makeFunction(name: "quad_vertex") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "quad_vertex not found")
+        }
+        guard let fragmentFunc = library.makeFunction(name: "quad_fragment") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "quad_fragment not found")
+        }
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertexFunc
+        descriptor.fragmentFunction = fragmentFunc
+        descriptor.vertexDescriptor = makeVertexDescriptor()
+        configureBlending(descriptor.colorAttachments[0], pixelFormat: colorPixelFormat)
+        descriptor.depthAttachmentPixelFormat = .depth32Float_stencil8
+        descriptor.stencilAttachmentPixelFormat = .depth32Float_stencil8
+
+        do {
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            let msg = "Stencil composite pipeline failed: \(error.localizedDescription)"
+            throw MetalRendererError.failedToCreatePipeline(reason: msg)
+        }
+    }
+
+    private static func makeMaskWritePipeline(
+        device: MTLDevice,
+        library: MTLLibrary
+    ) throws -> MTLRenderPipelineState {
+        guard let vertexFunc = library.makeFunction(name: "mask_vertex") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "mask_vertex not found")
+        }
+        guard let fragmentFunc = library.makeFunction(name: "mask_fragment") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "mask_fragment not found")
+        }
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertexFunc
+        descriptor.fragmentFunction = fragmentFunc
+        descriptor.vertexDescriptor = makeVertexDescriptor()
+        // No color attachment - stencil only
+        descriptor.colorAttachments[0].pixelFormat = .invalid
+        descriptor.depthAttachmentPixelFormat = .depth32Float_stencil8
+        descriptor.stencilAttachmentPixelFormat = .depth32Float_stencil8
+
+        do {
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            let msg = "Mask write pipeline failed: \(error.localizedDescription)"
+            throw MetalRendererError.failedToCreatePipeline(reason: msg)
+        }
+    }
+
+    private static func makeStencilWriteDepthStencilState(device: MTLDevice) throws -> MTLDepthStencilState {
+        let descriptor = MTLDepthStencilDescriptor()
+        descriptor.isDepthWriteEnabled = false
+        descriptor.depthCompareFunction = .always
+
+        // Front face stencil: write 0xFF where fragment passes (mask alpha > 0)
+        let stencilDescriptor = MTLStencilDescriptor()
+        stencilDescriptor.stencilCompareFunction = .always
+        stencilDescriptor.stencilFailureOperation = .keep
+        stencilDescriptor.depthFailureOperation = .keep
+        stencilDescriptor.depthStencilPassOperation = .replace
+        stencilDescriptor.readMask = 0xFF
+        stencilDescriptor.writeMask = 0xFF
+
+        descriptor.frontFaceStencil = stencilDescriptor
+        descriptor.backFaceStencil = stencilDescriptor
+
+        guard let state = device.makeDepthStencilState(descriptor: descriptor) else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "Stencil write state failed")
+        }
+        return state
+    }
+
+    private static func makeStencilTestDepthStencilState(device: MTLDevice) throws -> MTLDepthStencilState {
+        let descriptor = MTLDepthStencilDescriptor()
+        descriptor.isDepthWriteEnabled = false
+        descriptor.depthCompareFunction = .always
+
+        // Front face stencil: pass only where stencil == 0xFF
+        let stencilDescriptor = MTLStencilDescriptor()
+        stencilDescriptor.stencilCompareFunction = .equal
+        stencilDescriptor.stencilFailureOperation = .keep
+        stencilDescriptor.depthFailureOperation = .keep
+        stencilDescriptor.depthStencilPassOperation = .keep
+        stencilDescriptor.readMask = 0xFF
+        stencilDescriptor.writeMask = 0x00
+
+        descriptor.frontFaceStencil = stencilDescriptor
+        descriptor.backFaceStencil = stencilDescriptor
+
+        guard let state = device.makeDepthStencilState(descriptor: descriptor) else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "Stencil test state failed")
+        }
+        return state
+    }
+}
+
 // MARK: - Shader Source
 
 extension MetalRendererResources {
@@ -182,6 +317,36 @@ extension MetalRendererResources {
     ) {
         float4 color = tex.sample(samp, in.texCoord);
         return color * in.opacity;
+    }
+
+    // MARK: - Mask Shaders
+
+    struct MaskVertexOut {
+        float4 position [[position]];
+        float2 texCoord;
+    };
+
+    vertex MaskVertexOut mask_vertex(
+        QuadVertexIn in [[stage_in]],
+        constant QuadUniforms& uniforms [[buffer(1)]]
+    ) {
+        MaskVertexOut out;
+        out.position = uniforms.mvp * float4(in.position, 0.0, 1.0);
+        out.texCoord = in.texCoord;
+        return out;
+    }
+
+    fragment void mask_fragment(
+        MaskVertexOut in [[stage_in]],
+        texture2d<float> maskTex [[texture(0)]],
+        sampler samp [[sampler(0)]]
+    ) {
+        float alpha = maskTex.sample(samp, in.texCoord).r;
+        // Discard fragments where mask alpha is zero
+        if (alpha < 0.004) {
+            discard_fragment();
+        }
+        // Fragment passes - stencil will be written via depth stencil state
     }
     """
 }

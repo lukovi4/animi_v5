@@ -4,18 +4,19 @@ import simd
 // MARK: - Render Context
 
 /// Groups rendering parameters to reduce function parameter count.
-private struct RenderContext {
+struct RenderContext {
     let encoder: MTLRenderCommandEncoder
     let target: RenderTarget
     let textureProvider: TextureProvider
     let animToViewport: Matrix2D
     let viewportToNDC: Matrix2D
+    let commandBuffer: MTLCommandBuffer
 }
 
 // MARK: - Execution State
 
 /// Tracks state during command execution.
-private struct ExecutionState {
+struct ExecutionState {
     var transformStack: [Matrix2D] = [.identity]
     var clipStack: [MTLScissorRect] = []
     var groupDepth: Int = 0
@@ -83,15 +84,108 @@ extension MetalRenderer {
         renderPassDescriptor: MTLRenderPassDescriptor,
         target: RenderTarget,
         textureProvider: TextureProvider,
-        commandBuffer: MTLCommandBuffer
+        commandBuffer: MTLCommandBuffer,
+        initialState: ExecutionState? = nil
     ) throws {
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+        let baseline = initialState ?? makeInitialState(target: target)
+        var state = baseline
+        let targetRect = RectD(
+            x: 0, y: 0,
+            width: Double(target.sizePx.width),
+            height: Double(target.sizePx.height)
+        )
+        let animToViewport = GeometryMapping.animToInputContain(animSize: target.animSize, inputRect: targetRect)
+        let viewportToNDC = GeometryMapping.viewportToNDC(width: targetRect.width, height: targetRect.height)
+
+        // Process commands in segments separated by mask scopes
+        var index = 0
+        var isFirstPass = true
+
+        while index < commands.count {
+            // Find next mask scope or end of commands
+            let segmentStart = index
+            var segmentEnd = commands.count
+
+            for idx in segmentStart..<commands.count {
+                if case .beginMaskAdd = commands[idx] {
+                    segmentEnd = idx
+                    break
+                }
+            }
+
+            // Render segment if non-empty
+            if segmentStart < segmentEnd {
+                try renderSegment(
+                    commands: Array(commands[segmentStart..<segmentEnd]),
+                    target: target,
+                    textureProvider: textureProvider,
+                    commandBuffer: commandBuffer,
+                    animToViewport: animToViewport,
+                    viewportToNDC: viewportToNDC,
+                    state: &state,
+                    renderPassDescriptor: isFirstPass ? renderPassDescriptor : nil
+                )
+                isFirstPass = false
+            }
+
+            index = segmentEnd
+
+            // Process mask scope if found
+            if index < commands.count, case .beginMaskAdd = commands[index] {
+                guard let scope = extractMaskScope(from: commands, startIndex: index) else {
+                    throw MetalRendererError.invalidCommandStack(reason: "Malformed mask: BeginMaskAdd without EndMask")
+                }
+                try renderMaskScope(
+                    scope: scope,
+                    target: target,
+                    textureProvider: textureProvider,
+                    commandBuffer: commandBuffer,
+                    animToViewport: animToViewport,
+                    viewportToNDC: viewportToNDC,
+                    inheritedState: state
+                )
+                index = scope.endIndex + 1
+                isFirstPass = false
+            }
+        }
+
+        try validateBalancedStacks(state, baseline: baseline)
+    }
+
+    // swiftlint:disable:next function_parameter_count
+    private func renderSegment(
+        commands: [RenderCommand],
+        target: RenderTarget,
+        textureProvider: TextureProvider,
+        commandBuffer: MTLCommandBuffer,
+        animToViewport: Matrix2D,
+        viewportToNDC: Matrix2D,
+        state: inout ExecutionState,
+        renderPassDescriptor: MTLRenderPassDescriptor?
+    ) throws {
+        let descriptor: MTLRenderPassDescriptor
+        if let provided = renderPassDescriptor {
+            descriptor = provided
+        } else {
+            descriptor = MTLRenderPassDescriptor()
+            descriptor.colorAttachments[0].texture = target.texture
+            descriptor.colorAttachments[0].loadAction = .load
+            descriptor.colorAttachments[0].storeAction = .store
+        }
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
             throw MetalRendererError.failedToCreateCommandBuffer
         }
         defer { encoder.endEncoding() }
 
-        let ctx = makeRenderContext(encoder: encoder, target: target, textureProvider: textureProvider)
-        var state = makeInitialState(target: target)
+        let ctx = RenderContext(
+            encoder: encoder,
+            target: target,
+            textureProvider: textureProvider,
+            animToViewport: animToViewport,
+            viewportToNDC: viewportToNDC,
+            commandBuffer: commandBuffer
+        )
 
         encoder.setScissorRect(state.clipStack[0])
         encoder.setRenderPipelineState(resources.pipelineState)
@@ -100,22 +194,311 @@ extension MetalRenderer {
         for command in commands {
             try executeCommand(command, ctx: ctx, state: &state)
         }
-
-        try validateBalancedStacks(state)
     }
 
-    private func makeRenderContext(
-        encoder: MTLRenderCommandEncoder,
+    private func renderMaskScope(
+        scope: MaskScope,
         target: RenderTarget,
-        textureProvider: TextureProvider
-    ) -> RenderContext {
-        let targetRect = RectD(x: 0, y: 0, width: Double(target.sizePx.width), height: Double(target.sizePx.height))
-        return RenderContext(
-            encoder: encoder,
+        textureProvider: TextureProvider,
+        commandBuffer: MTLCommandBuffer,
+        animToViewport: Matrix2D,
+        viewportToNDC: Matrix2D,
+        inheritedState: ExecutionState
+    ) throws {
+        let targetSize = target.sizePx
+        let currentScissor = inheritedState.currentScissor
+
+        // Skip if path is empty or degenerate
+        guard scope.path.vertexCount > 2 else {
+            // Render content without masking
+            try renderInnerCommandsToTarget(
+                scope.innerCommands,
+                target: target,
+                textureProvider: textureProvider,
+                commandBuffer: commandBuffer,
+                inheritedState: inheritedState
+            )
+            return
+        }
+
+        // Step 1: Render inner commands to offscreen texture
+        guard let contentTex = texturePool.acquireColorTexture(size: targetSize) else {
+            return
+        }
+        defer { texturePool.release(contentTex) }
+
+        try renderInnerCommandsToTexture(
+            scope.innerCommands,
+            texture: contentTex,
             target: target,
             textureProvider: textureProvider,
-            animToViewport: GeometryMapping.animToInputContain(animSize: target.animSize, inputRect: targetRect),
-            viewportToNDC: GeometryMapping.viewportToNDC(width: targetRect.width, height: targetRect.height)
+            commandBuffer: commandBuffer,
+            inheritedState: inheritedState
+        )
+
+        // Step 2: Get or create mask texture
+        let maskTransform = animToViewport.concatenating(inheritedState.currentTransform)
+        guard let maskTex = maskCache.texture(
+            for: scope.path,
+            transform: maskTransform,
+            size: targetSize,
+            opacity: scope.opacity
+        ) else {
+            // Fallback: composite content without masking
+            try compositeTextureToTarget(
+                contentTex,
+                target: target,
+                viewportToNDC: viewportToNDC,
+                commandBuffer: commandBuffer,
+                scissor: currentScissor
+            )
+            return
+        }
+
+        // Step 3: Composite with stencil
+        try compositeWithStencilMask(
+            contentTex: contentTex,
+            maskTex: maskTex,
+            target: target,
+            viewportToNDC: viewportToNDC,
+            commandBuffer: commandBuffer,
+            scissor: currentScissor
+        )
+    }
+
+    private func renderInnerCommandsToTarget(
+        _ commands: [RenderCommand],
+        target: RenderTarget,
+        textureProvider: TextureProvider,
+        commandBuffer: MTLCommandBuffer,
+        inheritedState: ExecutionState
+    ) throws {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target.texture
+        descriptor.colorAttachments[0].loadAction = .load
+        descriptor.colorAttachments[0].storeAction = .store
+
+        try drawInternal(
+            commands: commands,
+            renderPassDescriptor: descriptor,
+            target: target,
+            textureProvider: textureProvider,
+            commandBuffer: commandBuffer,
+            initialState: inheritedState
+        )
+    }
+
+    private func renderInnerCommandsToTexture(
+        _ commands: [RenderCommand],
+        texture: MTLTexture,
+        target: RenderTarget,
+        textureProvider: TextureProvider,
+        commandBuffer: MTLCommandBuffer,
+        inheritedState: ExecutionState
+    ) throws {
+        let offscreenTarget = RenderTarget(
+            texture: texture,
+            drawableScale: target.drawableScale,
+            animSize: target.animSize
+        )
+
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = texture
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+        try drawInternal(
+            commands: commands,
+            renderPassDescriptor: descriptor,
+            target: offscreenTarget,
+            textureProvider: textureProvider,
+            commandBuffer: commandBuffer,
+            initialState: inheritedState
+        )
+    }
+
+    private func compositeTextureToTarget(
+        _ texture: MTLTexture,
+        target: RenderTarget,
+        viewportToNDC: Matrix2D,
+        commandBuffer: MTLCommandBuffer,
+        scissor: MTLScissorRect?
+    ) throws {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target.texture
+        descriptor.colorAttachments[0].loadAction = .load
+        descriptor.colorAttachments[0].storeAction = .store
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+        defer { encoder.endEncoding() }
+
+        if let scissor = scissor {
+            encoder.setScissorRect(scissor)
+        }
+
+        guard let vertexBuffer = resources.makeQuadVertexBuffer(
+            device: device,
+            width: Float(texture.width),
+            height: Float(texture.height)
+        ) else { return }
+
+        let mvp = viewportToNDC.toFloat4x4()
+        var uniforms = QuadUniforms(mvp: mvp, opacity: 1.0)
+
+        encoder.setRenderPipelineState(resources.pipelineState)
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)
+        encoder.setFragmentTexture(texture, index: 0)
+        encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+        encoder.drawIndexedPrimitives(
+            type: .triangle,
+            indexCount: resources.quadIndexCount,
+            indexType: .uint16,
+            indexBuffer: resources.quadIndexBuffer,
+            indexBufferOffset: 0
+        )
+    }
+
+    private func compositeWithStencilMask(
+        contentTex: MTLTexture,
+        maskTex: MTLTexture,
+        target: RenderTarget,
+        viewportToNDC: Matrix2D,
+        commandBuffer: MTLCommandBuffer,
+        scissor: MTLScissorRect?
+    ) throws {
+        let targetSize = target.sizePx
+
+        // Create stencil texture
+        guard let stencilTex = texturePool.acquireStencilTexture(size: targetSize) else {
+            return
+        }
+        defer { texturePool.release(stencilTex) }
+
+        // Pass 1: Write mask to stencil buffer
+        try writeMaskToStencilBuffer(
+            maskTex: maskTex,
+            stencilTex: stencilTex,
+            viewportToNDC: viewportToNDC,
+            commandBuffer: commandBuffer,
+            scissor: scissor
+        )
+
+        // Pass 2: Composite content with stencil test
+        try compositeContentWithStencil(
+            contentTex: contentTex,
+            stencilTex: stencilTex,
+            target: target,
+            viewportToNDC: viewportToNDC,
+            commandBuffer: commandBuffer,
+            scissor: scissor
+        )
+    }
+
+    private func writeMaskToStencilBuffer(
+        maskTex: MTLTexture,
+        stencilTex: MTLTexture,
+        viewportToNDC: Matrix2D,
+        commandBuffer: MTLCommandBuffer,
+        scissor: MTLScissorRect?
+    ) throws {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.depthAttachment.texture = stencilTex
+        descriptor.depthAttachment.loadAction = .clear
+        descriptor.depthAttachment.storeAction = .store
+        descriptor.depthAttachment.clearDepth = 1.0
+        descriptor.stencilAttachment.texture = stencilTex
+        descriptor.stencilAttachment.loadAction = .clear
+        descriptor.stencilAttachment.storeAction = .store
+        descriptor.stencilAttachment.clearStencil = 0
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+        defer { encoder.endEncoding() }
+
+        if let scissor = scissor {
+            encoder.setScissorRect(scissor)
+        }
+
+        guard let vertexBuffer = resources.makeQuadVertexBuffer(
+            device: device,
+            width: Float(maskTex.width),
+            height: Float(maskTex.height)
+        ) else { return }
+
+        let mvp = viewportToNDC.toFloat4x4()
+        var uniforms = QuadUniforms(mvp: mvp, opacity: 1.0)
+
+        encoder.setRenderPipelineState(resources.maskWritePipelineState)
+        encoder.setDepthStencilState(resources.stencilWriteDepthStencilState)
+        encoder.setStencilReferenceValue(0xFF)
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)
+        encoder.setFragmentTexture(maskTex, index: 0)
+        encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+        encoder.drawIndexedPrimitives(
+            type: .triangle,
+            indexCount: resources.quadIndexCount,
+            indexType: .uint16,
+            indexBuffer: resources.quadIndexBuffer,
+            indexBufferOffset: 0
+        )
+    }
+
+    private func compositeContentWithStencil(
+        contentTex: MTLTexture,
+        stencilTex: MTLTexture,
+        target: RenderTarget,
+        viewportToNDC: Matrix2D,
+        commandBuffer: MTLCommandBuffer,
+        scissor: MTLScissorRect?
+    ) throws {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target.texture
+        descriptor.colorAttachments[0].loadAction = .load
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.depthAttachment.texture = stencilTex
+        descriptor.depthAttachment.loadAction = .load
+        descriptor.depthAttachment.storeAction = .dontCare
+        descriptor.stencilAttachment.texture = stencilTex
+        descriptor.stencilAttachment.loadAction = .load
+        descriptor.stencilAttachment.storeAction = .dontCare
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+        defer { encoder.endEncoding() }
+
+        if let scissor = scissor {
+            encoder.setScissorRect(scissor)
+        }
+
+        guard let vertexBuffer = resources.makeQuadVertexBuffer(
+            device: device,
+            width: Float(contentTex.width),
+            height: Float(contentTex.height)
+        ) else { return }
+
+        let mvp = viewportToNDC.toFloat4x4()
+        var uniforms = QuadUniforms(mvp: mvp, opacity: 1.0)
+
+        encoder.setRenderPipelineState(resources.stencilCompositePipelineState)
+        encoder.setDepthStencilState(resources.stencilTestDepthStencilState)
+        encoder.setStencilReferenceValue(0xFF)
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)
+        encoder.setFragmentTexture(contentTex, index: 0)
+        encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+        encoder.drawIndexedPrimitives(
+            type: .triangle,
+            indexCount: resources.quadIndexCount,
+            indexType: .uint16,
+            indexBuffer: resources.quadIndexBuffer,
+            indexBufferOffset: 0
         )
     }
 
@@ -125,22 +508,85 @@ extension MetalRenderer {
         return state
     }
 
-    private func validateBalancedStacks(_ state: ExecutionState) throws {
-        if state.groupDepth != 0 {
-            throw MetalRendererError.invalidCommandStack(reason: "Unbalanced groups: \(state.groupDepth)")
+    private func validateBalancedStacks(_ state: ExecutionState, baseline: ExecutionState) throws {
+        if state.groupDepth != baseline.groupDepth {
+            throw MetalRendererError.invalidCommandStack(
+                reason: "Unbalanced groups: expected \(baseline.groupDepth), got \(state.groupDepth)"
+            )
         }
-        if state.transformStack.count != 1 {
-            throw MetalRendererError.invalidCommandStack(reason: "Unbalanced transforms: \(state.transformStack.count)")
+        if state.transformStack.count != baseline.transformStack.count {
+            throw MetalRendererError.invalidCommandStack(
+                reason: "Unbalanced transforms: expected \(baseline.transformStack.count), got \(state.transformStack.count)"
+            )
         }
-        if state.clipStack.count != 1 {
-            throw MetalRendererError.invalidCommandStack(reason: "Unbalanced clips: \(state.clipStack.count)")
+        if state.clipStack.count != baseline.clipStack.count {
+            throw MetalRendererError.invalidCommandStack(
+                reason: "Unbalanced clips: expected \(baseline.clipStack.count), got \(state.clipStack.count)"
+            )
         }
-        if state.maskDepth != 0 {
-            throw MetalRendererError.invalidCommandStack(reason: "Unbalanced masks: \(state.maskDepth)")
+        if state.maskDepth != baseline.maskDepth {
+            throw MetalRendererError.invalidCommandStack(
+                reason: "Unbalanced masks: expected \(baseline.maskDepth), got \(state.maskDepth)"
+            )
         }
-        if state.matteDepth != 0 {
-            throw MetalRendererError.invalidCommandStack(reason: "Unbalanced mattes: \(state.matteDepth)")
+        if state.matteDepth != baseline.matteDepth {
+            throw MetalRendererError.invalidCommandStack(
+                reason: "Unbalanced mattes: expected \(baseline.matteDepth), got \(state.matteDepth)"
+            )
         }
+    }
+}
+
+// MARK: - Mask Scope Extraction
+
+/// Result of extracting a mask scope from command list
+struct MaskScope {
+    let startIndex: Int
+    let endIndex: Int
+    let innerCommands: [RenderCommand]
+    let path: BezierPath
+    let opacity: Double
+}
+
+extension MetalRenderer {
+    /// Extracts a mask scope starting at the given index.
+    /// Handles nested masks by counting begin/end pairs.
+    func extractMaskScope(from commands: [RenderCommand], startIndex: Int) -> MaskScope? {
+        guard startIndex < commands.count,
+              case .beginMaskAdd(let path, let opacity) = commands[startIndex] else {
+            return nil
+        }
+
+        var depth = 1
+        var index = startIndex + 1
+
+        while index < commands.count && depth > 0 {
+            switch commands[index] {
+            case .beginMaskAdd:
+                depth += 1
+            case .endMask:
+                depth -= 1
+            default:
+                break
+            }
+            if depth > 0 {
+                index += 1
+            }
+        }
+
+        guard depth == 0, index < commands.count else {
+            return nil
+        }
+
+        let innerCommands = Array(commands[(startIndex + 1)..<index])
+
+        return MaskScope(
+            startIndex: startIndex,
+            endIndex: index,
+            innerCommands: innerCommands,
+            path: path,
+            opacity: opacity
+        )
     }
 }
 

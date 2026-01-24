@@ -34,8 +34,11 @@ public enum RenderCommand: Sendable, Equatable {
 
     // MARK: - Masking
 
-    /// Begin an additive mask with the given path
-    case beginMaskAdd(path: BezierPath)
+    /// Begin an additive mask with the given path and opacity
+    /// - Parameters:
+    ///   - path: Bezier path defining the mask shape
+    ///   - opacity: Mask opacity (0.0 to 1.0)
+    case beginMaskAdd(path: BezierPath, opacity: Double)
 
     /// End the current mask
     case endMask
@@ -116,8 +119,8 @@ extension RenderCommand: CustomDebugStringConvertible {
             return "PopClipRect"
         case .drawImage(let assetId, let opacity):
             return "DrawImage(\(assetId), opacity:\(opacity))"
-        case .beginMaskAdd(let path):
-            return "BeginMaskAdd(vertices:\(path.vertexCount), closed:\(path.closed))"
+        case .beginMaskAdd(let path, let opacity):
+            return "BeginMaskAdd(vertices:\(path.vertexCount), closed:\(path.closed), opacity:\(opacity))"
         case .endMask:
             return "EndMask"
         case .beginMatteAlpha(let sourceLayerId):

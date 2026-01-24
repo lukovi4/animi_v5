@@ -243,7 +243,9 @@ extension AnimIR {
         // Masks begin
         for mask in layer.masks {
             if let staticPath = mask.path.staticPath {
-                commands.append(.beginMaskAdd(path: staticPath))
+                // Normalize opacity from 0..100 to 0..1, clamped
+                let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
+                commands.append(.beginMaskAdd(path: staticPath, opacity: normalizedOpacity))
             }
         }
 

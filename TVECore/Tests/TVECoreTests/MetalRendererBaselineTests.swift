@@ -141,7 +141,8 @@ final class MetalRendererBaselineTests: XCTestCase {
         provider.register(tex, for: "test")
         let path = BezierPath(vertices: [], inTangents: [], outTangents: [], closed: true)
         let cmds: [RenderCommand] = [
-            .beginGroup(name: "test"), .pushTransform(.identity), .beginMaskAdd(path: path),
+            .beginGroup(name: "test"), .pushTransform(.identity),
+            .beginMaskAdd(path: path, opacity: 1.0),
             .drawImage(assetId: "test", opacity: 1.0), .endMask, .popTransform, .endGroup
         ]
         let result = try renderer.drawOffscreen(
