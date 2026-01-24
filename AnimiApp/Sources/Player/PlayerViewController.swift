@@ -44,7 +44,9 @@ final class PlayerViewController: UIViewController {
     // MARK: - Properties
 
     private let loader = ScenePackageLoader()
+    private let validator = SceneValidator()
     private var currentPackage: ScenePackage?
+    private var isSceneValid = false
 
     // MARK: - Metal Resources
 
@@ -115,11 +117,23 @@ final class PlayerViewController: UIViewController {
             let package = try loader.load(from: rootURL)
             currentPackage = package
             logPackageInfo(package)
+
+            // Validate the scene
+            let report = validator.validate(scene: package.scene)
+            logValidationReport(report)
+
+            isSceneValid = !report.hasErrors
+            if report.hasErrors {
+                log("Scene is invalid — rendering disabled")
+            }
+
             metalView.setNeedsDisplay()
         } catch let error as ScenePackageLoadError {
             log("ERROR: \(error.localizedDescription)")
+            isSceneValid = false
         } catch {
             log("ERROR: Unexpected error - \(error)")
+            isSceneValid = false
         }
     }
 
@@ -167,6 +181,16 @@ final class PlayerViewController: UIViewController {
 
         if let imagesURL = package.imagesRootURL {
             log("Images folder: \(imagesURL.lastPathComponent)")
+        }
+    }
+
+    private func logValidationReport(_ report: ValidationReport) {
+        log("---")
+        log("Validation: \(report.errors.count) errors, \(report.warnings.count) warnings")
+
+        for issue in report.issues {
+            let severityTag = issue.severity == .error ? "[ERROR]" : "[WARN ]"
+            log("\(severityTag) \(issue.code) \(issue.path) — \(issue.message)")
         }
     }
 }

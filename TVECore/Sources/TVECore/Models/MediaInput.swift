@@ -29,6 +29,9 @@ public struct MediaInput: Decodable, Equatable, Sendable {
     /// Audio configuration
     public let audio: AudioConfig?
 
+    /// Reference to a mask asset for UI interaction (optional)
+    public let maskRef: String?
+
     public init(
         rect: Rect,
         bindingKey: String,
@@ -38,7 +41,8 @@ public struct MediaInput: Decodable, Equatable, Sendable {
         fitModesAllowed: [FitMode]? = nil,
         defaultFit: FitMode? = nil,
         userTransformsAllowed: UserTransformsAllowed? = nil,
-        audio: AudioConfig? = nil
+        audio: AudioConfig? = nil,
+        maskRef: String? = nil
     ) {
         self.rect = rect
         self.bindingKey = bindingKey
@@ -49,7 +53,15 @@ public struct MediaInput: Decodable, Equatable, Sendable {
         self.defaultFit = defaultFit
         self.userTransformsAllowed = userTransformsAllowed
         self.audio = audio
+        self.maskRef = maskRef
     }
+}
+
+/// Allowed media types for input slots
+public enum AllowedMediaType: String, CaseIterable, Sendable {
+    case photo
+    case video
+    case color
 }
 
 /// Hit test mode for tap detection
