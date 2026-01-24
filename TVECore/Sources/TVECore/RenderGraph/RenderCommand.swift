@@ -136,52 +136,45 @@ extension Array where Element == RenderCommand {
     /// Validates that all begin/end commands are properly balanced
     /// Returns true if the command list is valid
     public func isBalanced() -> Bool {
-        var groupStack = 0
-        var transformStack = 0
-        var clipStack = 0
-        var maskStack = 0
-        var matteStack = 0
-
+        var stacks = BalanceStacks()
         for command in self {
-            switch command {
-            case .beginGroup:
-                groupStack += 1
-            case .endGroup:
-                groupStack -= 1
-                if groupStack < 0 { return false }
-
-            case .pushTransform:
-                transformStack += 1
-            case .popTransform:
-                transformStack -= 1
-                if transformStack < 0 { return false }
-
-            case .pushClipRect:
-                clipStack += 1
-            case .popClipRect:
-                clipStack -= 1
-                if clipStack < 0 { return false }
-
-            case .beginMaskAdd:
-                maskStack += 1
-            case .endMask:
-                maskStack -= 1
-                if maskStack < 0 { return false }
-
-            case .beginMatteAlpha, .beginMatteAlphaInverted:
-                matteStack += 1
-            case .endMatte:
-                matteStack -= 1
-                if matteStack < 0 { return false }
-
-            case .drawImage:
-                break
-            }
+            guard stacks.process(command) else { return false }
         }
+        return stacks.allZero
+    }
+}
 
-        return groupStack == 0 && transformStack == 0 && clipStack == 0 && maskStack == 0 && matteStack == 0
+/// Helper for tracking command balance
+private struct BalanceStacks {
+    var group = 0
+    var transform = 0
+    var clip = 0
+    var mask = 0
+    var matte = 0
+
+    var allZero: Bool {
+        group == 0 && transform == 0 && clip == 0 && mask == 0 && matte == 0
     }
 
+    mutating func process(_ command: RenderCommand) -> Bool {
+        switch command {
+        case .beginGroup: group += 1
+        case .endGroup: group -= 1; if group < 0 { return false }
+        case .pushTransform: transform += 1
+        case .popTransform: transform -= 1; if transform < 0 { return false }
+        case .pushClipRect: clip += 1
+        case .popClipRect: clip -= 1; if clip < 0 { return false }
+        case .beginMaskAdd: mask += 1
+        case .endMask: mask -= 1; if mask < 0 { return false }
+        case .beginMatteAlpha, .beginMatteAlphaInverted: matte += 1
+        case .endMatte: matte -= 1; if matte < 0 { return false }
+        case .drawImage: break
+        }
+        return true
+    }
+}
+
+extension Array where Element == RenderCommand {
     /// Returns counts of each command type for debugging
     public func commandCounts() -> [String: Int] {
         var counts: [String: Int] = [:]
