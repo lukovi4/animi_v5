@@ -1,66 +1,116 @@
-Пока **не принимаю (request changes)** — в целом PR3 сделан сильно и почти готов, но есть **2 блокера**, которые нельзя мерджить, потому что они дадут “ложно-зелёные” тесты и потенциально сломают ассеты на реальном устройстве/CI с case-sensitive FS.
+* **Конфиг SwiftLint не подхватывался**, потому что запуск был из `TVECore/` — верно. Это типичная ловушка: SwiftLint ищет `.swiftlint.yml` относительно current working directory.
+* `superfluous_disable_command` — логично: ты отключал правило там, где конфиг уже исключает `x/y/ip/op/st`.
+* `prefer_self_in_static_references`, `empty_count`, `cyclomatic_complexity` — фиксы верные и “по стандарту”.
 
 ---
 
-## ✅ Что в PR3 хорошо (я оставляю)
+## Обязательное улучшение процесса (чтобы CI больше не падал)
 
-* Структура: `Lottie/`, `AnimLoader/`, `AnimValidator/` — ок.
-* Правила валидации покрывают нужный Part 1 subset: fps/root/binding/assets/precomp/masks/mattes/shapes — ок.
-* Поиск binding layer внутри `assets[].layers` — **сделано правильно**.
-* Интеграция в `PlayerViewController` (scene → anim load → anim validate → отчёт) — ок.
-* Добавлены `img_1..img_4` placeholders — правильно по задумке.
+### 1) Добавить “единый” командный entrypoint в репо
 
----
+В корне репозитория (`animi/`) добавить один из вариантов:
 
-# ❌ Блокер 1: неверное имя файла ассета (case mismatch)
+**Вариант A (лучший): Makefile**
 
-В архиве файл называется **`images/Img_4.png`** (с заглавной I).
-А в реальном `anim-4.json` asset ссылается на **`img_4.png`** (нижний регистр). Это 100% факт из исходного `anim-4.json`.
+* `make lint` → запускает SwiftLint из корня
+* `make test` → swift test / xcodebuild test
+* `make ci` → lint + test + build
 
-На macOS (case-insensitive) тесты пройдут, но:
+**Вариант B: Scripts**
+`Scripts/lint.sh`:
 
-* на **case-sensitive FS** (часть CI/сборок/окружений) и потенциально в runtime — словим `ASSET_MISSING`.
+* `cd "$(git rev-parse --show-toplevel)"`
+* `swiftlint lint --strict TVECore/Sources TVECore/Tests AnimiApp`
 
-✅ Fix:
+Это убирает человеческий фактор “запустил не оттуда”.
 
-* переименовать **строго в `img_4.png`**.
-* важно: если git на mac “не видит” rename только по регистру — делайте через промежуточное имя:
+### 2) Добавить это в README (коротко)
 
-  * `Img_4.png -> tmp_img_4.png -> img_4.png`
+Раздел `Local checks before push`:
 
----
-
-# ❌ Блокер 2: снова появился `@unchecked Sendable` (мы это запрещали)
-
-В PR3:
-
-* `public final class AnimValidator: @unchecked Sendable`
-* `public final class AnimLoader: @unchecked Sendable`
-
-Это **плохая практика и просто неверное обещание компилятору**, особенно потому что:
-
-* внутри есть `FileManager` (не Sendable)
-* и нам **не нужно** делать эти классы Sendable на этом этапе.
-
-✅ Fix:
-
-* убрать `@unchecked Sendable` у обоих классов (как мы уже сделали в PR2).
+* `make ci` (или `./Scripts/ci.sh`)
+* если без make — перечисление команд
 
 ---
 
-## Неблокирующие, но рекомендую (можно в этом PR, можно в следующем)
+## Что делать разработчику дальше (политика на будущее)
 
-1. `LottieAsset.relativePath`: сейчас `dir + file` — если `u="images"` без слеша, будет “imagesimg.png”. Лучше нормализовать join (`/`).
-2. `validateSizeMismatch`: сейчас может сыпать дубли-warnings, если один animRef используется несколькими variants/blocks. Можно дедуп по `block.id + animRef` (но не критично).
+**Перед каждым пушем/PR:**
+
+1. запуск из корня репо `swiftlint lint --strict ...`
+2. `swift test` (TVECore)
+3. `xcodebuild build` (AnimiApp)
+
+И если хочется прям железно — можно поставить pre-push git hook, но это опционально.
 
 ---
 
-## Решение
+Для **PR4.1** фиксируем так, чтобы это **на 100% совпадало с CI** и не ломалось от отсутствия конкретного симулятора.
 
-**PR3 не принимаю сейчас.**
-Приму сразу после:
+## Что использовать для `make build`
 
-1. rename `Img_4.png` → `img_4.png`
-2. убрать `@unchecked Sendable` у `AnimLoader` и `AnimValidator`
+### ✅ Рекомендованный вариант (стабильный)
 
-После этих двух правок — **approve/merge без дополнительных кругов**.
+Используем **generic destination**, как в CI:
+
+```bash
+xcodebuild build \
+  -project AnimiApp/AnimiApp.xcodeproj \
+  -scheme AnimiApp \
+  -destination 'generic/platform=iOS Simulator' \
+  -configuration Debug \
+  CODE_SIGN_IDENTITY="" \
+  CODE_SIGNING_REQUIRED=NO
+```
+
+Почему:
+
+* не зависит от “iPhone 15/16” и установленного runtime,
+* повторяет твою CI-политику (мы уже так сделали в PR0/PR1),
+* работает и локально, и на машинах без нужного симулятора.
+
+### ❌ Не рекомендую фиксировать `name=iPhone 15`
+
+Это хрупко: на машине может быть только iPhone 14 или другой runtime, и локальный `make build` начнёт падать “не найден destination”.
+
+## Scheme
+
+* **`-scheme AnimiApp`** — да, всегда явно указываем.
+* Workspace/Package не нужен.
+
+---
+
+## Мини-шаблон для Makefile целей (чтобы программисту было проще)
+
+* `lint`: запуск SwiftLint **из корня**
+* `test`: `swift test` внутри `TVECore`
+* `build`: `xcodebuild build ... generic`
+* `ci`: последовательно `lint test build`
+
+И в README в разделе “Local checks before push” пишем одну команду:
+
+* `make ci`
+
+---
+
+Используем **generic destination** — это самый стабильный и должен совпадать с вашим CI.
+
+✅ В `make build` фиксируем так:
+
+```bash
+xcodebuild build \
+  -project AnimiApp/AnimiApp.xcodeproj \
+  -scheme AnimiApp \
+  -destination 'generic/platform=iOS Simulator' \
+  -configuration Debug \
+  CODE_SIGN_IDENTITY="" \
+  CODE_SIGNING_REQUIRED=NO
+```
+
+Почему именно так:
+
+* `name=iPhone 16` — **хрупко** (на машине/CI может не быть такого симулятора).
+* `OS=latest,name=Any iOS Simulator Device` — это не “канонический” стабильный формат и тоже может вести себя по-разному.
+* `generic/platform=iOS Simulator` — **не привязан к модели** и обычно работает везде.
+
+Если хочешь максимально “один-в-один с CI” — просто **используй ровно ту же строку**, что в `.github/workflows/ci.yml`.
