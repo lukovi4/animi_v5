@@ -25,32 +25,32 @@ public struct Matrix2D: Equatable, Sendable {
     }
 
     /// Identity matrix (no transformation)
-    public static let identity = Matrix2D(a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0)
+    public static let identity = Self(a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0)
 
     /// Creates a translation matrix
-    public static func translation(x: Double, y: Double) -> Matrix2D {
-        Matrix2D(a: 1, b: 0, c: 0, d: 1, tx: x, ty: y)
+    public static func translation(x: Double, y: Double) -> Self {
+        Self(a: 1, b: 0, c: 0, d: 1, tx: x, ty: y)
     }
 
     /// Creates a scale matrix
-    public static func scale(x: Double, y: Double) -> Matrix2D {
-        Matrix2D(a: x, b: 0, c: 0, d: y, tx: 0, ty: 0)
+    public static func scale(x: Double, y: Double) -> Self {
+        Self(a: x, b: 0, c: 0, d: y, tx: 0, ty: 0)
     }
 
     /// Creates a uniform scale matrix
-    public static func scale(_ factor: Double) -> Matrix2D {
+    public static func scale(_ factor: Double) -> Self {
         scale(x: factor, y: factor)
     }
 
     /// Creates a rotation matrix (angle in radians)
-    public static func rotation(_ radians: Double) -> Matrix2D {
+    public static func rotation(_ radians: Double) -> Self {
         let cos = Darwin.cos(radians)
         let sin = Darwin.sin(radians)
-        return Matrix2D(a: cos, b: sin, c: -sin, d: cos, tx: 0, ty: 0)
+        return Self(a: cos, b: sin, c: -sin, d: cos, tx: 0, ty: 0)
     }
 
     /// Creates a rotation matrix (angle in degrees)
-    public static func rotationDegrees(_ degrees: Double) -> Matrix2D {
+    public static func rotationDegrees(_ degrees: Double) -> Self {
         rotation(degrees * .pi / 180.0)
     }
 

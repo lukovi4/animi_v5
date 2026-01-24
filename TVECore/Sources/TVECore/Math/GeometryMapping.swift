@@ -1,7 +1,5 @@
 import Foundation
 
-// swiftlint:disable identifier_name
-
 /// 2D size with double precision
 public struct SizeD: Equatable, Sendable {
     public let width: Double
@@ -12,7 +10,7 @@ public struct SizeD: Equatable, Sendable {
         self.height = height
     }
 
-    public static let zero = SizeD(width: 0, height: 0)
+    public static let zero = Self(width: 0, height: 0)
 }
 
 /// 2D rectangle with double precision
@@ -39,7 +37,7 @@ public struct RectD: Equatable, Sendable {
     public var origin: Vec2D { Vec2D(x: x, y: y) }
     public var size: SizeD { SizeD(width: width, height: height) }
 
-    public static let zero = RectD(x: 0, y: 0, width: 0, height: 0)
+    public static let zero = Self(x: 0, y: 0, width: 0, height: 0)
 }
 
 /// 2D vector with double precision
@@ -52,7 +50,7 @@ public struct Vec2D: Equatable, Sendable {
         self.y = y
     }
 
-    public static let zero = Vec2D(x: 0, y: 0)
+    public static let zero = Self(x: 0, y: 0)
 }
 
 // MARK: - Geometry Mapping
@@ -115,5 +113,3 @@ extension RectD {
         self.height = rect.height
     }
 }
-
-// swiftlint:enable identifier_name
