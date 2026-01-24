@@ -40,7 +40,7 @@ public struct AnimIR: Sendable, Equatable {
 
     // MARK: - Equatable (exclude lastRenderIssues from comparison)
 
-    public static func == (lhs: AnimIR, rhs: AnimIR) -> Bool {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.meta == rhs.meta &&
         lhs.rootComp == rhs.rootComp &&
         lhs.comps == rhs.comps &&
@@ -100,6 +100,25 @@ extension AnimIR {
     }
 }
 
+// MARK: - Render Context
+
+extension AnimIR {
+    /// Context for rendering operations - groups related parameters
+    private struct RenderContext {
+        let frame: Double
+        let frameIndex: Int
+        let parentWorld: Matrix2D
+        let parentOpacity: Double
+        let layerById: [LayerID: Layer]
+    }
+
+    /// Resolved world transform for a layer
+    private struct ResolvedTransform {
+        let worldMatrix: Matrix2D
+        let worldOpacity: Double
+    }
+}
+
 // MARK: - Render Commands Generation
 
 extension AnimIR {
@@ -123,14 +142,15 @@ extension AnimIR {
 
         // Render root composition
         if let rootComposition = comps[rootComp] {
-            renderComposition(
-                rootComposition,
+            let layerById = Dictionary(uniqueKeysWithValues: rootComposition.layers.map { ($0.id, $0) })
+            let context = RenderContext(
                 frame: localFrame,
-                parentWorldMatrix: .identity,
-                parentWorldOpacity: 1.0,
-                sceneFrameIndex: frameIndex,
-                commands: &commands
+                frameIndex: frameIndex,
+                parentWorld: .identity,
+                parentOpacity: 1.0,
+                layerById: layerById
             )
+            renderComposition(rootComposition, context: context, commands: &commands)
         }
 
         // End root group
@@ -151,71 +171,63 @@ extension AnimIR {
     /// Renders a composition recursively
     private mutating func renderComposition(
         _ composition: Composition,
-        frame: Double,
-        parentWorldMatrix: Matrix2D,
-        parentWorldOpacity: Double,
-        sceneFrameIndex: Int,
+        context: RenderContext,
         commands: inout [RenderCommand]
     ) {
-        // Build lookup for parent chain resolution within this composition
-        let layerById = Dictionary(uniqueKeysWithValues: composition.layers.map { ($0.id, $0) })
-
         // Process layers in order (as they appear in JSON)
         for layer in composition.layers {
-            renderLayer(
-                layer,
-                frame: frame,
-                parentWorldMatrix: parentWorldMatrix,
-                parentWorldOpacity: parentWorldOpacity,
-                layerById: layerById,
-                sceneFrameIndex: sceneFrameIndex,
-                commands: &commands
-            )
+            renderLayer(layer, context: context, commands: &commands)
         }
     }
 
     /// Renders a single layer
     private mutating func renderLayer(
         _ layer: Layer,
-        frame: Double,
-        parentWorldMatrix: Matrix2D,
-        parentWorldOpacity: Double,
-        layerById: [LayerID: Layer],
-        sceneFrameIndex: Int,
+        context: RenderContext,
         commands: inout [RenderCommand]
     ) {
         // Skip matte source layers - they don't render directly
-        if layer.isMatteSource {
-            return
-        }
+        guard !layer.isMatteSource else { return }
 
         // Skip if layer is not visible at this frame
-        guard Self.isVisible(layer, at: frame) else {
-            return
-        }
+        guard Self.isVisible(layer, at: context.frame) else { return }
 
         // Compute world matrix and opacity with parenting
-        // Returns nil if parent chain has errors - layer is skipped
-        guard let (worldMatrix, worldOpacity) = computeWorldTransform(
+        guard let resolved = computeLayerWorld(layer, context: context) else { return }
+
+        // Emit all commands for this layer
+        emitLayerCommands(layer, resolved: resolved, context: context, commands: &commands)
+    }
+
+    /// Computes world transform for a layer considering parent chain
+    private mutating func computeLayerWorld(
+        _ layer: Layer,
+        context: RenderContext
+    ) -> ResolvedTransform? {
+        guard let (matrix, opacity) = computeWorldTransform(
             for: layer,
-            at: frame,
-            baseWorldMatrix: parentWorldMatrix,
-            baseWorldOpacity: parentWorldOpacity,
-            layerById: layerById,
-            sceneFrameIndex: sceneFrameIndex
+            at: context.frame,
+            baseWorldMatrix: context.parentWorld,
+            baseWorldOpacity: context.parentOpacity,
+            layerById: context.layerById,
+            sceneFrameIndex: context.frameIndex
         ) else {
-            // Parent chain error - layer and subtree are not rendered
-            // Issue has already been recorded in computeWorldTransform
-            return
+            return nil
         }
+        return ResolvedTransform(worldMatrix: matrix, worldOpacity: opacity)
+    }
 
-        // Begin layer group
+    /// Emits render commands for a layer (group, transform, matte, masks, content)
+    private mutating func emitLayerCommands(
+        _ layer: Layer,
+        resolved: ResolvedTransform,
+        context: RenderContext,
+        commands: inout [RenderCommand]
+    ) {
         commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))"))
+        commands.append(.pushTransform(resolved.worldMatrix))
 
-        // Push computed world transform
-        commands.append(.pushTransform(worldMatrix))
-
-        // Handle matte - wrap content in matte begin/end
+        // Matte begin
         if let matte = layer.matte {
             switch matte.mode {
             case .alpha:
@@ -225,42 +237,23 @@ extension AnimIR {
             }
         }
 
-        // Handle masks - apply before content
-        let hasMasks = !layer.masks.isEmpty
-        if hasMasks {
-            for mask in layer.masks {
-                if let staticPath = mask.path.staticPath {
-                    commands.append(.beginMaskAdd(path: staticPath))
-                }
+        // Masks begin
+        for mask in layer.masks {
+            if let staticPath = mask.path.staticPath {
+                commands.append(.beginMaskAdd(path: staticPath))
             }
         }
 
-        // Render content based on layer type
-        renderLayerContent(
-            layer,
-            frame: frame,
-            worldMatrix: worldMatrix,
-            worldOpacity: worldOpacity,
-            sceneFrameIndex: sceneFrameIndex,
-            commands: &commands
-        )
+        // Content
+        renderLayerContent(layer, resolved: resolved, context: context, commands: &commands)
 
-        // End masks (LIFO order)
-        if hasMasks {
-            for _ in layer.masks {
-                commands.append(.endMask)
-            }
-        }
+        // Masks end (LIFO)
+        for _ in layer.masks { commands.append(.endMask) }
 
-        // End matte
-        if layer.matte != nil {
-            commands.append(.endMatte)
-        }
+        // Matte end
+        if layer.matte != nil { commands.append(.endMatte) }
 
-        // Pop transform
         commands.append(.popTransform)
-
-        // End layer group
         commands.append(.endGroup)
     }
 
@@ -358,39 +351,29 @@ extension AnimIR {
     /// Renders layer content based on type
     private mutating func renderLayerContent(
         _ layer: Layer,
-        frame: Double,
-        worldMatrix: Matrix2D,
-        worldOpacity: Double,
-        sceneFrameIndex: Int,
+        resolved: ResolvedTransform,
+        context: RenderContext,
         commands: inout [RenderCommand]
     ) {
         switch layer.content {
         case .image(let assetId):
-            // Draw image with computed world opacity
-            commands.append(.drawImage(assetId: assetId, opacity: worldOpacity))
+            commands.append(.drawImage(assetId: assetId, opacity: resolved.worldOpacity))
 
         case .precomp(let compId):
-            // Recursively render precomp composition
             if let precomp = comps[compId] {
-                // Apply start time offset: childFrame = frame - st
-                let childFrame = frame - layer.timing.startTime
-
-                renderComposition(
-                    precomp,
+                let childFrame = context.frame - layer.timing.startTime
+                let childLayerById = Dictionary(uniqueKeysWithValues: precomp.layers.map { ($0.id, $0) })
+                let childContext = RenderContext(
                     frame: childFrame,
-                    parentWorldMatrix: worldMatrix,
-                    parentWorldOpacity: worldOpacity,
-                    sceneFrameIndex: sceneFrameIndex,
-                    commands: &commands
+                    frameIndex: context.frameIndex,
+                    parentWorld: resolved.worldMatrix,
+                    parentOpacity: resolved.worldOpacity,
+                    layerById: childLayerById
                 )
+                renderComposition(precomp, context: childContext, commands: &commands)
             }
 
-        case .shapes:
-            // Shape layers used as matte sources don't render directly
-            break
-
-        case .none:
-            // Null layers have no visual content
+        case .shapes, .none:
             break
         }
     }
