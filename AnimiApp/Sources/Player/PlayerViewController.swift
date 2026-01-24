@@ -44,9 +44,13 @@ final class PlayerViewController: UIViewController {
     // MARK: - Properties
 
     private let loader = ScenePackageLoader()
-    private let validator = SceneValidator()
+    private let sceneValidator = SceneValidator()
+    private let animLoader = AnimLoader()
+    private let animValidator = AnimValidator()
     private var currentPackage: ScenePackage?
+    private var loadedAnimations: LoadedAnimations?
     private var isSceneValid = false
+    private var isAnimValid = false
 
     // MARK: - Metal Resources
 
@@ -114,26 +118,51 @@ final class PlayerViewController: UIViewController {
         log("Package root: \(rootURL.lastPathComponent)")
 
         do {
-            let package = try loader.load(from: rootURL)
-            currentPackage = package
-            logPackageInfo(package)
-
-            // Validate the scene
-            let report = validator.validate(scene: package.scene)
-            logValidationReport(report)
-
-            isSceneValid = !report.hasErrors
-            if report.hasErrors {
-                log("Scene is invalid — rendering disabled")
-            }
-
-            metalView.setNeedsDisplay()
+            try loadAndValidatePackage(from: rootURL)
         } catch let error as ScenePackageLoadError {
             log("ERROR: \(error.localizedDescription)")
             isSceneValid = false
+            isAnimValid = false
+        } catch let error as AnimLoadError {
+            log("ERROR: \(error.localizedDescription)")
+            isAnimValid = false
         } catch {
             log("ERROR: Unexpected error - \(error)")
             isSceneValid = false
+            isAnimValid = false
+        }
+    }
+
+    private func loadAndValidatePackage(from rootURL: URL) throws {
+        let package = try loader.load(from: rootURL)
+        currentPackage = package
+        logPackageInfo(package)
+
+        let sceneReport = sceneValidator.validate(scene: package.scene)
+        logValidationReport(sceneReport, title: "SceneValidation")
+
+        isSceneValid = !sceneReport.hasErrors
+        if sceneReport.hasErrors {
+            log("Scene is invalid — rendering disabled")
+            metalView.setNeedsDisplay()
+            return
+        }
+
+        try loadAndValidateAnimations(for: package)
+        metalView.setNeedsDisplay()
+    }
+
+    private func loadAndValidateAnimations(for package: ScenePackage) throws {
+        let loaded = try animLoader.loadAnimations(from: package)
+        loadedAnimations = loaded
+        log("Loaded \(loaded.lottieByAnimRef.count) animations")
+
+        let animReport = animValidator.validate(scene: package.scene, package: package, loaded: loaded)
+        logValidationReport(animReport, title: "AnimValidation")
+
+        isAnimValid = !animReport.hasErrors
+        if animReport.hasErrors {
+            log("Animations invalid — rendering disabled")
         }
     }
 
@@ -184,9 +213,9 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    private func logValidationReport(_ report: ValidationReport) {
+    private func logValidationReport(_ report: ValidationReport, title: String) {
         log("---")
-        log("Validation: \(report.errors.count) errors, \(report.warnings.count) warnings")
+        log("\(title): \(report.errors.count) errors, \(report.warnings.count) warnings")
 
         for issue in report.issues {
             let severityTag = issue.severity == .error ? "[ERROR]" : "[WARN ]"
