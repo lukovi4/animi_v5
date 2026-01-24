@@ -156,21 +156,31 @@ private struct BalanceStacks {
         group == 0 && transform == 0 && clip == 0 && mask == 0 && matte == 0
     }
 
-    mutating func process(_ command: RenderCommand) -> Bool {
+    mutating func increment(_ command: RenderCommand) {
         switch command {
         case .beginGroup: group += 1
-        case .endGroup: group -= 1; if group < 0 { return false }
         case .pushTransform: transform += 1
-        case .popTransform: transform -= 1; if transform < 0 { return false }
         case .pushClipRect: clip += 1
-        case .popClipRect: clip -= 1; if clip < 0 { return false }
         case .beginMaskAdd: mask += 1
-        case .endMask: mask -= 1; if mask < 0 { return false }
         case .beginMatteAlpha, .beginMatteAlphaInverted: matte += 1
-        case .endMatte: matte -= 1; if matte < 0 { return false }
-        case .drawImage: break
+        default: break
         }
-        return true
+    }
+
+    mutating func decrement(_ command: RenderCommand) -> Bool {
+        switch command {
+        case .endGroup: group -= 1; return group >= 0
+        case .popTransform: transform -= 1; return transform >= 0
+        case .popClipRect: clip -= 1; return clip >= 0
+        case .endMask: mask -= 1; return mask >= 0
+        case .endMatte: matte -= 1; return matte >= 0
+        default: return true
+        }
+    }
+
+    mutating func process(_ command: RenderCommand) -> Bool {
+        increment(command)
+        return decrement(command)
     }
 }
 
