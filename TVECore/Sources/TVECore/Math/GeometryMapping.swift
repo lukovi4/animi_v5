@@ -15,11 +15,14 @@ public struct SizeD: Equatable, Sendable {
 
 /// 2D rectangle with double precision
 public struct RectD: Equatable, Sendable {
+    // swiftlint:disable:next identifier_name
     public let x: Double
+    // swiftlint:disable:next identifier_name
     public let y: Double
     public let width: Double
     public let height: Double
 
+    // swiftlint:disable:next identifier_name
     public init(x: Double, y: Double, width: Double, height: Double) {
         self.x = x
         self.y = y
@@ -42,9 +45,12 @@ public struct RectD: Equatable, Sendable {
 
 /// 2D vector with double precision
 public struct Vec2D: Equatable, Sendable {
+    // swiftlint:disable:next identifier_name
     public let x: Double
+    // swiftlint:disable:next identifier_name
     public let y: Double
 
+    // swiftlint:disable:next identifier_name
     public init(x: Double, y: Double) {
         self.x = x
         self.y = y
@@ -86,18 +92,48 @@ public enum GeometryMapping {
         let scaledHeight = animSize.height * scale
 
         // Calculate centering offset within inputRect
-        let dx = inputRect.x + (inputRect.width - scaledWidth) / 2.0
-        let dy = inputRect.y + (inputRect.height - scaledHeight) / 2.0
+        let offsetX = inputRect.x + (inputRect.width - scaledWidth) / 2.0
+        let offsetY = inputRect.y + (inputRect.height - scaledHeight) / 2.0
 
-        // Result: Translate(dx, dy) * Scale(scale, scale)
-        // Matrix multiplication order: first scale, then translate
+        // Result: Translate * Scale - first scale, then translate
         return Matrix2D(
             a: scale,
             b: 0,
             c: 0,
             d: scale,
-            tx: dx,
-            ty: dy
+            tx: offsetX,
+            ty: offsetY
+        )
+    }
+
+    /// Returns matrix that converts viewport pixel coordinates to Metal NDC.
+    ///
+    /// Viewport space: origin at top-left, X right, Y down, range (0..width, 0..height)
+    /// Metal NDC: origin at center, X right, Y up, range (-1..+1, -1..+1)
+    ///
+    /// Transform:
+    /// - ndcX = (vpX / width) * 2 - 1
+    /// - ndcY = 1 - (vpY / height) * 2  (Y flip)
+    ///
+    /// - Parameters:
+    ///   - width: Viewport width in pixels
+    ///   - height: Viewport height in pixels
+    /// - Returns: Transformation matrix from viewport to NDC
+    public static func viewportToNDC(width: Double, height: Double) -> Matrix2D {
+        guard width > 0, height > 0 else {
+            return .identity
+        }
+
+        // Matrix that transforms (0..W, 0..H) to (-1..+1, +1..-1)
+        // x' = (x / W) * 2 - 1 = x * (2/W) - 1
+        // y' = 1 - (y / H) * 2 = y * (-2/H) + 1
+        return Matrix2D(
+            a: 2.0 / width,
+            b: 0,
+            c: 0,
+            d: -2.0 / height, // Negative for Y flip
+            tx: -1.0,
+            ty: 1.0
         )
     }
 }

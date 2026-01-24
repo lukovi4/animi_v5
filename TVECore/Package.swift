@@ -18,7 +18,8 @@ let package = Package(
         .target(
             name: "TVECore",
             dependencies: [],
-            path: "Sources/TVECore"
+            path: "Sources/TVECore",
+            exclude: ["MetalRenderer/Shaders/QuadShaders.metal"]
         ),
         .testTarget(
             name: "TVECoreTests",
