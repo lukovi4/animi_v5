@@ -291,7 +291,6 @@ extension MetalRenderer {
         )
     }
 
-    // swiftlint:disable:next function_parameter_count
     private func renderInnerCommandsToTexture(
         _ commands: [RenderCommand],
         texture: MTLTexture,
@@ -366,7 +365,6 @@ extension MetalRenderer {
         )
     }
 
-    // swiftlint:disable:next function_parameter_count
     private func compositeWithStencilMask(
         contentTex: MTLTexture,
         maskTex: MTLTexture,
@@ -454,7 +452,6 @@ extension MetalRenderer {
         )
     }
 
-    // swiftlint:disable:next function_parameter_count
     private func compositeContentWithStencil(
         contentTex: MTLTexture,
         stencilTex: MTLTexture,
