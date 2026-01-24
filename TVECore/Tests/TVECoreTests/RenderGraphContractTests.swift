@@ -183,19 +183,19 @@ final class RenderGraphContractTests: XCTestCase {
     // MARK: - Balance Tests
 
     func testRenderCommands_minimal_isBalanced() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
         XCTAssertTrue(commands.isBalanced(), "Commands should be balanced")
     }
 
     func testRenderCommands_withMask_isBalanced() throws {
-        let ir = try compileIR(lottieWithMaskJSON)
+        var ir = try compileIR(lottieWithMaskJSON)
         let commands = ir.renderCommands(frameIndex: 0)
         XCTAssertTrue(commands.isBalanced(), "Commands should be balanced")
     }
 
     func testRenderCommands_withMatte_isBalanced() throws {
-        let ir = try compileIR(lottieWithMatteJSON)
+        var ir = try compileIR(lottieWithMatteJSON)
         let commands = ir.renderCommands(frameIndex: 0)
         XCTAssertTrue(commands.isBalanced(), "Commands should be balanced")
     }
@@ -203,7 +203,7 @@ final class RenderGraphContractTests: XCTestCase {
     // MARK: - Group Balance Tests
 
     func testRenderCommands_beginEndGroupBalanced() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
         let counts = commands.commandCounts()
 
@@ -211,7 +211,7 @@ final class RenderGraphContractTests: XCTestCase {
     }
 
     func testRenderCommands_pushPopTransformBalanced() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
         let counts = commands.commandCounts()
 
@@ -221,7 +221,7 @@ final class RenderGraphContractTests: XCTestCase {
     // MARK: - Mask Tests
 
     func testRenderCommands_withMask_containsMaskCommands() throws {
-        let ir = try compileIR(lottieWithMaskJSON)
+        var ir = try compileIR(lottieWithMaskJSON)
         let commands = ir.renderCommands(frameIndex: 0)
 
         XCTAssertTrue(commands.hasMaskCommands, "Should have mask commands")
@@ -231,7 +231,7 @@ final class RenderGraphContractTests: XCTestCase {
     }
 
     func testRenderCommands_maskBeforeDrawImage() throws {
-        let ir = try compileIR(lottieWithMaskJSON)
+        var ir = try compileIR(lottieWithMaskJSON)
         let commands = ir.renderCommands(frameIndex: 0)
 
         var foundMaskBeforeImage = false
@@ -254,8 +254,9 @@ final class RenderGraphContractTests: XCTestCase {
     // MARK: - Matte Tests
 
     func testRenderCommands_withMatte_containsMatteCommands() throws {
-        let ir = try compileIR(lottieWithMatteJSON)
-        let commands = ir.renderCommands(frameIndex: 0)
+        var ir = try compileIR(lottieWithMatteJSON)
+        // Note: matte layers have ip=30, so test at frame 30 when they're visible
+        let commands = ir.renderCommands(frameIndex: 30)
 
         XCTAssertTrue(commands.hasMatteCommands, "Should have matte commands")
 
@@ -266,8 +267,9 @@ final class RenderGraphContractTests: XCTestCase {
     }
 
     func testRenderCommands_matteSourceNotRendered() throws {
-        let ir = try compileIR(lottieWithMatteJSON)
-        let commands = ir.renderCommands(frameIndex: 0)
+        var ir = try compileIR(lottieWithMatteJSON)
+        // Note: matte layers have ip=30, so test at frame 30 when they're visible
+        let commands = ir.renderCommands(frameIndex: 30)
 
         // Collect layer group names
         var layerGroupNames: [String] = []
@@ -285,7 +287,7 @@ final class RenderGraphContractTests: XCTestCase {
     // MARK: - Command Structure Tests
 
     func testRenderCommands_startsWithRootGroup() throws {
-        let ir = try compileIR(minimalLottieJSON, animRef: "my-anim.json")
+        var ir = try compileIR(minimalLottieJSON, animRef: "my-anim.json")
         let commands = ir.renderCommands(frameIndex: 0)
 
         guard let firstCommand = commands.first else {
@@ -302,7 +304,7 @@ final class RenderGraphContractTests: XCTestCase {
     }
 
     func testRenderCommands_endsWithEndGroup() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
 
         guard let lastCommand = commands.last else {
@@ -320,7 +322,7 @@ final class RenderGraphContractTests: XCTestCase {
     // MARK: - Determinism Tests
 
     func testRenderCommands_deterministic() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands1 = ir.renderCommands(frameIndex: 0)
         let commands2 = ir.renderCommands(frameIndex: 0)
 
@@ -331,19 +333,19 @@ final class RenderGraphContractTests: XCTestCase {
     }
 
     func testRenderCommands_differentFramesSameStructure() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands0 = ir.renderCommands(frameIndex: 0)
         let commands100 = ir.renderCommands(frameIndex: 100)
 
-        // In PR4 (no transform/visibility computation), structure should be same
-        XCTAssertEqual(commands0.count, commands100.count, "Command count should be same at different frames in PR4")
+        // For static animations (no animated properties), structure should be same at all frames
+        XCTAssertEqual(commands0.count, commands100.count, "Command count should be same at different frames for static anim")
         XCTAssertTrue(commands100.isBalanced())
     }
 
     // MARK: - DrawImage Tests
 
     func testRenderCommands_containsDrawImage() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
 
         let hasDrawImage = commands.contains { cmd in
@@ -354,7 +356,7 @@ final class RenderGraphContractTests: XCTestCase {
     }
 
     func testRenderCommands_drawImageHasCorrectAssetId() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
 
         var foundAssetId: String?
@@ -368,8 +370,8 @@ final class RenderGraphContractTests: XCTestCase {
         XCTAssertEqual(foundAssetId, "image_0")
     }
 
-    func testRenderCommands_drawImageOpacityIsPlaceholder() throws {
-        let ir = try compileIR(minimalLottieJSON)
+    func testRenderCommands_drawImageOpacity_isComputed() throws {
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
 
         var foundOpacity: Double?
@@ -380,19 +382,23 @@ final class RenderGraphContractTests: XCTestCase {
             }
         }
 
+        // Opacity is now computed from transform track (100% in minimalLottie = 1.0)
         XCTAssertNotNil(foundOpacity)
-        XCTAssertEqual(foundOpacity ?? 0, 1.0, accuracy: 0.001, "PR4 opacity should be placeholder 1.0")
+        XCTAssertEqual(foundOpacity ?? 0, 1.0, accuracy: 0.001, "Opacity should be computed from transform")
     }
 
     // MARK: - PushTransform Tests
 
-    func testRenderCommands_pushTransformIsIdentity() throws {
-        let ir = try compileIR(minimalLottieJSON)
+    func testRenderCommands_pushTransform_computedFromTrack() throws {
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
 
+        // For minimalLottie: position=(270,480), anchor=(270,480), scale=100%, rotation=0
+        // Transform = T(p) * R(0) * S(1) * T(-a) = T(270,480) * I * I * T(-270,-480) = identity
         for command in commands {
             if case .pushTransform(let matrix) = command {
-                XCTAssertEqual(matrix, .identity, "PR4 transforms should be identity")
+                // This specific test animation has identity transforms due to matching anchor/position
+                XCTAssertEqual(matrix, .identity, "This static anim should have identity transforms")
             }
         }
     }
@@ -400,7 +406,7 @@ final class RenderGraphContractTests: XCTestCase {
     // MARK: - Command Count Sanity
 
     func testRenderCommands_hasReasonableCommandCount() throws {
-        let ir = try compileIR(minimalLottieJSON)
+        var ir = try compileIR(minimalLottieJSON)
         let commands = ir.renderCommands(frameIndex: 0)
 
         XCTAssertGreaterThan(commands.count, 5, "Should have meaningful number of commands")

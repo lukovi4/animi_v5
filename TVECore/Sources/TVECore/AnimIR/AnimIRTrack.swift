@@ -67,6 +67,119 @@ public enum AnimTrack<T: Sendable & Equatable>: Sendable, Equatable {
     }
 }
 
+// MARK: - Linear Interpolation
+
+/// Linear interpolation for Double values
+public func lerp(_ from: Double, _ to: Double, _ factor: Double) -> Double {
+    from + (to - from) * factor
+}
+
+/// Linear interpolation for Vec2D values
+public func lerp(_ from: Vec2D, _ to: Vec2D, _ factor: Double) -> Vec2D {
+    Vec2D(
+        x: lerp(from.x, to.x, factor),
+        y: lerp(from.y, to.y, factor)
+    )
+}
+
+// MARK: - AnimTrack Sampling
+
+extension AnimTrack where T == Double {
+    /// Samples the track at the given frame using linear interpolation
+    /// - Parameter frame: Frame number (can be fractional)
+    /// - Returns: Interpolated value at the given frame
+    public func sample(frame: Double) -> Double {
+        switch self {
+        case .static(let value):
+            return value
+        case .keyframed(let keyframes):
+            return sampleKeyframes(keyframes, at: frame)
+        }
+    }
+
+    private func sampleKeyframes(_ keyframes: [Keyframe<Double>], at frame: Double) -> Double {
+        guard !keyframes.isEmpty else { return 0 }
+
+        // Before first keyframe
+        if frame <= keyframes[0].time {
+            return keyframes[0].value
+        }
+
+        // After last keyframe
+        if frame >= keyframes[keyframes.count - 1].time {
+            return keyframes[keyframes.count - 1].value
+        }
+
+        // Find segment containing frame
+        for i in 0..<(keyframes.count - 1) {
+            let k0 = keyframes[i]
+            let k1 = keyframes[i + 1]
+
+            if frame >= k0.time && frame < k1.time {
+                // Avoid division by zero
+                let duration = k1.time - k0.time
+                if duration <= 0 {
+                    return k1.value
+                }
+
+                let progress = (frame - k0.time) / duration
+                return lerp(k0.value, k1.value, progress)
+            }
+        }
+
+        // Fallback (should not reach here)
+        return keyframes[keyframes.count - 1].value
+    }
+}
+
+extension AnimTrack where T == Vec2D {
+    /// Samples the track at the given frame using linear interpolation
+    /// - Parameter frame: Frame number (can be fractional)
+    /// - Returns: Interpolated value at the given frame
+    public func sample(frame: Double) -> Vec2D {
+        switch self {
+        case .static(let value):
+            return value
+        case .keyframed(let keyframes):
+            return sampleKeyframes(keyframes, at: frame)
+        }
+    }
+
+    private func sampleKeyframes(_ keyframes: [Keyframe<Vec2D>], at frame: Double) -> Vec2D {
+        guard !keyframes.isEmpty else { return .zero }
+
+        // Before first keyframe
+        if frame <= keyframes[0].time {
+            return keyframes[0].value
+        }
+
+        // After last keyframe
+        if frame >= keyframes[keyframes.count - 1].time {
+            return keyframes[keyframes.count - 1].value
+        }
+
+        // Find segment containing frame
+        for i in 0..<(keyframes.count - 1) {
+            let k0 = keyframes[i]
+            let k1 = keyframes[i + 1]
+
+            if frame >= k0.time && frame < k1.time {
+                // Avoid division by zero
+                let duration = k1.time - k0.time
+                if duration <= 0 {
+                    return k1.value
+                }
+
+                let progress = (frame - k0.time) / duration
+                return lerp(k0.value, k1.value, progress)
+            }
+        }
+
+        // Fallback (should not reach here)
+        return keyframes[keyframes.count - 1].value
+    }
+}
+
 // MARK: - Transform Track
 
 /// Complete transform track for a layer

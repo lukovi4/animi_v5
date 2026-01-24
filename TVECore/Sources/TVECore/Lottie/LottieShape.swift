@@ -1,10 +1,52 @@
 import Foundation
 
+// MARK: - ShapeItem Enum
+
 /// Shape item in a shape layer (ty=4)
 /// Part 1 subset supports: gr (group), sh (path), fl (fill), tr (transform)
-public struct LottieShape: Decodable, Equatable, Sendable {
-    /// Shape type: "gr" = group, "sh" = path, "fl" = fill, "tr" = transform,
-    /// "st" = stroke, "rc" = rect, "el" = ellipse, "sr" = polystar, "tm" = trim, etc.
+public enum ShapeItem: Equatable, Sendable {
+    case group(LottieShapeGroup)
+    case path(LottieShapePath)
+    case fill(LottieShapeFill)
+    case transform(LottieShapeTransform)
+    case unknown(type: String)
+}
+
+// MARK: - ShapeItem Decodable
+
+extension ShapeItem: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case type = "ty"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+
+        switch type {
+        case "gr":
+            let group = try LottieShapeGroup(from: decoder)
+            self = .group(group)
+        case "sh":
+            let path = try LottieShapePath(from: decoder)
+            self = .path(path)
+        case "fl":
+            let fill = try LottieShapeFill(from: decoder)
+            self = .fill(fill)
+        case "tr":
+            let transform = try LottieShapeTransform(from: decoder)
+            self = .transform(transform)
+        default:
+            self = .unknown(type: type)
+        }
+    }
+}
+
+// MARK: - LottieShapeGroup (ty="gr")
+
+/// Shape group containing other shape items
+public struct LottieShapeGroup: Decodable, Equatable, Sendable {
+    /// Shape type (always "gr")
     public let type: String
 
     /// Shape name
@@ -16,14 +58,8 @@ public struct LottieShape: Decodable, Equatable, Sendable {
     /// Hidden flag
     public let hidden: Bool?
 
-    /// Group items (for ty="gr")
-    public let items: [Self]?
-
-    /// Blend mode
-    public let blendMode: Int?
-
-    /// Index
-    public let index: Int?
+    /// Group items
+    public let items: [ShapeItem]?
 
     /// Number of properties
     public let numProperties: Int?
@@ -31,51 +67,214 @@ public struct LottieShape: Decodable, Equatable, Sendable {
     /// Content index
     public let contentIndex: Int?
 
-    /// Shape path data (for ty="sh")
-    public let vertices: LottieAnimatedValue?
+    /// Blend mode
+    public let blendMode: Int?
 
-    /// Fill color (for ty="fl")
-    public let color: LottieAnimatedValue?
-
-    /// Opacity (for ty="fl" and ty="tr")
-    public let opacity: LottieAnimatedValue?
-
-    /// Fill rule (for ty="fl"): 1 = non-zero, 2 = even-odd
-    /// Also used for rotation (for ty="tr") - both use "r" key in Lottie JSON
-    public let fillRuleOrRotation: LottieAnimatedValue?
-
-    /// Position (for ty="tr")
-    public let position: LottieAnimatedValue?
-
-    /// Anchor (for ty="tr")
-    public let anchor: LottieAnimatedValue?
-
-    /// Scale (for ty="tr")
-    public let scale: LottieAnimatedValue?
-
-    /// Skew (for ty="tr")
-    public let skew: LottieAnimatedValue?
-
-    /// Skew axis (for ty="tr")
-    public let skewAxis: LottieAnimatedValue?
+    /// Index
+    public let index: Int?
 
     public init(
-        type: String,
+        type: String = "gr",
         name: String? = nil,
         matchName: String? = nil,
         hidden: Bool? = nil,
-        items: [Self]? = nil,
-        blendMode: Int? = nil,
-        index: Int? = nil,
+        items: [ShapeItem]? = nil,
         numProperties: Int? = nil,
         contentIndex: Int? = nil,
-        vertices: LottieAnimatedValue? = nil,
+        blendMode: Int? = nil,
+        index: Int? = nil
+    ) {
+        self.type = type
+        self.name = name
+        self.matchName = matchName
+        self.hidden = hidden
+        self.items = items
+        self.numProperties = numProperties
+        self.contentIndex = contentIndex
+        self.blendMode = blendMode
+        self.index = index
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "ty"
+        case name = "nm"
+        case matchName = "mn"
+        case hidden = "hd"
+        case items = "it"
+        case numProperties = "np"
+        case contentIndex = "cix"
+        case blendMode = "bm"
+        case index = "ix"
+    }
+}
+
+// MARK: - LottieShapePath (ty="sh")
+
+/// Shape path with vertices
+public struct LottieShapePath: Decodable, Equatable, Sendable {
+    /// Shape type (always "sh")
+    public let type: String
+
+    /// Shape name
+    public let name: String?
+
+    /// Match name (After Effects internal)
+    public let matchName: String?
+
+    /// Hidden flag
+    public let hidden: Bool?
+
+    /// Index
+    public let index: Int?
+
+    /// Shape path data (vertices)
+    public let vertices: LottieAnimatedValue?
+
+    public init(
+        type: String = "sh",
+        name: String? = nil,
+        matchName: String? = nil,
+        hidden: Bool? = nil,
+        index: Int? = nil,
+        vertices: LottieAnimatedValue? = nil
+    ) {
+        self.type = type
+        self.name = name
+        self.matchName = matchName
+        self.hidden = hidden
+        self.index = index
+        self.vertices = vertices
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "ty"
+        case name = "nm"
+        case matchName = "mn"
+        case hidden = "hd"
+        case index = "ix"
+        case vertices = "ks"
+    }
+}
+
+// MARK: - LottieShapeFill (ty="fl")
+
+/// Shape fill with color and opacity
+public struct LottieShapeFill: Decodable, Equatable, Sendable {
+    /// Shape type (always "fl")
+    public let type: String
+
+    /// Shape name
+    public let name: String?
+
+    /// Match name (After Effects internal)
+    public let matchName: String?
+
+    /// Hidden flag
+    public let hidden: Bool?
+
+    /// Index
+    public let index: Int?
+
+    /// Fill color
+    public let color: LottieAnimatedValue?
+
+    /// Opacity
+    public let opacity: LottieAnimatedValue?
+
+    /// Fill rule: 1 = non-zero, 2 = even-odd
+    /// Note: In Lottie JSON this is "r" as an Int, NOT an animated value
+    public let fillRule: Int?
+
+    /// Blend mode
+    public let blendMode: Int?
+
+    public init(
+        type: String = "fl",
+        name: String? = nil,
+        matchName: String? = nil,
+        hidden: Bool? = nil,
+        index: Int? = nil,
         color: LottieAnimatedValue? = nil,
         opacity: LottieAnimatedValue? = nil,
-        fillRuleOrRotation: LottieAnimatedValue? = nil,
+        fillRule: Int? = nil,
+        blendMode: Int? = nil
+    ) {
+        self.type = type
+        self.name = name
+        self.matchName = matchName
+        self.hidden = hidden
+        self.index = index
+        self.color = color
+        self.opacity = opacity
+        self.fillRule = fillRule
+        self.blendMode = blendMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "ty"
+        case name = "nm"
+        case matchName = "mn"
+        case hidden = "hd"
+        case index = "ix"
+        case color = "c"
+        case opacity = "o"
+        case fillRule = "r"
+        case blendMode = "bm"
+    }
+}
+
+// MARK: - LottieShapeTransform (ty="tr")
+
+/// Shape transform with position, scale, rotation, etc.
+public struct LottieShapeTransform: Decodable, Equatable, Sendable {
+    /// Shape type (always "tr")
+    public let type: String
+
+    /// Shape name
+    public let name: String?
+
+    /// Match name (After Effects internal)
+    public let matchName: String?
+
+    /// Hidden flag
+    public let hidden: Bool?
+
+    /// Index
+    public let index: Int?
+
+    /// Position
+    public let position: LottieAnimatedValue?
+
+    /// Anchor point
+    public let anchor: LottieAnimatedValue?
+
+    /// Scale
+    public let scale: LottieAnimatedValue?
+
+    /// Rotation (animated value)
+    /// Note: In Lottie JSON this is "r" as an animated value object, NOT an Int
+    public let rotation: LottieAnimatedValue?
+
+    /// Opacity
+    public let opacity: LottieAnimatedValue?
+
+    /// Skew
+    public let skew: LottieAnimatedValue?
+
+    /// Skew axis
+    public let skewAxis: LottieAnimatedValue?
+
+    public init(
+        type: String = "tr",
+        name: String? = nil,
+        matchName: String? = nil,
+        hidden: Bool? = nil,
+        index: Int? = nil,
         position: LottieAnimatedValue? = nil,
         anchor: LottieAnimatedValue? = nil,
         scale: LottieAnimatedValue? = nil,
+        rotation: LottieAnimatedValue? = nil,
+        opacity: LottieAnimatedValue? = nil,
         skew: LottieAnimatedValue? = nil,
         skewAxis: LottieAnimatedValue? = nil
     ) {
@@ -83,18 +282,12 @@ public struct LottieShape: Decodable, Equatable, Sendable {
         self.name = name
         self.matchName = matchName
         self.hidden = hidden
-        self.items = items
-        self.blendMode = blendMode
         self.index = index
-        self.numProperties = numProperties
-        self.contentIndex = contentIndex
-        self.vertices = vertices
-        self.color = color
-        self.opacity = opacity
-        self.fillRuleOrRotation = fillRuleOrRotation
         self.position = position
         self.anchor = anchor
         self.scale = scale
+        self.rotation = rotation
+        self.opacity = opacity
         self.skew = skew
         self.skewAxis = skewAxis
     }
@@ -104,19 +297,19 @@ public struct LottieShape: Decodable, Equatable, Sendable {
         case name = "nm"
         case matchName = "mn"
         case hidden = "hd"
-        case items = "it"
-        case blendMode = "bm"
         case index = "ix"
-        case numProperties = "np"
-        case contentIndex = "cix"
-        case vertices = "ks"
-        case color = "c"
-        case opacity = "o"
-        case fillRuleOrRotation = "r"
         case position = "p"
         case anchor = "a"
         case scale = "s"
+        case rotation = "r"
+        case opacity = "o"
         case skew = "sk"
         case skewAxis = "sa"
     }
 }
+
+// MARK: - Legacy LottieShape (deprecated, kept for compatibility)
+
+/// Legacy shape item structure - use ShapeItem enum instead
+@available(*, deprecated, message: "Use ShapeItem enum instead")
+public typealias LottieShape = ShapeItem

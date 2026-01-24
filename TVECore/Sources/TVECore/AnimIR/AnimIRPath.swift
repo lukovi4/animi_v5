@@ -207,7 +207,7 @@ extension Mask {
 /// Extracts bezier path from shape layer shapes
 public enum ShapePathExtractor {
     /// Extracts the first path from a list of Lottie shapes
-    public static func extractPath(from shapes: [LottieShape]?) -> BezierPath? {
+    public static func extractPath(from shapes: [ShapeItem]?) -> BezierPath? {
         guard let shapes = shapes else { return nil }
 
         for shape in shapes {
@@ -218,15 +218,15 @@ public enum ShapePathExtractor {
         return nil
     }
 
-    private static func extractPathFromShape(_ shape: LottieShape) -> BezierPath? {
-        switch shape.type {
-        case "sh":
+    private static func extractPathFromShape(_ shape: ShapeItem) -> BezierPath? {
+        switch shape {
+        case .path(let pathShape):
             // Path shape - extract vertices
-            return BezierPath(from: shape.vertices)
+            return BezierPath(from: pathShape.vertices)
 
-        case "gr":
+        case .group(let shapeGroup):
             // Group - recurse into items
-            guard let items = shape.items else { return nil }
+            guard let items = shapeGroup.items else { return nil }
             return extractPath(from: items)
 
         default:
@@ -235,7 +235,7 @@ public enum ShapePathExtractor {
     }
 
     /// Extracts fill color from shape layer shapes
-    public static func extractFillColor(from shapes: [LottieShape]?) -> [Double]? {
+    public static func extractFillColor(from shapes: [ShapeItem]?) -> [Double]? {
         guard let shapes = shapes else { return nil }
 
         for shape in shapes {
@@ -246,20 +246,20 @@ public enum ShapePathExtractor {
         return nil
     }
 
-    private static func extractFillFromShape(_ shape: LottieShape) -> [Double]? {
-        switch shape.type {
-        case "fl":
+    private static func extractFillFromShape(_ shape: ShapeItem) -> [Double]? {
+        switch shape {
+        case .fill(let fill):
             // Fill shape - extract color
-            guard let colorValue = shape.color,
+            guard let colorValue = fill.color,
                   let data = colorValue.value,
                   case .array(let arr) = data else {
                 return nil
             }
             return arr
 
-        case "gr":
+        case .group(let shapeGroup):
             // Group - recurse into items
-            guard let items = shape.items else { return nil }
+            guard let items = shapeGroup.items else { return nil }
             return extractFillColor(from: items)
 
         default:
@@ -268,7 +268,7 @@ public enum ShapePathExtractor {
     }
 
     /// Extracts fill opacity from shape layer shapes
-    public static func extractFillOpacity(from shapes: [LottieShape]?) -> Double {
+    public static func extractFillOpacity(from shapes: [ShapeItem]?) -> Double {
         guard let shapes = shapes else { return 100 }
 
         for shape in shapes {
@@ -279,11 +279,11 @@ public enum ShapePathExtractor {
         return 100
     }
 
-    private static func extractFillOpacityFromShape(_ shape: LottieShape) -> Double? {
-        switch shape.type {
-        case "fl":
+    private static func extractFillOpacityFromShape(_ shape: ShapeItem) -> Double? {
+        switch shape {
+        case .fill(let fill):
             // Fill shape - extract opacity
-            guard let opacityValue = shape.opacity,
+            guard let opacityValue = fill.opacity,
                   let data = opacityValue.value else {
                 return nil
             }
@@ -296,9 +296,9 @@ public enum ShapePathExtractor {
                 return nil
             }
 
-        case "gr":
+        case .group(let shapeGroup):
             // Group - recurse into items
-            guard let items = shape.items else { return nil }
+            guard let items = shapeGroup.items else { return nil }
             return extractFillOpacity(from: items)
 
         default:

@@ -49,7 +49,7 @@ public struct LottieLayer: Decodable, Equatable, Sendable {
     public let matteTarget: Int?
 
     /// Shapes (for shape layers, ty=4)
-    public let shapes: [LottieShape]?
+    public let shapes: [ShapeItem]?
 
     /// Precomp width
     public let width: Double?
@@ -88,7 +88,7 @@ public struct LottieLayer: Decodable, Equatable, Sendable {
         trackMatteType: Int? = nil,
         isMatteSource: Int? = nil,
         matteTarget: Int? = nil,
-        shapes: [LottieShape]? = nil,
+        shapes: [ShapeItem]? = nil,
         width: Double? = nil,
         height: Double? = nil,
         blendMode: Int? = nil,
@@ -166,7 +166,7 @@ public struct LottieLayer: Decodable, Equatable, Sendable {
         trackMatteType = try container.decodeIfPresent(Int.self, forKey: .trackMatteType)
         isMatteSource = try container.decodeIfPresent(Int.self, forKey: .isMatteSource)
         matteTarget = try container.decodeIfPresent(Int.self, forKey: .matteTarget)
-        shapes = try container.decodeIfPresent([LottieShape].self, forKey: .shapes)
+        shapes = try container.decodeIfPresent([ShapeItem].self, forKey: .shapes)
         width = try container.decodeIfPresent(Double.self, forKey: .width)
         height = try container.decodeIfPresent(Double.self, forKey: .height)
         blendMode = try container.decodeIfPresent(Int.self, forKey: .blendMode)

@@ -4,7 +4,7 @@ import Foundation
 
 extension AnimValidator {
     func validateShapes(
-        shapes: [LottieShape],
+        shapes: [ShapeItem],
         layerIndex: Int,
         context: String,
         animRef: String,
@@ -23,7 +23,7 @@ extension AnimValidator {
     }
 
     func validateShapeItem(
-        shape: LottieShape,
+        shape: ShapeItem,
         shapeIndex: Int,
         layerIndex: Int,
         context: String,
@@ -32,27 +32,42 @@ extension AnimValidator {
     ) {
         let basePath = "anim(\(animRef)).\(context)[\(layerIndex)].shapes[\(shapeIndex)]"
 
-        if !Self.supportedShapeTypes.contains(shape.type) {
+        switch shape {
+        case .group(let shapeGroup):
+            // Recursively validate group items
+            if let items = shapeGroup.items {
+                for (itemIndex, item) in items.enumerated() {
+                    validateShapeItem(
+                        shape: item,
+                        shapeIndex: itemIndex,
+                        layerIndex: layerIndex,
+                        context: "\(context)[\(layerIndex)].shapes[\(shapeIndex)].it",
+                        animRef: animRef,
+                        issues: &issues
+                    )
+                }
+            }
+
+        case .path:
+            // Path shape is supported, no validation issues
+            break
+
+        case .fill:
+            // Fill shape is supported, no validation issues
+            break
+
+        case .transform:
+            // Transform shape is supported, no validation issues
+            break
+
+        case .unknown(let type):
+            // Unknown shape type - report as unsupported
             issues.append(ValidationIssue(
                 code: AnimValidationCode.unsupportedShapeItem,
                 severity: .error,
                 path: "\(basePath).ty",
-                message: "Shape type '\(shape.type)' not supported. Supported: gr, sh, fl, tr"
+                message: "Shape type '\(type)' not supported. Supported: gr, sh, fl, tr"
             ))
-        }
-
-        // Recursively check group items
-        if shape.type == "gr", let items = shape.items {
-            for (itemIndex, item) in items.enumerated() {
-                validateShapeItem(
-                    shape: item,
-                    shapeIndex: itemIndex,
-                    layerIndex: layerIndex,
-                    context: "\(context)[\(layerIndex)].shapes[\(shapeIndex)].it",
-                    animRef: animRef,
-                    issues: &issues
-                )
-            }
         }
     }
 }
