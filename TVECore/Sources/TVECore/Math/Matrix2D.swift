@@ -56,8 +56,8 @@ public struct Matrix2D: Equatable, Sendable {
 
     /// Concatenates this matrix with another (self * other)
     /// Result applies other first, then self
-    public func concatenating(_ other: Matrix2D) -> Matrix2D {
-        Matrix2D(
+    public func concatenating(_ other: Self) -> Self {
+        Self(
             a: a * other.a + b * other.c,
             b: a * other.b + b * other.d,
             c: c * other.a + d * other.c,
@@ -76,12 +76,12 @@ public struct Matrix2D: Equatable, Sendable {
     }
 
     /// Returns the inverse matrix, or nil if not invertible
-    public var inverse: Matrix2D? {
+    public var inverse: Self? {
         let det = a * d - b * c
         guard abs(det) > 1e-10 else { return nil }
 
         let invDet = 1.0 / det
-        return Matrix2D(
+        return Self(
             a: d * invDet,
             b: -b * invDet,
             c: -c * invDet,
@@ -96,7 +96,7 @@ public struct Matrix2D: Equatable, Sendable {
 
 extension Matrix2D {
     /// Checks if two matrices are approximately equal within epsilon
-    public func isApproximatelyEqual(to other: Matrix2D, epsilon: Double = 1e-6) -> Bool {
+    public func isApproximatelyEqual(to other: Self, epsilon: Double = 1e-6) -> Bool {
         abs(a - other.a) < epsilon &&
         abs(b - other.b) < epsilon &&
         abs(c - other.c) < epsilon &&

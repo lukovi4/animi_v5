@@ -186,7 +186,6 @@ public final class AnimIRCompiler {
         return layers
     }
 
-    // swiftlint:disable function_parameter_count
     /// Compiles a single Lottie layer into IR layer
     private func compileLayer(
         _ lottie: LottieLayer,
@@ -196,7 +195,6 @@ public final class AnimIRCompiler {
         fallbackOp: Double,
         matteInfo: MatteInfo?
     ) throws -> Layer {
-        // swiftlint:enable function_parameter_count
         // Determine layer ID (from ind or index)
         let layerId: LayerID = lottie.index ?? index
 

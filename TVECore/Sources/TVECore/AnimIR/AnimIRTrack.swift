@@ -1,6 +1,6 @@
 import Foundation
 
-// swiftlint:disable identifier_name line_length
+// swiftlint:disable line_length
 
 // MARK: - Keyframe
 
@@ -101,7 +101,7 @@ public struct TransformTrack: Sendable, Equatable {
     }
 
     /// Default transform (identity)
-    public static let identity = TransformTrack(
+    public static let identity = Self(
         position: .static(.zero),
         scale: .static(Vec2D(x: 100, y: 100)),
         rotation: .static(0),
@@ -263,4 +263,4 @@ extension TransformTrack {
     }
 }
 
-// swiftlint:enable identifier_name line_length
+// swiftlint:enable line_length

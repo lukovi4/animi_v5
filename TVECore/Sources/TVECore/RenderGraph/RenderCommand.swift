@@ -135,7 +135,7 @@ extension RenderCommand: CustomDebugStringConvertible {
 extension Array where Element == RenderCommand {
     /// Validates that all begin/end commands are properly balanced
     /// Returns true if the command list is valid
-    public func isBalanced() -> Bool { // swiftlint:disable:this cyclomatic_complexity
+    public func isBalanced() -> Bool {
         var groupStack = 0
         var transformStack = 0
         var clipStack = 0
@@ -183,7 +183,7 @@ extension Array where Element == RenderCommand {
     }
 
     /// Returns counts of each command type for debugging
-    public func commandCounts() -> [String: Int] { // swiftlint:disable:this cyclomatic_complexity
+    public func commandCounts() -> [String: Int] {
         var counts: [String: Int] = [:]
 
         for command in self {

@@ -43,7 +43,7 @@ public struct LayerTiming: Sendable, Equatable {
     }
 
     /// Creates timing from Lottie layer values with defaults
-    public init(ip: Double?, op: Double?, st: Double?, fallbackOp: Double) { // swiftlint:disable:this identifier_name
+    public init(ip: Double?, op: Double?, st: Double?, fallbackOp: Double) {
         self.inPoint = ip ?? 0
         self.outPoint = op ?? fallbackOp
         self.startTime = st ?? 0

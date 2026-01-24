@@ -24,7 +24,7 @@ public struct BezierPath: Sendable, Equatable {
     }
 
     /// Creates an empty path
-    public static let empty = BezierPath(vertices: [], inTangents: [], outTangents: [], closed: false)
+    public static let empty = Self(vertices: [], inTangents: [], outTangents: [], closed: false)
 
     /// Number of vertices in the path
     public var vertexCount: Int {
@@ -49,15 +49,15 @@ extension BezierPath {
         }
 
         self.vertices = vertices.map { arr in
-            Vec2D(x: arr.count > 0 ? arr[0] : 0, y: arr.count > 1 ? arr[1] : 0)
+            Vec2D(x: !arr.isEmpty ? arr[0] : 0, y: arr.count > 1 ? arr[1] : 0)
         }
 
         self.inTangents = (pathData.inTangents ?? []).map { arr in
-            Vec2D(x: arr.count > 0 ? arr[0] : 0, y: arr.count > 1 ? arr[1] : 0)
+            Vec2D(x: !arr.isEmpty ? arr[0] : 0, y: arr.count > 1 ? arr[1] : 0)
         }
 
         self.outTangents = (pathData.outTangents ?? []).map { arr in
-            Vec2D(x: arr.count > 0 ? arr[0] : 0, y: arr.count > 1 ? arr[1] : 0)
+            Vec2D(x: !arr.isEmpty ? arr[0] : 0, y: arr.count > 1 ? arr[1] : 0)
         }
 
         self.closed = pathData.closed ?? false
@@ -138,7 +138,7 @@ public struct Mask: Sendable, Equatable {
 
 extension Mask {
     /// Creates Mask from LottieMask
-    public init?(from lottieMask: LottieMask) { // swiftlint:disable:this cyclomatic_complexity
+    public init?(from lottieMask: LottieMask) {
         // Mode must be "a" (add) for Part 1
         guard let mode = MaskMode(lottieMode: lottieMask.mode) else {
             return nil
