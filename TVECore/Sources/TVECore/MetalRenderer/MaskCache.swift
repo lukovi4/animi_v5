@@ -145,10 +145,11 @@ final class MaskCache {
         }
 
         alphaBytes.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
             texture.replace(
                 region: MTLRegionMake2D(0, 0, size.width, size.height),
                 mipmapLevel: 0,
-                withBytes: buffer.baseAddress!,
+                withBytes: baseAddress,
                 bytesPerRow: size.width
             )
         }

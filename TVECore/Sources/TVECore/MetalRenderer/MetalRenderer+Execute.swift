@@ -1,3 +1,4 @@
+// swiftlint:disable file_length
 import Metal
 import simd
 
@@ -79,6 +80,7 @@ private enum ScissorHelper {
 // MARK: - MetalRenderer Execute Extension
 
 extension MetalRenderer {
+    // swiftlint:disable:next function_body_length
     func drawInternal(
         commands: [RenderCommand],
         renderPassDescriptor: MTLRenderPassDescriptor,
@@ -196,6 +198,7 @@ extension MetalRenderer {
         }
     }
 
+    // swiftlint:disable:next function_parameter_count
     private func renderMaskScope(
         scope: MaskScope,
         target: RenderTarget,
@@ -288,6 +291,7 @@ extension MetalRenderer {
         )
     }
 
+    // swiftlint:disable:next function_parameter_count
     private func renderInnerCommandsToTexture(
         _ commands: [RenderCommand],
         texture: MTLTexture,
@@ -362,6 +366,7 @@ extension MetalRenderer {
         )
     }
 
+    // swiftlint:disable:next function_parameter_count
     private func compositeWithStencilMask(
         contentTex: MTLTexture,
         maskTex: MTLTexture,
@@ -449,6 +454,7 @@ extension MetalRenderer {
         )
     }
 
+    // swiftlint:disable:next function_parameter_count
     private func compositeContentWithStencil(
         contentTex: MTLTexture,
         stencilTex: MTLTexture,
@@ -515,8 +521,10 @@ extension MetalRenderer {
             )
         }
         if state.transformStack.count != baseline.transformStack.count {
+            let exp = baseline.transformStack.count
+            let got = state.transformStack.count
             throw MetalRendererError.invalidCommandStack(
-                reason: "Unbalanced transforms: expected \(baseline.transformStack.count), got \(state.transformStack.count)"
+                reason: "Unbalanced transforms: expected \(exp), got \(got)"
             )
         }
         if state.clipStack.count != baseline.clipStack.count {
