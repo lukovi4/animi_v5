@@ -86,17 +86,18 @@ public enum GeometryMapping {
         let scaledHeight = animSize.height * scale
 
         // Calculate centering offset within inputRect
-        let offsetX = inputRect.x + (inputRect.width - scaledWidth) / 2.0
-        let offsetY = inputRect.y + (inputRect.height - scaledHeight) / 2.0
+        let dx = inputRect.x + (inputRect.width - scaledWidth) / 2.0
+        let dy = inputRect.y + (inputRect.height - scaledHeight) / 2.0
 
-        // Result: Translate * Scale - first scale, then translate
+        // Result: Translate(dx, dy) * Scale(scale, scale)
+        // Matrix multiplication order: first scale, then translate
         return Matrix2D(
             a: scale,
             b: 0,
             c: 0,
             d: scale,
-            tx: offsetX,
-            ty: offsetY
+            tx: dx,
+            ty: dy
         )
     }
 

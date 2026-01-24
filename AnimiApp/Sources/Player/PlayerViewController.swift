@@ -157,11 +157,22 @@ final class PlayerViewController: UIViewController {
         guard let url = Bundle.main.url(forResource: "scene", withExtension: "json", subdirectory: subdir) else {
             log("ERROR: Test package not found"); return
         }
-        do { try loadAndValidatePackage(from: url.deletingLastPathComponent()) }
-        catch { log("ERROR: \(error)"); isSceneValid = false; isAnimValid = false }
+        do {
+            try loadAndValidatePackage(from: url.deletingLastPathComponent())
+        } catch {
+            log("ERROR: \(error)")
+            isSceneValid = false
+            isAnimValid = false
+        }
     }
 
-    @objc private func playPauseTapped() { isPlaying ? stopPlayback() : startPlayback() }
+    @objc private func playPauseTapped() {
+        if isPlaying {
+            stopPlayback()
+        } else {
+            startPlayback()
+        }
+    }
 
     @objc private func frameSliderChanged() {
         currentFrameIndex = Int(frameSlider.value)
