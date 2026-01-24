@@ -14,6 +14,30 @@ struct RenderContext {
     let commandBuffer: MTLCommandBuffer
 }
 
+/// Groups parameters for mask composite operations.
+struct MaskCompositeContext {
+    let target: RenderTarget
+    let viewportToNDC: Matrix2D
+    let commandBuffer: MTLCommandBuffer
+    let scissor: MTLScissorRect?
+}
+
+/// Groups parameters for inner command rendering.
+struct InnerRenderContext {
+    let target: RenderTarget
+    let textureProvider: TextureProvider
+    let commandBuffer: MTLCommandBuffer
+}
+
+/// Groups parameters for mask scope rendering.
+struct MaskScopeContext {
+    let target: RenderTarget
+    let textureProvider: TextureProvider
+    let commandBuffer: MTLCommandBuffer
+    let animToViewport: Matrix2D
+    let viewportToNDC: Matrix2D
+}
+
 // MARK: - Execution State
 
 /// Tracks state during command execution.
@@ -137,15 +161,14 @@ extension MetalRenderer {
                 guard let scope = extractMaskScope(from: commands, startIndex: index) else {
                     throw MetalRendererError.invalidCommandStack(reason: "Malformed mask: BeginMaskAdd without EndMask")
                 }
-                try renderMaskScope(
-                    scope: scope,
+                let scopeCtx = MaskScopeContext(
                     target: target,
                     textureProvider: textureProvider,
                     commandBuffer: commandBuffer,
                     animToViewport: animToViewport,
-                    viewportToNDC: viewportToNDC,
-                    inheritedState: state
+                    viewportToNDC: viewportToNDC
                 )
+                try renderMaskScope(scope: scope, ctx: scopeCtx, inheritedState: state)
                 index = scope.endIndex + 1
                 isFirstPass = false
             }
@@ -198,27 +221,21 @@ extension MetalRenderer {
         }
     }
 
-    // swiftlint:disable:next function_parameter_count
     private func renderMaskScope(
         scope: MaskScope,
-        target: RenderTarget,
-        textureProvider: TextureProvider,
-        commandBuffer: MTLCommandBuffer,
-        animToViewport: Matrix2D,
-        viewportToNDC: Matrix2D,
+        ctx: MaskScopeContext,
         inheritedState: ExecutionState
     ) throws {
-        let targetSize = target.sizePx
+        let targetSize = ctx.target.sizePx
         let currentScissor = inheritedState.currentScissor
 
         // Skip if path is empty or degenerate
         guard scope.path.vertexCount > 2 else {
-            // Render content without masking
             try renderInnerCommandsToTarget(
                 scope.innerCommands,
-                target: target,
-                textureProvider: textureProvider,
-                commandBuffer: commandBuffer,
+                target: ctx.target,
+                textureProvider: ctx.textureProvider,
+                commandBuffer: ctx.commandBuffer,
                 inheritedState: inheritedState
             )
             return
@@ -230,43 +247,44 @@ extension MetalRenderer {
         }
         defer { texturePool.release(contentTex) }
 
+        let innerCtx = InnerRenderContext(
+            target: ctx.target,
+            textureProvider: ctx.textureProvider,
+            commandBuffer: ctx.commandBuffer
+        )
         try renderInnerCommandsToTexture(
             scope.innerCommands,
             texture: contentTex,
-            target: target,
-            textureProvider: textureProvider,
-            commandBuffer: commandBuffer,
+            ctx: innerCtx,
             inheritedState: inheritedState
         )
 
         // Step 2: Get or create mask texture
-        let maskTransform = animToViewport.concatenating(inheritedState.currentTransform)
+        let maskTransform = ctx.animToViewport.concatenating(inheritedState.currentTransform)
         guard let maskTex = maskCache.texture(
             for: scope.path,
             transform: maskTransform,
             size: targetSize,
             opacity: scope.opacity
         ) else {
-            // Fallback: composite content without masking
             try compositeTextureToTarget(
                 contentTex,
-                target: target,
-                viewportToNDC: viewportToNDC,
-                commandBuffer: commandBuffer,
+                target: ctx.target,
+                viewportToNDC: ctx.viewportToNDC,
+                commandBuffer: ctx.commandBuffer,
                 scissor: currentScissor
             )
             return
         }
 
         // Step 3: Composite with stencil
-        try compositeWithStencilMask(
-            contentTex: contentTex,
-            maskTex: maskTex,
-            target: target,
-            viewportToNDC: viewportToNDC,
-            commandBuffer: commandBuffer,
+        let compositeCtx = MaskCompositeContext(
+            target: ctx.target,
+            viewportToNDC: ctx.viewportToNDC,
+            commandBuffer: ctx.commandBuffer,
             scissor: currentScissor
         )
+        try compositeWithStencilMask(contentTex: contentTex, maskTex: maskTex, ctx: compositeCtx)
     }
 
     private func renderInnerCommandsToTarget(
@@ -294,15 +312,13 @@ extension MetalRenderer {
     private func renderInnerCommandsToTexture(
         _ commands: [RenderCommand],
         texture: MTLTexture,
-        target: RenderTarget,
-        textureProvider: TextureProvider,
-        commandBuffer: MTLCommandBuffer,
+        ctx: InnerRenderContext,
         inheritedState: ExecutionState
     ) throws {
         let offscreenTarget = RenderTarget(
             texture: texture,
-            drawableScale: target.drawableScale,
-            animSize: target.animSize
+            drawableScale: ctx.target.drawableScale,
+            animSize: ctx.target.animSize
         )
 
         let descriptor = MTLRenderPassDescriptor()
@@ -315,8 +331,8 @@ extension MetalRenderer {
             commands: commands,
             renderPassDescriptor: descriptor,
             target: offscreenTarget,
-            textureProvider: textureProvider,
-            commandBuffer: commandBuffer,
+            textureProvider: ctx.textureProvider,
+            commandBuffer: ctx.commandBuffer,
             initialState: inheritedState
         )
     }
@@ -368,12 +384,9 @@ extension MetalRenderer {
     private func compositeWithStencilMask(
         contentTex: MTLTexture,
         maskTex: MTLTexture,
-        target: RenderTarget,
-        viewportToNDC: Matrix2D,
-        commandBuffer: MTLCommandBuffer,
-        scissor: MTLScissorRect?
+        ctx: MaskCompositeContext
     ) throws {
-        let targetSize = target.sizePx
+        let targetSize = ctx.target.sizePx
 
         // Create stencil texture
         guard let stencilTex = texturePool.acquireStencilTexture(size: targetSize) else {
@@ -385,19 +398,16 @@ extension MetalRenderer {
         try writeMaskToStencilBuffer(
             maskTex: maskTex,
             stencilTex: stencilTex,
-            viewportToNDC: viewportToNDC,
-            commandBuffer: commandBuffer,
-            scissor: scissor
+            viewportToNDC: ctx.viewportToNDC,
+            commandBuffer: ctx.commandBuffer,
+            scissor: ctx.scissor
         )
 
         // Pass 2: Composite content with stencil test
         try compositeContentWithStencil(
             contentTex: contentTex,
             stencilTex: stencilTex,
-            target: target,
-            viewportToNDC: viewportToNDC,
-            commandBuffer: commandBuffer,
-            scissor: scissor
+            ctx: ctx
         )
     }
 
@@ -455,13 +465,10 @@ extension MetalRenderer {
     private func compositeContentWithStencil(
         contentTex: MTLTexture,
         stencilTex: MTLTexture,
-        target: RenderTarget,
-        viewportToNDC: Matrix2D,
-        commandBuffer: MTLCommandBuffer,
-        scissor: MTLScissorRect?
+        ctx: MaskCompositeContext
     ) throws {
         let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = target.texture
+        descriptor.colorAttachments[0].texture = ctx.target.texture
         descriptor.colorAttachments[0].loadAction = .load
         descriptor.colorAttachments[0].storeAction = .store
         descriptor.depthAttachment.texture = stencilTex
@@ -471,12 +478,12 @@ extension MetalRenderer {
         descriptor.stencilAttachment.loadAction = .load
         descriptor.stencilAttachment.storeAction = .dontCare
 
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+        guard let encoder = ctx.commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
             return
         }
         defer { encoder.endEncoding() }
 
-        if let scissor = scissor {
+        if let scissor = ctx.scissor {
             encoder.setScissorRect(scissor)
         }
 
@@ -486,7 +493,7 @@ extension MetalRenderer {
             height: Float(contentTex.height)
         ) else { return }
 
-        let mvp = viewportToNDC.toFloat4x4()
+        let mvp = ctx.viewportToNDC.toFloat4x4()
         var uniforms = QuadUniforms(mvp: mvp, opacity: 1.0)
 
         encoder.setRenderPipelineState(resources.stencilCompositePipelineState)
