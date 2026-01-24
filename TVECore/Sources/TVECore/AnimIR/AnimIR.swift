@@ -110,6 +110,8 @@ extension AnimIR {
         let parentWorld: Matrix2D
         let parentOpacity: Double
         let layerById: [LayerID: Layer]
+        /// Stack of composition IDs currently being rendered (for cycle detection)
+        let visitedComps: Set<CompID>
     }
 
     /// Resolved world transform for a layer
@@ -148,7 +150,8 @@ extension AnimIR {
                 frameIndex: frameIndex,
                 parentWorld: .identity,
                 parentOpacity: 1.0,
-                layerById: layerById
+                layerById: layerById,
+                visitedComps: [rootComp]
             )
             renderComposition(rootComposition, context: context, commands: &commands)
         }
@@ -360,18 +363,55 @@ extension AnimIR {
             commands.append(.drawImage(assetId: assetId, opacity: resolved.worldOpacity))
 
         case .precomp(let compId):
-            if let precomp = comps[compId] {
-                let childFrame = context.frame - layer.timing.startTime
-                let childLayerById = Dictionary(uniqueKeysWithValues: precomp.layers.map { ($0.id, $0) })
-                let childContext = RenderContext(
-                    frame: childFrame,
-                    frameIndex: context.frameIndex,
-                    parentWorld: resolved.worldMatrix,
-                    parentOpacity: resolved.worldOpacity,
-                    layerById: childLayerById
+            // Cycle detection: check if we're already rendering this composition
+            if context.visitedComps.contains(compId) {
+                let stackPath = context.visitedComps.sorted().joined(separator: " → ")
+                let issue = RenderIssue(
+                    severity: .error,
+                    code: RenderIssue.codePrecompCycle,
+                    path: "anim(\(meta.sourceAnimRef)).layers[id=\(layer.id)].refId",
+                    message: "Cycle detected: '\(compId)' already in render stack: [\(stackPath)]",
+                    frameIndex: context.frameIndex
                 )
-                renderComposition(precomp, context: childContext, commands: &commands)
+                lastRenderIssues.append(issue)
+                return
             }
+
+            // Precomp not found
+            guard let precomp = comps[compId] else {
+                let issue = RenderIssue(
+                    severity: .error,
+                    code: RenderIssue.codePrecompAssetNotFound,
+                    path: "anim(\(meta.sourceAnimRef)).layers[id=\(layer.id)].refId",
+                    message: "Precomp '\(compId)' not found in compositions",
+                    frameIndex: context.frameIndex
+                )
+                lastRenderIssues.append(issue)
+                return
+            }
+
+            // Calculate child frame using Lottie st offset
+            let childFrame = context.frame - layer.timing.startTime
+            let childLayerById = Dictionary(uniqueKeysWithValues: precomp.layers.map { ($0.id, $0) })
+
+            // Add current compId to visited stack for cycle detection
+            var childVisited = context.visitedComps
+            childVisited.insert(compId)
+
+            // IMPORTANT: parentWorld = .identity because container transform is already
+            // on the command stack via pushTransform(resolved.worldMatrix) above.
+            // Children compute relative transforms within their composition.
+            // Effective matrix = stack * childLocal (applied automatically by executor).
+            // Opacity has no stack, so we pass it as a number.
+            let childContext = RenderContext(
+                frame: childFrame,
+                frameIndex: context.frameIndex,
+                parentWorld: .identity,
+                parentOpacity: resolved.worldOpacity,
+                layerById: childLayerById,
+                visitedComps: childVisited
+            )
+            renderComposition(precomp, context: childContext, commands: &commands)
 
         case .shapes, .none:
             break

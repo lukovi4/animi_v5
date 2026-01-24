@@ -46,6 +46,12 @@ extension RenderIssue {
 
     /// Cycle detected in parent chain (layer references itself or creates loop)
     public static let codeParentCycle = "PARENT_CYCLE"
+
+    /// Cycle detected in precomp reference chain (comp_A -> comp_B -> comp_A)
+    public static let codePrecompCycle = "PRECOMP_CYCLE"
+
+    /// Precomp asset referenced by refId not found in compositions
+    public static let codePrecompAssetNotFound = "PRECOMP_ASSET_NOT_FOUND"
 }
 
 // MARK: - Debug Description

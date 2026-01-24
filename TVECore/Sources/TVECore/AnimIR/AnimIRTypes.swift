@@ -33,7 +33,8 @@ public struct LayerTiming: Sendable, Equatable {
     /// Out point - frame when layer becomes invisible
     public let outPoint: Double
 
-    /// Start time offset
+    /// Lottie `st` (start time offset).
+    /// Used to map parent frame to child comp frame: childFrame = frame - st.
     public let startTime: Double
 
     public init(inPoint: Double, outPoint: Double, startTime: Double) {
