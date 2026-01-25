@@ -261,7 +261,8 @@ final class RenderGraphContractTests: XCTestCase {
         XCTAssertTrue(commands.hasMatteCommands, "Should have matte commands")
 
         let counts = commands.commandCounts()
-        let matteBegins = (counts["beginMatteAlpha"] ?? 0) + (counts["beginMatteAlphaInverted"] ?? 0)
+        // PR9: use unified beginMatte command instead of separate alpha/alphaInverted
+        let matteBegins = counts["beginMatte"] ?? 0
         let matteEnds = counts["endMatte"] ?? 0
         XCTAssertEqual(matteBegins, matteEnds, "Matte begin/end should be balanced")
     }
@@ -271,17 +272,39 @@ final class RenderGraphContractTests: XCTestCase {
         // Note: matte layers have ip=30, so test at frame 30 when they're visible
         let commands = ir.renderCommands(frameIndex: 30)
 
-        // Collect layer group names
-        var layerGroupNames: [String] = []
+        // PR9: Matte source layer should only appear inside "matteSource" group
+        // and NOT at the top level (directly under root)
+        // Track nesting to find top-level layer groups
+        var topLevelLayerGroupNames: [String] = []
+        var insideMatteSource = false
+        var matteSourceDepth = 0
+
         for command in commands {
-            if case .beginGroup(let name) = command, name.hasPrefix("Layer:") {
-                layerGroupNames.append(name)
+            switch command {
+            case .beginGroup(let name):
+                if name == "matteSource" {
+                    insideMatteSource = true
+                    matteSourceDepth = 1
+                } else if insideMatteSource {
+                    matteSourceDepth += 1
+                } else if name.hasPrefix("Layer:") {
+                    topLevelLayerGroupNames.append(name)
+                }
+            case .endGroup:
+                if insideMatteSource {
+                    matteSourceDepth -= 1
+                    if matteSourceDepth == 0 {
+                        insideMatteSource = false
+                    }
+                }
+            default:
+                break
             }
         }
 
-        // Matte source (nm="matte_source") should NOT be in the layer groups
-        let hasMatteSourceGroup = layerGroupNames.contains { $0.contains("matte_source") }
-        XCTAssertFalse(hasMatteSourceGroup, "Matte source layer should not be rendered directly")
+        // Matte source (nm="matte_source") should NOT be in top-level layer groups
+        let hasMatteSourceAtTopLevel = topLevelLayerGroupNames.contains { $0.contains("matte_source") }
+        XCTAssertFalse(hasMatteSourceAtTopLevel, "Matte source layer should not be rendered at top level")
     }
 
     // MARK: - Command Structure Tests

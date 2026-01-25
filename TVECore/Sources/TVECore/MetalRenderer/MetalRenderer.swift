@@ -123,6 +123,7 @@ public final class MetalRenderer {
     let options: MetalRendererOptions
     let texturePool: TexturePool
     let maskCache: MaskCache
+    let shapeCache: ShapeCache
 
     // MARK: - Initialization
 
@@ -142,6 +143,7 @@ public final class MetalRenderer {
         self.resources = try MetalRendererResources(device: device, colorPixelFormat: colorPixelFormat)
         self.texturePool = TexturePool(device: device)
         self.maskCache = MaskCache(device: device)
+        self.shapeCache = ShapeCache(device: device)
     }
 
     /// Clears pooled textures to free memory.
@@ -149,6 +151,7 @@ public final class MetalRenderer {
     public func clearCaches() {
         texturePool.clear()
         maskCache.clear()
+        shapeCache.clear()
     }
 
     // MARK: - Public API
@@ -159,12 +162,14 @@ public final class MetalRenderer {
     ///   - target: Render target (drawable texture)
     ///   - textureProvider: Provider for asset textures
     ///   - commandBuffer: Metal command buffer to use
+    ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
     /// - Throws: MetalRendererError if rendering fails
     public func draw(
         commands: [RenderCommand],
         target: RenderTarget,
         textureProvider: TextureProvider,
-        commandBuffer: MTLCommandBuffer
+        commandBuffer: MTLCommandBuffer,
+        assetSizes: [String: AssetSize] = [:]
     ) throws {
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = target.texture
@@ -182,7 +187,8 @@ public final class MetalRenderer {
             renderPassDescriptor: renderPassDescriptor,
             target: target,
             textureProvider: textureProvider,
-            commandBuffer: commandBuffer
+            commandBuffer: commandBuffer,
+            assetSizes: assetSizes
         )
     }
 
@@ -193,6 +199,7 @@ public final class MetalRenderer {
     ///   - sizePx: Target size in pixels
     ///   - animSize: Animation size for contain mapping
     ///   - textureProvider: Provider for asset textures
+    ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
     /// - Returns: Rendered texture
     /// - Throws: MetalRendererError if rendering fails
     public func drawOffscreen(
@@ -200,7 +207,8 @@ public final class MetalRenderer {
         device: MTLDevice,
         sizePx: (width: Int, height: Int),
         animSize: SizeD,
-        textureProvider: TextureProvider
+        textureProvider: TextureProvider,
+        assetSizes: [String: AssetSize] = [:]
     ) throws -> MTLTexture {
         // Create offscreen texture
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -246,7 +254,8 @@ public final class MetalRenderer {
             renderPassDescriptor: renderPassDescriptor,
             target: target,
             textureProvider: textureProvider,
-            commandBuffer: commandBuffer
+            commandBuffer: commandBuffer,
+            assetSizes: assetSizes
         )
 
         commandBuffer.commit()

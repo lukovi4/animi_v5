@@ -605,4 +605,64 @@ final class AnimIRCompilerTests: XCTestCase {
         XCTAssertEqual(layer.transform.rotation.staticValue, 0)
         XCTAssertEqual(layer.transform.opacity.staticValue, 100)
     }
+
+    // MARK: - Luma Matte End-to-End Tests
+
+    func testCompile_lumaMatteType3_generatesLumaRenderCommand() throws {
+        // Given: Lottie with tt=3 (luma matte)
+        let json = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [{ "id": "image_0", "u": "images/", "p": "img.png", "w": 100, "h": 100 }],
+          "layers": [
+            { "ty": 4, "ind": 0, "td": 1, "shapes": [
+                { "ty": "gr", "it": [{ "ty": "sh", "ks": { "v": [[0,0],[100,0],[100,100],[0,100]], "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "c": true } }, { "ty": "fl", "c": { "k": [1,1,1,1] } }] }
+            ] },
+            { "ty": 2, "ind": 1, "refId": "image_0", "tt": 3, "nm": "media" }
+          ]
+        }
+        """
+        let lottie = try decodeLottie(json)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        // When
+        var ir = try compiler.compile(lottie: lottie, animRef: "test", bindingKey: "media", assetIndex: assetIndex)
+        let commands = ir.renderCommands(frameIndex: 0)
+
+        // Then: Should have beginMatte with .luma mode
+        let matteCommand = commands.first { cmd in
+            if case .beginMatte(let mode) = cmd { return mode == .luma }
+            return false
+        }
+        XCTAssertNotNil(matteCommand, "Should have beginMatte(.luma) command for tt=3")
+    }
+
+    func testCompile_lumaInvertedMatteType4_generatesLumaInvertedRenderCommand() throws {
+        // Given: Lottie with tt=4 (luma inverted matte)
+        let json = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [{ "id": "image_0", "u": "images/", "p": "img.png", "w": 100, "h": 100 }],
+          "layers": [
+            { "ty": 4, "ind": 0, "td": 1, "shapes": [
+                { "ty": "gr", "it": [{ "ty": "sh", "ks": { "v": [[0,0],[100,0],[100,100],[0,100]], "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "c": true } }, { "ty": "fl", "c": { "k": [1,1,1,1] } }] }
+            ] },
+            { "ty": 2, "ind": 1, "refId": "image_0", "tt": 4, "nm": "media" }
+          ]
+        }
+        """
+        let lottie = try decodeLottie(json)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        // When
+        var ir = try compiler.compile(lottie: lottie, animRef: "test", bindingKey: "media", assetIndex: assetIndex)
+        let commands = ir.renderCommands(frameIndex: 0)
+
+        // Then: Should have beginMatte with .lumaInverted mode
+        let matteCommand = commands.first { cmd in
+            if case .beginMatte(let mode) = cmd { return mode == .lumaInverted }
+            return false
+        }
+        XCTAssertNotNil(matteCommand, "Should have beginMatte(.lumaInverted) command for tt=4")
+    }
 }

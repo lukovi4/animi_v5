@@ -49,7 +49,7 @@ public enum AnimValidationCode {
     /// Animated mask opacity not supported (o.a == 1)
     public static let unsupportedMaskOpacityAnimated = "UNSUPPORTED_MASK_OPACITY_ANIMATED"
 
-    /// Track matte type not supported (tt not in {1, 2})
+    /// Track matte type not supported (tt not in {1, 2, 3, 4})
     public static let unsupportedMatteType = "UNSUPPORTED_MATTE_TYPE"
 
     /// Shape item type not supported in matte source

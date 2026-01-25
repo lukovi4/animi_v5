@@ -2,6 +2,11 @@ import Metal
 import MetalKit
 import Foundation
 
+// MARK: - Logger Type
+
+/// Logger callback for diagnostic messages
+public typealias TVELogger = (String) -> Void
+
 // MARK: - Scene Package Texture Provider
 
 /// Texture provider that loads textures from a scene package's images folder.
@@ -14,6 +19,8 @@ public final class ScenePackageTextureProvider: TextureProvider {
     private let assetIndex: AssetIndexIR
     private let loader: MTKTextureLoader
     private var cache: [String: MTLTexture] = [:]
+    private var missingAssets: Set<String> = []
+    private let logger: TVELogger?
 
     // MARK: - Initialization
 
@@ -22,11 +29,13 @@ public final class ScenePackageTextureProvider: TextureProvider {
     ///   - device: Metal device for texture creation
     ///   - imagesRootURL: Root URL for images folder
     ///   - assetIndex: Asset index mapping asset IDs to relative paths
-    public init(device: MTLDevice, imagesRootURL: URL, assetIndex: AssetIndexIR) {
+    ///   - logger: Optional logger for diagnostic messages
+    public init(device: MTLDevice, imagesRootURL: URL, assetIndex: AssetIndexIR, logger: TVELogger? = nil) {
         self.device = device
         self.imagesRootURL = imagesRootURL
         self.assetIndex = assetIndex
         self.loader = MTKTextureLoader(device: device)
+        self.logger = logger
     }
 
     // MARK: - TextureProvider
@@ -39,8 +48,15 @@ public final class ScenePackageTextureProvider: TextureProvider {
             return cached
         }
 
+        // Skip known missing assets (don't spam log)
+        if missingAssets.contains(assetId) {
+            return nil
+        }
+
         // Look up relative path in asset index
         guard let relativePath = assetIndex.byId[assetId] else {
+            logger?("[TextureProvider] Asset '\(assetId)' not in index")
+            missingAssets.insert(assetId)
             return nil
         }
 
@@ -48,7 +64,8 @@ public final class ScenePackageTextureProvider: TextureProvider {
         let textureURL = imagesRootURL.appendingPathComponent(relativePath)
 
         // Load texture
-        guard let texture = loadTexture(from: textureURL) else {
+        guard let texture = loadTexture(from: textureURL, assetId: assetId) else {
+            missingAssets.insert(assetId)
             return nil
         }
 
@@ -69,21 +86,22 @@ public final class ScenePackageTextureProvider: TextureProvider {
             }
 
             let textureURL = imagesRootURL.appendingPathComponent(relativePath)
-            guard let texture = loadTexture(from: textureURL) else {
+            guard let texture = loadTexture(from: textureURL, assetId: assetId) else {
                 throw TextureLoadError.failedToLoad(assetId: assetId, path: relativePath)
             }
             cache[assetId] = texture
         }
     }
 
-    /// Clears the texture cache.
+    /// Clears the texture cache and missing assets set.
     public func clearCache() {
         cache.removeAll()
+        missingAssets.removeAll()
     }
 
     // MARK: - Private
 
-    private func loadTexture(from url: URL) -> MTLTexture? {
+    private func loadTexture(from url: URL, assetId: String) -> MTLTexture? {
         // Load with options for premultiplied alpha
         let options: [MTKTextureLoader.Option: Any] = [
             .SRGB: false, // Linear color space for correct blending
@@ -95,7 +113,7 @@ public final class ScenePackageTextureProvider: TextureProvider {
         do {
             return try loader.newTexture(URL: url, options: options)
         } catch {
-            // Return nil to allow graceful fallback
+            logger?("[TextureProvider] Failed to load '\(assetId)' at \(url.lastPathComponent): \(error.localizedDescription)")
             return nil
         }
     }

@@ -12,6 +12,7 @@ struct RenderContext {
     let animToViewport: Matrix2D
     let viewportToNDC: Matrix2D
     let commandBuffer: MTLCommandBuffer
+    let assetSizes: [String: AssetSize]
 }
 
 /// Groups parameters for mask composite operations.
@@ -27,6 +28,7 @@ struct InnerRenderContext {
     let target: RenderTarget
     let textureProvider: TextureProvider
     let commandBuffer: MTLCommandBuffer
+    let assetSizes: [String: AssetSize]
 }
 
 /// Groups parameters for mask scope rendering.
@@ -36,6 +38,23 @@ struct MaskScopeContext {
     let commandBuffer: MTLCommandBuffer
     let animToViewport: Matrix2D
     let viewportToNDC: Matrix2D
+    let assetSizes: [String: AssetSize]
+}
+
+/// Groups parameters for matte scope rendering.
+struct MatteScopeContext {
+    let target: RenderTarget
+    let textureProvider: TextureProvider
+    let commandBuffer: MTLCommandBuffer
+    let animToViewport: Matrix2D
+    let viewportToNDC: Matrix2D
+    let assetSizes: [String: AssetSize]
+}
+
+/// Type of scope encountered during command processing.
+private enum ScopeType {
+    case mask
+    case matte
 }
 
 // MARK: - Execution State
@@ -111,6 +130,7 @@ extension MetalRenderer {
         target: RenderTarget,
         textureProvider: TextureProvider,
         commandBuffer: MTLCommandBuffer,
+        assetSizes: [String: AssetSize] = [:],
         initialState: ExecutionState? = nil
     ) throws {
         let baseline = initialState ?? makeInitialState(target: target)
@@ -123,18 +143,25 @@ extension MetalRenderer {
         let animToViewport = GeometryMapping.animToInputContain(animSize: target.animSize, inputRect: targetRect)
         let viewportToNDC = GeometryMapping.viewportToNDC(width: targetRect.width, height: targetRect.height)
 
-        // Process commands in segments separated by mask scopes
+        // Process commands in segments separated by mask/matte scopes
         var index = 0
         var isFirstPass = true
 
         while index < commands.count {
-            // Find next mask scope or end of commands
+            // Find next mask or matte scope or end of commands
             let segmentStart = index
             var segmentEnd = commands.count
+            var foundScopeType: ScopeType?
 
             for idx in segmentStart..<commands.count {
                 if case .beginMaskAdd = commands[idx] {
                     segmentEnd = idx
+                    foundScopeType = .mask
+                    break
+                }
+                if case .beginMatte = commands[idx] {
+                    segmentEnd = idx
+                    foundScopeType = .matte
                     break
                 }
             }
@@ -148,6 +175,7 @@ extension MetalRenderer {
                     commandBuffer: commandBuffer,
                     animToViewport: animToViewport,
                     viewportToNDC: viewportToNDC,
+                    assetSizes: assetSizes,
                     state: &state,
                     renderPassDescriptor: isFirstPass ? renderPassDescriptor : nil
                 )
@@ -156,8 +184,9 @@ extension MetalRenderer {
 
             index = segmentEnd
 
-            // Process mask scope if found
-            if index < commands.count, case .beginMaskAdd = commands[index] {
+            // Process scope if found
+            switch foundScopeType {
+            case .mask:
                 guard let scope = extractMaskScope(from: commands, startIndex: index) else {
                     throw MetalRendererError.invalidCommandStack(reason: "Malformed mask: BeginMaskAdd without EndMask")
                 }
@@ -166,11 +195,29 @@ extension MetalRenderer {
                     textureProvider: textureProvider,
                     commandBuffer: commandBuffer,
                     animToViewport: animToViewport,
-                    viewportToNDC: viewportToNDC
+                    viewportToNDC: viewportToNDC,
+                    assetSizes: assetSizes
                 )
                 try renderMaskScope(scope: scope, ctx: scopeCtx, inheritedState: state)
                 index = scope.endIndex + 1
                 isFirstPass = false
+
+            case .matte:
+                let matteScope = try extractMatteScope(from: commands, startIndex: index)
+                let matteScopeCtx = MatteScopeContext(
+                    target: target,
+                    textureProvider: textureProvider,
+                    commandBuffer: commandBuffer,
+                    animToViewport: animToViewport,
+                    viewportToNDC: viewportToNDC,
+                    assetSizes: assetSizes
+                )
+                try renderMatteScope(scope: matteScope, ctx: matteScopeCtx, inheritedState: state)
+                index = matteScope.endIndex + 1
+                isFirstPass = false
+
+            case .none:
+                break
             }
         }
 
@@ -185,6 +232,7 @@ extension MetalRenderer {
         commandBuffer: MTLCommandBuffer,
         animToViewport: Matrix2D,
         viewportToNDC: Matrix2D,
+        assetSizes: [String: AssetSize],
         state: inout ExecutionState,
         renderPassDescriptor: MTLRenderPassDescriptor?
     ) throws {
@@ -209,7 +257,8 @@ extension MetalRenderer {
             textureProvider: textureProvider,
             animToViewport: animToViewport,
             viewportToNDC: viewportToNDC,
-            commandBuffer: commandBuffer
+            commandBuffer: commandBuffer,
+            assetSizes: assetSizes
         )
 
         encoder.setScissorRect(state.clipStack[0])
@@ -250,7 +299,8 @@ extension MetalRenderer {
         let innerCtx = InnerRenderContext(
             target: ctx.target,
             textureProvider: ctx.textureProvider,
-            commandBuffer: ctx.commandBuffer
+            commandBuffer: ctx.commandBuffer,
+            assetSizes: ctx.assetSizes
         )
         try renderInnerCommandsToTexture(
             scope.innerCommands,
@@ -512,6 +562,138 @@ extension MetalRenderer {
         )
     }
 
+    // MARK: - Matte Scope Rendering
+
+    private func renderMatteScope(
+        scope: MatteScope,
+        ctx: MatteScopeContext,
+        inheritedState: ExecutionState
+    ) throws {
+        let targetSize = ctx.target.sizePx
+        let currentScissor = inheritedState.currentScissor
+
+        // Step 1: Render matte source commands to matteTex
+        guard let matteTex = texturePool.acquireColorTexture(size: targetSize) else {
+            return
+        }
+        defer { texturePool.release(matteTex) }
+
+        try renderCommandsToTexture(
+            scope.sourceCommands,
+            texture: matteTex,
+            target: ctx.target,
+            textureProvider: ctx.textureProvider,
+            commandBuffer: ctx.commandBuffer,
+            inheritedState: inheritedState
+        )
+
+        // Step 2: Render matte consumer commands to consumerTex
+        guard let consumerTex = texturePool.acquireColorTexture(size: targetSize) else {
+            return
+        }
+        defer { texturePool.release(consumerTex) }
+
+        try renderCommandsToTexture(
+            scope.consumerCommands,
+            texture: consumerTex,
+            target: ctx.target,
+            textureProvider: ctx.textureProvider,
+            commandBuffer: ctx.commandBuffer,
+            inheritedState: inheritedState
+        )
+
+        // Step 3: Composite consumerTex to target with matteTex as matte
+        try compositeWithMatte(
+            consumerTex: consumerTex,
+            matteTex: matteTex,
+            mode: scope.mode,
+            target: ctx.target,
+            viewportToNDC: ctx.viewportToNDC,
+            commandBuffer: ctx.commandBuffer,
+            scissor: currentScissor
+        )
+    }
+
+    // swiftlint:disable:next function_parameter_count
+    private func renderCommandsToTexture(
+        _ commands: [RenderCommand],
+        texture: MTLTexture,
+        target: RenderTarget,
+        textureProvider: TextureProvider,
+        commandBuffer: MTLCommandBuffer,
+        inheritedState: ExecutionState
+    ) throws {
+        let offscreenTarget = RenderTarget(
+            texture: texture,
+            drawableScale: target.drawableScale,
+            animSize: target.animSize
+        )
+
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = texture
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+        try drawInternal(
+            commands: commands,
+            renderPassDescriptor: descriptor,
+            target: offscreenTarget,
+            textureProvider: textureProvider,
+            commandBuffer: commandBuffer,
+            initialState: inheritedState
+        )
+    }
+
+    // swiftlint:disable:next function_parameter_count
+    private func compositeWithMatte(
+        consumerTex: MTLTexture,
+        matteTex: MTLTexture,
+        mode: RenderMatteMode,
+        target: RenderTarget,
+        viewportToNDC: Matrix2D,
+        commandBuffer: MTLCommandBuffer,
+        scissor: MTLScissorRect?
+    ) throws {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target.texture
+        descriptor.colorAttachments[0].loadAction = .load
+        descriptor.colorAttachments[0].storeAction = .store
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+        defer { encoder.endEncoding() }
+
+        if let scissor = scissor {
+            encoder.setScissorRect(scissor)
+        }
+
+        guard let vertexBuffer = resources.makeQuadVertexBuffer(
+            device: device,
+            width: Float(consumerTex.width),
+            height: Float(consumerTex.height)
+        ) else { return }
+
+        let mvp = viewportToNDC.toFloat4x4()
+        var uniforms = MatteCompositeUniforms(mvp: mvp, mode: mode.shaderModeValue)
+
+        encoder.setRenderPipelineState(resources.matteCompositePipelineState)
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<MatteCompositeUniforms>.stride, index: 1)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<MatteCompositeUniforms>.stride, index: 1)
+        encoder.setFragmentTexture(consumerTex, index: 0)
+        encoder.setFragmentTexture(matteTex, index: 1)
+        encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+        encoder.drawIndexedPrimitives(
+            type: .triangle,
+            indexCount: resources.quadIndexCount,
+            indexType: .uint16,
+            indexBuffer: resources.quadIndexBuffer,
+            indexBufferOffset: 0
+        )
+    }
+
     private func makeInitialState(target: RenderTarget) -> ExecutionState {
         var state = ExecutionState()
         state.clipStack.append(MTLScissorRect(x: 0, y: 0, width: target.sizePx.width, height: target.sizePx.height))
@@ -560,6 +742,17 @@ struct MaskScope {
     let opacity: Double
 }
 
+// MARK: - Matte Scope Extraction
+
+/// Result of extracting a matte scope from command list
+struct MatteScope {
+    let startIndex: Int
+    let endIndex: Int
+    let mode: RenderMatteMode
+    let sourceCommands: [RenderCommand]
+    let consumerCommands: [RenderCommand]
+}
+
 extension MetalRenderer {
     /// Extracts a mask scope starting at the given index.
     /// Handles nested masks by counting begin/end pairs.
@@ -600,6 +793,128 @@ extension MetalRenderer {
             opacity: opacity
         )
     }
+
+    /// Extracts a matte scope starting at the given index.
+    /// Expects exactly two child groups: "matteSource" and "matteConsumer".
+    func extractMatteScope(from commands: [RenderCommand], startIndex: Int) throws -> MatteScope {
+        guard startIndex < commands.count,
+              case .beginMatte(let mode) = commands[startIndex] else {
+            throw MetalRendererError.invalidCommandStack(reason: "Expected beginMatte at index \(startIndex)")
+        }
+
+        // Find matching endMatte
+        var matteDepth = 1
+        var endMatteIndex = startIndex + 1
+        while endMatteIndex < commands.count && matteDepth > 0 {
+            switch commands[endMatteIndex] {
+            case .beginMatte:
+                matteDepth += 1
+            case .endMatte:
+                matteDepth -= 1
+            default:
+                break
+            }
+            if matteDepth > 0 {
+                endMatteIndex += 1
+            }
+        }
+
+        guard matteDepth == 0, endMatteIndex < commands.count else {
+            let msg = "Missing EndMatte for BeginMatte at index \(startIndex)"
+            throw MetalRendererError.invalidCommandStack(reason: msg)
+        }
+
+        // Extract inner commands (between beginMatte and endMatte)
+        let innerCommands = Array(commands[(startIndex + 1)..<endMatteIndex])
+
+        // Parse the two groups: matteSource and matteConsumer
+        let (sourceCommands, consumerCommands) = try parseMatteGroups(innerCommands)
+
+        return MatteScope(
+            startIndex: startIndex,
+            endIndex: endMatteIndex,
+            mode: mode,
+            sourceCommands: sourceCommands,
+            consumerCommands: consumerCommands
+        )
+    }
+
+    // Parses matte scope inner commands to extract matteSource and matteConsumer group contents.
+    // swiftlint:disable:next cyclomatic_complexity function_body_length
+    private func parseMatteGroups(
+        _ commands: [RenderCommand]
+    ) throws -> (source: [RenderCommand], consumer: [RenderCommand]) {
+        // Find first group (matteSource)
+        guard !commands.isEmpty,
+              case .beginGroup(let firstName) = commands[0],
+              firstName == "matteSource" else {
+            let msg = "Matte scope must start with beginGroup(\"matteSource\")"
+            throw MetalRendererError.invalidCommandStack(reason: msg)
+        }
+
+        // Find end of matteSource group
+        var depth = 1
+        var sourceEndIndex = 1
+        while sourceEndIndex < commands.count && depth > 0 {
+            switch commands[sourceEndIndex] {
+            case .beginGroup:
+                depth += 1
+            case .endGroup:
+                depth -= 1
+            default:
+                break
+            }
+            if depth > 0 {
+                sourceEndIndex += 1
+            }
+        }
+
+        guard depth == 0 else {
+            throw MetalRendererError.invalidCommandStack(reason: "Unbalanced matteSource group")
+        }
+
+        let sourceCommands = Array(commands[1..<sourceEndIndex])
+
+        // Find second group (matteConsumer)
+        let consumerStartIndex = sourceEndIndex + 1
+        guard consumerStartIndex < commands.count,
+              case .beginGroup(let secondName) = commands[consumerStartIndex],
+              secondName == "matteConsumer" else {
+            let msg = "Matte scope must have beginGroup(\"matteConsumer\") after matteSource"
+            throw MetalRendererError.invalidCommandStack(reason: msg)
+        }
+
+        // Find end of matteConsumer group
+        depth = 1
+        var consumerEndIndex = consumerStartIndex + 1
+        while consumerEndIndex < commands.count && depth > 0 {
+            switch commands[consumerEndIndex] {
+            case .beginGroup:
+                depth += 1
+            case .endGroup:
+                depth -= 1
+            default:
+                break
+            }
+            if depth > 0 {
+                consumerEndIndex += 1
+            }
+        }
+
+        guard depth == 0 else {
+            throw MetalRendererError.invalidCommandStack(reason: "Unbalanced matteConsumer group")
+        }
+
+        let consumerCommands = Array(commands[(consumerStartIndex + 1)..<consumerEndIndex])
+
+        // Verify nothing else after matteConsumer
+        if consumerEndIndex + 1 < commands.count {
+            let msg = "Unexpected commands after matteConsumer group in matte scope"
+            throw MetalRendererError.invalidCommandStack(reason: msg)
+        }
+
+        return (sourceCommands, consumerCommands)
+    }
 }
 
 // MARK: - Command Execution
@@ -627,6 +942,15 @@ extension MetalRenderer {
             if let scissor = state.currentScissor { ctx.encoder.setScissorRect(scissor) }
         case .drawImage(let assetId, let opacity):
             try drawImage(assetId: assetId, opacity: opacity, ctx: ctx, transform: state.currentTransform)
+        case .drawShape(let path, let fillColor, let fillOpacity, let layerOpacity):
+            try drawShape(
+                path: path,
+                fillColor: fillColor,
+                fillOpacity: fillOpacity,
+                layerOpacity: layerOpacity,
+                ctx: ctx,
+                transform: state.currentTransform
+            )
         case .beginMaskAdd:
             state.maskDepth += 1
         case .endMask:
@@ -634,7 +958,7 @@ extension MetalRenderer {
             guard state.maskDepth >= 0 else {
                 throw MetalRendererError.invalidCommandStack(reason: "EndMask without BeginMask")
             }
-        case .beginMatteAlpha, .beginMatteAlphaInverted:
+        case .beginMatte:
             state.matteDepth += 1
         case .endMatte:
             state.matteDepth -= 1
@@ -649,10 +973,20 @@ extension MetalRenderer {
         guard let texture = ctx.textureProvider.texture(for: assetId) else {
             throw MetalRendererError.noTextureForAsset(assetId: assetId)
         }
+        // Use asset size from metadata if available, otherwise fallback to texture size
+        let quadWidth: Float
+        let quadHeight: Float
+        if let assetSize = ctx.assetSizes[assetId] {
+            quadWidth = Float(assetSize.width)
+            quadHeight = Float(assetSize.height)
+        } else {
+            quadWidth = Float(texture.width)
+            quadHeight = Float(texture.height)
+        }
         guard let vertexBuffer = resources.makeQuadVertexBuffer(
             device: device,
-            width: Float(texture.width),
-            height: Float(texture.height)
+            width: quadWidth,
+            height: quadHeight
         ) else { return }
 
         let mvp = ctx.viewportToNDC.concatenating(ctx.animToViewport).concatenating(transform).toFloat4x4()
@@ -661,6 +995,54 @@ extension MetalRenderer {
         ctx.encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         ctx.encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)
         ctx.encoder.setFragmentTexture(texture, index: 0)
+        ctx.encoder.drawIndexedPrimitives(
+            type: .triangle,
+            indexCount: resources.quadIndexCount,
+            indexType: .uint16,
+            indexBuffer: resources.quadIndexBuffer,
+            indexBufferOffset: 0
+        )
+    }
+
+    // swiftlint:disable:next function_parameter_count
+    private func drawShape(
+        path: BezierPath,
+        fillColor: [Double]?,
+        fillOpacity: Double,
+        layerOpacity: Double,
+        ctx: RenderContext,
+        transform: Matrix2D
+    ) throws {
+        let effectiveOpacity = (fillOpacity / 100.0) * layerOpacity
+        guard effectiveOpacity > 0, path.vertexCount > 2 else { return }
+
+        let targetSize = ctx.target.sizePx
+
+        // Compute transform from path to viewport
+        let pathToViewport = ctx.animToViewport.concatenating(transform)
+
+        // Rasterize shape to BGRA texture using the shape cache
+        guard let shapeTex = shapeCache.texture(
+            for: path,
+            transform: pathToViewport,
+            size: targetSize,
+            fillColor: fillColor ?? [1, 1, 1],
+            opacity: effectiveOpacity
+        ) else { return }
+
+        // Draw the rasterized shape texture
+        guard let vertexBuffer = resources.makeQuadVertexBuffer(
+            device: device,
+            width: Float(shapeTex.width),
+            height: Float(shapeTex.height)
+        ) else { return }
+
+        let mvp = ctx.viewportToNDC.toFloat4x4()
+        var uniforms = QuadUniforms(mvp: mvp, opacity: 1.0) // Opacity already baked into texture
+
+        ctx.encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        ctx.encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)
+        ctx.encoder.setFragmentTexture(shapeTex, index: 0)
         ctx.encoder.drawIndexedPrimitives(
             type: .triangle,
             indexCount: resources.quadIndexCount,
@@ -681,5 +1063,34 @@ extension Matrix2D {
             SIMD4<Float>(0, 0, 1, 0),
             SIMD4<Float>(Float(tx), Float(ty), 0, 1)
         ))
+    }
+}
+
+// MARK: - Matte Composite Uniforms
+
+/// Uniform buffer structure for matte composite rendering.
+struct MatteCompositeUniforms {
+    var mvp: simd_float4x4
+    var mode: Int32
+    var padding: SIMD3<Float> = .zero
+
+    init(mvp: simd_float4x4, mode: Int32) {
+        self.mvp = mvp
+        self.mode = mode
+    }
+}
+
+// MARK: - RenderMatteMode Shader Value
+
+extension RenderMatteMode {
+    /// Returns the shader mode value for this matte mode.
+    /// 0 = alpha, 1 = alphaInverted, 2 = luma, 3 = lumaInverted
+    var shaderModeValue: Int32 {
+        switch self {
+        case .alpha: return 0
+        case .alphaInverted: return 1
+        case .luma: return 2
+        case .lumaInverted: return 3
+        }
     }
 }

@@ -442,6 +442,7 @@ final class AnimValidatorTests: XCTestCase {
 
     func testValidate_unsupportedMatteType_returnsError() throws {
         let scene = sceneJSON()
+        // tt=5 is unsupported (only 1-4 are valid)
         let anim = """
         {
           "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
@@ -450,7 +451,7 @@ final class AnimValidatorTests: XCTestCase {
             { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
           ],
           "layers": [
-            { "ty": 0, "refId": "comp_0", "tt": 3 }
+            { "ty": 0, "refId": "comp_0", "tt": 5 }
           ]
         }
         """
@@ -460,11 +461,12 @@ final class AnimValidatorTests: XCTestCase {
             $0.code == AnimValidationCode.unsupportedMatteType
         }
         XCTAssertNotNil(error)
-        XCTAssertTrue(error?.message.contains("type 3") ?? false)
+        XCTAssertTrue(error?.message.contains("type 5") ?? false)
     }
 
     func testValidate_supportedMatteTypes_noError() throws {
         let scene = sceneJSON()
+        // Test all 4 supported matte types: alpha(1), alphaInv(2), luma(3), lumaInv(4)
         let anim = """
         {
           "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
@@ -475,7 +477,12 @@ final class AnimValidatorTests: XCTestCase {
           "layers": [
             { "ty": 4, "td": 1, "shapes": [{ "ty": "gr", "it": [{ "ty": "sh" }, { "ty": "fl" }] }] },
             { "ty": 0, "refId": "comp_0", "tt": 1 },
-            { "ty": 0, "refId": "comp_0", "tt": 2 }
+            { "ty": 4, "td": 1, "shapes": [{ "ty": "gr", "it": [{ "ty": "sh" }, { "ty": "fl" }] }] },
+            { "ty": 0, "refId": "comp_0", "tt": 2 },
+            { "ty": 4, "td": 1, "shapes": [{ "ty": "gr", "it": [{ "ty": "sh" }, { "ty": "fl" }] }] },
+            { "ty": 0, "refId": "comp_0", "tt": 3 },
+            { "ty": 4, "td": 1, "shapes": [{ "ty": "gr", "it": [{ "ty": "sh" }, { "ty": "fl" }] }] },
+            { "ty": 0, "refId": "comp_0", "tt": 4 }
           ]
         }
         """

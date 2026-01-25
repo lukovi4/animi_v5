@@ -1,3 +1,4 @@
+// swiftlint:disable file_length
 import Foundation
 
 /// Intermediate Representation of a Lottie animation
@@ -82,13 +83,13 @@ extension AnimIR {
         let anchor = transform.anchor.sample(frame: frame)
 
         // Normalize scale from percentage (100 = 1.0)
-        let sx = scale.x / 100.0
-        let sy = scale.y / 100.0
+        let scaleX = scale.x / 100.0
+        let scaleY = scale.y / 100.0
 
         // Build matrix: T(position) * R(rotation) * S(scale) * T(-anchor)
         return Matrix2D.translation(x: position.x, y: position.y)
             .concatenating(.rotationDegrees(rotation))
-            .concatenating(.scale(x: sx, y: sy))
+            .concatenating(.scale(x: scaleX, y: scaleY))
             .concatenating(.translation(x: -anchor.x, y: -anchor.y))
     }
 
@@ -227,18 +228,93 @@ extension AnimIR {
         context: RenderContext,
         commands: inout [RenderCommand]
     ) {
+        // Handle matte consumer with scope-based structure
+        if let matte = layer.matte {
+            emitMatteScope(
+                consumer: layer,
+                consumerResolved: resolved,
+                matte: matte,
+                context: context,
+                commands: &commands
+            )
+            return
+        }
+
+        // Regular layer (no matte)
+        emitRegularLayerCommands(layer, resolved: resolved, context: context, commands: &commands)
+    }
+
+    /// Emits scope-based matte structure with matteSource and matteConsumer groups
+    private mutating func emitMatteScope(
+        consumer: Layer,
+        consumerResolved: ResolvedTransform,
+        matte: MatteInfo,
+        context: RenderContext,
+        commands: inout [RenderCommand]
+    ) {
+        // Map IR MatteMode to RenderCommand RenderMatteMode
+        let renderMatteMode: RenderMatteMode
+        switch matte.mode {
+        case .alpha:
+            renderMatteMode = .alpha
+        case .alphaInverted:
+            renderMatteMode = .alphaInverted
+        case .luma:
+            renderMatteMode = .luma
+        case .lumaInverted:
+            renderMatteMode = .lumaInverted
+        }
+
+        commands.append(.beginMatte(mode: renderMatteMode))
+
+        // Emit matteSource group
+        commands.append(.beginGroup(name: "matteSource"))
+        if let sourceLayer = context.layerById[matte.sourceLayerId] {
+            // Compute matte source world transform
+            if let sourceResolved = computeLayerWorld(sourceLayer, context: context) {
+                // Render matte source as regular layer (no matte wrapping for the source itself)
+                emitRegularLayerCommands(
+                    sourceLayer,
+                    resolved: sourceResolved,
+                    context: context,
+                    commands: &commands
+                )
+            }
+        } else {
+            // Matte source layer not found - record issue
+            let issue = RenderIssue(
+                severity: .error,
+                code: RenderIssue.codeMatteSourceNotFound,
+                path: "anim(\(meta.sourceAnimRef)).layers[id=\(consumer.id)]",
+                message: "Matte source layer id=\(matte.sourceLayerId) not found",
+                frameIndex: context.frameIndex
+            )
+            lastRenderIssues.append(issue)
+        }
+        commands.append(.endGroup)
+
+        // Emit matteConsumer group
+        commands.append(.beginGroup(name: "matteConsumer"))
+        emitRegularLayerCommands(
+            consumer,
+            resolved: consumerResolved,
+            context: context,
+            commands: &commands
+        )
+        commands.append(.endGroup)
+
+        commands.append(.endMatte)
+    }
+
+    /// Emits render commands for a regular layer (without matte wrapping)
+    private mutating func emitRegularLayerCommands(
+        _ layer: Layer,
+        resolved: ResolvedTransform,
+        context: RenderContext,
+        commands: inout [RenderCommand]
+    ) {
         commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))"))
         commands.append(.pushTransform(resolved.worldMatrix))
-
-        // Matte begin
-        if let matte = layer.matte {
-            switch matte.mode {
-            case .alpha:
-                commands.append(.beginMatteAlpha(sourceLayerId: matte.sourceLayerId))
-            case .alphaInverted:
-                commands.append(.beginMatteAlphaInverted(sourceLayerId: matte.sourceLayerId))
-            }
-        }
 
         // Masks begin
         for mask in layer.masks {
@@ -255,15 +331,13 @@ extension AnimIR {
         // Masks end (LIFO)
         for _ in layer.masks { commands.append(.endMask) }
 
-        // Matte end
-        if layer.matte != nil { commands.append(.endMatte) }
-
         commands.append(.popTransform)
         commands.append(.endGroup)
     }
 
-    /// Computes world transform for a layer considering parent chain
-    /// Returns nil if parent chain has errors (PARENT_NOT_FOUND or PARENT_CYCLE)
+    // Computes world transform for a layer considering parent chain.
+    // Returns nil if parent chain has errors (PARENT_NOT_FOUND or PARENT_CYCLE).
+    // swiftlint:disable:next function_parameter_count
     private mutating func computeWorldTransform(
         for layer: Layer,
         at frame: Double,
@@ -353,7 +427,8 @@ extension AnimIR {
         return chain
     }
 
-    /// Renders layer content based on type
+    // Renders layer content based on type.
+    // swiftlint:disable:next function_body_length
     private mutating func renderLayerContent(
         _ layer: Layer,
         resolved: ResolvedTransform,
@@ -415,7 +490,18 @@ extension AnimIR {
             )
             renderComposition(precomp, context: childContext, commands: &commands)
 
-        case .shapes, .none:
+        case .shapes(let shapeGroup):
+            // Render shape as filled path (used for matte sources)
+            if let path = shapeGroup.path {
+                commands.append(.drawShape(
+                    path: path,
+                    fillColor: shapeGroup.fillColor,
+                    fillOpacity: shapeGroup.fillOpacity,
+                    layerOpacity: resolved.worldOpacity
+                ))
+            }
+
+        case .none:
             break
         }
     }

@@ -98,6 +98,7 @@ final class PlayerViewController: UIViewController {
     private var displayLink: CADisplayLink?
     private var isPlaying = false
     private var animationFPS = 30.0
+    private var renderErrorLogged = false
 
     // MARK: - Lifecycle
 
@@ -152,6 +153,7 @@ final class PlayerViewController: UIViewController {
 
     @objc private func loadTestPackageTapped() {
         stopPlayback()
+        renderErrorLogged = false
         log("---\nLoading test package...")
         let subdir = "TestAssets/ScenePackages/example_4blocks"
         guard let url = Bundle.main.url(forResource: "scene", withExtension: "json", subdirectory: subdir) else {
@@ -208,8 +210,9 @@ final class PlayerViewController: UIViewController {
     private func compileFirstAnimation(for package: ScenePackage) throws {
         guard isAnimValid,
               let loaded = loadedAnimations,
-              let imagesURL = package.imagesRootURL,
               let device = metalView.device else { return }
+        // Use package.rootURL because asset paths include "images/" prefix
+        let packageRootURL = package.rootURL
         let animRef = "anim-1.json"
         guard let lottie = loaded.lottieByAnimRef[animRef],
               let assetIndex = loaded.assetIndexByAnimRef[animRef] else {
@@ -222,13 +225,31 @@ final class PlayerViewController: UIViewController {
             animIR = try compiler.compile(
                 lottie: lottie, animRef: animRef, bindingKey: bindingKey, assetIndex: assetIndex
             )
-            guard let ir = animIR else { return }
+            guard var ir = animIR else { return }
             let size = "\(Int(ir.meta.width))x\(Int(ir.meta.height))"
             log("AnimIR: \(size) @ \(ir.meta.fps)fps, \(ir.meta.frameCount) frames")
-            let assetsIR = AssetIndexIR(from: assetIndex)
             textureProvider = ScenePackageTextureProvider(
-                device: device, imagesRootURL: imagesURL, assetIndex: assetsIR
+                device: device,
+                imagesRootURL: packageRootURL,
+                assetIndex: ir.assets,
+                logger: { [weak self] msg in self?.log(msg) }
             )
+            // One-time diagnostic: check commands and textures
+            let testCommands = ir.renderCommands(frameIndex: 0)
+            let drawImageAssets = testCommands.compactMap { cmd -> String? in
+                if case .drawImage(let assetId, _) = cmd { return assetId }
+                return nil
+            }
+            let uniqueAssets = Array(Set(drawImageAssets))
+            log("Render stats: commands=\(testCommands.count), drawImage=\(drawImageAssets.count), assets=\(uniqueAssets)")
+            // Check texture availability
+            for assetId in uniqueAssets {
+                if let tex = textureProvider?.texture(for: assetId) {
+                    log("Texture loaded: \(assetId) [\(tex.width)x\(tex.height)]")
+                } else {
+                    log("WARNING: Texture MISSING: \(assetId)")
+                }
+            }
             totalFrames = ir.meta.frameCount
             animationFPS = ir.meta.fps
             currentFrameIndex = 0
@@ -318,9 +339,22 @@ extension PlayerViewController: MTKViewDelegate {
                 animSize: ir.meta.size
             )
             let commands = ir.renderCommands(frameIndex: currentFrameIndex)
-            try? renderer.draw(
-                commands: commands, target: target, textureProvider: provider, commandBuffer: cmdBuf
-            )
+            do {
+                try renderer.draw(
+                    commands: commands,
+                    target: target,
+                    textureProvider: provider,
+                    commandBuffer: cmdBuf,
+                    assetSizes: ir.assets.sizeById
+                )
+            } catch {
+                if !renderErrorLogged {
+                    renderErrorLogged = true
+                    DispatchQueue.main.async { [weak self] in
+                        self?.log("Render error: \(error)")
+                    }
+                }
+            }
         } else if let desc = view.currentRenderPassDescriptor,
                   let enc = cmdBuf.makeRenderCommandEncoder(descriptor: desc) {
             enc.endEncoding()

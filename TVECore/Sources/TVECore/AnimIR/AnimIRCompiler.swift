@@ -123,8 +123,14 @@ public final class AnimIRCompiler {
             animRef: animRef
         )
 
-        // Build asset index IR
-        let assetsIR = AssetIndexIR(from: assetIndex)
+        // Build asset index IR with sizes from Lottie
+        var sizeById: [String: AssetSize] = [:]
+        for asset in lottie.assets where asset.isImage {
+            if let width = asset.width, let height = asset.height {
+                sizeById[asset.id] = AssetSize(width: width, height: height)
+            }
+        }
+        let assetsIR = AssetIndexIR(byId: assetIndex.byId, sizeById: sizeById)
 
         return AnimIR(
             meta: meta,

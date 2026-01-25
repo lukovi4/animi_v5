@@ -16,8 +16,8 @@ public final class AnimValidator {
     /// Supported layer types in Part 1
     private static let supportedLayerTypes: Set<Int> = [0, 2, 3, 4]
 
-    /// Supported track matte types: 1 = alpha, 2 = alpha inverted
-    private static let supportedMatteTypes: Set<Int> = [1, 2]
+    /// Supported track matte types: 1 = alpha, 2 = alphaInv, 3 = luma, 4 = lumaInv
+    private static let supportedMatteTypes: Set<Int> = [1, 2, 3, 4]
 
     /// Supported shape types for matte source layers
     static let supportedShapeTypes: Set<String> = ["gr", "sh", "fl", "tr"]

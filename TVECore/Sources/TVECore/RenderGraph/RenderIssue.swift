@@ -52,6 +52,9 @@ extension RenderIssue {
 
     /// Precomp asset referenced by refId not found in compositions
     public static let codePrecompAssetNotFound = "PRECOMP_ASSET_NOT_FOUND"
+
+    /// Matte source layer referenced by sourceLayerId not found in composition
+    public static let codeMatteSourceNotFound = "MATTE_SOURCE_NOT_FOUND"
 }
 
 // MARK: - Debug Description

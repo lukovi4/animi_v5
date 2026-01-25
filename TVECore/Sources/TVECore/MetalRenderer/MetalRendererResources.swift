@@ -1,3 +1,4 @@
+// swiftlint:disable file_length
 import Metal
 import simd
 
@@ -48,6 +49,11 @@ final class MetalRendererResources {
     /// Depth stencil state for testing stencil == 0xFF
     let stencilTestDepthStencilState: MTLDepthStencilState
 
+    // MARK: - Matte Composite Resources
+
+    /// Pipeline for compositing consumer with matte (alpha/luma modes)
+    let matteCompositePipelineState: MTLRenderPipelineState
+
     init(device: MTLDevice, colorPixelFormat: MTLPixelFormat) throws {
         let library = try Self.makeShaderLibrary(device: device)
         pipelineState = try Self.makePipelineState(device: device, library: library, colorPixelFormat: colorPixelFormat)
@@ -66,6 +72,13 @@ final class MetalRendererResources {
         )
         stencilWriteDepthStencilState = try Self.makeStencilWriteDepthStencilState(device: device)
         stencilTestDepthStencilState = try Self.makeStencilTestDepthStencilState(device: device)
+
+        // Matte composite resources
+        matteCompositePipelineState = try Self.makeMatteCompositePipeline(
+            device: device,
+            library: library,
+            colorPixelFormat: colorPixelFormat
+        )
     }
 
     func makeQuadVertexBuffer(device: MTLDevice, width: Float, height: Float) -> MTLBuffer? {
@@ -273,6 +286,32 @@ extension MetalRendererResources {
         }
         return state
     }
+
+    private static func makeMatteCompositePipeline(
+        device: MTLDevice,
+        library: MTLLibrary,
+        colorPixelFormat: MTLPixelFormat
+    ) throws -> MTLRenderPipelineState {
+        guard let vertexFunc = library.makeFunction(name: "matte_composite_vertex") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "matte_composite_vertex not found")
+        }
+        guard let fragmentFunc = library.makeFunction(name: "matte_composite_fragment") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "matte_composite_fragment not found")
+        }
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertexFunc
+        descriptor.fragmentFunction = fragmentFunc
+        descriptor.vertexDescriptor = makeVertexDescriptor()
+        configureBlending(descriptor.colorAttachments[0], pixelFormat: colorPixelFormat)
+
+        do {
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            let msg = "Matte composite pipeline failed: \(error.localizedDescription)"
+            throw MetalRendererError.failedToCreatePipeline(reason: msg)
+        }
+    }
 }
 
 // MARK: - Shader Source
@@ -347,6 +386,62 @@ extension MetalRendererResources {
             discard_fragment();
         }
         // Fragment passes - stencil will be written via depth stencil state
+    }
+
+    // MARK: - Matte Composite Shaders
+
+    struct MatteCompositeUniforms {
+        float4x4 mvp;
+        int mode;       // 0=alpha, 1=alphaInverted, 2=luma, 3=lumaInverted
+        float3 _padding;
+    };
+
+    struct MatteCompositeVertexOut {
+        float4 position [[position]];
+        float2 texCoord;
+    };
+
+    vertex MatteCompositeVertexOut matte_composite_vertex(
+        QuadVertexIn in [[stage_in]],
+        constant MatteCompositeUniforms& uniforms [[buffer(1)]]
+    ) {
+        MatteCompositeVertexOut out;
+        out.position = uniforms.mvp * float4(in.position, 0.0, 1.0);
+        out.texCoord = in.texCoord;
+        return out;
+    }
+
+    fragment float4 matte_composite_fragment(
+        MatteCompositeVertexOut in [[stage_in]],
+        texture2d<float> consumerTex [[texture(0)]],
+        texture2d<float> matteTex [[texture(1)]],
+        sampler samp [[sampler(0)]],
+        constant MatteCompositeUniforms& uniforms [[buffer(1)]]
+    ) {
+        float4 consumer = consumerTex.sample(samp, in.texCoord);
+        float4 matte = matteTex.sample(samp, in.texCoord);
+
+        float factor;
+        int mode = uniforms.mode;
+
+        if (mode == 0) {
+            // alpha
+            factor = matte.a;
+        } else if (mode == 1) {
+            // alphaInverted
+            factor = 1.0 - matte.a;
+        } else if (mode == 2) {
+            // luma: luminance = 0.2126*r + 0.7152*g + 0.0722*b
+            float luma = 0.2126 * matte.r + 0.7152 * matte.g + 0.0722 * matte.b;
+            factor = luma;
+        } else {
+            // lumaInverted
+            float luma = 0.2126 * matte.r + 0.7152 * matte.g + 0.0722 * matte.b;
+            factor = 1.0 - luma;
+        }
+
+        // Apply factor to premultiplied consumer
+        return float4(consumer.rgb * factor, consumer.a * factor);
     }
     """
 }

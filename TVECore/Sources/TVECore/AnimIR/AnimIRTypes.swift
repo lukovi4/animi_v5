@@ -91,10 +91,12 @@ public struct ShapeGroup: Sendable, Equatable {
 
 // MARK: - Matte Mode
 
-/// Track matte types supported in Part 1
+/// Track matte types - maps directly to Lottie tt values
 public enum MatteMode: Int, Sendable, Equatable {
     case alpha = 1         // tt=1: Alpha matte
     case alphaInverted = 2 // tt=2: Alpha inverted matte
+    case luma = 3          // tt=3: Luma matte
+    case lumaInverted = 4  // tt=4: Luma inverted matte
 
     /// Creates MatteMode from Lottie tt value
     public init?(trackMatteType: Int) {
@@ -234,6 +236,19 @@ public struct BindingInfo: Sendable, Equatable {
     }
 }
 
+// MARK: - Asset Size
+
+/// Asset size in Lottie coordinates
+public struct AssetSize: Sendable, Equatable {
+    public let width: Double
+    public let height: Double
+
+    public init(width: Double, height: Double) {
+        self.width = width
+        self.height = height
+    }
+}
+
 // MARK: - Asset Index IR
 
 /// IR-specific asset index (decoupled from Lottie types)
@@ -241,13 +256,18 @@ public struct AssetIndexIR: Sendable, Equatable {
     /// Mapping from asset ID to relative file path
     public let byId: [String: String]
 
-    public init(byId: [String: String] = [:]) {
+    /// Mapping from asset ID to asset size (from Lottie w/h)
+    public let sizeById: [String: AssetSize]
+
+    public init(byId: [String: String] = [:], sizeById: [String: AssetSize] = [:]) {
         self.byId = byId
+        self.sizeById = sizeById
     }
 
-    /// Creates from PR3 AssetIndex
+    /// Creates from PR3 AssetIndex (legacy, no sizes)
     public init(from assetIndex: AssetIndex) {
         self.byId = assetIndex.byId
+        self.sizeById = [:]
     }
 }
 
