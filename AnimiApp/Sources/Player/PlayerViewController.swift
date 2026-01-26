@@ -2,13 +2,14 @@ import UIKit
 import MetalKit
 import TVECore
 
-/// Main player view controller with Metal rendering surface and debug log
+/// Main player view controller with Metal rendering surface and debug log.
+/// Supports full scene playback with multiple media blocks.
 final class PlayerViewController: UIViewController {
 
     // MARK: - UI Components
 
     private lazy var loadButton: UIButton = {
-        makeButton(title: "Load Test Package", action: #selector(loadTestPackageTapped))
+        makeButton(title: "Load Scene", action: #selector(loadTestPackageTapped))
     }()
 
     private lazy var playPauseButton: UIButton = {
@@ -92,13 +93,20 @@ final class PlayerViewController: UIViewController {
     private lazy var commandQueue: MTLCommandQueue? = { metalView.device?.makeCommandQueue() }()
     private var renderer: MetalRenderer?
     private var textureProvider: ScenePackageTextureProvider?
-    private var animIR: AnimIR?
+
+    // Scene playback
+    private var scenePlayer: ScenePlayer?
+    private var canvasSize: SizeD = .zero
+    private var mergedAssetSizes: [String: AssetSize] = [:]
+
+    // Playback state
     private var currentFrameIndex = 0
     private var totalFrames = 0
     private var displayLink: CADisplayLink?
     private var isPlaying = false
-    private var animationFPS = 30.0
+    private var sceneFPS = 30.0
     private var renderErrorLogged = false
+    private var deviceHeaderLogged = false
 
     // MARK: - Lifecycle
 
@@ -143,7 +151,7 @@ final class PlayerViewController: UIViewController {
             renderer = try MetalRenderer(
                 device: device,
                 colorPixelFormat: metalView.colorPixelFormat,
-                options: MetalRendererOptions(clearColor: clearCol)
+                options: MetalRendererOptions(clearColor: clearCol, enableDiagnostics: true)
             )
             log("MetalRenderer initialized")
         } catch { log("ERROR: MetalRenderer failed: \(error)") }
@@ -154,7 +162,7 @@ final class PlayerViewController: UIViewController {
     @objc private func loadTestPackageTapped() {
         stopPlayback()
         renderErrorLogged = false
-        log("---\nLoading test package...")
+        log("---\nLoading scene package...")
         let subdir = "TestAssets/ScenePackages/example_4blocks"
         guard let url = Bundle.main.url(forResource: "scene", withExtension: "json", subdirectory: subdir) else {
             log("ERROR: Test package not found"); return
@@ -193,7 +201,7 @@ final class PlayerViewController: UIViewController {
         isSceneValid = !sceneReport.hasErrors
         guard isSceneValid else { log("Scene invalid"); metalView.setNeedsDisplay(); return }
         try loadAndValidateAnimations(for: package)
-        try compileFirstAnimation(for: package)
+        try compileScene(for: package)
         metalView.setNeedsDisplay()
     }
 
@@ -207,69 +215,81 @@ final class PlayerViewController: UIViewController {
         if report.hasErrors { log("Animations invalid") }
     }
 
-    private func compileFirstAnimation(for package: ScenePackage) throws {
+    private func compileScene(for package: ScenePackage) throws {
         guard isAnimValid,
               let loaded = loadedAnimations,
               let device = metalView.device else { return }
-        // Use package.rootURL because asset paths include "images/" prefix
-        let packageRootURL = package.rootURL
-        let animRef = "anim-1.json"
-        guard let lottie = loaded.lottieByAnimRef[animRef],
-              let assetIndex = loaded.assetIndexByAnimRef[animRef] else {
-            log("ERROR: Animation '\(animRef)' not found"); return
+
+        log("---\nCompiling scene...")
+
+        // Create and compile scene player
+        let player = ScenePlayer()
+        let runtime = try player.compile(package: package, loadedAnimations: loaded)
+        scenePlayer = player
+
+        // Store canvas size for render target
+        canvasSize = runtime.canvasSize
+
+        // Get merged asset index for texture provider
+        guard let mergedIndex = player.mergedAssetIndex else {
+            log("ERROR: No merged asset index"); return
         }
-        let bindingKey = package.scene.mediaBlocks.first?.input.bindingKey ?? "media"
-        log("---\nCompiling \(animRef)...")
-        let compiler = AnimIRCompiler()
-        do {
-            animIR = try compiler.compile(
-                lottie: lottie, animRef: animRef, bindingKey: bindingKey, assetIndex: assetIndex
-            )
-            guard var ir = animIR else { return }
-            let size = "\(Int(ir.meta.width))x\(Int(ir.meta.height))"
-            log("AnimIR: \(size) @ \(ir.meta.fps)fps, \(ir.meta.frameCount) frames")
-            textureProvider = ScenePackageTextureProvider(
-                device: device,
-                imagesRootURL: packageRootURL,
-                assetIndex: ir.assets,
-                logger: { [weak self] msg in self?.log(msg) }
-            )
-            // One-time diagnostic: check commands and textures
-            let testCommands = ir.renderCommands(frameIndex: 0)
-            let drawImageAssets = testCommands.compactMap { cmd -> String? in
-                if case .drawImage(let assetId, _) = cmd { return assetId }
-                return nil
+
+        // Store merged asset sizes for renderer
+        mergedAssetSizes = mergedIndex.sizeById
+
+        // Create texture provider for entire scene
+        textureProvider = SceneTextureProviderFactory.create(
+            device: device,
+            package: package,
+            mergedAssetIndex: mergedIndex,
+            logger: { [weak self] msg in self?.log(msg) }
+        )
+
+        // Log compilation results
+        let blockCount = runtime.blocks.count
+        let canvasSizeStr = "\(Int(canvasSize.width))x\(Int(canvasSize.height))"
+        log("Scene compiled: \(canvasSizeStr) @ \(runtime.fps)fps, \(runtime.durationFrames) frames, \(blockCount) blocks")
+
+        // Log block details
+        for block in runtime.blocks {
+            let rect = block.rectCanvas
+            let rectStr = "(\(Int(rect.x)),\(Int(rect.y)) \(Int(rect.width))x\(Int(rect.height)))"
+            log("  Block '\(block.blockId)' z=\(block.zIndex) rect=\(rectStr)")
+        }
+
+        // Log asset count
+        log("Merged assets: \(mergedIndex.byId.count) textures")
+
+        // One-time diagnostic: check textures
+        for (assetId, _) in mergedIndex.byId {
+            if let tex = textureProvider?.texture(for: assetId) {
+                log("Texture: \(assetId) [\(tex.width)x\(tex.height)]")
+            } else {
+                log("WARNING: Texture MISSING: \(assetId)")
             }
-            let uniqueAssets = Array(Set(drawImageAssets))
-            log("Render stats: commands=\(testCommands.count), drawImage=\(drawImageAssets.count), assets=\(uniqueAssets)")
-            // Check texture availability
-            for assetId in uniqueAssets {
-                if let tex = textureProvider?.texture(for: assetId) {
-                    log("Texture loaded: \(assetId) [\(tex.width)x\(tex.height)]")
-                } else {
-                    log("WARNING: Texture MISSING: \(assetId)")
-                }
-            }
-            totalFrames = ir.meta.frameCount
-            animationFPS = ir.meta.fps
-            currentFrameIndex = 0
-            frameSlider.maximumValue = Float(max(0, totalFrames - 1))
-            frameSlider.value = 0
-            frameSlider.isEnabled = true
-            playPauseButton.isEnabled = true
-            updateFrameLabel()
-            log("Ready for playback!")
-        } catch { log("ERROR: Compile failed: \(error)") }
+        }
+
+        // Setup playback controls
+        totalFrames = runtime.durationFrames
+        sceneFPS = Double(runtime.fps)
+        currentFrameIndex = 0
+        frameSlider.maximumValue = Float(max(0, totalFrames - 1))
+        frameSlider.value = 0
+        frameSlider.isEnabled = true
+        playPauseButton.isEnabled = true
+        updateFrameLabel()
+        log("Ready for playback!")
     }
 
     // MARK: - Playback
 
     private func startPlayback() {
-        guard animIR != nil else { return }
+        guard scenePlayer?.runtime != nil else { return }
         isPlaying = true
         updatePlayPauseButton()
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
-        let fps = Float(animationFPS)
+        let fps = Float(sceneFPS)
         displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
         displayLink?.add(to: .main, forMode: .common)
     }
@@ -301,7 +321,9 @@ final class PlayerViewController: UIViewController {
 
     private func log(_ message: String) {
         let ts = DateFormatter.logFormatter.string(from: Date())
-        logTextView.text += "[\(ts)] \(message)\n"
+        let line = "[\(ts)] \(message)"
+        print(line)  // Console output for Xcode
+        logTextView.text += line + "\n"
         let loc = max(0, logTextView.text.count - 1)
         logTextView.scrollRangeToVisible(NSRange(location: loc, length: 1))
     }
@@ -332,20 +354,101 @@ extension PlayerViewController: MTKViewDelegate {
               let cmdQueue = commandQueue,
               let cmdBuf = cmdQueue.makeCommandBuffer() else { return }
 
-        if let renderer = renderer, var ir = animIR, let provider = textureProvider {
+        if let renderer = renderer,
+           let player = scenePlayer,
+           let provider = textureProvider,
+           canvasSize.width > 0 {
+            // Use canvas size for RenderTarget (not individual anim size)
             let target = RenderTarget(
                 texture: drawable.texture,
                 drawableScale: Double(view.contentScaleFactor),
-                animSize: ir.meta.size
+                animSize: canvasSize
             )
-            let commands = ir.renderCommands(frameIndex: currentFrameIndex)
+
+            // DIAGNOSTIC: Device header (one-time log per review.md section 5)
+            if !deviceHeaderLogged {
+                deviceHeaderLogged = true
+                let bounds = view.bounds
+                let safe = view.safeAreaInsets
+                let drawableSize = view.drawableSize
+                let texW = drawable.texture.width
+                let texH = drawable.texture.height
+                DispatchQueue.main.async { [weak self] in
+                    self?.log("--- DEVICE DIAGNOSTIC HEADER ---")
+                    self?.log("view.bounds: \(Int(bounds.width))x\(Int(bounds.height))")
+                    self?.log("safeAreaInsets: T=\(safe.top) B=\(safe.bottom) L=\(safe.left) R=\(safe.right)")
+                    self?.log("drawableSize: \(Int(drawableSize.width))x\(Int(drawableSize.height))")
+                    self?.log("texture size: \(texW)x\(texH)")
+                    self?.log("canvasSize: \(Int(self?.canvasSize.width ?? 0))x\(Int(self?.canvasSize.height ?? 0))")
+                    self?.log("target.animSize: \(Int(target.animSize.width))x\(Int(target.animSize.height))")
+                    self?.log("contentScaleFactor: \(view.contentScaleFactor)")
+                    self?.log("--- END DEVICE HEADER ---")
+                }
+            }
+
+            // Get render commands for current scene frame
+            let commands = player.renderCommands(sceneFrameIndex: currentFrameIndex)
+
+            // DIAGNOSTIC: Log matte/shape commands every 30 frames (per review.md)
+            if currentFrameIndex % 30 == 0 {
+                let hasMatteCommands = commands.contains { cmd in
+                    if case .beginMatte = cmd { return true }
+                    return false
+                }
+                let drawShapeFrames = commands.compactMap { cmd -> Double? in
+                    if case .drawShape(_, _, _, _, let frame) = cmd { return frame }
+                    return nil
+                }
+                let pathRegistryCount = player.mergedPathRegistry?.count ?? -1
+                let frameForLog = currentFrameIndex
+
+                // Deep diagnostic: check if paths are actually animated
+                var pathDiagnostics: [String] = []
+                if let registry = player.mergedPathRegistry {
+                    for cmd in commands {
+                        if case .drawShape(let pathId, _, _, _, _) = cmd {
+                            if let resource = registry.path(for: pathId) {
+                                let animated = resource.isAnimated ? "ANIM" : "STATIC"
+                                let kfCount = resource.keyframeCount
+                                let times = resource.keyframeTimes
+                                pathDiagnostics.append("pathId=\(pathId.value) \(animated) kf=\(kfCount) times=\(times)")
+                            } else {
+                                pathDiagnostics.append("pathId=\(pathId.value) NOT_FOUND")
+                            }
+                        }
+                    }
+                }
+
+                DispatchQueue.main.async { [weak self] in
+                    self?.log("[DIAG] frame=\(frameForLog), hasMatte=\(hasMatteCommands), " +
+                              "drawShapeFrames=\(drawShapeFrames), pathRegistry.count=\(pathRegistryCount)")
+                    for diag in pathDiagnostics {
+                        self?.log("[DIAG-PATH] \(diag)")
+                    }
+                }
+            }
+
+            // Get path registry for mask/shape rendering
+            guard let pathRegistry = player.mergedPathRegistry else {
+                if !renderErrorLogged {
+                    renderErrorLogged = true
+                    DispatchQueue.main.async { [weak self] in
+                        self?.log("Render error: No path registry available")
+                    }
+                }
+                cmdBuf.present(drawable)
+                cmdBuf.commit()
+                return
+            }
+
             do {
                 try renderer.draw(
                     commands: commands,
                     target: target,
                     textureProvider: provider,
                     commandBuffer: cmdBuf,
-                    assetSizes: ir.assets.sizeById
+                    assetSizes: mergedAssetSizes,
+                    pathRegistry: pathRegistry
                 )
             } catch {
                 if !renderErrorLogged {
