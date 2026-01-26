@@ -7,8 +7,8 @@ public final class AnimValidator {
         /// Require exactly one binding layer per block (Part 1 strict mode)
         public var requireExactlyOneBindingLayer: Bool = true
 
-        /// Allow animated mask paths (Part 1: false, only static paths)
-        public var allowAnimatedMaskPath: Bool = false
+        /// Allow animated mask paths (enabled after PR-C animated path support)
+        public var allowAnimatedMaskPath: Bool = true
 
         public init() {}
     }
@@ -430,13 +430,22 @@ extension AnimValidator {
         }
 
         // Check animated path
-        if !options.allowAnimatedMaskPath, let path = mask.path, path.isAnimated {
-            issues.append(ValidationIssue(
-                code: AnimValidationCode.unsupportedMaskPathAnimated,
-                severity: .error,
-                path: "\(basePath).pt.a",
-                message: "Animated mask paths not supported in Part 1"
-            ))
+        if let path = mask.path, path.isAnimated {
+            if !options.allowAnimatedMaskPath {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedMaskPathAnimated,
+                    severity: .error,
+                    path: "\(basePath).pt.a",
+                    message: "Animated mask paths not supported in Part 1"
+                ))
+            } else {
+                // Validate topology consistency for animated paths
+                validatePathTopology(
+                    path: path,
+                    basePath: "\(basePath).pt",
+                    issues: &issues
+                )
+            }
         }
 
         // Check animated opacity
@@ -447,6 +456,83 @@ extension AnimValidator {
                 path: "\(basePath).o.a",
                 message: "Animated mask opacity not supported"
             ))
+        }
+    }
+
+    /// Validates that animated path keyframes have consistent topology
+    /// (same vertex count and closed flag across all keyframes)
+    func validatePathTopology(
+        path: LottieAnimatedValue,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        guard let data = path.value,
+              case .keyframes(let keyframes) = data else {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.pathKeyframesMissing,
+                severity: .error,
+                path: basePath,
+                message: "Animated path has no keyframes"
+            ))
+            return
+        }
+
+        guard !keyframes.isEmpty else {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.pathKeyframesMissing,
+                severity: .error,
+                path: basePath,
+                message: "Animated path has empty keyframes array"
+            ))
+            return
+        }
+
+        // Extract topology from first keyframe
+        guard case .path(let firstPathData) = keyframes[0].startValue,
+              let firstVertices = firstPathData.vertices else {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.pathKeyframesMissing,
+                severity: .error,
+                path: "\(basePath).k[0]",
+                message: "First keyframe has no path data"
+            ))
+            return
+        }
+
+        let expectedVertexCount = firstVertices.count
+        let expectedClosed = firstPathData.closed ?? false
+
+        // Validate all subsequent keyframes have matching topology
+        for (index, kf) in keyframes.enumerated().dropFirst() {
+            guard case .path(let pathData) = kf.startValue,
+                  let vertices = pathData.vertices else {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.pathKeyframesMissing,
+                    severity: .error,
+                    path: "\(basePath).k[\(index)]",
+                    message: "Keyframe \(index) has no path data"
+                ))
+                continue
+            }
+
+            if vertices.count != expectedVertexCount {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.pathTopologyMismatch,
+                    severity: .error,
+                    path: "\(basePath).k[\(index)]",
+                    message: "Keyframe \(index) has \(vertices.count) vertices, expected \(expectedVertexCount)"
+                ))
+            }
+
+            let closed = pathData.closed ?? false
+            if closed != expectedClosed {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.pathTopologyMismatch,
+                    severity: .error,
+                    path: "\(basePath).k[\(index)].c",
+                    message: "Keyframe \(index) closed=\(closed), expected \(expectedClosed)"
+                ))
+            }
         }
     }
 
