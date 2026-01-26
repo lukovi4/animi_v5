@@ -39,12 +39,15 @@ final class TestProfileTransformsTests: XCTestCase {
         }
 
         let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
-        return try compiler.compile(
+        var ir = try compiler.compile(
             lottie: lottie,
             animRef: animRef,
             bindingKey: "media",
             assetIndex: assetIndex
         )
+        // Register paths for mask and shape rendering
+        ir.registerPaths()
+        return ir
     }
 
     private func getDrawImageOpacity(from commands: [RenderCommand]) -> Double? {
@@ -159,6 +162,21 @@ final class TestProfileTransformsTests: XCTestCase {
 
         // At ip=30, layers become visible
         XCTAssertTrue(hasDrawImage(commands), "anim-2 should render at frame 30 (ip=30)")
+    }
+
+    /// Verify opacity fix: null parent opacity=0 should NOT affect child opacity
+    /// This is the key test for PR10.3 Blocker 3 fix
+    func testAnim2_frame30_opacityIsFullDespiteParentZeroOpacity() throws {
+        var ir = try loadAnimIR("anim-2.json")
+        let commands = ir.renderCommands(frameIndex: 30)
+
+        // The null parent layer has opacity=0, but with correct Lottie semantics
+        // the child (precomp) should still have full opacity because parenting
+        // does NOT inherit opacity - only precomp container does
+        let opacity = getDrawImageOpacity(from: commands)
+        XCTAssertNotNil(opacity, "Should have DrawImage command")
+        XCTAssertEqual(opacity ?? 0, 1.0, accuracy: 0.01,
+            "Child opacity should be 1.0 - parenting chain does NOT inherit opacity")
     }
 
     func testAnim2_frame45_visible() throws {

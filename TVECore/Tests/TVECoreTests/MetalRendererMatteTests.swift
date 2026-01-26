@@ -200,7 +200,8 @@ final class MetalRendererMatteTests: XCTestCase {
             device: device,
             sizePx: (size, size),
             animSize: SizeD(width: Double(size), height: Double(size)),
-            textureProvider: textureProvider
+            textureProvider: textureProvider,
+            pathRegistry: PathRegistry()
         )
 
         // Assert: left side should have content, right side should be transparent
@@ -241,7 +242,8 @@ final class MetalRendererMatteTests: XCTestCase {
             device: device,
             sizePx: (size, size),
             animSize: SizeD(width: Double(size), height: Double(size)),
-            textureProvider: textureProvider
+            textureProvider: textureProvider,
+            pathRegistry: PathRegistry()
         )
 
         // Assert: inverted - left should be transparent, right should be visible
@@ -285,7 +287,8 @@ final class MetalRendererMatteTests: XCTestCase {
             device: device,
             sizePx: (size, size),
             animSize: SizeD(width: Double(size), height: Double(size)),
-            textureProvider: textureProvider
+            textureProvider: textureProvider,
+            pathRegistry: PathRegistry()
         )
 
         // Assert: left (high luma) should be visible, right (low luma) should be nearly transparent
@@ -326,7 +329,8 @@ final class MetalRendererMatteTests: XCTestCase {
             device: device,
             sizePx: (size, size),
             animSize: SizeD(width: Double(size), height: Double(size)),
-            textureProvider: textureProvider
+            textureProvider: textureProvider,
+            pathRegistry: PathRegistry()
         )
 
         // Assert: inverted - left (high luma) becomes transparent, right (low luma) becomes visible
@@ -370,7 +374,8 @@ final class MetalRendererMatteTests: XCTestCase {
             device: device,
             sizePx: (size, size),
             animSize: SizeD(width: Double(size), height: Double(size)),
-            textureProvider: textureProvider
+            textureProvider: textureProvider,
+            pathRegistry: PathRegistry()
         )
 
         // Assert: origin pixel should be transparent (content shifted), translated position should have content
@@ -403,7 +408,8 @@ final class MetalRendererMatteTests: XCTestCase {
             device: device,
             sizePx: (size, size),
             animSize: SizeD(width: Double(size), height: Double(size)),
-            textureProvider: textureProvider
+            textureProvider: textureProvider,
+            pathRegistry: PathRegistry()
         )) { error in
             guard case MetalRendererError.invalidCommandStack(let reason) = error else {
                 XCTFail("Expected invalidCommandStack error, got: \(error)")
@@ -436,7 +442,8 @@ final class MetalRendererMatteTests: XCTestCase {
             device: device,
             sizePx: (size, size),
             animSize: SizeD(width: Double(size), height: Double(size)),
-            textureProvider: textureProvider
+            textureProvider: textureProvider,
+            pathRegistry: PathRegistry()
         )) { error in
             guard case MetalRendererError.invalidCommandStack(let reason) = error else {
                 XCTFail("Expected invalidCommandStack error, got: \(error)")
@@ -481,7 +488,8 @@ final class MetalRendererMatteTests: XCTestCase {
             device: device,
             sizePx: (size, size),
             animSize: SizeD(width: Double(size), height: Double(size)),
-            textureProvider: textureProvider
+            textureProvider: textureProvider,
+            pathRegistry: PathRegistry()
         )
 
         // Assert: outside clip should be transparent, inside clip should have content

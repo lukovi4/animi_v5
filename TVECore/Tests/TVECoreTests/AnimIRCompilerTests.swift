@@ -376,7 +376,8 @@ final class AnimIRCompilerTests: XCTestCase {
         // Then
         XCTAssertEqual(ir.binding.bindingKey, "media")
         XCTAssertEqual(ir.binding.boundCompId, AnimIR.rootCompId)
-        XCTAssertEqual(ir.binding.boundAssetId, "image_0")
+        // Asset ID is namespaced with animRef
+        XCTAssertEqual(ir.binding.boundAssetId, "test.json|image_0")
     }
 
     func testCompile_bindingInPrecomp_found() throws {
@@ -528,7 +529,7 @@ final class AnimIRCompilerTests: XCTestCase {
 
     // MARK: - Asset Index Tests
 
-    func testCompile_assetIndexPreserved() throws {
+    func testCompile_assetIndexNamespaced() throws {
         // Given
         let lottie = try decodeLottie(minimalLottieJSON)
         let assetIndex = AssetIndex(byId: [
@@ -544,9 +545,65 @@ final class AnimIRCompilerTests: XCTestCase {
             assetIndex: assetIndex
         )
 
-        // Then
-        XCTAssertEqual(ir.assets.byId["image_0"], "images/img_1.png")
-        XCTAssertEqual(ir.assets.byId["image_1"], "images/img_2.png")
+        // Then - asset IDs are namespaced with animRef using | separator
+        XCTAssertEqual(ir.assets.byId["test.json|image_0"], "images/img_1.png")
+        XCTAssertEqual(ir.assets.byId["test.json|image_1"], "images/img_2.png")
+
+        // Original keys should not exist
+        XCTAssertNil(ir.assets.byId["image_0"])
+        XCTAssertNil(ir.assets.byId["image_1"])
+    }
+
+    func testCompile_differentAnimRefs_haveDistinctAssetIds() throws {
+        // Given: Two animations with same Lottie asset ID "image_0"
+        let lottie = try decodeLottie(minimalLottieJSON)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img_1.png"])
+
+        // When: Compile with different animRefs
+        let ir1 = try compiler.compile(
+            lottie: lottie,
+            animRef: "anim-1.json",
+            bindingKey: "media",
+            assetIndex: assetIndex
+        )
+        let ir2 = try compiler.compile(
+            lottie: lottie,
+            animRef: "anim-2.json",
+            bindingKey: "media",
+            assetIndex: assetIndex
+        )
+
+        // Then: Each IR has distinct namespaced asset IDs
+        XCTAssertTrue(ir1.assets.byId.keys.contains("anim-1.json|image_0"))
+        XCTAssertTrue(ir2.assets.byId.keys.contains("anim-2.json|image_0"))
+
+        // No collision - different keys
+        XCTAssertFalse(ir1.assets.byId.keys.contains("anim-2.json|image_0"))
+        XCTAssertFalse(ir2.assets.byId.keys.contains("anim-1.json|image_0"))
+    }
+
+    func testCompile_drawImageCommand_usesNamespacedAssetId() throws {
+        // Given
+        let lottie = try decodeLottie(minimalLottieJSON)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img_1.png"])
+
+        // When
+        var ir = try compiler.compile(
+            lottie: lottie,
+            animRef: "test.json",
+            bindingKey: "media",
+            assetIndex: assetIndex
+        )
+        let commands = ir.renderCommands(frameIndex: 0)
+
+        // Then: drawImage command should use namespaced asset ID
+        let drawImageCommands = commands.compactMap { cmd -> String? in
+            if case .drawImage(let assetId, _) = cmd { return assetId }
+            return nil
+        }
+
+        XCTAssertTrue(drawImageCommands.contains("test.json|image_0"))
+        XCTAssertFalse(drawImageCommands.contains("image_0"))
     }
 
     // MARK: - Determinism Tests

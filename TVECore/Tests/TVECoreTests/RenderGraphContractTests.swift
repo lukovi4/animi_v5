@@ -172,12 +172,15 @@ final class RenderGraphContractTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let lottie = try JSONDecoder().decode(LottieJSON.self, from: data)
         let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
-        return try compiler.compile(
+        var ir = try compiler.compile(
             lottie: lottie,
             animRef: animRef,
             bindingKey: "media",
             assetIndex: assetIndex
         )
+        // Register paths for mask and shape rendering
+        ir.registerPaths()
+        return ir
     }
 
     // MARK: - Balance Tests
@@ -390,7 +393,8 @@ final class RenderGraphContractTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(foundAssetId, "image_0")
+        // Asset ID is namespaced with animRef (default "test.json")
+        XCTAssertEqual(foundAssetId, "test.json|image_0")
     }
 
     func testRenderCommands_drawImageOpacity_isComputed() throws {

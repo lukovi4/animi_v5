@@ -47,6 +47,9 @@ public enum MetalRendererError: Error, Sendable, Equatable {
 
     /// Command stack is invalid (unbalanced push/pop)
     case invalidCommandStack(reason: String)
+
+    /// Path resource for the given PathID was not found in registry
+    case missingPathResource(pathId: PathID)
 }
 
 extension MetalRendererError: LocalizedError {
@@ -60,6 +63,8 @@ extension MetalRendererError: LocalizedError {
             return "Failed to create render pipeline: \(reason)"
         case .invalidCommandStack(let reason):
             return "Invalid command stack: \(reason)"
+        case .missingPathResource(let pathId):
+            return "No path resource found for pathId: \(pathId)"
         }
     }
 }
@@ -97,16 +102,22 @@ public struct MetalRendererOptions: Sendable {
     /// Whether to log warnings for unsupported commands (masks/mattes)
     public var enableWarningsForUnsupportedCommands: Bool
 
+    /// Enable diagnostic logging for scissor/transform debugging
+    public var enableDiagnostics: Bool
+
     /// Creates renderer options with defaults.
     /// - Parameters:
     ///   - clearColor: Clear color (default: transparent black)
     ///   - enableWarningsForUnsupportedCommands: Enable warnings (default: true)
+    ///   - enableDiagnostics: Enable diagnostic logging (default: false)
     public init(
         clearColor: ClearColor = .transparentBlack,
-        enableWarningsForUnsupportedCommands: Bool = true
+        enableWarningsForUnsupportedCommands: Bool = true,
+        enableDiagnostics: Bool = false
     ) {
         self.clearColor = clearColor
         self.enableWarningsForUnsupportedCommands = enableWarningsForUnsupportedCommands
+        self.enableDiagnostics = enableDiagnostics
     }
 }
 
@@ -124,6 +135,7 @@ public final class MetalRenderer {
     let texturePool: TexturePool
     let maskCache: MaskCache
     let shapeCache: ShapeCache
+    private let logger: TVELogger?
 
     // MARK: - Initialization
 
@@ -132,18 +144,33 @@ public final class MetalRenderer {
     ///   - device: Metal device to use
     ///   - colorPixelFormat: Pixel format for color attachments
     ///   - options: Renderer configuration options
+    ///   - logger: Optional logger for diagnostic messages
     /// - Throws: MetalRendererError if initialization fails
     public init(
         device: MTLDevice,
         colorPixelFormat: MTLPixelFormat,
-        options: MetalRendererOptions = MetalRendererOptions()
+        options: MetalRendererOptions = MetalRendererOptions(),
+        logger: TVELogger? = nil
     ) throws {
         self.device = device
         self.options = options
+        self.logger = logger
         self.resources = try MetalRendererResources(device: device, colorPixelFormat: colorPixelFormat)
         self.texturePool = TexturePool(device: device)
         self.maskCache = MaskCache(device: device)
         self.shapeCache = ShapeCache(device: device)
+    }
+
+    /// Diagnostic logging (only when enabled via options)
+    func diagLog(_ message: String) {
+        guard options.enableDiagnostics else { return }
+        if let logger = logger {
+            logger("[RENDERER] \(message)")
+        } else {
+            #if DEBUG
+            print("[RENDERER] \(message)")
+            #endif
+        }
     }
 
     /// Clears pooled textures to free memory.
@@ -163,13 +190,15 @@ public final class MetalRenderer {
     ///   - textureProvider: Provider for asset textures
     ///   - commandBuffer: Metal command buffer to use
     ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
+    ///   - pathRegistry: Registry of path resources for GPU rendering
     /// - Throws: MetalRendererError if rendering fails
     public func draw(
         commands: [RenderCommand],
         target: RenderTarget,
         textureProvider: TextureProvider,
         commandBuffer: MTLCommandBuffer,
-        assetSizes: [String: AssetSize] = [:]
+        assetSizes: [String: AssetSize] = [:],
+        pathRegistry: PathRegistry
     ) throws {
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = target.texture
@@ -188,7 +217,8 @@ public final class MetalRenderer {
             target: target,
             textureProvider: textureProvider,
             commandBuffer: commandBuffer,
-            assetSizes: assetSizes
+            assetSizes: assetSizes,
+            pathRegistry: pathRegistry
         )
     }
 
@@ -200,6 +230,7 @@ public final class MetalRenderer {
     ///   - animSize: Animation size for contain mapping
     ///   - textureProvider: Provider for asset textures
     ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
+    ///   - pathRegistry: Registry of path resources for GPU rendering
     /// - Returns: Rendered texture
     /// - Throws: MetalRendererError if rendering fails
     public func drawOffscreen(
@@ -208,7 +239,8 @@ public final class MetalRenderer {
         sizePx: (width: Int, height: Int),
         animSize: SizeD,
         textureProvider: TextureProvider,
-        assetSizes: [String: AssetSize] = [:]
+        assetSizes: [String: AssetSize] = [:],
+        pathRegistry: PathRegistry
     ) throws -> MTLTexture {
         // Create offscreen texture
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -255,7 +287,8 @@ public final class MetalRenderer {
             target: target,
             textureProvider: textureProvider,
             commandBuffer: commandBuffer,
-            assetSizes: assetSizes
+            assetSizes: assetSizes,
+            pathRegistry: pathRegistry
         )
 
         commandBuffer.commit()

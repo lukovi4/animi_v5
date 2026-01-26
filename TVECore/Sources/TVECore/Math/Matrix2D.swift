@@ -75,6 +75,15 @@ public struct Matrix2D: Equatable, Sendable {
         )
     }
 
+    /// Applies rotation and scale (but NOT translation) to a vector
+    /// Used for transforming tangent vectors which are relative to their vertex
+    public func applyToVector(_ vector: Vec2D) -> Vec2D {
+        Vec2D(
+            x: a * vector.x + b * vector.y,
+            y: c * vector.x + d * vector.y
+        )
+    }
+
     /// Returns the inverse matrix, or nil if not invertible
     public var inverse: Self? {
         let det = a * d - b * c

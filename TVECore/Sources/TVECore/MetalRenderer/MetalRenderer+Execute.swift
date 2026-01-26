@@ -13,6 +13,7 @@ struct RenderContext {
     let viewportToNDC: Matrix2D
     let commandBuffer: MTLCommandBuffer
     let assetSizes: [String: AssetSize]
+    let pathRegistry: PathRegistry
 }
 
 /// Groups parameters for mask composite operations.
@@ -29,6 +30,7 @@ struct InnerRenderContext {
     let textureProvider: TextureProvider
     let commandBuffer: MTLCommandBuffer
     let assetSizes: [String: AssetSize]
+    let pathRegistry: PathRegistry
 }
 
 /// Groups parameters for mask scope rendering.
@@ -39,6 +41,7 @@ struct MaskScopeContext {
     let animToViewport: Matrix2D
     let viewportToNDC: Matrix2D
     let assetSizes: [String: AssetSize]
+    let pathRegistry: PathRegistry
 }
 
 /// Groups parameters for matte scope rendering.
@@ -49,6 +52,7 @@ struct MatteScopeContext {
     let animToViewport: Matrix2D
     let viewportToNDC: Matrix2D
     let assetSizes: [String: AssetSize]
+    let pathRegistry: PathRegistry
 }
 
 /// Type of scope encountered during command processing.
@@ -81,8 +85,37 @@ struct ExecutionState {
         transformStack.removeLast()
     }
 
-    mutating func pushClip(_ rect: RectD, targetSize: (width: Int, height: Int)) {
-        let newScissor = ScissorHelper.makeScissorRect(from: rect, targetSize: targetSize)
+    mutating func pushClip(
+        _ rect: RectD,
+        targetSize: (width: Int, height: Int),
+        animToViewport: Matrix2D
+    ) {
+        // Per review.md: scissor mapping uses only animToViewport
+        // Transform 4 corners of rect through animToViewport
+        let tl = animToViewport.apply(to: Vec2D(x: rect.x, y: rect.y))
+        let tr = animToViewport.apply(to: Vec2D(x: rect.x + rect.width, y: rect.y))
+        let bl = animToViewport.apply(to: Vec2D(x: rect.x, y: rect.y + rect.height))
+        let br = animToViewport.apply(to: Vec2D(x: rect.x + rect.width, y: rect.y + rect.height))
+
+        // Get AABB in pixel coords
+        let minX = min(tl.x, tr.x, bl.x, br.x)
+        let minY = min(tl.y, tr.y, bl.y, br.y)
+        let maxX = max(tl.x, tr.x, bl.x, br.x)
+        let maxY = max(tl.y, tr.y, bl.y, br.y)
+
+        // Round: floor(min), ceil(max) per review.md
+        let x = Int(floor(minX))
+        let y = Int(floor(minY))
+        let w = Int(ceil(maxX)) - x
+        let h = Int(ceil(maxY)) - y
+
+        // Clamp to texture bounds
+        let clampedX = max(0, min(x, targetSize.width))
+        let clampedY = max(0, min(y, targetSize.height))
+        let clampedW = max(0, min(w, targetSize.width - clampedX))
+        let clampedH = max(0, min(h, targetSize.height - clampedY))
+
+        let newScissor = MTLScissorRect(x: clampedX, y: clampedY, width: clampedW, height: clampedH)
         let intersected = currentScissor.map {
             ScissorHelper.intersect($0, newScissor)
         } ?? newScissor
@@ -131,6 +164,7 @@ extension MetalRenderer {
         textureProvider: TextureProvider,
         commandBuffer: MTLCommandBuffer,
         assetSizes: [String: AssetSize] = [:],
+        pathRegistry: PathRegistry,
         initialState: ExecutionState? = nil
     ) throws {
         let baseline = initialState ?? makeInitialState(target: target)
@@ -176,6 +210,7 @@ extension MetalRenderer {
                     animToViewport: animToViewport,
                     viewportToNDC: viewportToNDC,
                     assetSizes: assetSizes,
+                    pathRegistry: pathRegistry,
                     state: &state,
                     renderPassDescriptor: isFirstPass ? renderPassDescriptor : nil
                 )
@@ -196,7 +231,8 @@ extension MetalRenderer {
                     commandBuffer: commandBuffer,
                     animToViewport: animToViewport,
                     viewportToNDC: viewportToNDC,
-                    assetSizes: assetSizes
+                    assetSizes: assetSizes,
+                    pathRegistry: pathRegistry
                 )
                 try renderMaskScope(scope: scope, ctx: scopeCtx, inheritedState: state)
                 index = scope.endIndex + 1
@@ -210,7 +246,8 @@ extension MetalRenderer {
                     commandBuffer: commandBuffer,
                     animToViewport: animToViewport,
                     viewportToNDC: viewportToNDC,
-                    assetSizes: assetSizes
+                    assetSizes: assetSizes,
+                    pathRegistry: pathRegistry
                 )
                 try renderMatteScope(scope: matteScope, ctx: matteScopeCtx, inheritedState: state)
                 index = matteScope.endIndex + 1
@@ -233,6 +270,7 @@ extension MetalRenderer {
         animToViewport: Matrix2D,
         viewportToNDC: Matrix2D,
         assetSizes: [String: AssetSize],
+        pathRegistry: PathRegistry,
         state: inout ExecutionState,
         renderPassDescriptor: MTLRenderPassDescriptor?
     ) throws {
@@ -258,10 +296,13 @@ extension MetalRenderer {
             animToViewport: animToViewport,
             viewportToNDC: viewportToNDC,
             commandBuffer: commandBuffer,
-            assetSizes: assetSizes
+            assetSizes: assetSizes,
+            pathRegistry: pathRegistry
         )
 
-        encoder.setScissorRect(state.clipStack[0])
+        // Use current scissor (respects inherited clip state) or fallback to base scissor
+        let initialScissor = state.currentScissor ?? state.clipStack[0]
+        encoder.setScissorRect(initialScissor)
         encoder.setRenderPipelineState(resources.pipelineState)
         encoder.setFragmentSamplerState(resources.samplerState, index: 0)
 
@@ -278,13 +319,33 @@ extension MetalRenderer {
         let targetSize = ctx.target.sizePx
         let currentScissor = inheritedState.currentScissor
 
-        // Skip if path is empty or degenerate
-        guard scope.path.vertexCount > 2 else {
+        // Get path from registry and sample at current frame
+        guard let pathResource = ctx.pathRegistry.path(for: scope.pathId) else {
+            assertionFailure("Missing path resource for pathId: \(scope.pathId)")
+            throw MetalRendererError.missingPathResource(pathId: scope.pathId)
+        }
+
+        // Sample path at current frame (CPU fallback for now)
+        guard let path = samplePath(resource: pathResource, frame: scope.frame) else {
             try renderInnerCommandsToTarget(
                 scope.innerCommands,
                 target: ctx.target,
                 textureProvider: ctx.textureProvider,
                 commandBuffer: ctx.commandBuffer,
+                pathRegistry: ctx.pathRegistry,
+                inheritedState: inheritedState
+            )
+            return
+        }
+
+        // Skip if path is empty or degenerate
+        guard path.vertexCount > 2 else {
+            try renderInnerCommandsToTarget(
+                scope.innerCommands,
+                target: ctx.target,
+                textureProvider: ctx.textureProvider,
+                commandBuffer: ctx.commandBuffer,
+                pathRegistry: ctx.pathRegistry,
                 inheritedState: inheritedState
             )
             return
@@ -300,7 +361,8 @@ extension MetalRenderer {
             target: ctx.target,
             textureProvider: ctx.textureProvider,
             commandBuffer: ctx.commandBuffer,
-            assetSizes: ctx.assetSizes
+            assetSizes: ctx.assetSizes,
+            pathRegistry: ctx.pathRegistry
         )
         try renderInnerCommandsToTexture(
             scope.innerCommands,
@@ -309,10 +371,10 @@ extension MetalRenderer {
             inheritedState: inheritedState
         )
 
-        // Step 2: Get or create mask texture
+        // Step 2: Get or create mask texture (CPU rasterization - TODO: replace with GPU in PR-C)
         let maskTransform = ctx.animToViewport.concatenating(inheritedState.currentTransform)
         guard let maskTex = maskCache.texture(
-            for: scope.path,
+            for: path,
             transform: maskTransform,
             size: targetSize,
             opacity: scope.opacity
@@ -337,11 +399,95 @@ extension MetalRenderer {
         try compositeWithStencilMask(contentTex: contentTex, maskTex: maskTex, ctx: compositeCtx)
     }
 
+    /// Samples a path at the given frame using PathResource keyframes.
+    /// Returns interpolated BezierPath for CPU rasterization fallback.
+    private func samplePath(resource: PathResource, frame: Double) -> BezierPath? {
+        guard resource.vertexCount > 0 else { return nil }
+
+        // For static path, return first keyframe
+        guard resource.isAnimated else {
+            return pathResourceToBezierPath(positions: resource.keyframePositions[0], vertexCount: resource.vertexCount)
+        }
+
+        // Find keyframe segment
+        let times = resource.keyframeTimes
+        guard !times.isEmpty else { return nil }
+
+        // Before first keyframe
+        if frame <= times[0] {
+            return pathResourceToBezierPath(positions: resource.keyframePositions[0], vertexCount: resource.vertexCount)
+        }
+
+        // After last keyframe
+        if frame >= times[times.count - 1] {
+            return pathResourceToBezierPath(positions: resource.keyframePositions[times.count - 1], vertexCount: resource.vertexCount)
+        }
+
+        // Find segment
+        for idx in 0..<(times.count - 1) {
+            if frame >= times[idx] && frame < times[idx + 1] {
+                let t0 = times[idx]
+                let t1 = times[idx + 1]
+                var linearT = (frame - t0) / (t1 - t0)
+
+                // Apply easing if available
+                if idx < resource.keyframeEasing.count, let easing = resource.keyframeEasing[idx] {
+                    if easing.hold {
+                        linearT = 0 // Hold at start value
+                    } else {
+                        linearT = CubicBezierEasing.solve(
+                            x: linearT,
+                            x1: easing.outX,
+                            y1: easing.outY,
+                            x2: easing.inX,
+                            y2: easing.inY
+                        )
+                    }
+                }
+
+                // Interpolate positions
+                let pos0 = resource.keyframePositions[idx]
+                let pos1 = resource.keyframePositions[idx + 1]
+                var interpolated = [Float](repeating: 0, count: pos0.count)
+                for pIdx in 0..<pos0.count {
+                    interpolated[pIdx] = pos0[pIdx] + Float(linearT) * (pos1[pIdx] - pos0[pIdx])
+                }
+
+                return pathResourceToBezierPath(positions: interpolated, vertexCount: resource.vertexCount)
+            }
+        }
+
+        return nil
+    }
+
+    /// Converts flattened positions from PathResource to BezierPath (for CPU fallback).
+    private func pathResourceToBezierPath(positions: [Float], vertexCount: Int) -> BezierPath? {
+        guard positions.count >= vertexCount * 2 else { return nil }
+
+        var vertices: [Vec2D] = []
+        for idx in 0..<vertexCount {
+            let x = Double(positions[idx * 2])
+            let y = Double(positions[idx * 2 + 1])
+            vertices.append(Vec2D(x: x, y: y))
+        }
+
+        // PathResource stores flattened polylines, so tangents are zero
+        let zeroTangents = [Vec2D](repeating: Vec2D(x: 0, y: 0), count: vertexCount)
+
+        return BezierPath(
+            vertices: vertices,
+            inTangents: zeroTangents,
+            outTangents: zeroTangents,
+            closed: true // Assume closed for masks
+        )
+    }
+
     private func renderInnerCommandsToTarget(
         _ commands: [RenderCommand],
         target: RenderTarget,
         textureProvider: TextureProvider,
         commandBuffer: MTLCommandBuffer,
+        pathRegistry: PathRegistry,
         inheritedState: ExecutionState
     ) throws {
         let descriptor = MTLRenderPassDescriptor()
@@ -355,6 +501,7 @@ extension MetalRenderer {
             target: target,
             textureProvider: textureProvider,
             commandBuffer: commandBuffer,
+            pathRegistry: pathRegistry,
             initialState: inheritedState
         )
     }
@@ -383,6 +530,7 @@ extension MetalRenderer {
             target: offscreenTarget,
             textureProvider: ctx.textureProvider,
             commandBuffer: ctx.commandBuffer,
+            pathRegistry: ctx.pathRegistry,
             initialState: inheritedState
         )
     }
@@ -584,7 +732,9 @@ extension MetalRenderer {
             target: ctx.target,
             textureProvider: ctx.textureProvider,
             commandBuffer: ctx.commandBuffer,
-            inheritedState: inheritedState
+            pathRegistry: ctx.pathRegistry,
+            inheritedState: inheritedState,
+            scissor: currentScissor
         )
 
         // Step 2: Render matte consumer commands to consumerTex
@@ -599,7 +749,9 @@ extension MetalRenderer {
             target: ctx.target,
             textureProvider: ctx.textureProvider,
             commandBuffer: ctx.commandBuffer,
-            inheritedState: inheritedState
+            pathRegistry: ctx.pathRegistry,
+            inheritedState: inheritedState,
+            scissor: currentScissor
         )
 
         // Step 3: Composite consumerTex to target with matteTex as matte
@@ -621,8 +773,16 @@ extension MetalRenderer {
         target: RenderTarget,
         textureProvider: TextureProvider,
         commandBuffer: MTLCommandBuffer,
-        inheritedState: ExecutionState
+        pathRegistry: PathRegistry,
+        inheritedState: ExecutionState,
+        scissor: MTLScissorRect?
     ) throws {
+        // Assumes offscreen textures are same size as target; otherwise scissor must be remapped.
+        var stateWithScissor = inheritedState
+        if let scissor = scissor {
+            stateWithScissor.clipStack.append(scissor)  // PUSH, not replace
+        }
+
         let offscreenTarget = RenderTarget(
             texture: texture,
             drawableScale: target.drawableScale,
@@ -641,7 +801,8 @@ extension MetalRenderer {
             target: offscreenTarget,
             textureProvider: textureProvider,
             commandBuffer: commandBuffer,
-            initialState: inheritedState
+            pathRegistry: pathRegistry,
+            initialState: stateWithScissor
         )
     }
 
@@ -738,8 +899,9 @@ struct MaskScope {
     let startIndex: Int
     let endIndex: Int
     let innerCommands: [RenderCommand]
-    let path: BezierPath
+    let pathId: PathID
     let opacity: Double
+    let frame: Double
 }
 
 // MARK: - Matte Scope Extraction
@@ -758,7 +920,7 @@ extension MetalRenderer {
     /// Handles nested masks by counting begin/end pairs.
     func extractMaskScope(from commands: [RenderCommand], startIndex: Int) -> MaskScope? {
         guard startIndex < commands.count,
-              case .beginMaskAdd(let path, let opacity) = commands[startIndex] else {
+              case .beginMaskAdd(let pathId, let opacity, let frame) = commands[startIndex] else {
             return nil
         }
 
@@ -789,8 +951,9 @@ extension MetalRenderer {
             startIndex: startIndex,
             endIndex: index,
             innerCommands: innerCommands,
-            path: path,
-            opacity: opacity
+            pathId: pathId,
+            opacity: opacity,
+            frame: frame
         )
     }
 
@@ -935,19 +1098,28 @@ extension MetalRenderer {
         case .popTransform:
             try state.popTransform()
         case .pushClipRect(let rect):
-            state.pushClip(rect, targetSize: ctx.target.sizePx)
-            if let scissor = state.currentScissor { ctx.encoder.setScissorRect(scissor) }
+            state.pushClip(rect, targetSize: ctx.target.sizePx, animToViewport: ctx.animToViewport)
+            if let scissor = state.currentScissor {
+                ctx.encoder.setScissorRect(scissor)
+            }
         case .popClipRect:
             try state.popClip()
             if let scissor = state.currentScissor { ctx.encoder.setScissorRect(scissor) }
         case .drawImage(let assetId, let opacity):
-            try drawImage(assetId: assetId, opacity: opacity, ctx: ctx, transform: state.currentTransform)
-        case .drawShape(let path, let fillColor, let fillOpacity, let layerOpacity):
+            try drawImage(
+                assetId: assetId,
+                opacity: opacity,
+                ctx: ctx,
+                transform: state.currentTransform,
+                scissor: state.currentScissor
+            )
+        case .drawShape(let pathId, let fillColor, let fillOpacity, let layerOpacity, let frame):
             try drawShape(
-                path: path,
+                pathId: pathId,
                 fillColor: fillColor,
                 fillOpacity: fillOpacity,
                 layerOpacity: layerOpacity,
+                frame: frame,
                 ctx: ctx,
                 transform: state.currentTransform
             )
@@ -968,7 +1140,14 @@ extension MetalRenderer {
         }
     }
 
-    private func drawImage(assetId: String, opacity: Double, ctx: RenderContext, transform: Matrix2D) throws {
+    // swiftlint:disable:next function_parameter_count
+    private func drawImage(
+        assetId: String,
+        opacity: Double,
+        ctx: RenderContext,
+        transform: Matrix2D,
+        scissor: MTLScissorRect?
+    ) throws {
         guard opacity > 0 else { return }
         guard let texture = ctx.textureProvider.texture(for: assetId) else {
             throw MetalRendererError.noTextureForAsset(assetId: assetId)
@@ -983,13 +1162,16 @@ extension MetalRenderer {
             quadWidth = Float(texture.width)
             quadHeight = Float(texture.height)
         }
+
+        let fullTransform = ctx.animToViewport.concatenating(transform)
+
         guard let vertexBuffer = resources.makeQuadVertexBuffer(
             device: device,
             width: quadWidth,
             height: quadHeight
         ) else { return }
 
-        let mvp = ctx.viewportToNDC.concatenating(ctx.animToViewport).concatenating(transform).toFloat4x4()
+        let mvp = ctx.viewportToNDC.concatenating(fullTransform).toFloat4x4()
         var uniforms = QuadUniforms(mvp: mvp, opacity: Float(opacity))
 
         ctx.encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
@@ -1006,22 +1188,31 @@ extension MetalRenderer {
 
     // swiftlint:disable:next function_parameter_count
     private func drawShape(
-        path: BezierPath,
+        pathId: PathID,
         fillColor: [Double]?,
         fillOpacity: Double,
         layerOpacity: Double,
+        frame: Double,
         ctx: RenderContext,
         transform: Matrix2D
     ) throws {
         let effectiveOpacity = (fillOpacity / 100.0) * layerOpacity
-        guard effectiveOpacity > 0, path.vertexCount > 2 else { return }
+        guard effectiveOpacity > 0 else { return }
+
+        // Look up path in registry and sample at current frame
+        guard let pathResource = ctx.pathRegistry.path(for: pathId) else {
+            assertionFailure("Missing path resource for pathId: \(pathId)")
+            throw MetalRendererError.missingPathResource(pathId: pathId)
+        }
+        guard let path = samplePath(resource: pathResource, frame: frame) else { return }
+        guard path.vertexCount > 2 else { return }
 
         let targetSize = ctx.target.sizePx
 
         // Compute transform from path to viewport
         let pathToViewport = ctx.animToViewport.concatenating(transform)
 
-        // Rasterize shape to BGRA texture using the shape cache
+        // Rasterize shape to BGRA texture using the shape cache (CPU fallback)
         guard let shapeTex = shapeCache.texture(
             for: path,
             transform: pathToViewport,
@@ -1077,6 +1268,41 @@ struct MatteCompositeUniforms {
     init(mvp: simd_float4x4, mode: Int32) {
         self.mvp = mvp
         self.mode = mode
+    }
+}
+
+// MARK: - Diagnostic Helpers
+
+extension MetalRenderer {
+    /// Computes max alpha value in texture (for matte diagnostic per review.md)
+    /// Samples every 8th pixel for performance
+    func computeMaxAlpha(texture: MTLTexture) -> UInt8 {
+        #if os(iOS) || os(tvOS)
+        guard texture.storageMode == .shared else {
+            return 0 // Cannot read from private textures on iOS
+        }
+        #else
+        guard texture.storageMode == .shared || texture.storageMode == .managed else {
+            return 0 // Cannot read from private textures
+        }
+        #endif
+        let width = texture.width
+        let height = texture.height
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        texture.getBytes(&pixels, bytesPerRow: bytesPerRow, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+
+        var maxAlpha: UInt8 = 0
+        let step = 8 // Sample every 8th pixel for performance
+        for y in stride(from: 0, to: height, by: step) {
+            for x in stride(from: 0, to: width, by: step) {
+                let idx = (y * width + x) * 4 + 3 // Alpha is at offset 3 (BGRA)
+                if pixels[idx] > maxAlpha {
+                    maxAlpha = pixels[idx]
+                }
+            }
+        }
+        return maxAlpha
     }
 }
 

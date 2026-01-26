@@ -48,17 +48,24 @@ public enum RenderCommand: Sendable, Equatable {
     /// Draw an image asset
     case drawImage(assetId: String, opacity: Double)
 
-    /// Draw a shape (rasterized from BezierPath)
+    /// Draw a shape using GPU path rendering
     /// Used for shape layers as matte sources
-    case drawShape(path: BezierPath, fillColor: [Double]?, fillOpacity: Double, layerOpacity: Double)
+    /// - Parameters:
+    ///   - pathId: Reference to PathResource in PathRegistry
+    ///   - fillColor: RGB fill color (0-1 each component)
+    ///   - fillOpacity: Fill opacity (0-100)
+    ///   - layerOpacity: Layer opacity (0-1)
+    ///   - frame: Current frame for animated path interpolation
+    case drawShape(pathId: PathID, fillColor: [Double]?, fillOpacity: Double, layerOpacity: Double, frame: Double)
 
     // MARK: - Masking
 
     /// Begin an additive mask with the given path and opacity
     /// - Parameters:
-    ///   - path: Bezier path defining the mask shape
+    ///   - pathId: Reference to PathResource in PathRegistry
     ///   - opacity: Mask opacity (0.0 to 1.0)
-    case beginMaskAdd(path: BezierPath, opacity: Double)
+    ///   - frame: Current frame for animated path interpolation
+    case beginMaskAdd(pathId: PathID, opacity: Double, frame: Double)
 
     /// End the current mask
     case endMask
@@ -139,10 +146,10 @@ extension RenderCommand: CustomDebugStringConvertible {
             return "PopClipRect"
         case .drawImage(let assetId, let opacity):
             return "DrawImage(\(assetId), opacity:\(opacity))"
-        case .drawShape(let path, _, let fillOpacity, let layerOpacity):
-            return "DrawShape(vertices:\(path.vertexCount), fillOp:\(fillOpacity), layerOp:\(layerOpacity))"
-        case .beginMaskAdd(let path, let opacity):
-            return "BeginMaskAdd(vertices:\(path.vertexCount), closed:\(path.closed), opacity:\(opacity))"
+        case .drawShape(let pathId, _, let fillOpacity, let layerOpacity, let frame):
+            return "DrawShape(pathId:\(pathId.value), fillOp:\(fillOpacity), layerOp:\(layerOpacity), frame:\(frame))"
+        case .beginMaskAdd(let pathId, let opacity, let frame):
+            return "BeginMaskAdd(pathId:\(pathId.value), opacity:\(opacity), frame:\(frame))"
         case .endMask:
             return "EndMask"
         case .beginMatte(let mode):

@@ -388,17 +388,175 @@ final class AnimIRTransformTests: XCTestCase {
         XCTAssertEqual(worldPos.y, 0, accuracy: 0.001)
     }
 
-    func testParenting_opacityInheritance() {
-        // Given: parent opacity 50%, child opacity 50%
-        // Expected: effective child opacity = 0.5 * 0.5 = 0.25
-        let parentOpacity = 0.5
-        let childOpacity = 0.5
+    /// Parenting chain (via parentId) does NOT affect opacity - only transform
+    /// This is correct Lottie/AE semantics: parent layer opacity is NOT inherited
+    func testParenting_opacityNotInheritedFromParentChain() {
+        // Given: parent with opacity 0%, child with opacity 100%
+        // In Lottie/AE: parenting does NOT multiply opacity, only transform
+        // So child should render at 100% opacity despite parent being 0%
+        let parentLayer = Layer(
+            id: 1,
+            name: "ParentNull",
+            type: .null,
+            timing: LayerTiming(inPoint: 0, outPoint: 60, startTime: 0),
+            parent: nil,
+            transform: TransformTrack(
+                position: .static(Vec2D(x: 100, y: 0)),
+                scale: .static(Vec2D(x: 100, y: 100)),
+                rotation: .static(0),
+                opacity: .static(0),  // Parent opacity = 0%
+                anchor: .static(.zero)
+            ),
+            masks: [],
+            matte: nil,
+            content: .none,
+            isMatteSource: false
+        )
+
+        let childLayer = Layer(
+            id: 2,
+            name: "ChildImage",
+            type: .image,
+            timing: LayerTiming(inPoint: 0, outPoint: 60, startTime: 0),
+            parent: 1,  // Parented to layer 1
+            transform: TransformTrack(
+                position: .static(Vec2D(x: 50, y: 0)),
+                scale: .static(Vec2D(x: 100, y: 100)),
+                rotation: .static(0),
+                opacity: .static(100),  // Child opacity = 100%
+                anchor: .static(.zero)
+            ),
+            masks: [],
+            matte: nil,
+            content: .image(assetId: "image_0"),
+            isMatteSource: false
+        )
+
+        var ir = AnimIR(
+            meta: Meta(
+                width: 1080, height: 1920, fps: 30,
+                inPoint: 0, outPoint: 60,
+                sourceAnimRef: "test.json"
+            ),
+            rootComp: AnimIR.rootCompId,
+            comps: [
+                AnimIR.rootCompId: Composition(
+                    id: AnimIR.rootCompId,
+                    size: SizeD(width: 1080, height: 1920),
+                    layers: [parentLayer, childLayer]
+                )
+            ],
+            assets: AssetIndexIR(byId: ["image_0": "images/img.png"]),
+            binding: BindingInfo(
+                bindingKey: "media",
+                boundLayerId: 2,
+                boundAssetId: "image_0",
+                boundCompId: AnimIR.rootCompId
+            )
+        )
 
         // When
-        let effectiveOpacity = parentOpacity * childOpacity
+        let commands = ir.renderCommands(frameIndex: 0)
 
-        // Then
-        XCTAssertEqual(effectiveOpacity, 0.25, accuracy: 0.001)
+        // Then: child should render with opacity 1.0 (NOT 0.0)
+        // because parenting chain does NOT inherit opacity
+        let drawCommand = commands.first { cmd in
+            if case .drawImage = cmd { return true }
+            return false
+        }
+
+        if case let .drawImage(_, opacity) = drawCommand {
+            XCTAssertEqual(opacity, 1.0, accuracy: 0.01,
+                "Child opacity should be 1.0 - parenting does NOT inherit opacity")
+        } else {
+            XCTFail("Expected DrawImage command")
+        }
+    }
+
+    /// Precomp container opacity DOES affect its subtree (via context.parentOpacity)
+    /// This is correct Lottie/AE semantics for precomp layers
+    func testPrecomp_containerOpacityAffectsSubtree() {
+        // Given: precomp layer at 50% opacity containing an image layer at 100%
+        // Expected: image inside precomp renders at 50% (container opacity * layer opacity)
+        let precompId: CompID = "precomp_0"
+
+        // Image layer inside precomp
+        let imageLayer = Layer(
+            id: 1,
+            name: "ImageInPrecomp",
+            type: .image,
+            timing: LayerTiming(inPoint: 0, outPoint: 60, startTime: 0),
+            parent: nil,
+            transform: .identity,  // 100% opacity
+            masks: [],
+            matte: nil,
+            content: .image(assetId: "image_0"),
+            isMatteSource: false
+        )
+
+        // Precomp layer in root comp with 50% opacity
+        let precompLayer = Layer(
+            id: 1,
+            name: "PrecompLayer",
+            type: .precomp,
+            timing: LayerTiming(inPoint: 0, outPoint: 60, startTime: 0),
+            parent: nil,
+            transform: TransformTrack(
+                position: .static(.zero),
+                scale: .static(Vec2D(x: 100, y: 100)),
+                rotation: .static(0),
+                opacity: .static(50),  // 50% opacity on container
+                anchor: .static(.zero)
+            ),
+            masks: [],
+            matte: nil,
+            content: .precomp(compId: precompId),
+            isMatteSource: false
+        )
+
+        var ir = AnimIR(
+            meta: Meta(
+                width: 1080, height: 1920, fps: 30,
+                inPoint: 0, outPoint: 60,
+                sourceAnimRef: "test.json"
+            ),
+            rootComp: AnimIR.rootCompId,
+            comps: [
+                AnimIR.rootCompId: Composition(
+                    id: AnimIR.rootCompId,
+                    size: SizeD(width: 1080, height: 1920),
+                    layers: [precompLayer]
+                ),
+                precompId: Composition(
+                    id: precompId,
+                    size: SizeD(width: 540, height: 960),
+                    layers: [imageLayer]
+                )
+            ],
+            assets: AssetIndexIR(byId: ["image_0": "images/img.png"]),
+            binding: BindingInfo(
+                bindingKey: "media",
+                boundLayerId: 1,
+                boundAssetId: "image_0",
+                boundCompId: precompId
+            )
+        )
+
+        // When
+        let commands = ir.renderCommands(frameIndex: 0)
+
+        // Then: image should render at 0.5 opacity (container 50% * layer 100%)
+        let drawCommand = commands.first { cmd in
+            if case .drawImage = cmd { return true }
+            return false
+        }
+
+        if case let .drawImage(_, opacity) = drawCommand {
+            XCTAssertEqual(opacity, 0.5, accuracy: 0.01,
+                "Image in precomp should inherit container opacity: 0.5 * 1.0 = 0.5")
+        } else {
+            XCTFail("Expected DrawImage command")
+        }
     }
 
     func testParenting_withParentRotation() {

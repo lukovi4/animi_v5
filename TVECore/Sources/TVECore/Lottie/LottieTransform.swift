@@ -139,16 +139,57 @@ public enum LottieValueData: Decodable, Equatable, Sendable {
     }
 }
 
+/// Value type for keyframe start/end values
+/// Supports both numeric arrays (position, scale, etc.) and path data (shape morphing)
+public enum LottieKeyframeValue: Equatable, Sendable {
+    /// Numeric values (position, scale, rotation, opacity, etc.)
+    case numbers([Double])
+    /// Path data for shape/mask keyframes
+    case path(LottiePathData)
+}
+
+extension LottieKeyframeValue: Decodable {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+
+        // Try as [Double] first (most common case: position, scale, etc.)
+        if let numbers = try? container.decode([Double].self) {
+            self = .numbers(numbers)
+            return
+        }
+
+        // Try as [LottiePathData] (path keyframes come as array with one element)
+        if let pathArray = try? container.decode([LottiePathData].self), let firstPath = pathArray.first {
+            self = .path(firstPath)
+            return
+        }
+
+        // Try as single LottiePathData (fallback)
+        if let pathData = try? container.decode(LottiePathData.self) {
+            self = .path(pathData)
+            return
+        }
+
+        // No silent fallback - throw error for unknown format
+        throw DecodingError.dataCorrupted(
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "Keyframe value must be [Double] or [LottiePathData], got unknown format"
+            )
+        )
+    }
+}
+
 /// Keyframe in animated value
-public struct LottieKeyframe: Decodable, Equatable, Sendable {
+public struct LottieKeyframe: Equatable, Sendable {
     /// Time in frames
     public let time: Double?
 
-    /// Start value
-    public let startValue: [Double]?
+    /// Start value (can be numbers or path data)
+    public let startValue: LottieKeyframeValue?
 
-    /// End value (legacy format)
-    public let endValue: [Double]?
+    /// End value (legacy format, can be numbers or path data)
+    public let endValue: LottieKeyframeValue?
 
     /// In tangent for easing
     public let inTangent: LottieTangent?
@@ -161,8 +202,8 @@ public struct LottieKeyframe: Decodable, Equatable, Sendable {
 
     public init(
         time: Double? = nil,
-        startValue: [Double]? = nil,
-        endValue: [Double]? = nil,
+        startValue: LottieKeyframeValue? = nil,
+        endValue: LottieKeyframeValue? = nil,
         inTangent: LottieTangent? = nil,
         outTangent: LottieTangent? = nil,
         hold: Int? = nil
@@ -182,6 +223,23 @@ public struct LottieKeyframe: Decodable, Equatable, Sendable {
         case inTangent = "i"
         case outTangent = "o"
         case hold = "h"
+    }
+}
+
+extension LottieKeyframe: Decodable {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        time = try container.decodeIfPresent(Double.self, forKey: .time)
+        startValue = try container.decodeIfPresent(LottieKeyframeValue.self, forKey: .startValue)
+        endValue = try container.decodeIfPresent(LottieKeyframeValue.self, forKey: .endValue)
+        hold = try container.decodeIfPresent(Int.self, forKey: .hold)
+
+        // Special handling for i/o: they can be easing tangents OR path tangents
+        // For path keyframes, i/o at keyframe level are easing (not path tangents)
+        // Path tangents are inside the LottiePathData
+        inTangent = try container.decodeIfPresent(LottieTangent.self, forKey: .inTangent)
+        outTangent = try container.decodeIfPresent(LottieTangent.self, forKey: .outTangent)
     }
 }
 

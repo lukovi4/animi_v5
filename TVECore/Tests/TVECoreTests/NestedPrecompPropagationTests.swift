@@ -32,12 +32,15 @@ final class NestedPrecompPropagationTests: XCTestCase {
         let lottie = try JSONDecoder().decode(LottieJSON.self, from: data)
 
         let assetIndex = AssetIndex(byId: ["image_0": "images/img_nested.png"])
-        return try compiler.compile(
+        var ir = try compiler.compile(
             lottie: lottie,
             animRef: animRef,
             bindingKey: "media",
             assetIndex: assetIndex
         )
+        // Register paths for mask and shape rendering
+        ir.registerPaths()
+        return ir
     }
 
     private func getDrawImageOpacity(from commands: [RenderCommand]) -> Double? {

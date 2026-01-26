@@ -73,8 +73,8 @@ public enum LayerContent: Sendable, Equatable {
 /// Simplified shape group for matte source layers
 /// Full shape rendering is not needed in Part 1 - shapes are used only as matte sources
 public struct ShapeGroup: Sendable, Equatable {
-    /// Combined path from all shapes in the group
-    public let path: BezierPath?
+    /// Combined path from all shapes (supports static and animated paths)
+    public let animPath: AnimPath?
 
     /// Fill color (RGBA, 0-1)
     public let fillColor: [Double]?
@@ -82,10 +82,27 @@ public struct ShapeGroup: Sendable, Equatable {
     /// Fill opacity (0-100)
     public let fillOpacity: Double
 
-    public init(path: BezierPath? = nil, fillColor: [Double]? = nil, fillOpacity: Double = 100) {
-        self.path = path
+    /// Path ID in PathRegistry (set during compilation)
+    public var pathId: PathID?
+
+    /// Convenience accessor for static path (backwards compatibility)
+    public var path: BezierPath? {
+        animPath?.staticPath
+    }
+
+    public init(animPath: AnimPath? = nil, fillColor: [Double]? = nil, fillOpacity: Double = 100, pathId: PathID? = nil) {
+        self.animPath = animPath
         self.fillColor = fillColor
         self.fillOpacity = fillOpacity
+        self.pathId = pathId
+    }
+
+    /// Backwards-compatible initializer
+    public init(path: BezierPath? = nil, fillColor: [Double]? = nil, fillOpacity: Double = 100) {
+        self.animPath = path.map { .staticBezier($0) }
+        self.fillColor = fillColor
+        self.fillOpacity = fillOpacity
+        self.pathId = nil
     }
 }
 

@@ -51,6 +51,17 @@ extension AnimIRCompilerError: LocalizedError {
     }
 }
 
+// MARK: - Asset ID Namespacing
+
+/// Separator used for asset ID namespacing
+private let assetIdNamespaceSeparator = "|"
+
+/// Creates a namespaced asset ID from animRef and original Lottie asset ID.
+/// Format: "<animRef>|<lottieAssetId>" e.g. "anim-1.json|image_0"
+private func namespacedAssetId(animRef: String, assetId: String) -> String {
+    "\(animRef)\(assetIdNamespaceSeparator)\(assetId)"
+}
+
 // MARK: - AnimIR Compiler
 
 /// Compiles LottieJSON into AnimIR representation
@@ -123,14 +134,23 @@ public final class AnimIRCompiler {
             animRef: animRef
         )
 
-        // Build asset index IR with sizes from Lottie
-        var sizeById: [String: AssetSize] = [:]
+        // Build asset index IR with namespaced keys
+        var namespacedById: [String: String] = [:]
+        var namespacedSizeById: [String: AssetSize] = [:]
+
+        for (originalId, path) in assetIndex.byId {
+            let nsId = namespacedAssetId(animRef: animRef, assetId: originalId)
+            namespacedById[nsId] = path
+        }
+
         for asset in lottie.assets where asset.isImage {
             if let width = asset.width, let height = asset.height {
-                sizeById[asset.id] = AssetSize(width: width, height: height)
+                let nsId = namespacedAssetId(animRef: animRef, assetId: asset.id)
+                namespacedSizeById[nsId] = AssetSize(width: width, height: height)
             }
         }
-        let assetsIR = AssetIndexIR(byId: assetIndex.byId, sizeById: sizeById)
+
+        let assetsIR = AssetIndexIR(byId: namespacedById, sizeById: namespacedSizeById)
 
         return AnimIR(
             meta: meta,
@@ -227,8 +247,8 @@ public final class AnimIRCompiler {
         // Build masks
         let masks = compileMasks(from: lottie.masksProperties)
 
-        // Determine content
-        let content = compileContent(from: lottie, layerType: layerType)
+        // Determine content (with namespaced asset IDs)
+        let content = compileContent(from: lottie, layerType: layerType, animRef: animRef)
 
         // Check if this is a matte source
         let isMatteSource = (lottie.isMatteSource ?? 0) == 1
@@ -254,28 +274,36 @@ public final class AnimIRCompiler {
     }
 
     /// Compiles layer content based on type
-    private func compileContent(from lottie: LottieLayer, layerType: LayerType) -> LayerContent {
+    /// Image asset IDs are namespaced with animRef to avoid collisions across animations
+    private func compileContent(
+        from lottie: LottieLayer,
+        layerType: LayerType,
+        animRef: String
+    ) -> LayerContent {
         switch layerType {
         case .image:
             if let refId = lottie.refId, !refId.isEmpty {
-                return .image(assetId: refId)
+                // Namespace the asset ID to avoid collisions across different animations
+                let nsAssetId = namespacedAssetId(animRef: animRef, assetId: refId)
+                return .image(assetId: nsAssetId)
             }
             return .none
 
         case .precomp:
+            // Precomp IDs are local to AnimIR, no namespacing needed
             if let refId = lottie.refId, !refId.isEmpty {
                 return .precomp(compId: refId)
             }
             return .none
 
         case .shapeMatte:
-            // Extract shape data for matte source
-            let path = ShapePathExtractor.extractPath(from: lottie.shapes)
+            // Extract animated shape data for matte source
+            let animPath = ShapePathExtractor.extractAnimPath(from: lottie.shapes)
             let fillColor = ShapePathExtractor.extractFillColor(from: lottie.shapes)
             let fillOpacity = ShapePathExtractor.extractFillOpacity(from: lottie.shapes)
 
             return .shapes(ShapeGroup(
-                path: path,
+                animPath: animPath,
                 fillColor: fillColor,
                 fillOpacity: fillOpacity
             ))

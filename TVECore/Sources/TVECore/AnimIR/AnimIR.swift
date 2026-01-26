@@ -11,13 +11,16 @@ public struct AnimIR: Sendable, Equatable {
     public let rootComp: CompID
 
     /// All compositions (root + precomps) keyed by ID
-    public let comps: [CompID: Composition]
+    public var comps: [CompID: Composition]
 
     /// Asset index (assetId -> relativePath)
     public let assets: AssetIndexIR
 
     /// Binding layer information
     public let binding: BindingInfo
+
+    /// Path registry for GPU path rendering (masks and shapes)
+    public var pathRegistry: PathRegistry
 
     /// Issues from the last renderCommands call (reset on each call)
     public private(set) var lastRenderIssues: [RenderIssue] = []
@@ -27,13 +30,15 @@ public struct AnimIR: Sendable, Equatable {
         rootComp: CompID,
         comps: [CompID: Composition],
         assets: AssetIndexIR,
-        binding: BindingInfo
+        binding: BindingInfo,
+        pathRegistry: PathRegistry = PathRegistry()
     ) {
         self.meta = meta
         self.rootComp = rootComp
         self.comps = comps
         self.assets = assets
         self.binding = binding
+        self.pathRegistry = pathRegistry
     }
 
     /// Root composition ID constant
@@ -46,7 +51,8 @@ public struct AnimIR: Sendable, Equatable {
         lhs.rootComp == rhs.rootComp &&
         lhs.comps == rhs.comps &&
         lhs.assets == rhs.assets &&
-        lhs.binding == rhs.binding
+        lhs.binding == rhs.binding &&
+        lhs.pathRegistry == rhs.pathRegistry
     }
 }
 
@@ -58,6 +64,80 @@ extension AnimIR {
     public func localFrameIndex(sceneFrameIndex: Int) -> Int {
         let maxFrame = Int(meta.outPoint) - 1
         return max(0, min(sceneFrameIndex, maxFrame))
+    }
+}
+
+// MARK: - Path Registration
+
+extension AnimIR {
+    /// Registers all paths (masks and shapes) in the PathRegistry.
+    /// Should be called once after compilation before rendering.
+    /// This method mutates the AnimIR to store pathIds.
+    public mutating func registerPaths() {
+        var localRegistry = pathRegistry
+        registerPaths(into: &localRegistry)
+        pathRegistry = localRegistry
+    }
+
+    /// Registers all paths into an external PathRegistry.
+    /// Use this when coordinating path registration across multiple AnimIRs
+    /// to ensure globally unique pathIds.
+    /// - Parameter registry: External registry to register paths into
+    public mutating func registerPaths(into registry: inout PathRegistry) {
+        // Iterate all compositions and layers
+        for (compId, comp) in comps {
+            var updatedLayers: [Layer] = []
+
+            for var layer in comp.layers {
+                // Register mask paths
+                var updatedMasks: [Mask] = []
+                for var mask in layer.masks {
+                    if mask.pathId == nil {
+                        let pathId = PathID(registry.count)
+                        if let resource = PathResourceBuilder.build(from: mask.path, pathId: pathId) {
+                            registry.register(resource)
+                            mask.pathId = pathId
+                        }
+                    }
+                    updatedMasks.append(mask)
+                }
+
+                // Register shape paths (for matte sources)
+                var updatedContent = layer.content
+                if case .shapes(var shapeGroup) = layer.content {
+                    if shapeGroup.pathId == nil, let animPath = shapeGroup.animPath {
+                        let pathId = PathID(registry.count)
+                        if let resource = PathResourceBuilder.build(from: animPath, pathId: pathId) {
+                            registry.register(resource)
+                            shapeGroup.pathId = pathId
+                            updatedContent = .shapes(shapeGroup)
+                        }
+                    }
+                }
+
+                // Create updated layer with new masks and content
+                layer = Layer(
+                    id: layer.id,
+                    name: layer.name,
+                    type: layer.type,
+                    timing: layer.timing,
+                    parent: layer.parent,
+                    transform: layer.transform,
+                    masks: updatedMasks,
+                    matte: layer.matte,
+                    content: updatedContent,
+                    isMatteSource: layer.isMatteSource
+                )
+                updatedLayers.append(layer)
+            }
+
+            // Update composition with updated layers
+            let updatedComp = Composition(id: compId, size: comp.size, layers: updatedLayers)
+            comps[compId] = updatedComp
+        }
+
+        // Also store in local registry for single-AnimIR use
+        pathRegistry = registry
     }
 }
 
@@ -316,20 +396,22 @@ extension AnimIR {
         commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))"))
         commands.append(.pushTransform(resolved.worldMatrix))
 
-        // Masks begin
+        // Masks begin - only emit for masks with registered pathId
+        var emittedMaskCount = 0
         for mask in layer.masks {
-            if let staticPath = mask.path.staticPath {
+            if let pathId = mask.pathId {
                 // Normalize opacity from 0..100 to 0..1, clamped
                 let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
-                commands.append(.beginMaskAdd(path: staticPath, opacity: normalizedOpacity))
+                commands.append(.beginMaskAdd(pathId: pathId, opacity: normalizedOpacity, frame: context.frame))
+                emittedMaskCount += 1
             }
         }
 
         // Content
         renderLayerContent(layer, resolved: resolved, context: context, commands: &commands)
 
-        // Masks end (LIFO)
-        for _ in layer.masks { commands.append(.endMask) }
+        // Masks end (LIFO) - match emitted masks only
+        for _ in 0..<emittedMaskCount { commands.append(.endMask) }
 
         commands.append(.popTransform)
         commands.append(.endGroup)
@@ -360,14 +442,12 @@ extension AnimIR {
 
         // Start with base (from containing composition)
         var worldMatrix = baseWorldMatrix
-        var worldOpacity = baseWorldOpacity
 
         // Apply parent transforms in order (root parent first)
+        // NOTE: Parenting chain affects ONLY transform, NOT opacity (per Lottie/AE semantics)
         for parentLayer in parentChain.reversed() {
             let parentLocal = Self.computeLocalMatrix(transform: parentLayer.transform, at: frame)
-            let parentOpacity = Self.computeOpacity(transform: parentLayer.transform, at: frame)
             worldMatrix = worldMatrix.concatenating(parentLocal)
-            worldOpacity *= parentOpacity
         }
 
         // Apply this layer's local transform
@@ -375,7 +455,10 @@ extension AnimIR {
         let localOpacity = Self.computeOpacity(transform: layer.transform, at: frame)
 
         worldMatrix = worldMatrix.concatenating(localMatrix)
-        worldOpacity *= localOpacity
+
+        // Opacity formula: context.parentOpacity (from precomp recursion) * layerOpacity
+        // Parenting chain does NOT affect opacity - only precomp container does
+        let worldOpacity = baseWorldOpacity * localOpacity
 
         return (worldMatrix, worldOpacity)
     }
@@ -492,12 +575,13 @@ extension AnimIR {
 
         case .shapes(let shapeGroup):
             // Render shape as filled path (used for matte sources)
-            if let path = shapeGroup.path {
+            if let pathId = shapeGroup.pathId {
                 commands.append(.drawShape(
-                    path: path,
+                    pathId: pathId,
                     fillColor: shapeGroup.fillColor,
                     fillOpacity: shapeGroup.fillOpacity,
-                    layerOpacity: resolved.worldOpacity
+                    layerOpacity: resolved.worldOpacity,
+                    frame: context.frame
                 ))
             }
 

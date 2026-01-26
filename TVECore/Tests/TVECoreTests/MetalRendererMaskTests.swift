@@ -28,6 +28,23 @@ final class MetalRendererMaskTests: XCTestCase {
         device = nil
     }
 
+    // MARK: - Helper to register path and get pathId
+
+    private func registerPath(_ path: BezierPath, in registry: inout PathRegistry) -> PathID {
+        let pathId = PathID(registry.count)
+        if let resource = PathResourceBuilder.build(from: path, pathId: pathId) {
+            return registry.register(resource)
+        }
+        // For empty paths, create a minimal resource
+        return registry.register(PathResource(
+            pathId: pathId,
+            keyframePositions: [[]],
+            keyframeTimes: [0],
+            indices: [],
+            vertexCount: 0
+        ))
+    }
+
     // MARK: - Test 1: Mask clips content to path bounds
 
     func testMaskClipsContentToPathBounds() throws {
@@ -38,11 +55,13 @@ final class MetalRendererMaskTests: XCTestCase {
 
         // Create a small square mask in the center (8x8 at position 12,12)
         let maskPath = createRectPath(xPos: 12, yPos: 12, width: 8, height: 8)
+        var registry = PathRegistry()
+        let pathId = registerPath(maskPath, in: &registry)
 
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(path: maskPath, opacity: 1.0),
+            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -51,7 +70,8 @@ final class MetalRendererMaskTests: XCTestCase {
 
         let result = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
-            animSize: SizeD(width: 32, height: 32), textureProvider: provider
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
         )
 
         // Inside mask area should have content
@@ -72,11 +92,13 @@ final class MetalRendererMaskTests: XCTestCase {
         provider.register(tex, for: "test")
 
         let maskPath = createRectPath(xPos: 0, yPos: 0, width: 32, height: 32)
+        var registry = PathRegistry()
+        let pathId = registerPath(maskPath, in: &registry)
 
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(path: maskPath, opacity: 0.0),
+            .beginMaskAdd(pathId: pathId, opacity: 0.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -85,7 +107,8 @@ final class MetalRendererMaskTests: XCTestCase {
 
         let result = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
-            animSize: SizeD(width: 32, height: 32), textureProvider: provider
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
         )
 
         let pixel = readPixel(from: result, at: MaskTestPoint(xPos: 16, yPos: 16))
@@ -102,11 +125,13 @@ final class MetalRendererMaskTests: XCTestCase {
 
         // Empty path (fewer than 3 vertices)
         let emptyPath = BezierPath(vertices: [], inTangents: [], outTangents: [], closed: true)
+        var registry = PathRegistry()
+        let pathId = registerPath(emptyPath, in: &registry)
 
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(path: emptyPath, opacity: 1.0),
+            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -115,7 +140,8 @@ final class MetalRendererMaskTests: XCTestCase {
 
         let result = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
-            animSize: SizeD(width: 32, height: 32), textureProvider: provider
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
         )
 
         // Empty mask should render content without masking (fallback behavior)
@@ -127,10 +153,12 @@ final class MetalRendererMaskTests: XCTestCase {
 
     func testMaskScopeExtraction() throws {
         let path = createRectPath(xPos: 0, yPos: 0, width: 10, height: 10)
+        var registry = PathRegistry()
+        let pathId = registerPath(path, in: &registry)
 
         let commands: [RenderCommand] = [
             .beginGroup(name: "root"),
-            .beginMaskAdd(path: path, opacity: 1.0),
+            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
             .pushTransform(.identity),
             .drawImage(assetId: "test", opacity: 1.0),
             .popTransform,
@@ -150,15 +178,18 @@ final class MetalRendererMaskTests: XCTestCase {
     func testNestedMaskScopeExtraction() throws {
         let outerPath = createRectPath(xPos: 0, yPos: 0, width: 20, height: 20)
         let innerPath = createRectPath(xPos: 5, yPos: 5, width: 10, height: 10)
+        var registry = PathRegistry()
+        let outerPathId = registerPath(outerPath, in: &registry)
+        let innerPathId = registerPath(innerPath, in: &registry)
 
         let commands: [RenderCommand] = [
-            .beginMaskAdd(path: outerPath, opacity: 1.0),  // 0
-            .pushTransform(.identity),                      // 1
-            .beginMaskAdd(path: innerPath, opacity: 1.0),   // 2
-            .drawImage(assetId: "test", opacity: 1.0),      // 3
-            .endMask,                                       // 4 (matches inner)
-            .popTransform,                                  // 5
-            .endMask                                        // 6 (matches outer)
+            .beginMaskAdd(pathId: outerPathId, opacity: 1.0, frame: 0),  // 0
+            .pushTransform(.identity),                                    // 1
+            .beginMaskAdd(pathId: innerPathId, opacity: 1.0, frame: 0),   // 2
+            .drawImage(assetId: "test", opacity: 1.0),                    // 3
+            .endMask,                                                     // 4 (matches inner)
+            .popTransform,                                                // 5
+            .endMask                                                      // 6 (matches outer)
         ]
 
         let outerScope = renderer.extractMaskScope(from: commands, startIndex: 0)
@@ -183,11 +214,13 @@ final class MetalRendererMaskTests: XCTestCase {
         provider.register(tex, for: "test")
 
         let maskPath = createRectPath(xPos: 8, yPos: 8, width: 16, height: 16)
+        var registry = PathRegistry()
+        let pathId = registerPath(maskPath, in: &registry)
 
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(path: maskPath, opacity: 0.8),
+            .beginMaskAdd(pathId: pathId, opacity: 0.8, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -196,11 +229,13 @@ final class MetalRendererMaskTests: XCTestCase {
 
         let result1 = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
-            animSize: SizeD(width: 32, height: 32), textureProvider: provider
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
         )
         let result2 = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
-            animSize: SizeD(width: 32, height: 32), textureProvider: provider
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
         )
 
         let bytes1 = readAllPixels(from: result1, size: 32)
@@ -218,11 +253,13 @@ final class MetalRendererMaskTests: XCTestCase {
 
         // Create a larger mask to ensure visibility
         let maskPath = createRectPath(xPos: 0, yPos: 0, width: 16, height: 16)
+        var registry = PathRegistry()
+        let pathId = registerPath(maskPath, in: &registry)
 
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(path: maskPath, opacity: 1.0),
+            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -231,7 +268,8 @@ final class MetalRendererMaskTests: XCTestCase {
 
         let result = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
-            animSize: SizeD(width: 32, height: 32), textureProvider: provider
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
         )
 
         // Check that masked content was rendered (at least some pixels non-transparent)
@@ -250,12 +288,14 @@ final class MetalRendererMaskTests: XCTestCase {
 
         // Small mask near origin (0,0) with size 8x8
         let maskPath = createRectPath(xPos: 0, yPos: 0, width: 8, height: 8)
+        var registry = PathRegistry()
+        let pathId = registerPath(maskPath, in: &registry)
 
         // Apply translation BEFORE the mask - content should appear at translated position
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.translation(x: 16, y: 0)),
-            .beginMaskAdd(path: maskPath, opacity: 1.0),
+            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -264,7 +304,8 @@ final class MetalRendererMaskTests: XCTestCase {
 
         let result = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
-            animSize: SizeD(width: 32, height: 32), textureProvider: provider
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
         )
 
         // Original position (0-8) should be empty due to translation
@@ -286,13 +327,15 @@ final class MetalRendererMaskTests: XCTestCase {
 
         // Large mask covering entire area
         let maskPath = createRectPath(xPos: 0, yPos: 0, width: 32, height: 32)
+        var registry = PathRegistry()
+        let pathId = registerPath(maskPath, in: &registry)
 
         // Apply clip BEFORE the mask - composite should respect clip
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushClipRect(RectD(x: 0, y: 0, width: 8, height: 8)),
             .pushTransform(.identity),
-            .beginMaskAdd(path: maskPath, opacity: 1.0),
+            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -302,7 +345,8 @@ final class MetalRendererMaskTests: XCTestCase {
 
         let result = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
-            animSize: SizeD(width: 32, height: 32), textureProvider: provider
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
         )
 
         // Inside clip area (0-8) should have content
@@ -319,11 +363,13 @@ final class MetalRendererMaskTests: XCTestCase {
     func testUnbalancedMaskThrows() throws {
         let provider = InMemoryTextureProvider()
         let maskPath = createRectPath(xPos: 0, yPos: 0, width: 10, height: 10)
+        var registry = PathRegistry()
+        let pathId = registerPath(maskPath, in: &registry)
 
         // BeginMaskAdd without EndMask
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
-            .beginMaskAdd(path: maskPath, opacity: 1.0),
+            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             // Missing .endMask
             .endGroup
@@ -332,7 +378,8 @@ final class MetalRendererMaskTests: XCTestCase {
         XCTAssertThrowsError(
             try renderer.drawOffscreen(
                 commands: cmds, device: device, sizePx: (32, 32),
-                animSize: SizeD(width: 32, height: 32), textureProvider: provider
+                animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+                pathRegistry: registry
             )
         ) { error in
             guard let metalError = error as? MetalRendererError,

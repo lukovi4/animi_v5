@@ -308,10 +308,10 @@ extension TransformTrack {
         return lottieKeyframes.compactMap { kf -> Keyframe<Vec2D>? in
             guard let time = kf.time else { return nil }
 
-            // Get value from startValue (modern format) or assume zero
+            // Get value from startValue (modern format) - must be numbers type
             let vec: Vec2D
-            if let startArr = kf.startValue, startArr.count >= 2 {
-                vec = Vec2D(x: startArr[0], y: startArr[1])
+            if case .numbers(let arr) = kf.startValue, arr.count >= 2 {
+                vec = Vec2D(x: arr[0], y: arr[1])
             } else {
                 return nil
             }
@@ -332,10 +332,10 @@ extension TransformTrack {
         return lottieKeyframes.compactMap { kf -> Keyframe<Double>? in
             guard let time = kf.time else { return nil }
 
-            // Get value from startValue
+            // Get value from startValue - must be numbers type
             let num: Double
-            if let startArr = kf.startValue, !startArr.isEmpty {
-                num = startArr[0]
+            if case .numbers(let arr) = kf.startValue, !arr.isEmpty {
+                num = arr[0]
             } else {
                 return nil
             }

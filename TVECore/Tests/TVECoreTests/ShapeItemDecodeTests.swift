@@ -234,6 +234,186 @@ final class ShapeItemDecodeTests: XCTestCase {
         }
     }
 
+    // MARK: - Animated Path Keyframes (PR-A)
+
+    /// Test that animated path keyframes are correctly decoded
+    /// This is the fix for anim-3.json matte mask animation
+    func testPathShape_decodesAnimatedKeyframes() throws {
+        // Path with animated keyframes (like in anim-3.json matte mask)
+        let json = """
+        {
+            "ty": "sh",
+            "nm": "Path 1",
+            "ks": {
+                "a": 1,
+                "k": [
+                    {
+                        "t": 60,
+                        "s": [{"v": [[-10, -160], [-10, 480], [10, 160], [10, -480]], "i": [[0, 0], [0, 0], [0, 0], [0, 0]], "o": [[0, 0], [0, 0], [0, 0], [0, 0]], "c": true}],
+                        "i": {"x": [0.833], "y": [0.833]},
+                        "o": {"x": [0.167], "y": [0.167]}
+                    },
+                    {
+                        "t": 90,
+                        "s": [{"v": [[270, -160], [270, 480], [-270, 160], [-270, -480]], "i": [[0, 0], [0, 0], [0, 0], [0, 0]], "o": [[0, 0], [0, 0], [0, 0], [0, 0]], "c": true}]
+                    }
+                ]
+            }
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .path(let path) = shape else {
+            XCTFail("Expected .path case, got \(shape)")
+            return
+        }
+
+        XCTAssertNotNil(path.vertices, "Vertices (ks) should be present")
+        XCTAssertEqual(path.vertices?.isAnimated, true, "Path should be animated (a=1)")
+
+        // Verify keyframes are decoded
+        guard let value = path.vertices?.value,
+              case .keyframes(let keyframes) = value else {
+            XCTFail("Expected keyframes in path.vertices")
+            return
+        }
+
+        XCTAssertEqual(keyframes.count, 2, "Should have 2 keyframes")
+
+        // Check first keyframe
+        let kf1 = keyframes[0]
+        XCTAssertEqual(kf1.time, 60, "First keyframe time should be 60")
+
+        // Verify startValue is path data, not numbers
+        guard case .path(let pathData1) = kf1.startValue else {
+            XCTFail("First keyframe startValue should be .path, got \(String(describing: kf1.startValue))")
+            return
+        }
+        XCTAssertEqual(pathData1.vertices?.count, 4, "Path should have 4 vertices")
+        XCTAssertEqual(pathData1.closed, true, "Path should be closed")
+
+        // Check second keyframe
+        let kf2 = keyframes[1]
+        XCTAssertEqual(kf2.time, 90, "Second keyframe time should be 90")
+
+        guard case .path(let pathData2) = kf2.startValue else {
+            XCTFail("Second keyframe startValue should be .path")
+            return
+        }
+        XCTAssertEqual(pathData2.vertices?.count, 4, "Path should have 4 vertices")
+
+        // Verify the path actually changed between keyframes
+        if let v1 = pathData1.vertices?.first, let v2 = pathData2.vertices?.first {
+            XCTAssertNotEqual(v1, v2, "Path vertices should be different between keyframes")
+        }
+    }
+
+    /// Test that anim-3.json shape path keyframes decode correctly
+    func testAnim3_shapePathKeyframes_decode() throws {
+        // Load anim-3.json from resources
+        guard let url = Bundle.module.url(
+            forResource: "anim-3",
+            withExtension: "json",
+            subdirectory: "Resources"
+        ) else {
+            XCTFail("Could not find anim-3.json in Resources")
+            return
+        }
+
+        let data = try Data(contentsOf: url)
+        let lottie = try JSONDecoder().decode(LottieJSON.self, from: data)
+
+        // Find the matte source layer (td=1)
+        let matteLayers = lottie.layers.filter { $0.isMatteSource == 1 }
+        guard let matteLayer = matteLayers.first else {
+            XCTFail("Could not find matte source layer (td=1)")
+            return
+        }
+
+        XCTAssertEqual(matteLayer.name, "img_1.3_mask", "Matte layer should be img_1.3_mask")
+        XCTAssertEqual(matteLayer.type, 4, "Matte layer should be shape layer (ty=4)")
+
+        // Get shapes
+        guard let shapes = matteLayer.shapes, !shapes.isEmpty else {
+            XCTFail("Matte layer should have shapes")
+            return
+        }
+
+        // Find the group containing the path
+        guard case .group(let group) = shapes[0],
+              let items = group.items else {
+            XCTFail("First shape should be a group with items")
+            return
+        }
+
+        // Find the path item
+        guard let pathItem = items.first(where: {
+            if case .path = $0 { return true }
+            return false
+        }), case .path(let pathShape) = pathItem else {
+            XCTFail("Group should contain a path shape")
+            return
+        }
+
+        // Verify path is animated
+        XCTAssertEqual(pathShape.vertices?.isAnimated, true, "Path should be animated")
+
+        // Verify keyframes
+        guard let value = pathShape.vertices?.value,
+              case .keyframes(let keyframes) = value else {
+            XCTFail("Path should have keyframes")
+            return
+        }
+
+        XCTAssertEqual(keyframes.count, 2, "Should have 2 keyframes (frames 60 and 90)")
+        XCTAssertEqual(keyframes[0].time, 60)
+        XCTAssertEqual(keyframes[1].time, 90)
+
+        // Verify both keyframes have path data
+        for (index, kf) in keyframes.enumerated() {
+            guard case .path(let pathData) = kf.startValue else {
+                XCTFail("Keyframe \(index) should have path data in startValue")
+                continue
+            }
+            XCTAssertEqual(pathData.vertices?.count, 4, "Keyframe \(index) path should have 4 vertices")
+        }
+    }
+
+    /// Test that numeric keyframes still work (position, scale, etc.)
+    func testNumericKeyframes_stillWork() throws {
+        let json = """
+        {
+            "a": 1,
+            "k": [
+                {"t": 0, "s": [0, 0]},
+                {"t": 30, "s": [100, 100]}
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let animValue = try JSONDecoder().decode(LottieAnimatedValue.self, from: data)
+
+        XCTAssertEqual(animValue.isAnimated, true)
+
+        guard let value = animValue.value,
+              case .keyframes(let keyframes) = value else {
+            XCTFail("Should decode as keyframes")
+            return
+        }
+
+        XCTAssertEqual(keyframes.count, 2)
+
+        // Verify startValue is numbers, not path
+        guard case .numbers(let nums) = keyframes[0].startValue else {
+            XCTFail("Numeric keyframe should have .numbers startValue")
+            return
+        }
+        XCTAssertEqual(nums, [0, 0])
+    }
+
     // MARK: - Critical: Fill and Transform "r" Field Disambiguation
 
     /// This is the critical test that validates the fix for the 16 skipped tests.

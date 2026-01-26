@@ -4,20 +4,22 @@ import Foundation
 // MARK: - Shape Cache Key
 
 /// Key for caching rasterized shape textures.
-/// Combines path identity, target size, transform, and fill color for uniqueness.
+/// Combines path identity, target size, transform, fill color, and opacity for uniqueness.
 struct ShapeCacheKey: Hashable {
     let pathHash: Int
     let width: Int
     let height: Int
     let transformHash: Int
     let colorHash: Int
+    let opacity: Double
 
-    init(path: BezierPath, size: (width: Int, height: Int), transform: Matrix2D, fillColor: [Double]) {
+    init(path: BezierPath, size: (width: Int, height: Int), transform: Matrix2D, fillColor: [Double], opacity: Double) {
         self.pathHash = Self.computePathHash(path)
         self.width = size.width
         self.height = size.height
         self.transformHash = Self.computeTransformHash(transform)
         self.colorHash = Self.computeColorHash(fillColor)
+        self.opacity = opacity
     }
 
     private static func computePathHash(_ path: BezierPath) -> Int {
@@ -93,7 +95,7 @@ final class ShapeCache {
         fillColor: [Double],
         opacity: Double
     ) -> MTLTexture? {
-        let key = ShapeCacheKey(path: path, size: size, transform: transform, fillColor: fillColor)
+        let key = ShapeCacheKey(path: path, size: size, transform: transform, fillColor: fillColor, opacity: opacity)
 
         // Check cache
         if let cached = cache[key] {
