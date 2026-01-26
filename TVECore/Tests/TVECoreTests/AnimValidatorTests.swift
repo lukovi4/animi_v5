@@ -157,7 +157,8 @@ final class AnimValidatorTests: XCTestCase {
         sceneJSON: String,
         animJSON: String,
         animRef: String = "anim-1.json",
-        images: [String] = ["img_1.png"]
+        images: [String] = ["img_1.png"],
+        options: AnimValidator.Options? = nil
     ) throws -> ValidationReport {
         let package = try createTempPackage(
             sceneJSON: sceneJSON,
@@ -165,7 +166,8 @@ final class AnimValidatorTests: XCTestCase {
             images: images
         )
         let loaded = try loader.loadAnimations(from: package)
-        return validator.validate(scene: package.scene, package: package, loaded: loaded)
+        let validatorToUse: AnimValidator = options.map { AnimValidator(options: $0) } ?? validator
+        return validatorToUse.validate(scene: package.scene, package: package, loaded: loaded)
     }
 
     // MARK: - Happy Path Tests
@@ -410,18 +412,36 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertNotNil(error)
     }
 
-    func testValidate_maskPathAnimated_returnsError() throws {
+    func testValidate_maskPathAnimated_returnsError_whenDisabled() throws {
         let scene = sceneJSON()
         let maskJSON = """
         { "mode": "a", "inv": false, "pt": { "a": 1, "k": [] }, "o": { "a": 0, "k": 100 } }
         """
         let anim = animJSON(masksJSON: maskJSON)
-        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+        // Explicitly disable animated mask paths to test the error case
+        var options = AnimValidator.Options()
+        options.allowAnimatedMaskPath = false
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim, options: options)
 
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedMaskPathAnimated
         }
         XCTAssertNotNil(error)
+    }
+
+    func testValidate_maskPathAnimated_noError_whenEnabled() throws {
+        let scene = sceneJSON()
+        let maskJSON = """
+        { "mode": "a", "inv": false, "pt": { "a": 1, "k": [] }, "o": { "a": 0, "k": 100 } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        // Default: allowAnimatedMaskPath = true
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskPathAnimated
+        }
+        XCTAssertNil(error, "Animated mask paths should be allowed by default")
     }
 
     func testValidate_maskOpacityAnimated_returnsError() throws {
@@ -552,6 +572,147 @@ final class AnimValidatorTests: XCTestCase {
             $0.code == AnimValidationCode.unsupportedShapeItem
         }
         XCTAssertNil(shapeError)
+    }
+
+    // MARK: - Path Topology Validation Tests
+
+    func testValidate_animatedPathTopologyMismatch_producesValidationError() throws {
+        // Create validator with animated paths allowed
+        var options = AnimValidator.Options()
+        options.allowAnimatedMaskPath = true
+        let customValidator = AnimValidator(options: options)
+
+        let scene = sceneJSON()
+        // Animated mask with topology mismatch: first keyframe has 4 vertices, second has 3
+        let maskJSON = """
+        {
+          "mode": "a",
+          "inv": false,
+          "pt": {
+            "a": 1,
+            "k": [
+              {
+                "t": 0,
+                "s": [{ "v": [[0,0], [100,0], [100,100], [0,100]], "i": [[0,0], [0,0], [0,0], [0,0]], "o": [[0,0], [0,0], [0,0], [0,0]], "c": true }]
+              },
+              {
+                "t": 30,
+                "s": [{ "v": [[0,0], [100,0], [100,100]], "i": [[0,0], [0,0], [0,0]], "o": [[0,0], [0,0], [0,0]], "c": true }]
+              }
+            ]
+          },
+          "o": { "a": 0, "k": 100 }
+        }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+
+        let package = try createTempPackage(
+            sceneJSON: scene,
+            animFiles: ["anim-1.json": anim],
+            images: ["img_1.png"]
+        )
+        let loaded = try loader.loadAnimations(from: package)
+        let report = customValidator.validate(scene: package.scene, package: package, loaded: loaded)
+
+        // Should have a topology mismatch error
+        let topologyError = report.errors.first {
+            $0.code == AnimValidationCode.pathTopologyMismatch
+        }
+        XCTAssertNotNil(topologyError, "Topology mismatch should produce validation error, not silent nil")
+        XCTAssertTrue(topologyError?.message.contains("4") ?? false, "Error should mention expected vertex count")
+        XCTAssertTrue(topologyError?.message.contains("3") ?? false, "Error should mention actual vertex count")
+    }
+
+    func testValidate_animatedPathTopologyMismatch_closedFlag_producesError() throws {
+        // Create validator with animated paths allowed
+        var options = AnimValidator.Options()
+        options.allowAnimatedMaskPath = true
+        let customValidator = AnimValidator(options: options)
+
+        let scene = sceneJSON()
+        // Animated mask with closed flag mismatch
+        let maskJSON = """
+        {
+          "mode": "a",
+          "inv": false,
+          "pt": {
+            "a": 1,
+            "k": [
+              {
+                "t": 0,
+                "s": [{ "v": [[0,0], [100,0]], "i": [[0,0], [0,0]], "o": [[0,0], [0,0]], "c": true }]
+              },
+              {
+                "t": 30,
+                "s": [{ "v": [[0,0], [100,0]], "i": [[0,0], [0,0]], "o": [[0,0], [0,0]], "c": false }]
+              }
+            ]
+          },
+          "o": { "a": 0, "k": 100 }
+        }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+
+        let package = try createTempPackage(
+            sceneJSON: scene,
+            animFiles: ["anim-1.json": anim],
+            images: ["img_1.png"]
+        )
+        let loaded = try loader.loadAnimations(from: package)
+        let report = customValidator.validate(scene: package.scene, package: package, loaded: loaded)
+
+        // Should have a topology mismatch error for closed flag
+        let topologyError = report.errors.first {
+            $0.code == AnimValidationCode.pathTopologyMismatch
+        }
+        XCTAssertNotNil(topologyError, "Closed flag mismatch should produce validation error")
+        XCTAssertTrue(topologyError?.message.contains("closed") ?? false, "Error should mention closed flag")
+    }
+
+    func testValidate_animatedPathConsistentTopology_noError() throws {
+        // Create validator with animated paths allowed
+        var options = AnimValidator.Options()
+        options.allowAnimatedMaskPath = true
+        let customValidator = AnimValidator(options: options)
+
+        let scene = sceneJSON()
+        // Valid animated mask with consistent topology (same vertex count and closed flag)
+        let maskJSON = """
+        {
+          "mode": "a",
+          "inv": false,
+          "pt": {
+            "a": 1,
+            "k": [
+              {
+                "t": 0,
+                "s": [{ "v": [[0,0], [100,0], [100,100], [0,100]], "i": [[0,0], [0,0], [0,0], [0,0]], "o": [[0,0], [0,0], [0,0], [0,0]], "c": true }]
+              },
+              {
+                "t": 30,
+                "s": [{ "v": [[10,10], [90,10], [90,90], [10,90]], "i": [[0,0], [0,0], [0,0], [0,0]], "o": [[0,0], [0,0], [0,0], [0,0]], "c": true }]
+              }
+            ]
+          },
+          "o": { "a": 0, "k": 100 }
+        }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+
+        let package = try createTempPackage(
+            sceneJSON: scene,
+            animFiles: ["anim-1.json": anim],
+            images: ["img_1.png"]
+        )
+        let loaded = try loader.loadAnimations(from: package)
+        let report = customValidator.validate(scene: package.scene, package: package, loaded: loaded)
+
+        // Should NOT have topology errors
+        let topologyError = report.errors.first {
+            $0.code == AnimValidationCode.pathTopologyMismatch ||
+            $0.code == AnimValidationCode.pathKeyframesMissing
+        }
+        XCTAssertNil(topologyError, "Consistent topology should not produce errors")
     }
 
     // MARK: - Integration Tests
