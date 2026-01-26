@@ -55,6 +55,12 @@ public enum AnimValidationCode {
     /// Shape item type not supported in matte source
     public static let unsupportedShapeItem = "UNSUPPORTED_SHAPE_ITEM"
 
+    /// Path keyframes have mismatched topology (vertex count or closed flag differ)
+    public static let pathTopologyMismatch = "PATH_TOPOLOGY_MISMATCH"
+
+    /// Path keyframes are missing or invalid
+    public static let pathKeyframesMissing = "PATH_KEYFRAMES_MISSING"
+
     // MARK: - Warnings
 
     /// Animation size does not match input rect size

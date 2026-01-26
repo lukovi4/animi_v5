@@ -48,9 +48,24 @@ extension AnimValidator {
                 }
             }
 
-        case .path:
-            // Path shape is supported, no validation issues
-            break
+        case .path(let shapePath):
+            // Validate animated path topology if animated paths are allowed
+            if let pathValue = shapePath.vertices, pathValue.isAnimated {
+                if !options.allowAnimatedMaskPath {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedMaskPathAnimated,
+                        severity: .error,
+                        path: "\(basePath).ks.a",
+                        message: "Animated shape paths not supported in Part 1"
+                    ))
+                } else {
+                    validatePathTopology(
+                        path: pathValue,
+                        basePath: "\(basePath).ks",
+                        issues: &issues
+                    )
+                }
+            }
 
         case .fill:
             // Fill shape is supported, no validation issues
