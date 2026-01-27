@@ -95,7 +95,7 @@ final class PlayerViewController: UIViewController {
     private var textureProvider: ScenePackageTextureProvider?
 
     // Scene playback
-    private var scenePlayer: ScenePlayer?
+    private var compiledScene: CompiledScene?
     private var canvasSize: SizeD = .zero
     private var mergedAssetSizes: [String: AssetSize] = [:]
 
@@ -224,29 +224,25 @@ final class PlayerViewController: UIViewController {
 
         // Create and compile scene player
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: loaded)
-        scenePlayer = player
+        let compiled = try player.compile(package: package, loadedAnimations: loaded)
+        compiledScene = compiled
 
         // Store canvas size for render target
-        canvasSize = runtime.canvasSize
-
-        // Get merged asset index for texture provider
-        guard let mergedIndex = player.mergedAssetIndex else {
-            log("ERROR: No merged asset index"); return
-        }
+        canvasSize = compiled.runtime.canvasSize
 
         // Store merged asset sizes for renderer
-        mergedAssetSizes = mergedIndex.sizeById
+        mergedAssetSizes = compiled.mergedAssetIndex.sizeById
 
         // Create texture provider for entire scene
         textureProvider = SceneTextureProviderFactory.create(
             device: device,
             package: package,
-            mergedAssetIndex: mergedIndex,
+            mergedAssetIndex: compiled.mergedAssetIndex,
             logger: { [weak self] msg in self?.log(msg) }
         )
 
         // Log compilation results
+        let runtime = compiled.runtime
         let blockCount = runtime.blocks.count
         let canvasSizeStr = "\(Int(canvasSize.width))x\(Int(canvasSize.height))"
         log("Scene compiled: \(canvasSizeStr) @ \(runtime.fps)fps, \(runtime.durationFrames) frames, \(blockCount) blocks")
@@ -259,10 +255,10 @@ final class PlayerViewController: UIViewController {
         }
 
         // Log asset count
-        log("Merged assets: \(mergedIndex.byId.count) textures")
+        log("Merged assets: \(compiled.mergedAssetIndex.byId.count) textures")
 
         // One-time diagnostic: check textures
-        for (assetId, _) in mergedIndex.byId {
+        for (assetId, _) in compiled.mergedAssetIndex.byId {
             if let tex = textureProvider?.texture(for: assetId) {
                 log("Texture: \(assetId) [\(tex.width)x\(tex.height)]")
             } else {
@@ -285,7 +281,7 @@ final class PlayerViewController: UIViewController {
     // MARK: - Playback
 
     private func startPlayback() {
-        guard scenePlayer?.runtime != nil else { return }
+        guard compiledScene != nil else { return }
         isPlaying = true
         updatePlayPauseButton()
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
@@ -355,7 +351,7 @@ extension PlayerViewController: MTKViewDelegate {
               let cmdBuf = cmdQueue.makeCommandBuffer() else { return }
 
         if let renderer = renderer,
-           let player = scenePlayer,
+           let compiled = compiledScene,
            let provider = textureProvider,
            canvasSize.width > 0 {
             // Use canvas size for RenderTarget (not individual anim size)
@@ -387,7 +383,7 @@ extension PlayerViewController: MTKViewDelegate {
             }
 
             // Get render commands for current scene frame
-            let commands = player.renderCommands(sceneFrameIndex: currentFrameIndex)
+            let commands = compiled.runtime.renderCommands(sceneFrameIndex: currentFrameIndex)
 
             // DIAGNOSTIC: Log matte/shape commands every 30 frames (per review.md)
             if currentFrameIndex % 30 == 0 {
@@ -399,22 +395,21 @@ extension PlayerViewController: MTKViewDelegate {
                     if case .drawShape(_, _, _, _, let frame) = cmd { return frame }
                     return nil
                 }
-                let pathRegistryCount = player.mergedPathRegistry?.count ?? -1
+                let pathRegistryCount = compiled.pathRegistry.count
                 let frameForLog = currentFrameIndex
 
                 // Deep diagnostic: check if paths are actually animated
                 var pathDiagnostics: [String] = []
-                if let registry = player.mergedPathRegistry {
-                    for cmd in commands {
-                        if case .drawShape(let pathId, _, _, _, _) = cmd {
-                            if let resource = registry.path(for: pathId) {
-                                let animated = resource.isAnimated ? "ANIM" : "STATIC"
-                                let kfCount = resource.keyframeCount
-                                let times = resource.keyframeTimes
-                                pathDiagnostics.append("pathId=\(pathId.value) \(animated) kf=\(kfCount) times=\(times)")
-                            } else {
-                                pathDiagnostics.append("pathId=\(pathId.value) NOT_FOUND")
-                            }
+                let registry = compiled.pathRegistry
+                for cmd in commands {
+                    if case .drawShape(let pathId, _, _, _, _) = cmd {
+                        if let resource = registry.path(for: pathId) {
+                            let animated = resource.isAnimated ? "ANIM" : "STATIC"
+                            let kfCount = resource.keyframeCount
+                            let times = resource.keyframeTimes
+                            pathDiagnostics.append("pathId=\(pathId.value) \(animated) kf=\(kfCount) times=\(times)")
+                        } else {
+                            pathDiagnostics.append("pathId=\(pathId.value) NOT_FOUND")
                         }
                     }
                 }
@@ -428,19 +423,6 @@ extension PlayerViewController: MTKViewDelegate {
                 }
             }
 
-            // Get path registry for mask/shape rendering
-            guard let pathRegistry = player.mergedPathRegistry else {
-                if !renderErrorLogged {
-                    renderErrorLogged = true
-                    DispatchQueue.main.async { [weak self] in
-                        self?.log("Render error: No path registry available")
-                    }
-                }
-                cmdBuf.present(drawable)
-                cmdBuf.commit()
-                return
-            }
-
             do {
                 try renderer.draw(
                     commands: commands,
@@ -448,7 +430,7 @@ extension PlayerViewController: MTKViewDelegate {
                     textureProvider: provider,
                     commandBuffer: cmdBuf,
                     assetSizes: mergedAssetSizes,
-                    pathRegistry: pathRegistry
+                    pathRegistry: compiled.pathRegistry
                 )
             } catch {
                 if !renderErrorLogged {
