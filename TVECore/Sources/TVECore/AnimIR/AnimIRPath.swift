@@ -435,8 +435,9 @@ public struct Mask: Sendable, Equatable {
 extension Mask {
     /// Creates Mask from LottieMask
     public init?(from lottieMask: LottieMask) {
-        // Mode must be "a" (add) for Part 1
-        guard let mode = MaskMode(lottieMode: lottieMask.mode) else {
+        // Parse mode from Lottie string (a/s/i → add/subtract/intersect)
+        guard let modeString = lottieMask.mode,
+              let mode = MaskMode(rawValue: modeString) else {
             return nil
         }
         self.mode = mode

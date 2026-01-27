@@ -60,11 +60,23 @@ public enum RenderCommand: Sendable, Equatable {
 
     // MARK: - Masking
 
-    /// Begin an additive mask with the given path and opacity
+    /// Begin a mask scope with boolean operation mode for GPU mask accumulation.
+    /// Masks are applied via coverage texture and combined using the specified mode.
+    /// - Parameters:
+    ///   - mode: Boolean operation (add/subtract/intersect)
+    ///   - inverted: Whether to invert coverage before applying operation
+    ///   - pathId: Reference to PathResource in PathRegistry
+    ///   - opacity: Mask opacity (0.0 to 1.0)
+    ///   - frame: Current frame for animated path interpolation
+    case beginMask(mode: MaskMode, inverted: Bool, pathId: PathID, opacity: Double, frame: Double)
+
+    /// Begin an additive mask with the given path and opacity.
+    /// - Note: Deprecated. Use `beginMask(mode:inverted:pathId:opacity:frame:)` instead.
     /// - Parameters:
     ///   - pathId: Reference to PathResource in PathRegistry
     ///   - opacity: Mask opacity (0.0 to 1.0)
     ///   - frame: Current frame for animated path interpolation
+    @available(*, deprecated, message: "Use beginMask(mode:inverted:pathId:opacity:frame:) instead")
     case beginMaskAdd(pathId: PathID, opacity: Double, frame: Double)
 
     /// End the current mask
@@ -88,7 +100,7 @@ extension RenderCommand {
     /// Returns true if this is a "begin" command that requires a matching "end"
     public var isBeginCommand: Bool {
         switch self {
-        case .beginGroup, .pushTransform, .pushClipRect, .beginMaskAdd, .beginMatte:
+        case .beginGroup, .pushTransform, .pushClipRect, .beginMask, .beginMaskAdd, .beginMatte:
             return true
         default:
             return false
@@ -114,7 +126,7 @@ extension RenderCommand {
             return .popTransform
         case .pushClipRect:
             return .popClipRect
-        case .beginMaskAdd:
+        case .beginMask, .beginMaskAdd:
             return .endMask
         case .beginMatte:
             return .endMatte
@@ -148,6 +160,8 @@ extension RenderCommand: CustomDebugStringConvertible {
             return "DrawImage(\(assetId), opacity:\(opacity))"
         case .drawShape(let pathId, _, let fillOpacity, let layerOpacity, let frame):
             return "DrawShape(pathId:\(pathId.value), fillOp:\(fillOpacity), layerOp:\(layerOpacity), frame:\(frame))"
+        case .beginMask(let mode, let inverted, let pathId, let opacity, let frame):
+            return "BeginMask(mode:\(mode.rawValue), inv:\(inverted), pathId:\(pathId.value), op:\(opacity), frame:\(frame))"
         case .beginMaskAdd(let pathId, let opacity, let frame):
             return "BeginMaskAdd(pathId:\(pathId.value), opacity:\(opacity), frame:\(frame))"
         case .endMask:
@@ -191,7 +205,7 @@ private struct BalanceStacks {
         case .beginGroup: group += 1
         case .pushTransform: transform += 1
         case .pushClipRect: clip += 1
-        case .beginMaskAdd: mask += 1
+        case .beginMask, .beginMaskAdd: mask += 1
         case .beginMatte: matte += 1
         default: break
         }
@@ -231,6 +245,7 @@ extension Array where Element == RenderCommand {
             case .popClipRect: key = "popClipRect"
             case .drawImage: key = "drawImage"
             case .drawShape: key = "drawShape"
+            case .beginMask: key = "beginMask"
             case .beginMaskAdd: key = "beginMaskAdd"
             case .endMask: key = "endMask"
             case .beginMatte: key = "beginMatte"
@@ -245,8 +260,10 @@ extension Array where Element == RenderCommand {
     /// Checks if the command list contains mask commands
     public var hasMaskCommands: Bool {
         contains { cmd in
-            if case .beginMaskAdd = cmd { return true }
-            return false
+            switch cmd {
+            case .beginMask, .beginMaskAdd: return true
+            default: return false
+            }
         }
     }
 

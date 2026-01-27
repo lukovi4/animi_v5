@@ -233,7 +233,10 @@ final class RenderGraphContractTests: XCTestCase {
         XCTAssertTrue(commands.hasMaskCommands, "Should have mask commands")
 
         let counts = commands.commandCounts()
-        XCTAssertEqual(counts["beginMaskAdd"], counts["endMask"], "Mask begin/end should be balanced")
+        // PR-B: uses beginMask instead of beginMaskAdd
+        let maskBegins = (counts["beginMask"] ?? 0) + (counts["beginMaskAdd"] ?? 0)
+        let maskEnds = counts["endMask"] ?? 0
+        XCTAssertEqual(maskBegins, maskEnds, "Mask begin/end should be balanced")
     }
 
     func testRenderCommands_maskBeforeDrawImage() throws {
@@ -244,17 +247,20 @@ final class RenderGraphContractTests: XCTestCase {
         var inMask = false
 
         for command in commands {
-            if case .beginMaskAdd = command {
+            switch command {
+            case .beginMask, .beginMaskAdd:
                 inMask = true
-            } else if case .drawImage = command, inMask {
+            case .drawImage where inMask:
                 foundMaskBeforeImage = true
-                break
-            } else if case .endMask = command {
+            case .endMask:
                 inMask = false
+            default:
+                break
             }
+            if foundMaskBeforeImage { break }
         }
 
-        XCTAssertTrue(foundMaskBeforeImage, "Should have BeginMaskAdd before DrawImage")
+        XCTAssertTrue(foundMaskBeforeImage, "Should have BeginMask before DrawImage")
     }
 
     // MARK: - Matte Tests

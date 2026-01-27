@@ -188,16 +188,17 @@ extension MetalRenderer {
             var foundScopeType: ScopeType?
 
             for idx in segmentStart..<commands.count {
-                if case .beginMaskAdd = commands[idx] {
+                switch commands[idx] {
+                case .beginMask, .beginMaskAdd:
                     segmentEnd = idx
                     foundScopeType = .mask
-                    break
-                }
-                if case .beginMatte = commands[idx] {
+                case .beginMatte:
                     segmentEnd = idx
                     foundScopeType = .matte
-                    break
+                default:
+                    continue
                 }
+                break
             }
 
             // Render segment if non-empty
@@ -223,7 +224,7 @@ extension MetalRenderer {
             switch foundScopeType {
             case .mask:
                 guard let scope = extractMaskScope(from: commands, startIndex: index) else {
-                    throw MetalRendererError.invalidCommandStack(reason: "Malformed mask: BeginMaskAdd without EndMask")
+                    throw MetalRendererError.invalidCommandStack(reason: "Malformed mask: BeginMask without EndMask")
                 }
                 let scopeCtx = MaskScopeContext(
                     target: target,
@@ -918,9 +919,21 @@ struct MatteScope {
 extension MetalRenderer {
     /// Extracts a mask scope starting at the given index.
     /// Handles nested masks by counting begin/end pairs.
+    /// Supports both new beginMask and legacy beginMaskAdd commands.
     func extractMaskScope(from commands: [RenderCommand], startIndex: Int) -> MaskScope? {
-        guard startIndex < commands.count,
-              case .beginMaskAdd(let pathId, let opacity, let frame) = commands[startIndex] else {
+        guard startIndex < commands.count else { return nil }
+
+        // Extract pathId, opacity, frame from either beginMask or beginMaskAdd
+        let pathId: PathID
+        let opacity: Double
+        let frame: Double
+
+        switch commands[startIndex] {
+        case .beginMask(_, _, let pid, let op, let fr):
+            pathId = pid; opacity = op; frame = fr
+        case .beginMaskAdd(let pid, let op, let fr):
+            pathId = pid; opacity = op; frame = fr
+        default:
             return nil
         }
 
@@ -929,7 +942,7 @@ extension MetalRenderer {
 
         while index < commands.count && depth > 0 {
             switch commands[index] {
-            case .beginMaskAdd:
+            case .beginMask, .beginMaskAdd:
                 depth += 1
             case .endMask:
                 depth -= 1
@@ -954,6 +967,94 @@ extension MetalRenderer {
             pathId: pathId,
             opacity: opacity,
             frame: frame
+        )
+    }
+
+    /// Extracts a complete mask group scope from the command stream.
+    ///
+    /// Handles LIFO-nested mask structure where masks are emitted in reverse order:
+    /// ```
+    /// beginMask(M2) → beginMask(M1) → beginMask(M0) → [inner] → endMask → endMask → endMask
+    /// ```
+    ///
+    /// Returns masks in AE application order (M0, M1, M2) for correct accumulation.
+    /// The `endIndex` points to the next command after the last `endMask`.
+    ///
+    /// - Parameters:
+    ///   - commands: Full command stream
+    ///   - startIndex: Index of first beginMask command
+    /// - Returns: Extracted scope with ops in AE order, or nil if invalid structure
+    func extractMaskGroupScope(from commands: [RenderCommand], startIndex: Int) -> MaskGroupScope? {
+        guard startIndex < commands.count else { return nil }
+
+        var ops: [MaskOp] = []
+        var index = startIndex
+
+        // Phase 1: Collect consecutive beginMask commands
+        while index < commands.count {
+            switch commands[index] {
+            case .beginMask(let mode, let inverted, let pathId, let opacity, let frame):
+                ops.append(MaskOp(mode: mode, inverted: inverted, pathId: pathId, opacity: opacity, frame: frame))
+                index += 1
+            case .beginMaskAdd(let pathId, let opacity, let frame):
+                // Legacy command: treat as add, non-inverted
+                ops.append(MaskOp(mode: .add, inverted: false, pathId: pathId, opacity: opacity, frame: frame))
+                index += 1
+            default:
+                break
+            }
+
+            // Check if next command is also a beginMask
+            if index < commands.count {
+                switch commands[index] {
+                case .beginMask, .beginMaskAdd:
+                    continue
+                default:
+                    break
+                }
+            }
+            break
+        }
+
+        guard !ops.isEmpty else { return nil }
+
+        let innerStart = index
+        var depth = ops.count
+        var firstEndMaskIndex: Int?
+
+        // Phase 2: Walk until all scopes are closed
+        while index < commands.count && depth > 0 {
+            switch commands[index] {
+            case .beginMask, .beginMaskAdd:
+                // Nested mask inside a mask-group inner content is unsupported.
+                // This would corrupt innerCommands/endIndex calculation.
+                return nil
+
+            case .endMask:
+                if firstEndMaskIndex == nil {
+                    firstEndMaskIndex = index
+                }
+                depth -= 1
+
+            default:
+                break
+            }
+            index += 1
+        }
+
+        // Verify we found all endMasks
+        guard depth == 0, let innerEnd = firstEndMaskIndex else { return nil }
+
+        // Inner commands are between last beginMask and first endMask
+        let innerCommands = (innerEnd > innerStart) ? Array(commands[innerStart..<innerEnd]) : []
+
+        // Reverse ops to get AE application order (emission was reversed)
+        let opsInAeOrder = Array(ops.reversed())
+
+        return MaskGroupScope(
+            opsInAeOrder: opsInAeOrder,
+            innerCommands: innerCommands,
+            endIndex: index
         )
     }
 
@@ -1123,7 +1224,9 @@ extension MetalRenderer {
                 ctx: ctx,
                 transform: state.currentTransform
             )
-        case .beginMaskAdd:
+        case .beginMask, .beginMaskAdd:
+            // Both new and deprecated mask commands increment depth.
+            // Actual GPU mask rendering will be implemented in PR-C via extraction.
             state.maskDepth += 1
         case .endMask:
             state.maskDepth -= 1

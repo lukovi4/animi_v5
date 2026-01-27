@@ -58,7 +58,7 @@ final class TexturePool {
         )
     }
 
-    /// Acquires a mask texture (r8Unorm) for alpha mask storage.
+    /// Acquires a mask texture (r8Unorm) for alpha mask storage (CPU raster path).
     /// - Parameter size: Texture dimensions in pixels
     /// - Returns: A texture configured for shader read
     func acquireMaskTexture(size: (width: Int, height: Int)) -> MTLTexture? {
@@ -67,6 +67,19 @@ final class TexturePool {
             pixelFormat: .r8Unorm,
             usage: [.shaderRead],
             storageMode: .shared
+        )
+    }
+
+    /// Acquires an R8 texture for GPU mask accumulator or coverage rendering.
+    /// Used for GPU-based mask boolean operations (add/subtract/intersect).
+    /// - Parameter size: Texture dimensions in pixels
+    /// - Returns: A texture configured for render target, shader read, and shader write
+    func acquireR8Texture(size: (width: Int, height: Int)) -> MTLTexture? {
+        acquire(
+            size: size,
+            pixelFormat: .r8Unorm,
+            usage: [.renderTarget, .shaderRead, .shaderWrite],
+            storageMode: .private
         )
     }
 

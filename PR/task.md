@@ -1,335 +1,452 @@
-Да, понял. Ниже — **полное детальное ТЗ** для фикса **“Вариант B (лучший, “навсегда правильный”): глобальные PathID сразу при компиляции”** на базе текущего кода проекта.
+Ниже — **полное техническое задание (ТЗ) “под код”** для интеграции **GPU mask-texture (R8) + boolean ops** так, чтобы:
+
+* **не сломать текущую логику** (track matte + masks работают правильно сейчас),
+* убрать **CPU-raster masks** из “горячего пути”,
+* получить корректные **add/subtract/intersect + inverted** + несколько масок на один слой,
+* корректно работать при **любом масштабе preview** и при **export 1080×1920** (и будущих).
 
 ---
 
-## 0) Цель изменения
+# 1) Цель и ограничения
 
-Сделать так, чтобы:
+## Цель
 
-1. **PathID назначались один раз, детерминированно, на этапе компиляции** Lottie → AnimIR
-2. **Был один Scene-level PathRegistry** (на сцену), без “склейки” на рантайме и без дублирования данных между AnimIR
-3. **Switch variant на лету** работал без пересборки registry / без re-registerPaths
-4. Убрать “размазанную ответственность”: сейчас часть логики “глобализации PathID” живёт в `ScenePlayer.compile`, часть — в `AnimIR.registerPaths(into:)`, плюс есть вводящая в заблуждение `SceneRuntime.mergedPathRegistry`.
+Заменить текущий CPU fallback для masks на **GPU-генерацию маски** в `R8Unorm` текстуру и **комбинирование boolean ops** (AE mask modes) на GPU, затем применять маску при композите.
 
----
+## Важно сохранить
 
-## 1) Проблема текущей реализации (что фиксируем)
+1. **Track matte pipeline** (alpha/alpha inverted + luma/luma inverted) должен продолжить работать **без изменений поведения**.
+2. Существующая “маска как scope” (`beginMask…` → inner → `endMask`) должна продолжить корректно работать в render-graph (в т.ч. вложенности/группы/трансформ-стек).
 
-### 1.1 Дублирование ответственности
+## Вне скоупа (сейчас)
 
-Сейчас `ScenePlayer.compile()` создаёт `mergedPathRegistry` и делает:
-
-* компилирует каждый `AnimIR` (без pathId)
-* затем **вторым проходом** вызывает `animIR.registerPaths(into: &mergedPathRegistry)` для всех variants всех blocks
-* при этом `AnimIR.registerPaths(into:)` **в конце делает `pathRegistry = registry`**, то есть **каждый AnimIR начинает хранить внутри себя ссылочно/структурно “весь merged registry”**, что:
-
-  * размножает данные (структурно копируется массив `paths`, т.к. `struct`)
-  * создаёт путаницу: “чей” registry? сцены или анимации?
-
-### 1.2 SceneRuntime.mergedPathRegistry сейчас неправильный
-
-`SceneRuntime.mergedPathRegistry` прямо говорит TODO и фактически берёт только selectedVariant, что **ломает** идею “один registry для всей сцены”.
+* Feather/blur для masks (можно оставить расширяемость, но не реализовывать).
+* Глобальная замена shape CPU-raster на GPU (можно позже; сейчас делаем только masks).
 
 ---
 
-## 2) Новый контракт (итоговая архитектура)
+# 2) Текущее состояние в коде (куда встраиваемся)
 
-### 2.1 Единственный источник правды для paths
+## Где сейчас “болит” CPU-raster
 
-* **`ScenePlayer`** (или будущий `SceneCompiler`) хранит:
+* `TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift`
 
-  * `blockRuntimes`
-  * **`mergedPathRegistry: PathRegistry`** — один на сцену
+  * `renderMaskScope(...)`:
 
-### 2.2 AnimIR больше НЕ владеет PathRegistry
+    * рендерит innerCommands в offscreen `contentTex`
+    * потом делает `maskCache.texture(...)` → это CPU-raster через `MaskRasterizer`
+    * потом `compositeWithStencilMask(...)` (stencil-проходы)
+* `TVECore/Sources/TVECore/MetalRenderer/MaskRasterizer.swift` — CoreGraphics raster.
+* `TVECore/Sources/TVECore/MetalRenderer/MaskCache.swift` — кэш CPU-raster текстур.
 
-* `AnimIR` по-прежнему содержит `mask.pathId` и `shapeGroup.pathId`
-* но **не хранит внутри себя `pathRegistry.paths`** (допустимо оставить поле, но оно должно быть пустым/локальным и не использоваться в рендере)
-* Рендер (`MetalRenderer`) получает **scene-level registry** всегда извне.
+## Что сейчас по mask-модам
 
----
-
-## 3) Требования (MUST)
-
-### MUST-1: Глобальные PathID при компиляции
-
-`PathID` назначается в момент построения `Mask` и `ShapeGroup` (matte shapes) внутри компилятора.
-
-### MUST-2: Детерминированность
-
-Одинаковый вход → одинаковые PathID.
-Детерминированный порядок регистрации:
-
-* порядок mediaBlocks из `scene.json`
-* внутри блока — порядок variants
-* внутри анимации — порядок layers/masks как в JSON
-* precomps — как сейчас: компилируются из `lottie.assets` (в порядке JSON)
-
-### MUST-3: Variant switch без пересборки registry
-
-Переключение variants не требует `registerPaths()`, не требует мерджа, PathID уже валидны в общем registry сцены.
-
-### MUST-4: Никаких post-pass registerPaths в ScenePlayer
-
-`ScenePlayer.compile()` **не делает** второго прохода с `registerPaths`.
-
-### MUST-5: Ошибка вместо “тихого игнора” (рекомендовано как релизное поведение)
-
-Если маска/shapeMatte присутствует, но `PathResourceBuilder.build(...)` вернул `nil` (топология/триангуляция/мало вершин) — **компиляция должна падать** (иначе мы молча потеряем маску и получим неверный рендер).
+* `RenderCommand` поддерживает только `.beginMaskAdd(...)` / `.endMask` (см. `TVECore/Sources/TVECore/RenderGraph/RenderCommand.swift`).
+* `AnimIR` при генерации команд эмитит **несколько beginMaskAdd** для layer.masks, и потом **LIFO endMask** (см. `TVECore/Sources/TVECore/AnimIR/AnimIR.swift`).
+* `AnimIRTypes.MaskMode` сейчас только `add` (см. `TVECore/Sources/TVECore/AnimIR/AnimIRTypes.swift`).
 
 ---
 
-## 4) Изменения API и кода (по файлам)
+# 3) Новая архитектура (как должно работать)
 
-### 4.1 `AnimIRCompiler` — расширить сигнатуру compile
+## 3.1 Высокоуровневая схема
 
-**Файл:** `TVECore/Sources/TVECore/AnimIR/AnimIRCompiler.swift`
+Для каждого mask-scope (на уровне RenderCommand исполнения):
 
-#### Было:
+1. **Собрать список всех масок**, которые должны применяться к одному и тому же innerCommands (в порядке AE).
+2. Посчитать **bbox** объединения масок в пикселях **target** (с учётом animToViewport и текущего transform стека), затем пересечь с текущим scissor (clipStack).
+3. На GPU:
+
+   * построить `maskAccumTex` (`R8Unorm`, размер = bbox)
+   * для каждой маски по очереди:
+
+     * нарисовать `coverageTex` (`R8Unorm`) треугольниками PathResource (с учётом анимации пути на кадре)
+     * если inverted → инвертировать coverage
+     * умножить coverage на opacity
+     * применить boolean op к `maskAccumTex` (add/subtract/intersect)
+4. Отрендерить innerCommands в `contentTex` (желательно с scissor=bbox для экономии fillrate).
+5. Скомпозить `contentTex` в target **с применением `maskAccumTex`** (alpha multiply / premultiplied корректно), с учётом scissor.
+
+## 3.2 Почему НЕ stencil в финале
+
+Stencil-clip ломает “мягкое” покрытие (AA/coverage), потому что превращает маску в бинарный тест.
+Для будущего качества (и чтобы не спорить с AA) — **применяем maskTex в фрагменте** (умножение alpha), без stencil.
+
+---
+
+# 4) Изменения в данных и RenderCommand (чтобы поддержать все mask modes)
+
+## 4.1 AnimIRTypes: расширить MaskMode
+
+Файл: `TVECore/Sources/TVECore/AnimIR/AnimIRTypes.swift`
+
+Сделать:
+
+* `public enum MaskMode: String` добавить:
+
+  * `add` (уже есть)
+  * `subtract`
+  * `intersect`
+    (и если нужно на будущее — `none`, но сейчас не обязательно)
+
+Маппинг из Lottie/AE строк (важно для совместимости bodymovin):
+
+* add: `"a"`
+* subtract: `"s"`
+* intersect: `"i"`
+* (если встречается в ваших json ещё что-то — добавить с явной ошибкой компиляции/валидации)
+
+## 4.2 RenderCommand: новый beginMask, поддержка mode + inverted
+
+Файл: `TVECore/Sources/TVECore/RenderGraph/RenderCommand.swift`
+
+Заменить/расширить:
+
+* было: `.beginMaskAdd(pathId:opacity:frame:)`
+* станет: `.beginMask(mode: MaskMode, inverted: Bool, pathId: PathID, opacity: Double, frame: Double)`
+* `.endMask` оставить.
+
+**Важно:** старый `.beginMaskAdd` можно оставить временно как deprecated, но **execution** должен работать через новый кейс.
+(Иначе вы навсегда застрянете в add-only.)
+
+## 4.3 AnimIR.renderCommands: порядок масок (чтобы соответствовать AE)
+
+Файл: `TVECore/Sources/TVECore/AnimIR/AnimIR.swift`
+
+Сейчас вы эмитите masks в прямом порядке и закрываете LIFO — это даёт эффект “AND” только для add и ломает порядок для subtract/intersect.
+
+Нужно:
+
+* эмитить beginMask **в обратном порядке** массива `layer.masks`, чтобы применение шло как в AE:
+
+  * begin maskN
+  * begin maskN-1
+  * …
+  * begin mask1
+  * content
+  * end x N
+
+Так внутренний (последний begin) применяется первым → итоговый порядок применения становится 1..N (как в AE).
+
+И вместо `beginMaskAdd` использовать `beginMask(mode:inverted:pathId:opacity:frame:)`.
+
+---
+
+# 5) Extraction: собрать “MaskGroupScope”, а не один mask scope
+
+Сейчас:
+
+* `extractMaskScope(from:startIndex:)` возвращает `MaskScope` только для **одного beginMask** и innerCommands содержит остальные beginMask → фактически строится каскад offscreen-композитов.
+
+Нужно заменить на extraction, которая **схлопывает вложенные маски** в один “групповой” scope.
+
+Файл: `TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift`
+
+## 5.1 Новая структура
 
 ```swift
-public func compile(lottie: LottieJSON, animRef: String, bindingKey: String, assetIndex: AssetIndex) throws -> AnimIR
+struct MaskOp {
+  let mode: MaskMode
+  let inverted: Bool
+  let pathId: PathID
+  let opacity: Double
+  let frame: Double
+}
+
+struct MaskGroupScope {
+  let startIndex: Int
+  let endIndex: Int
+  let opsInAeOrder: [MaskOp]   // 1..N
+  let innerCommands: [RenderCommand] // без mask-wrapper
+}
 ```
 
-#### Стало (MUST):
+## 5.2 Правило схлопывания
 
-```swift
-public func compile(
-    lottie: LottieJSON,
-    animRef: String,
-    bindingKey: String,
-    assetIndex: AssetIndex,
-    pathRegistry: inout PathRegistry
-) throws -> AnimIR
-```
+Если scope выглядит так:
 
-**Смысл:** compiler получает scene-level registry (общий для всех variants/blocks) и **в процессе компиляции** регистрирует туда все пути, выставляя `pathId` в masks и shapeGroup.
+* beginMask(X)
 
----
+  * beginMask(Y)
 
-### 4.2 Компиляция masks с назначением pathId
+    * beginMask(Z)
 
-**Файл:** `AnimIRCompiler.swift`
+      * inner content...
+    * endMask
+  * endMask
+* endMask
 
-#### Было:
+Extraction должна:
 
-```swift
-private func compileMasks(from lottieMasks: [LottieMask]?) -> [Mask]
-```
+* собрать ops: `[Z, Y, X]` (в порядке применения)
+* innerCommands = “самый внутренний контент без mask-обёрток”.
 
-#### Стало:
+Это даёт возможность:
 
-```swift
-private func compileMasks(
-    from lottieMasks: [LottieMask]?,
-    animRef: String,
-    layerName: String,
-    pathRegistry: inout PathRegistry
-) throws -> [Mask]
-```
-
-#### Логика (MUST):
-
-Для каждой `Mask(from:)`:
-
-1. Собрали `Mask` (с `path: AnimPath`, `pathId == nil`)
-2. Построили `PathResource`:
-
-   * `PathResourceBuilder.build(from: mask.path, pathId: PathID(0))` (id всё равно перепишется внутри `register`)
-3. Если build вернул nil → **throw UnsupportedFeature**
-
-   * code: `"MASK_PATH_BUILD_FAILED"`
-   * message: “Cannot triangulate/flatten mask path (topology mismatch or too few vertices)”
-   * path: `"anim(\(animRef)).layer(\(layerName)).mask[\(index)]"`
-4. Зарегистрировали:
-
-   * `let assignedId = pathRegistry.register(resource)`
-5. Положили:
-
-   * `mask.pathId = assignedId`
-
-> Примечание: `PathRegistry.register()` сам проставляет id = index. Поэтому в builder можно передавать `PathID(0)`.
+* сделать **один** `contentTex`
+* сделать **один** `maskAccumTex`
+* сделать **один** composite.
 
 ---
 
-### 4.3 Компиляция shapeMatte (матт-источник) с назначением pathId
+# 6) GPU pipeline: текстуры, шейдеры, compute boolean ops
 
-**Файл:** `AnimIRCompiler.swift`
+## 6.1 Новые ресурсы/пулы текстур
 
-Сейчас `compileContent` делает:
+Файл: `TVECore/Sources/TVECore/MetalRenderer/TexturePool.swift` (или где у вас pool; в snapshot видно `texturePool.acquireColorTexture(...)` и `acquireStencilTexture(...)` — расширяем там же)
 
-* `ShapePathExtractor.extractAnimPath(...)`
-* создаёт `ShapeGroup(animPath:..., pathId:nil)`
+Добавить:
 
-#### Изменение (MUST):
+* `acquireR8Texture(size: (w,h)) -> MTLTexture?`
+* (опционально) `acquireR8TextureMSAA(size, sampleCount:4)` если решите AA через MSAA.
 
-`compileContent` должен принимать `pathRegistry` и при `.shapeMatte`:
+Требования:
 
-* если `animPath != nil`:
+* `pixelFormat = .r8Unorm`
+* `usage = [.renderTarget, .shaderRead, .shaderWrite]` (shaderWrite если compute пишет напрямую)
+* storageMode: `.private`
 
-  * build resource `PathResourceBuilder.build(from: animPath, pathId: PathID(0))`
-  * если nil → throw UnsupportedFeature
+## 6.2 Шейдеры
 
-    * code: `"MATTE_PATH_BUILD_FAILED"`
-    * path: `"anim(\(animRef)).layer(\(layerName)).shapeMatte"`
-  * `shapeGroup.pathId = pathRegistry.register(resource)`
+Файл: `TVECore/Sources/TVECore/MetalRenderer/MetalRendererResources.swift` (там уже `shaderSource` строка)
 
-Сигнатура:
+Нужно добавить:
 
-```swift
-private func compileContent(
-    from lottie: LottieLayer,
-    layerType: LayerType,
-    animRef: String,
-    layerName: String,
-    pathRegistry: inout PathRegistry
-) throws -> LayerContent
-```
+### A) Coverage render (рисуем треугольники пути в R8)
 
----
+* vertex: принимает `float2 position` (в **anim space** или уже в viewport px — выберите одно и зафиксируйте)
+* uniform: `mvp` (как сейчас для quad), плюс опционально `coverageScale` (opacity)
+* fragment: возвращает `float`/`half` = coverage (обычно 1.0 * opacity)
 
-### 4.4 Протянуть registry в compileLayer / compileLayers / compile
+PipelineState:
 
-**Файл:** `AnimIRCompiler.swift`
+* colorAttachment pixelFormat: `.r8Unorm`
+* blending: выключено (перерисовка = 1.0)
+* depth/stencil: не нужен
 
-* `compile(...)` принимает `inout PathRegistry`
-* `compileLayers(...)` принимает `inout PathRegistry`
-* `compileLayer(...)` принимает `inout PathRegistry`
+### B) Masked composite (умножение контента на mask)
 
-И использует:
+Новый fragment:
 
-* `compileMasks(..., pathRegistry: &pathRegistry)`
-* `compileContent(..., pathRegistry: &pathRegistry)`
+* texture0 = contentTex (bgra)
+* texture1 = maskAccumTex (r8)
+* sample mask → `mask = mask.r`
+* output = content * mask (в premultiplied логике: rgb и a умножить на mask)
 
----
+PipelineState:
 
-### 4.5 `AnimIR.registerPaths()` — больше не используется
+* colorAttachment как основной рендер (`bgra8Unorm`)
+* blending как сейчас (premultiplied)
 
-**Файл:** `TVECore/Sources/TVECore/AnimIR/AnimIR.swift`
+### C) Compute kernel: boolean combine
 
-Варианты действий (выбрать релизно-оптимальный):
+Compute shader, который читает:
 
-**MUST (для Part 1 релиза):**
+* `maskAccumTex` (read-write)
 
-* `ScenePlayer` больше не вызывает `registerPaths` вообще.
-* `registerPaths` можно оставить для тестов/отладки, но:
+* `coverageTex` (read)
+  и применяет op:
 
-  * **убрать строку `pathRegistry = registry`** в `registerPaths(into:)` (иначе мы снова “заливаем” в AnimIR глобальный registry).
-  * либо сделать поведение: `pathRegistry` остаётся локальным и содержит только локальные paths (но локальные ids тогда не должны конфликтовать — это отдельная тема).
+* add: `acc = max(acc, cov)`
 
-**Рекомендую релизное правило:**
+* subtract: `acc = acc * (1 - cov)`
 
-* `AnimIR.pathRegistry` считается **deprecated/unused** в сценовом пайплайне.
-* `AnimIR.registerPaths()` оставить только для unit-тестов “одной анимации” (и там он может регистрировать в `self.pathRegistry`, а НЕ в внешний).
+* intersect: `acc = min(acc, cov)`
+
+Важно: “инициализация acc” зависит от первого op (см. 6.3).
 
 ---
 
-### 4.6 `ScenePlayer.compile()` — единый registry, без post-pass
+## 6.3 Инициализация maskAccum (важно для корректности первого SUBTRACT)
 
-**Файл:** `TVECore/Sources/TVECore/ScenePlayer/ScenePlayer.swift`
+AE-логика по сути применяет маски “на пустом или полном” в зависимости от первого режима.
 
-#### Было:
+Правило:
 
-* компиляция variants
-* потом отдельный проход `registerPaths(into: &mergedPathRegistry)`
+* если первая маска `subtract` → стартовое acc = 1.0
+* иначе → стартовое acc = 0.0
 
-#### Стало (MUST):
+Реализация:
 
-1. В начале `compile()`:
+* при старте построения `maskAccumTex`:
 
-```swift
-var mergedPathRegistry = PathRegistry()
-```
-
-2. При компиляции каждого variant вызывать:
-
-```swift
-let animIR = try compiler.compile(..., pathRegistry: &mergedPathRegistry)
-```
-
-3. После компиляции всех блоков:
-
-* `self.mergedPathRegistry = mergedPathRegistry`
-
-4. Полностью удалить блок:
-
-```swift
-for i in 0..<blockRuntimes.count { ... registerPaths ... }
-```
+  * clear = 1.0 если first == subtract
+  * clear = 0.0 иначе
 
 ---
 
-### 4.7 Убрать/починить `SceneRuntime.mergedPathRegistry`
+# 7) Sampling PathResource на кадре (без BezierPath)
 
-**Файл:** `TVECore/Sources/TVECore/ScenePlayer/ScenePlayerTypes.swift`
+Сейчас `samplePath(resource:frame:)` делает CPU интерполяцию positions и превращает в BezierPath.
 
-Сейчас там неверная реализация + TODO.
+Для GPU coverage вам нужно **positions[] и indices[]**.
 
-**MUST:**
+Сделать новую функцию в `MetalRenderer+Execute.swift`:
 
-* удалить `public var mergedPathRegistry: PathRegistry` из `SceneRuntime` целиком
-  **или**
-* сделать его строгим прокси к тому, что реально собрал `ScenePlayer` (но сейчас `SceneRuntime` не хранит registry).
+* `samplePathPositions(resource: PathResource, frame: Double) -> [Float]?`
 
-Самый чистый релизный вариант: **удалить**, чтобы не было двух “источников правды”.
+  * та же логика, что в `samplePath`, только возвращает flattened `[x0,y0,...]`
+* `indices` берём из `resource.indices`
 
----
-
-## 5) Изменения тестов (обязательно)
-
-### 5.1 Тесты, которые сейчас делают `ir.registerPaths()`
-
-Найдено в проекте:
-
-* `TestProfileTransformsTests.swift`
-* `MetalRendererAnimatedMatteMorphTests.swift`
-* возможно и другие
-
-**Новый паттерн:**
-
-```swift
-var registry = PathRegistry()
-let ir = try compiler.compile(..., pathRegistry: &registry)
-// НЕ вызываем registerPaths()
-let commands = ir.renderCommands(...)
-renderer.draw(..., pathRegistry: registry)
-```
-
-### 5.2 Добавить новый unit-тест на “глобальность id”
-
-**Новый тест (MUST):** `GlobalPathIdTests`
-
-Сценарий:
-
-* компилируем **две** разные анимации с масками в **один** `registry`
-* проверяем:
-
-  * все `mask.pathId` не nil
-  * ids второй анимации **не начинаются с 0**, а идут дальше (или хотя бы `maxId(anim1) < minId(anim2)` при детерминированном порядке компиляции)
+Так вы не зависите от `BezierPath` и не теряете triangulation.
 
 ---
 
-## 6) Acceptance Criteria (DoD)
+# 8) Bounding box и scissor (обязательное ускорение + корректность на preview scale)
 
-Готово, если:
+## 8.1 Как считать bbox
 
-1. `ScenePlayer.compile()` компилирует сцену **без** вызовов `registerPaths()`.
-2. `mergedPathRegistry.count > 0` для сцен с масками/маттами.
-3. У всех `Mask` в поддержанном subset `mask.pathId != nil`.
-4. У shape matte источников (LayerType.shapeMatte) `shapeGroup.pathId != nil`.
-5. Переключение variant не требует пересборки registry (никаких side effects).
-6. Тесты обновлены и проходят.
-7. В профиле памяти:
+Для каждой maskOp:
 
-   * нет N-кратного копирования `paths` внутри каждого `AnimIR`.
+* берём `positions` на кадре
+* прогоняем через transform:
+
+  * `pathToViewportPx = ctx.animToViewport.concatenating(currentTransform)`
+    (как сейчас делаете для CPU raster)
+* считаем min/max по всем вершинам
+* объединяем bbox всех масок
+
+Потом:
+
+* clamp bbox к `target.sizePx`
+* расширить bbox на 1–2 px (чтобы не обрезать AA по краю)
+* пересечь bbox со `currentScissor` (если clipStack активен)
+
+Если bbox пустой:
+
+* если итоговая маска по логике должна быть “пустая” → пропускаем композит
+* если по логике должна быть “полная” (например subtract единственной маской с пустым coverage) → просто композитим content как есть
+  (это редкие edge cases, но их надо описать и обработать детерминированно)
+
+## 8.2 Рендер в bbox-локальную текстуру
+
+`maskAccumTex` и `coverageTex` имеют размер bbox.
+
+Нужна матрица:
+
+* anim → viewportPx (как раньше)
+* viewportPx → bboxLocalPx (translate -bboxMin)
+* bboxLocalPx → NDC (через `GeometryMapping.viewportToNDC(width:bboxW,height:bboxH)`)
+
+Именно эту MVP использовать в coverage pipeline.
 
 ---
 
-## 7) Доп. замечания для “финального релизного” качества
+# 9) Изменения в исполнителе MetalRenderer
 
-* Если сейчас где-то ещё используется `animIR.pathRegistry` (кроме тестов) — это баг, нужно перейти на scene-level registry.
-* `AnimIR.registerPaths(into:)` в текущем виде опасен именно строкой `pathRegistry = registry` — она почти гарантированно вернёт проблему дублирования.
+Файл: `TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift`
+
+## 9.1 Заменить renderMaskScope на renderMaskGroupScope
+
+Новый метод:
+
+`func renderMaskGroupScope(scope: MaskGroupScope, ctx: MaskScopeContext, inheritedState: ExecutionState) throws`
+
+Шаги:
+
+1. собрать ops, sample positions для bbox
+2. создать `maskAccumTex`, `coverageTex` (из pool)
+3. clear `maskAccumTex` стартовым значением (см. 6.3)
+4. для каждой op:
+
+   * нарисовать coverageTex (clear=0)
+   * если inverted: в coverage fragment можно сделать `cov = 1 - cov` или отдельный compute-pass; проще — во fragment.
+   * coverage *= opacity
+   * compute combine → maskAccumTex
+5. отрендерить innerCommands в `contentTex` (желательно с scissor=bbox∩currentScissor)
+6. composite contentTex → target с maskAccumTex (masked fragment), scissor= currentScissor (или bbox∩currentScissor)
+
+## 9.2 Не трогать Matte
+
+`renderMatteScope(...)` / `compositeWithMatte(...)` оставить как есть, только убедиться, что новая mask логика не конфликтует со state stacks.
 
 ---
 
-Если хочешь — я могу **сразу сформулировать конкретный PR-план** (по коммитам/порядку правок) и чеклист ревью для программиста, чтобы ты просто отправила ему “делай 1→2→3” и потом мы жёстко прогнали по DoD.
+# 10) Backward compatibility / безопасный rollout
+
+Добавить в `MetalRendererOptions` (файл `MetalRenderer.swift` или где у вас options):
+
+* `maskBackend: MaskBackend = .gpuTextureOps`
+  где:
+* `.gpuTextureOps` — новый путь
+* `.cpuRasterStencil` — старый путь (оставить как fallback на время релиза)
+
+В `renderMask…` выбирать по опции.
+
+---
+
+# 11) Тесты и критерии приёмки
+
+## 11.1 Обновить/добавить unit+integration тесты
+
+Файл: `TVECore/Tests/TVECoreTests/MetalRendererMaskTests.swift`
+
+Добавить тесты:
+
+1. **ADD**: белый квадрат, маска-квадрат → внутри видно, снаружи прозрачно.
+2. **SUBTRACT**: старт “полный” и вычесть квадрат → снаружи видно, внутри пусто.
+3. **INTERSECT**: две add/intersect маски (например пересечение двух прямоугольников) → видна только общая область.
+4. **INVERTED** для каждого mode (минимум для add и subtract).
+5. **Несколько масок на один слой** с цепочкой режимов (add → subtract → intersect) и проверкой пары пикселей.
+6. **Маска + matte**: слой под matte scope содержит masks — результат стабилен (не ломаем матты).
+
+## 11.2 Критерии приёмки (must)
+
+* Ни один существующий тест не должен начать флапать.
+* Сцены из TestAssets, где “masks/mattes сейчас правильно”, должны давать **визуально тот же результат** (побайтно сравнивать можно позже; сейчас хотя бы pixel probes + golden images).
+* В профайле:
+
+  * не должно быть CoreGraphics raster в hot path (MaskRasterizer не вызывается при `.gpuTextureOps`)
+  * время кадра при множественных масках не деградирует относительно текущего “CPU-raster + stencil”, и должно улучшиться на реальных сценах с анимированными масками.
+
+---
+
+# 12) Edge cases (чтобы у разработчика “не было вопросов”)
+
+1. **Пустой path / degenerate (vertexCount < 3)**:
+
+   * для add/intersect: coverage = 0
+   * для subtract при старте acc=1: `acc = 1 * (1 - 0) = 1` (т.е. не влияет)
+2. **Opacity=0**: mask-op не влияет.
+3. **Opacity<1**:
+
+   * add: даёт частичное покрытие (если вы делаете coverage=1*opacity)
+   * subtract: вычитает частично (acc*=1-cov) — корректно и расширяемо
+4. **Current scissor**:
+
+   * bbox обязательно пересекать с scissor
+   * если пересечение пустое — можно early exit
+5. **Preview scale**:
+
+   * bbox считается в пикселях текущего target
+   * никаких “привязок” к 1080×1920 в preview
+6. **Export 1080×1920**:
+
+   * target фиксированный, bbox работает так же
+7. **Детерминизм**:
+
+   * никакой зависимости от UIScreen scale внутри оффскрина (как сейчас у вас в `RenderTarget.drawableScale` — использовать только там, где нужно)
+
+---
+
+# 13) Список конкретных файлов, которые будут затронуты
+
+**Обязательные:**
+
+* `TVECore/Sources/TVECore/RenderGraph/RenderCommand.swift` — новый beginMask (mode+inverted).
+* `TVECore/Sources/TVECore/AnimIR/AnimIRTypes.swift` — MaskMode add/subtract/intersect.
+* `TVECore/Sources/TVECore/AnimIR/AnimIR.swift` — эмит масок в обратном порядке + новый beginMask.
+* `TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift` — extraction в MaskGroupScope + renderMaskGroupScope + GPU sampling positions + bbox.
+* `TVECore/Sources/TVECore/MetalRenderer/MetalRendererResources.swift` — новые shaders + pipeline states + compute pipeline.
+
+**Желательные:**
+
+* `TVECore/Sources/TVECore/MetalRenderer/MaskRasterizer.swift`, `MaskCache.swift` — оставить как fallback/для дебага, но убрать из default-path.
+
+**Тесты:**
+
+* `TVECore/Tests/TVECoreTests/MetalRendererMaskTests.swift` — расширить кейсы на modes/invert/цепочки.
+
+---
+
+Если хочешь, я могу дополнить это ТЗ **прямо “по вашему стилю PR”**: разложить на 3 PR’а (infra/shaders → command+compiler → renderer+tests) и написать чек-лист ревью для каждого PR (что именно я буду проверять как техлид).

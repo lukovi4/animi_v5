@@ -139,15 +139,16 @@ public struct MatteInfo: Sendable, Equatable {
 
 // MARK: - Mask Mode
 
-/// Mask modes supported in Part 1 (only add)
+/// Mask boolean operation modes matching AE/Lottie mask operations.
+/// Used for GPU mask accumulation: each mode defines how coverage
+/// is combined with the accumulator texture.
 public enum MaskMode: String, Sendable, Equatable {
+    /// Additive mask: result = max(accumulator, coverage)
     case add = "a"
-
-    /// Creates MaskMode from Lottie mode string
-    public init?(lottieMode: String?) {
-        guard let mode = lottieMode else { return nil }
-        self.init(rawValue: mode)
-    }
+    /// Subtractive mask: result = accumulator * (1 - coverage)
+    case subtract = "s"
+    /// Intersect mask: result = min(accumulator, coverage)
+    case intersect = "i"
 }
 
 // MARK: - Layer

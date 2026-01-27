@@ -221,19 +221,19 @@ final class NestedPrecompPropagationTests: XCTestCase {
     // MARK: - Test 4: Mask on Precomp Wraps Subtree
 
     /// Verifies that mask on precomp layer wraps the entire subtree
-    /// DrawImage should be between BeginMaskAdd and EndMask
+    /// DrawImage should be between BeginMask and EndMask
     func testMaskOnPrecompWrapsSubtree() throws {
         var ir = try loadAnimIR("anim-nested-1.json")
         let commands = ir.renderCommands(frameIndex: 30)
 
-        // Find indices of BeginMaskAdd, DrawImage, and EndMask
+        // Find indices of BeginMask (or legacy BeginMaskAdd), DrawImage, and EndMask
         var beginMaskIndex: Int?
         var drawImageIndex: Int?
         var endMaskIndex: Int?
 
         for (index, command) in commands.enumerated() {
             switch command {
-            case .beginMaskAdd:
+            case .beginMask, .beginMaskAdd:
                 if beginMaskIndex == nil { beginMaskIndex = index }
             case .drawImage:
                 if drawImageIndex == nil { drawImageIndex = index }
@@ -244,12 +244,12 @@ final class NestedPrecompPropagationTests: XCTestCase {
             }
         }
 
-        XCTAssertNotNil(beginMaskIndex, "BeginMaskAdd should be present")
+        XCTAssertNotNil(beginMaskIndex, "BeginMask should be present")
         XCTAssertNotNil(drawImageIndex, "DrawImage should be present")
         XCTAssertNotNil(endMaskIndex, "EndMask should be present")
 
         if let begin = beginMaskIndex, let draw = drawImageIndex, let end = endMaskIndex {
-            XCTAssertLessThan(begin, draw, "BeginMaskAdd should come before DrawImage")
+            XCTAssertLessThan(begin, draw, "BeginMask should come before DrawImage")
             XCTAssertLessThan(draw, end, "DrawImage should come before EndMask")
         }
     }

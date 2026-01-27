@@ -414,13 +414,21 @@ extension AnimIR {
         commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))"))
         commands.append(.pushTransform(resolved.worldMatrix))
 
-        // Masks begin - only emit for masks with registered pathId
+        // Masks begin - emit in REVERSE order for correct AE application order.
+        // AE applies masks top-to-bottom (index 0 first). With LIFO-nested structure,
+        // reversed emission ensures masks are applied in AE order after unwrapping.
         var emittedMaskCount = 0
-        for mask in layer.masks {
+        for mask in layer.masks.reversed() {
             if let pathId = mask.pathId {
                 // Normalize opacity from 0..100 to 0..1, clamped
                 let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
-                commands.append(.beginMaskAdd(pathId: pathId, opacity: normalizedOpacity, frame: context.frame))
+                commands.append(.beginMask(
+                    mode: mask.mode,
+                    inverted: mask.inverted,
+                    pathId: pathId,
+                    opacity: normalizedOpacity,
+                    frame: context.frame
+                ))
                 emittedMaskCount += 1
             }
         }

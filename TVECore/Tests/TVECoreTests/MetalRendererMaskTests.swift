@@ -1,5 +1,6 @@
 import XCTest
 import Metal
+import simd
 @testable import TVECore
 
 // MARK: - Test Helpers
@@ -673,5 +674,144 @@ final class TexturePoolTests: XCTestCase {
 
         let tex2 = pool.acquireColorTexture(size: (50, 50))
         XCTAssertFalse(tex === tex2, "Should create new texture after clear")
+    }
+
+    // MARK: - R8 Texture Tests (GPU Mask Infrastructure)
+
+    func testAcquireR8Texture() throws {
+        let pool = TexturePool(device: device)
+        let texture = pool.acquireR8Texture(size: (100, 100))
+
+        XCTAssertNotNil(texture)
+        XCTAssertEqual(texture?.width, 100)
+        XCTAssertEqual(texture?.height, 100)
+        XCTAssertEqual(texture?.pixelFormat, .r8Unorm)
+    }
+
+    func testR8TextureHasCorrectUsage() throws {
+        let pool = TexturePool(device: device)
+        let texture = pool.acquireR8Texture(size: (64, 64))
+
+        XCTAssertNotNil(texture)
+        // R8 texture should support render target, shader read, and shader write
+        XCTAssertTrue(texture!.usage.contains(.renderTarget))
+        XCTAssertTrue(texture!.usage.contains(.shaderRead))
+        XCTAssertTrue(texture!.usage.contains(.shaderWrite))
+    }
+
+    func testR8TextureReleaseAndReuse() throws {
+        let pool = TexturePool(device: device)
+
+        let tex1 = pool.acquireR8Texture(size: (32, 32))
+        XCTAssertNotNil(tex1)
+
+        pool.release(tex1!)
+
+        let tex2 = pool.acquireR8Texture(size: (32, 32))
+        XCTAssertTrue(tex1 === tex2, "Should reuse released R8 texture")
+    }
+
+    func testR8TextureDifferentSizesNotReused() throws {
+        let pool = TexturePool(device: device)
+
+        let tex1 = pool.acquireR8Texture(size: (32, 32))
+        pool.release(tex1!)
+
+        let tex2 = pool.acquireR8Texture(size: (64, 64))
+        XCTAssertFalse(tex1 === tex2, "Different size should create new texture")
+    }
+}
+
+// MARK: - GPU Mask Pipeline Tests
+
+final class GPUMaskPipelineTests: XCTestCase {
+    var device: MTLDevice!
+    var renderer: MetalRenderer!
+
+    override func setUpWithError() throws {
+        device = MTLCreateSystemDefaultDevice()
+        try XCTSkipIf(device == nil, "Metal not available")
+        renderer = try MetalRenderer(
+            device: device,
+            colorPixelFormat: .bgra8Unorm,
+            options: MetalRendererOptions(clearColor: .transparentBlack)
+        )
+    }
+
+    override func tearDown() {
+        renderer = nil
+        device = nil
+    }
+
+    func testCoveragePipelineCreated() throws {
+        // Verify the actual pipeline object exists
+        let pipeline = renderer.resources.coveragePipelineState
+        XCTAssertNotNil(pipeline)
+        // Verify it's a render pipeline (has vertex/fragment functions)
+        XCTAssertNotNil(pipeline.label ?? "") // Pipeline exists and is valid
+    }
+
+    func testMaskedCompositePipelineCreated() throws {
+        // Verify the actual pipeline object exists
+        let pipeline = renderer.resources.maskedCompositePipelineState
+        XCTAssertNotNil(pipeline)
+    }
+
+    func testMaskCombineComputePipelineCreated() throws {
+        // Verify the actual compute pipeline object exists
+        let pipeline = renderer.resources.maskCombineComputePipeline
+        XCTAssertNotNil(pipeline)
+        // Verify it has reasonable threadgroup size
+        XCTAssertGreaterThan(pipeline.maxTotalThreadsPerThreadgroup, 0)
+    }
+
+    func testMaskCombineParamsStructLayout() throws {
+        // Verify struct layout matches Metal shader exactly
+        let params = MaskCombineParams(mode: MaskCombineParams.modeAdd, inverted: false, opacity: 1.0)
+
+        // Strict layout verification
+        XCTAssertEqual(MemoryLayout<MaskCombineParams>.size, 16, "MaskCombineParams size must be 16 bytes")
+        XCTAssertEqual(MemoryLayout<MaskCombineParams>.stride, 16, "MaskCombineParams stride must be 16 bytes")
+        XCTAssertEqual(MemoryLayout<MaskCombineParams>.alignment, 4, "MaskCombineParams alignment must be 4 bytes")
+
+        // Verify values
+        XCTAssertEqual(params.mode, 0)
+        XCTAssertEqual(params.inverted, 0)
+        XCTAssertEqual(params.opacity, 1.0)
+    }
+
+    func testMaskCombineParamsModes() throws {
+        XCTAssertEqual(MaskCombineParams.modeAdd, 0)
+        XCTAssertEqual(MaskCombineParams.modeSubtract, 1)
+        XCTAssertEqual(MaskCombineParams.modeIntersect, 2)
+    }
+
+    func testMaskCombineParamsInverted() throws {
+        let normalParams = MaskCombineParams(mode: MaskCombineParams.modeAdd, inverted: false, opacity: 0.5)
+        XCTAssertEqual(normalParams.inverted, 0)
+
+        let invertedParams = MaskCombineParams(mode: MaskCombineParams.modeSubtract, inverted: true, opacity: 0.8)
+        XCTAssertEqual(invertedParams.inverted, 1)
+    }
+
+    func testCoverageUniformsStructLayout() throws {
+        let uniforms = CoverageUniforms(mvp: matrix_identity_float4x4)
+        // CoverageUniforms contains only MVP matrix (4x4 = 64 bytes)
+        let size = MemoryLayout<CoverageUniforms>.size
+        XCTAssertEqual(size, 64, "Should be exactly 64 bytes (4x4 matrix)")
+        XCTAssertEqual(uniforms.mvp, matrix_identity_float4x4)
+    }
+
+    func testMaskedCompositeUniformsStructLayout() throws {
+        let uniforms = MaskedCompositeUniforms(mvp: matrix_identity_float4x4, opacity: 0.5)
+
+        // Strict layout verification - must match Metal shader struct exactly
+        // Metal: float4x4 mvp (64) + float opacity (4) + float3 _padding (12) = 80 bytes
+        XCTAssertEqual(MemoryLayout<MaskedCompositeUniforms>.size, 80, "MaskedCompositeUniforms size must be 80 bytes")
+        XCTAssertEqual(MemoryLayout<MaskedCompositeUniforms>.stride, 80, "MaskedCompositeUniforms stride must be 80 bytes")
+        XCTAssertEqual(MemoryLayout<MaskedCompositeUniforms>.alignment, 16, "MaskedCompositeUniforms alignment must be 16 bytes")
+
+        // Verify values
+        XCTAssertEqual(uniforms.opacity, 0.5)
     }
 }

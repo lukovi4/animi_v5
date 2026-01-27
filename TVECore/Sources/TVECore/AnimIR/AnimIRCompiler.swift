@@ -337,7 +337,13 @@ public final class AnimIRCompiler {
         var masks: [Mask] = []
 
         for (index, lottieMask) in lottieMasks.enumerated() {
-            guard var mask = Mask(from: lottieMask) else { continue }
+            guard var mask = Mask(from: lottieMask) else {
+                throw UnsupportedFeature(
+                    code: "UNSUPPORTED_MASK_MODE",
+                    message: "Unknown mask mode '\(lottieMask.mode ?? "nil")' - only add/subtract/intersect (a/s/i) supported",
+                    path: "anim(\(animRef)).layer(\(layerName)).mask[\(index)]"
+                )
+            }
 
             // Build PathResource with dummy PathID - rely only on assignedId from register()
             guard let resource = PathResourceBuilder.build(from: mask.path, pathId: PathID(0)) else {

@@ -91,6 +91,93 @@ public struct PathResource: Sendable, Equatable {
     }
 }
 
+// MARK: - Triangulated Position Sampling
+
+extension PathResource {
+    /// Samples flattened triangulated positions (x,y,x,y,...) at the given frame.
+    ///
+    /// For static paths, copies positions directly. For animated paths, interpolates
+    /// between keyframes using easing curves.
+    ///
+    /// Caller MUST reuse `out` to avoid steady-state allocations.
+    ///
+    /// - Parameters:
+    ///   - frame: Animation frame to sample
+    ///   - out: Reusable output buffer (will be cleared and filled)
+    public func sampleTriangulatedPositions(at frame: Double, into out: inout [Float]) {
+        out.removeAll(keepingCapacity: true)
+
+        // Static path: copy directly
+        guard keyframePositions.count > 1 else {
+            if let first = keyframePositions.first {
+                out.append(contentsOf: first)
+            }
+            return
+        }
+
+        // Animated path: find keyframe segment and interpolate
+        let times = keyframeTimes
+
+        // Safety guard: keyframeTimes and keyframePositions must have same count
+        guard !times.isEmpty, times.count == keyframePositions.count else {
+            if let first = keyframePositions.first {
+                out.append(contentsOf: first)
+            }
+            return
+        }
+
+        // Before first keyframe
+        if frame <= times[0] {
+            out.append(contentsOf: keyframePositions[0])
+            return
+        }
+
+        // After last keyframe
+        if frame >= times[times.count - 1] {
+            out.append(contentsOf: keyframePositions[times.count - 1])
+            return
+        }
+
+        // Find segment containing frame
+        for idx in 0..<(times.count - 1) {
+            if frame >= times[idx] && frame < times[idx + 1] {
+                let t0 = times[idx]
+                let t1 = times[idx + 1]
+                var linearT = (frame - t0) / (t1 - t0)
+
+                // Apply easing if available
+                if idx < keyframeEasing.count, let easing = keyframeEasing[idx] {
+                    if easing.hold {
+                        linearT = 0 // Hold at start value
+                    } else {
+                        linearT = CubicBezierEasing.solve(
+                            x: linearT,
+                            x1: easing.outX,
+                            y1: easing.outY,
+                            x2: easing.inX,
+                            y2: easing.inY
+                        )
+                    }
+                }
+
+                // Interpolate positions
+                let pos0 = keyframePositions[idx]
+                let pos1 = keyframePositions[idx + 1]
+                out.reserveCapacity(pos0.count)
+
+                for pIdx in 0..<pos0.count {
+                    let interpolated = pos0[pIdx] + Float(linearT) * (pos1[pIdx] - pos0[pIdx])
+                    out.append(interpolated)
+                }
+                return
+            }
+        }
+
+        // Fallback: use last keyframe
+        out.append(contentsOf: keyframePositions[keyframePositions.count - 1])
+    }
+}
+
 // MARK: - Path Registry
 
 /// Registry of path resources for an AnimIR.
