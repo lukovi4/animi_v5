@@ -814,9 +814,14 @@ final class GPUMaskPipelineTests: XCTestCase {
         let uniforms = MaskedCompositeUniforms(mvp: matrix_identity_float4x4, opacity: 0.5)
 
         // Strict layout verification - must match Metal shader struct exactly
-        // Metal: float4x4 mvp (64) + float opacity (4) + float3 _padding (12) = 80 bytes
-        XCTAssertEqual(MemoryLayout<MaskedCompositeUniforms>.size, 80, "MaskedCompositeUniforms size must be 80 bytes")
-        XCTAssertEqual(MemoryLayout<MaskedCompositeUniforms>.stride, 80, "MaskedCompositeUniforms stride must be 80 bytes")
+        // Metal layout (with float3 alignment = 16):
+        //   float4x4 mvp:    64 bytes (offset 0)
+        //   float opacity:    4 bytes (offset 64)
+        //   padding:         12 bytes (offset 68, for float3 alignment)
+        //   float3 _padding: 12 bytes (offset 80) + 4 bytes struct padding = 16 bytes
+        //   Total: 96 bytes
+        XCTAssertEqual(MemoryLayout<MaskedCompositeUniforms>.size, 96, "MaskedCompositeUniforms size must be 96 bytes")
+        XCTAssertEqual(MemoryLayout<MaskedCompositeUniforms>.stride, 96, "MaskedCompositeUniforms stride must be 96 bytes")
         XCTAssertEqual(MemoryLayout<MaskedCompositeUniforms>.alignment, 16, "MaskedCompositeUniforms alignment must be 16 bytes")
 
         // Verify values

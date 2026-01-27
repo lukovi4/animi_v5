@@ -13,12 +13,21 @@ struct QuadVertex {
 // MARK: - Quad Uniforms
 
 /// Uniform buffer structure for quad rendering.
-/// Layout must match Metal: float4x4 (64) + float (4) + float3 (12) = 80 bytes
+/// Layout must match Metal shader struct exactly.
+///
+/// Metal layout (with float3 alignment = 16):
+///   float4x4 mvp:    64 bytes (offset 0)
+///   float opacity:    4 bytes (offset 64)
+///   padding:         12 bytes (offset 68, for float3 alignment)
+///   float3 _padding: 12 bytes (offset 80) + 4 bytes struct padding = 16 bytes
+///   Total: 96 bytes
 struct QuadUniforms {
-    var mvp: simd_float4x4
-    var opacity: Float
-    // Use tuple instead of SIMD3 to match Metal float3 alignment (4, not 16)
-    var padding: (Float, Float, Float) = (0, 0, 0)
+    var mvp: simd_float4x4          // 64 bytes
+    var opacity: Float              // 4 bytes
+    var _pad0: Float = 0            // 4 bytes (padding before SIMD3)
+    var _pad1: Float = 0            // 4 bytes
+    var _pad2: Float = 0            // 4 bytes
+    var _padding: SIMD3<Float> = .zero  // 16 bytes (SIMD3 has alignment 16 in Swift too)
 
     init(mvp: simd_float4x4, opacity: Float) {
         self.mvp = mvp
@@ -42,12 +51,21 @@ struct CoverageUniforms {
 // MARK: - Masked Composite Uniforms (GPU Mask)
 
 /// Uniform buffer structure for masked composite (content × mask).
-/// Layout must match Metal: float4x4 (64) + float (4) + float3 (12) = 80 bytes
+/// Layout must match Metal shader struct exactly.
+///
+/// Metal layout (with float3 alignment = 16):
+///   float4x4 mvp:    64 bytes (offset 0)
+///   float opacity:    4 bytes (offset 64)
+///   padding:         12 bytes (offset 68, for float3 alignment)
+///   float3 _padding: 12 bytes (offset 80) + 4 bytes struct padding = 16 bytes
+///   Total: 96 bytes
 struct MaskedCompositeUniforms {
-    var mvp: simd_float4x4
-    var opacity: Float
-    // Use tuple instead of SIMD3 to match Metal float3 alignment (4, not 16)
-    var padding: (Float, Float, Float) = (0, 0, 0)
+    var mvp: simd_float4x4          // 64 bytes
+    var opacity: Float              // 4 bytes
+    var _pad0: Float = 0            // 4 bytes (padding before SIMD3)
+    var _pad1: Float = 0            // 4 bytes
+    var _pad2: Float = 0            // 4 bytes
+    var _padding: SIMD3<Float> = .zero  // 16 bytes (SIMD3 has alignment 16 in Swift too)
 
     init(mvp: simd_float4x4, opacity: Float) {
         self.mvp = mvp

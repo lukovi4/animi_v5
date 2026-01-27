@@ -586,6 +586,12 @@ extension MetalRenderer {
         let mvp = viewportToNDC.toFloat4x4()
         var uniforms = QuadUniforms(mvp: mvp, opacity: 1.0)
 
+        // DEBUG: Validate uniforms struct matches Metal shader (96 bytes)
+        #if DEBUG
+        precondition(MemoryLayout<QuadUniforms>.stride == 96,
+                     "QuadUniforms stride mismatch: \(MemoryLayout<QuadUniforms>.stride) != 96")
+        #endif
+
         encoder.setRenderPipelineState(resources.pipelineState)
         encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)

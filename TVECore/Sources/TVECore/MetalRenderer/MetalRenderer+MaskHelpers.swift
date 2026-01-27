@@ -267,11 +267,47 @@ extension MetalRenderer {
         let mvp = viewportToNDC.toFloat4x4()
         var uniforms = MaskedCompositeUniforms(mvp: mvp, opacity: 1.0)
 
+        // DEBUG: Validate uniforms struct matches Metal shader (96 bytes)
+        #if DEBUG
+        precondition(MemoryLayout<MaskedCompositeUniforms>.stride == 96,
+                     "MaskedCompositeUniforms stride mismatch: \(MemoryLayout<MaskedCompositeUniforms>.stride) != 96")
+        #endif
+
         encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<MaskedCompositeUniforms>.stride, index: 1)
         encoder.setFragmentTexture(content, index: 0)
         encoder.setFragmentTexture(mask, index: 1)
 
+        // DEBUG: Validate indexed draw parameters
+        #if DEBUG
+        let requiredBytes = resources.quadIndexCount * MemoryLayout<UInt16>.stride
+        precondition(resources.quadIndexCount == 6, "quadIndexCount must be 6, got \(resources.quadIndexCount)")
+        precondition(resources.quadIndexBuffer.length >= requiredBytes,
+                     "quadIndexBuffer too small: len=\(resources.quadIndexBuffer.length), need=\(requiredBytes)")
+
+        // One-time log of parameters (uses static flag to log only once)
+        logMaskedCompositeParamsOnce(
+            indexCount: resources.quadIndexCount,
+            bufferLength: resources.quadIndexBuffer.length,
+            bbox: bbox,
+            contentSize: (content.width, content.height),
+            maskSize: (mask.width, mask.height)
+        )
+
+        // DEBUG switch: use triangleStrip instead of indexed draw to isolate index buffer issues
+        let useTriangleStrip = ProcessInfo.processInfo.environment["TVE_MASK_COMPOSITE_STRIP"] == "1"
+        if useTriangleStrip {
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        } else {
+            encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: resources.quadIndexCount,
+                indexType: .uint16,
+                indexBuffer: resources.quadIndexBuffer,
+                indexBufferOffset: 0
+            )
+        }
+        #else
         encoder.drawIndexedPrimitives(
             type: .triangle,
             indexCount: resources.quadIndexCount,
@@ -279,8 +315,37 @@ extension MetalRenderer {
             indexBuffer: resources.quadIndexBuffer,
             indexBufferOffset: 0
         )
+        #endif
     }
 }
+
+// MARK: - DEBUG Logging
+
+#if DEBUG
+/// Debug log flags to ensure one-time logging per session.
+/// Using enum with static var for proper Swift semantics.
+private enum DebugLogFlags {
+    static var didLogMaskedComposite = false
+}
+
+private func logMaskedCompositeParamsOnce(
+    indexCount: Int,
+    bufferLength: Int,
+    bbox: PixelBBox,
+    contentSize: (Int, Int),
+    maskSize: (Int, Int)
+) {
+    guard !DebugLogFlags.didLogMaskedComposite else { return }
+    DebugLogFlags.didLogMaskedComposite = true
+
+    print("[DEBUG] compositeMaskedQuad params:")
+    print("  quadIndexCount: \(indexCount)")
+    print("  quadIndexBuffer.length: \(bufferLength)")
+    print("  bbox: x=\(bbox.x), y=\(bbox.y), w=\(bbox.width), h=\(bbox.height)")
+    print("  content texture: \(contentSize.0)x\(contentSize.1)")
+    print("  mask texture: \(maskSize.0)x\(maskSize.1)")
+}
+#endif
 
 // MARK: - MaskMode Shader Value
 
