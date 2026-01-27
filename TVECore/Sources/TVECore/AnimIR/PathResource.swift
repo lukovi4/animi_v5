@@ -106,6 +106,8 @@ extension PathResource {
     ///   - out: Reusable output buffer (will be cleared and filled)
     public func sampleTriangulatedPositions(at frame: Double, into out: inout [Float]) {
         out.removeAll(keepingCapacity: true)
+        // PR-C3 (I5): Reserve capacity upfront to avoid reallocation during append
+        out.reserveCapacity(vertexCount * 2)
 
         // Static path: copy directly
         guard keyframePositions.count > 1 else {
@@ -163,7 +165,6 @@ extension PathResource {
                 // Interpolate positions
                 let pos0 = keyframePositions[idx]
                 let pos1 = keyframePositions[idx + 1]
-                out.reserveCapacity(pos0.count)
 
                 for pIdx in 0..<pos0.count {
                     let interpolated = pos0[pIdx] + Float(linearT) * (pos1[pIdx] - pos0[pIdx])

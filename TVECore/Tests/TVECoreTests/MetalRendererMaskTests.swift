@@ -14,6 +14,12 @@ final class MetalRendererMaskTests: XCTestCase {
     var device: MTLDevice!
     var renderer: MetalRenderer!
 
+    #if DEBUG
+    /// Expected number of GPU mask fallbacks for current test.
+    /// Default is 0 (no fallbacks expected). Override in tests where fallback is valid.
+    private var expectedMaskFallbacks: Int = 0
+    #endif
+
     override func setUpWithError() throws {
         device = MTLCreateSystemDefaultDevice()
         try XCTSkipIf(device == nil, "Metal not available")
@@ -22,9 +28,18 @@ final class MetalRendererMaskTests: XCTestCase {
             colorPixelFormat: .bgra8Unorm,
             options: MetalRendererOptions(clearColor: .transparentBlack)
         )
+        #if DEBUG
+        MaskDebugCounters.reset()
+        expectedMaskFallbacks = 0
+        #endif
     }
 
     override func tearDown() {
+        #if DEBUG
+        // PR-C4: Verify GPU mask fallback count matches expectation
+        XCTAssertEqual(MaskDebugCounters.fallbackCount, expectedMaskFallbacks,
+                       "Unexpected GPU mask fallback count")
+        #endif
         renderer = nil
         device = nil
     }
@@ -119,6 +134,11 @@ final class MetalRendererMaskTests: XCTestCase {
     // MARK: - Test 3: Empty mask path renders content unmasked
 
     func testEmptyMaskPathRendersContent() throws {
+        // Empty path triggers fallback (degenerate bbox) - this is expected
+        #if DEBUG
+        expectedMaskFallbacks = 1
+        #endif
+
         let provider = InMemoryTextureProvider()
         let col = MaskTestColor(red: 255, green: 255, blue: 255, alpha: 255)
         let tex = try XCTUnwrap(createSolidColorTexture(device: device, color: col, size: 32))
@@ -383,6 +403,9 @@ final class MetalRendererMaskTests: XCTestCase {
             .endGroup
         ]
 
+        // NOTE: Malformed scope goes through skipMalformedMaskScope, not renderMaskGroupScope
+        // So no fallback counter is incremented - this is handled in execute loop directly
+
         // Should NOT throw - fallback renders content without mask
         let result = try renderer.drawOffscreen(
             commands: cmds, device: device, sizePx: (32, 32),
@@ -537,14 +560,21 @@ final class MaskRasterizerTests: XCTestCase {
     }
 }
 
-// MARK: - Mask Cache Tests
+// MARK: - Mask Cache Tests (DEPRECATED - CPU mask path forbidden)
 
+/// **PR-C4:** These tests are for the legacy CPU mask cache which is now forbidden.
+/// MaskCache.texture() has a DEBUG preconditionFailure.
+/// Tests are skipped in DEBUG builds. Will be removed in future cleanup PR.
 final class MaskCacheTests: XCTestCase {
     var device: MTLDevice!
 
     override func setUpWithError() throws {
         device = MTLCreateSystemDefaultDevice()
         try XCTSkipIf(device == nil, "Metal not available")
+        #if DEBUG
+        // PR-C4: Skip all MaskCache tests - CPU mask path is forbidden
+        throw XCTSkip("MaskCache tests skipped: CPU mask path is forbidden (PR-C4). GPU masks only.")
+        #endif
     }
 
     override func tearDown() {

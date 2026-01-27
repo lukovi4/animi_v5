@@ -332,11 +332,18 @@ extension MetalRenderer {
         }
     }
 
+    /// Legacy CPU mask rendering path.
+    /// - Important: This function must NOT be called. GPU masks only (PR-C2+).
+    /// - Note: Kept for rollback safety. Will be removed in future cleanup PR.
     private func renderMaskScope(
         scope: MaskScope,
         ctx: MaskScopeContext,
         inheritedState: ExecutionState
     ) throws {
+#if DEBUG
+        preconditionFailure("CPU mask path is forbidden. Must use GPU mask pipeline (renderMaskGroupScope).")
+#else
+        // Legacy implementation (release-only rollback path)
         let targetSize = ctx.target.sizePx
         let currentScissor = inheritedState.currentScissor
 
@@ -418,6 +425,7 @@ extension MetalRenderer {
             scissor: currentScissor
         )
         try compositeWithStencilMask(contentTex: contentTex, maskTex: maskTex, ctx: compositeCtx)
+#endif
     }
 
     /// Samples a path at the given frame using PathResource keyframes.

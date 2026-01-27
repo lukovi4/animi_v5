@@ -1,6 +1,24 @@
 import Metal
 import simd
 
+// MARK: - Mask Debug Counters
+
+#if DEBUG
+/// Debug counters for mask rendering verification (PR-C4).
+/// Used to ensure GPU mask path is always taken and no fallbacks occur in tests.
+/// - Note: Internal visibility to avoid polluting public API surface.
+enum MaskDebugCounters {
+    /// Number of times GPU mask fallback was triggered (degenerate bbox or allocation failure).
+    /// Should be 0 in all mask tests to prove GPU path is working correctly.
+    static var fallbackCount = 0
+
+    /// Resets all counters. Call at the start of each test.
+    static func reset() {
+        fallbackCount = 0
+    }
+}
+#endif
+
 // MARK: - GPU Mask Group Rendering
 
 extension MetalRenderer {
@@ -39,6 +57,9 @@ extension MetalRenderer {
             expandAA: 2
         ) else {
             // Degenerate bbox - fallback: render inner commands without mask
+            #if DEBUG
+            MaskDebugCounters.fallbackCount += 1
+            #endif
             try renderInnerCommandsFallback(
                 scope.innerCommands,
                 ctx: ctx,
@@ -56,6 +77,9 @@ extension MetalRenderer {
               let accumB = texturePool.acquireR8Texture(size: bboxSize),
               let contentTex = texturePool.acquireColorTexture(size: bboxSize) else {
             // Allocation failed - fallback: render inner commands without mask
+            #if DEBUG
+            MaskDebugCounters.fallbackCount += 1
+            #endif
             try renderInnerCommandsFallback(
                 scope.innerCommands,
                 ctx: ctx,

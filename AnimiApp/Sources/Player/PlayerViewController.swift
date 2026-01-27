@@ -108,6 +108,10 @@ final class PlayerViewController: UIViewController {
     private var renderErrorLogged = false
     private var deviceHeaderLogged = false
 
+    // In-flight frame limiting (must match MetalRendererOptions.maxFramesInFlight)
+    private static let maxFramesInFlight = 3
+    private let inFlightSemaphore = DispatchSemaphore(value: maxFramesInFlight)
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -151,9 +155,13 @@ final class PlayerViewController: UIViewController {
             renderer = try MetalRenderer(
                 device: device,
                 colorPixelFormat: metalView.colorPixelFormat,
-                options: MetalRendererOptions(clearColor: clearCol, enableDiagnostics: true)
+                options: MetalRendererOptions(
+                    clearColor: clearCol,
+                    enableDiagnostics: true,
+                    maxFramesInFlight: Self.maxFramesInFlight  // Must match inFlightSemaphore
+                )
             )
-            log("MetalRenderer initialized")
+            log("MetalRenderer initialized (maxFramesInFlight=\(Self.maxFramesInFlight))")
         } catch { log("ERROR: MetalRenderer failed: \(error)") }
     }
 
@@ -346,9 +354,20 @@ extension PlayerViewController: MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) { view.setNeedsDisplay() }
 
     func draw(in view: MTKView) {
+        // Wait for in-flight frame slot (prevents GPU falling behind > maxFramesInFlight)
+        _ = inFlightSemaphore.wait(timeout: .distantFuture)
+
         guard let drawable = view.currentDrawable,
               let cmdQueue = commandQueue,
-              let cmdBuf = cmdQueue.makeCommandBuffer() else { return }
+              let cmdBuf = cmdQueue.makeCommandBuffer() else {
+            inFlightSemaphore.signal()
+            return
+        }
+
+        // Signal semaphore when GPU finishes this frame
+        cmdBuf.addCompletedHandler { [weak self] _ in
+            self?.inFlightSemaphore.signal()
+        }
 
         if let renderer = renderer,
            let compiled = compiledScene,

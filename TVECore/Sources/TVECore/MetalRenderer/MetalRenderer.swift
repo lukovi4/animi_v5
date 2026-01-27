@@ -105,19 +105,28 @@ public struct MetalRendererOptions: Sendable {
     /// Enable diagnostic logging for scissor/transform debugging
     public var enableDiagnostics: Bool
 
+    /// Maximum number of frames that can be in-flight simultaneously.
+    /// This controls the size of the vertex upload ring buffer.
+    /// Must match the semaphore count in your render loop for correctness.
+    /// Default is 3 (triple buffering).
+    public var maxFramesInFlight: Int
+
     /// Creates renderer options with defaults.
     /// - Parameters:
     ///   - clearColor: Clear color (default: transparent black)
     ///   - enableWarningsForUnsupportedCommands: Enable warnings (default: true)
     ///   - enableDiagnostics: Enable diagnostic logging (default: false)
+    ///   - maxFramesInFlight: Max in-flight frames for ring buffer (default: 3)
     public init(
         clearColor: ClearColor = .transparentBlack,
         enableWarningsForUnsupportedCommands: Bool = true,
-        enableDiagnostics: Bool = false
+        enableDiagnostics: Bool = false,
+        maxFramesInFlight: Int = 3
     ) {
         self.clearColor = clearColor
         self.enableWarningsForUnsupportedCommands = enableWarningsForUnsupportedCommands
         self.enableDiagnostics = enableDiagnostics
+        self.maxFramesInFlight = max(1, maxFramesInFlight)
     }
 }
 
@@ -136,6 +145,10 @@ public final class MetalRenderer {
     let maskCache: MaskCache
     let shapeCache: ShapeCache
     private let logger: TVELogger?
+
+    // PR-C3: GPU buffer caching for mask rendering
+    let vertexUploadPool: VertexUploadPool
+    let pathIndexBufferCache: PathIndexBufferCache
 
     // MARK: - Initialization
 
@@ -159,6 +172,8 @@ public final class MetalRenderer {
         self.texturePool = TexturePool(device: device)
         self.maskCache = MaskCache(device: device)
         self.shapeCache = ShapeCache(device: device)
+        self.vertexUploadPool = VertexUploadPool(device: device, buffersInFlight: options.maxFramesInFlight)
+        self.pathIndexBufferCache = PathIndexBufferCache(device: device)
     }
 
     /// Diagnostic logging (only when enabled via options)
@@ -179,6 +194,7 @@ public final class MetalRenderer {
         texturePool.clear()
         maskCache.clear()
         shapeCache.clear()
+        pathIndexBufferCache.clear()
     }
 
     // MARK: - Public API
@@ -200,6 +216,9 @@ public final class MetalRenderer {
         assetSizes: [String: AssetSize] = [:],
         pathRegistry: PathRegistry
     ) throws {
+        // PR-C3: Rotate to next buffer in ring for in-flight frame safety
+        vertexUploadPool.beginFrame()
+
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = target.texture
         renderPassDescriptor.colorAttachments[0].loadAction = .clear
@@ -242,6 +261,9 @@ public final class MetalRenderer {
         assetSizes: [String: AssetSize] = [:],
         pathRegistry: PathRegistry
     ) throws -> MTLTexture {
+        // PR-C3: Rotate to next buffer in ring for in-flight frame safety
+        vertexUploadPool.beginFrame()
+
         // Create offscreen texture
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,

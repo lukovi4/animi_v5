@@ -58,6 +58,9 @@ extension MetalRenderer {
     /// Uses coveragePipelineState to draw triangulated path geometry.
     /// Output is raw coverage (1.0 inside triangles).
     ///
+    /// PR-C3: Uses VertexUploadPool for vertices and PathIndexBufferCache for indices
+    /// to eliminate per-op MTLBuffer allocations.
+    ///
     /// - Parameters:
     ///   - pathId: Path ID to render
     ///   - frame: Animation frame for sampling
@@ -91,29 +94,24 @@ extension MetalRenderer {
             return // Invalid data - skip
         }
 
-        // TODO: [I4-perf] Cache vertex/index buffers to avoid per-frame allocations.
-        // - indexBuffer is stable per PathResource, can be cached in PathResource or a pool
-        // - vertexBuffer changes per frame for animated paths, consider ring buffer or pool
-
-        // Create vertex buffer from positions
-        let vertexByteCount = scratch.count * MemoryLayout<Float>.stride
-        guard let vertexBuffer = device.makeBuffer(
-            bytes: scratch,
-            length: vertexByteCount,
-            options: .storageModeShared
-        ) else {
+        // PR-C3: Use vertex upload pool instead of per-op makeBuffer
+        guard let vertexSlice = vertexUploadPool.uploadFloats(scratch) else {
             return
         }
 
-        // Create index buffer (stable per path, candidate for caching)
-        let indexByteCount = resource.indices.count * MemoryLayout<UInt16>.stride
-        guard let indexBuffer = device.makeBuffer(
-            bytes: resource.indices,
-            length: indexByteCount,
-            options: .storageModeShared
-        ) else {
+        // PR-C3: Use cached index buffer instead of per-op makeBuffer
+        guard let indexBuffer = pathIndexBufferCache.getOrCreate(for: pathId, indices: resource.indices) else {
             return
         }
+
+        #if DEBUG
+        // Validate data integrity
+        let expectedVertexBytes = scratch.count * MemoryLayout<Float>.stride
+        precondition(vertexSlice.length == expectedVertexBytes,
+                     "Vertex slice length mismatch: \(vertexSlice.length) != \(expectedVertexBytes)")
+        precondition(resource.indices.count % 3 == 0,
+                     "Index count must be multiple of 3 for triangles: \(resource.indices.count)")
+        #endif
 
         // Create render pass (load existing content - already cleared)
         let descriptor = MTLRenderPassDescriptor()
@@ -130,8 +128,8 @@ extension MetalRenderer {
         encoder.setRenderPipelineState(resources.coveragePipelineState)
         encoder.setScissorRect(scissor)
 
-        // Bind vertex buffer (positions as float2)
-        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        // Bind vertex buffer from pool (with offset)
+        encoder.setVertexBuffer(vertexSlice.buffer, offset: vertexSlice.offset, index: 0)
 
         // Bind uniforms
         var uniforms = CoverageUniforms(mvp: mvp)

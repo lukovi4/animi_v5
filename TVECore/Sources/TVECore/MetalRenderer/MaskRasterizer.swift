@@ -15,6 +15,10 @@ enum FillRule {
 /// Used to create mask textures for stencil-based masking.
 enum MaskRasterizer {
     /// Rasterizes a BezierPath to alpha bytes.
+    ///
+    /// - Important: This CPU rasterizer must NOT be called for masks. GPU masks only (PR-C2+).
+    /// - Note: Still used by ShapeCache for drawShape. Will be refactored in future PR.
+    ///
     /// - Parameters:
     ///   - path: The Bezier path to rasterize
     ///   - transformToViewportPx: Transform from path coords to viewport pixels
@@ -29,6 +33,9 @@ enum MaskRasterizer {
         fillRule: FillRule = .nonZero,
         antialias: Bool = true
     ) -> [UInt8] {
+        // NOTE: MaskRasterizer is still used by ShapeCache for drawShape command.
+        // The DEBUG guard below only applies to mask rendering via MaskCache.
+        // See MaskCache.texture() for the actual guard.
         let width = targetSizePx.width
         let height = targetSizePx.height
 

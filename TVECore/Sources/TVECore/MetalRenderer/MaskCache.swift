@@ -69,6 +69,10 @@ final class MaskCache {
     }
 
     /// Gets or creates a mask texture for the given parameters.
+    ///
+    /// - Important: This CPU mask cache must NOT be called. GPU masks only (PR-C2+).
+    /// - Note: Kept for rollback safety. Will be removed in future cleanup PR.
+    ///
     /// - Parameters:
     ///   - path: The Bezier path to rasterize
     ///   - transform: Transform from path coords to viewport pixels
@@ -81,6 +85,10 @@ final class MaskCache {
         size: (width: Int, height: Int),
         opacity: Double
     ) -> MTLTexture? {
+#if DEBUG
+        preconditionFailure("CPU mask cache is forbidden. Must use GPU mask pipeline (renderMaskGroupScope).")
+#else
+        // Legacy implementation (release-only rollback path)
         let key = MaskCacheKey(path: path, size: size, transform: transform)
 
         // Check cache
@@ -117,6 +125,7 @@ final class MaskCache {
         storeInCache(key: key, texture: texture)
 
         return texture
+#endif
     }
 
     /// Clears all cached textures.
