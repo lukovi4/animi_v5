@@ -165,7 +165,8 @@ extension MetalRenderer {
         commandBuffer: MTLCommandBuffer,
         assetSizes: [String: AssetSize] = [:],
         pathRegistry: PathRegistry,
-        initialState: ExecutionState? = nil
+        initialState: ExecutionState? = nil,
+        overrideAnimToViewport: Matrix2D? = nil
     ) throws {
         let baseline = initialState ?? makeInitialState(target: target)
         var state = baseline
@@ -174,7 +175,7 @@ extension MetalRenderer {
             width: Double(target.sizePx.width),
             height: Double(target.sizePx.height)
         )
-        let animToViewport = GeometryMapping.animToInputContain(animSize: target.animSize, inputRect: targetRect)
+        let animToViewport = overrideAnimToViewport ?? GeometryMapping.animToInputContain(animSize: target.animSize, inputRect: targetRect)
         let viewportToNDC = GeometryMapping.viewportToNDC(width: targetRect.width, height: targetRect.height)
 
         // Process commands in segments separated by mask/matte scopes
@@ -223,20 +224,39 @@ extension MetalRenderer {
             // Process scope if found
             switch foundScopeType {
             case .mask:
-                guard let scope = extractMaskScope(from: commands, startIndex: index) else {
-                    throw MetalRendererError.invalidCommandStack(reason: "Malformed mask: BeginMask without EndMask")
+                // PR-C2: GPU mask path with boolean operations
+                if let scope = extractMaskGroupScope(from: commands, startIndex: index) {
+                    let scopeCtx = MaskScopeContext(
+                        target: target,
+                        textureProvider: textureProvider,
+                        commandBuffer: commandBuffer,
+                        animToViewport: animToViewport,
+                        viewportToNDC: viewportToNDC,
+                        assetSizes: assetSizes,
+                        pathRegistry: pathRegistry
+                    )
+                    try renderMaskGroupScope(scope: scope, ctx: scopeCtx, inheritedState: state)
+                    index = scope.endIndex // endIndex already points to next command after last endMask
+                } else {
+                    // M1-fallback: malformed scope - skip to matching endMask and render inner without mask
+                    // This is safer than crashing the entire render
+                    let (innerCommands, endIdx) = skipMalformedMaskScope(from: commands, startIndex: index)
+                    if !innerCommands.isEmpty {
+                        try renderSegment(
+                            commands: innerCommands,
+                            target: target,
+                            textureProvider: textureProvider,
+                            commandBuffer: commandBuffer,
+                            animToViewport: animToViewport,
+                            viewportToNDC: viewportToNDC,
+                            assetSizes: assetSizes,
+                            pathRegistry: pathRegistry,
+                            state: &state,
+                            renderPassDescriptor: nil
+                        )
+                    }
+                    index = endIdx
                 }
-                let scopeCtx = MaskScopeContext(
-                    target: target,
-                    textureProvider: textureProvider,
-                    commandBuffer: commandBuffer,
-                    animToViewport: animToViewport,
-                    viewportToNDC: viewportToNDC,
-                    assetSizes: assetSizes,
-                    pathRegistry: pathRegistry
-                )
-                try renderMaskScope(scope: scope, ctx: scopeCtx, inheritedState: state)
-                index = scope.endIndex + 1
                 isFirstPass = false
 
             case .matte:
@@ -1056,6 +1076,80 @@ extension MetalRenderer {
             innerCommands: innerCommands,
             endIndex: index
         )
+    }
+
+    /// Skips a malformed mask scope and extracts inner commands for fallback rendering.
+    ///
+    /// Used when `extractMaskGroupScope` returns nil (malformed structure).
+    /// Finds all commands between beginMask chain and matching endMask(s),
+    /// returning them for rendering without mask.
+    ///
+    /// **Contract:**
+    /// - Nested beginMask inside inner content is NOT supported in normal path,
+    ///   but here we simply count depth and render inner WITHOUT mask up to first endMask.
+    /// - Goal: **do not crash render**, not guarantee visual equivalence.
+    /// - This is best-effort fallback for malformed command streams.
+    ///
+    /// - Parameters:
+    ///   - commands: Full command stream
+    ///   - startIndex: Index of first beginMask command
+    /// - Returns: Tuple of (innerCommands to render, endIndex after scope)
+    func skipMalformedMaskScope(from commands: [RenderCommand], startIndex: Int) -> ([RenderCommand], Int) {
+        guard startIndex < commands.count else {
+            return ([], commands.count)
+        }
+
+        var index = startIndex
+        var depth = 0
+
+        // Count initial beginMask commands
+        while index < commands.count {
+            switch commands[index] {
+            case .beginMask, .beginMaskAdd:
+                depth += 1
+                index += 1
+            default:
+                break
+            }
+            if index < commands.count {
+                switch commands[index] {
+                case .beginMask, .beginMaskAdd:
+                    continue
+                default:
+                    break
+                }
+            }
+            break
+        }
+
+        guard depth > 0 else {
+            return ([], startIndex)
+        }
+
+        let innerStart = index
+
+        // Find first endMask (inner content ends there)
+        var firstEndMaskIndex: Int?
+        while index < commands.count && depth > 0 {
+            switch commands[index] {
+            case .beginMask, .beginMaskAdd:
+                // Nested mask - just count it
+                depth += 1
+            case .endMask:
+                if firstEndMaskIndex == nil {
+                    firstEndMaskIndex = index
+                }
+                depth -= 1
+            default:
+                break
+            }
+            index += 1
+        }
+
+        let innerEnd = firstEndMaskIndex ?? index
+        let innerCommands = (innerEnd > innerStart) ? Array(commands[innerStart..<innerEnd]) : []
+
+        return (innerCommands, index)
     }
 
     /// Extracts a matte scope starting at the given index.

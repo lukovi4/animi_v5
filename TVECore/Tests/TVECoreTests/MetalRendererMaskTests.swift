@@ -359,36 +359,44 @@ final class MetalRendererMaskTests: XCTestCase {
         XCTAssertEqual(outsidePixel.alpha, 0, "Outside clip should be empty")
     }
 
-    // MARK: - Test 10: Unbalanced mask throws error
+    // MARK: - Test 10: Unbalanced mask does not crash (M1-fallback)
 
-    func testUnbalancedMaskThrows() throws {
+    func testUnbalancedMaskDoesNotCrash() throws {
+        // M1-fallback: malformed scope (missing endMask) should NOT throw.
+        // Instead, it should render inner commands without mask.
         let provider = InMemoryTextureProvider()
         let maskPath = createRectPath(xPos: 0, yPos: 0, width: 10, height: 10)
         var registry = PathRegistry()
         let pathId = registerPath(maskPath, in: &registry)
+
+        // Add a test texture so drawImage doesn't fail
+        let col = MaskTestColor(red: 255, green: 0, blue: 0, alpha: 255)
+        let tex = try XCTUnwrap(createSolidColorTexture(device: device, color: col, size: 32))
+        provider.register(tex, for: "test")
 
         // BeginMaskAdd without EndMask
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
-            // Missing .endMask
+            // Missing .endMask - malformed scope
             .endGroup
         ]
 
-        XCTAssertThrowsError(
-            try renderer.drawOffscreen(
-                commands: cmds, device: device, sizePx: (32, 32),
-                animSize: SizeD(width: 32, height: 32), textureProvider: provider,
-                pathRegistry: registry
-            )
-        ) { error in
-            guard let metalError = error as? MetalRendererError,
-                  case .invalidCommandStack = metalError else {
-                XCTFail("Expected invalidCommandStack error, got \(error)")
-                return
-            }
-        }
+        // Should NOT throw - fallback renders content without mask
+        let result = try renderer.drawOffscreen(
+            commands: cmds, device: device, sizePx: (32, 32),
+            animSize: SizeD(width: 32, height: 32), textureProvider: provider,
+            pathRegistry: registry
+        )
+
+        // Verify render completed (content was drawn without mask)
+        XCTAssertNotNil(result, "Render should complete successfully with fallback")
+
+        // Verify content was actually rendered (red color from texture)
+        let centerPixel = readPixel(from: result, at: MaskTestPoint(xPos: 16, yPos: 16))
+        XCTAssertGreaterThan(centerPixel.alpha, 0, "Fallback should render content")
+        XCTAssertGreaterThan(centerPixel.red, 200, "Content should be red (from test texture)")
     }
 
     // MARK: - Helper Methods
