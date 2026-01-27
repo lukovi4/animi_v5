@@ -68,20 +68,25 @@ private func namespacedAssetId(animRef: String, assetId: String) -> String {
 public final class AnimIRCompiler {
     public init() {}
 
-    /// Compiles a Lottie animation into AnimIR
+    /// Compiles a Lottie animation into AnimIR with scene-level path registry.
+    ///
+    /// This is the preferred method for scene compilation. PathIDs are assigned
+    /// deterministically during compilation into the shared registry.
     ///
     /// - Parameters:
     ///   - lottie: Parsed Lottie JSON
     ///   - animRef: Animation reference identifier
     ///   - bindingKey: Layer name to bind for content replacement
     ///   - assetIndex: Asset index from AnimLoader
-    /// - Returns: Compiled AnimIR
+    ///   - pathRegistry: Scene-level path registry (shared across all animations)
+    /// - Returns: Compiled AnimIR (with pathRegistry field empty - use scene-level registry)
     /// - Throws: AnimIRCompilerError or UnsupportedFeature if compilation fails
     public func compile(
         lottie: LottieJSON,
         animRef: String,
         bindingKey: String,
-        assetIndex: AssetIndex
+        assetIndex: AssetIndex,
+        pathRegistry: inout PathRegistry
     ) throws -> AnimIR {
         // Build metadata
         let meta = Meta(
@@ -101,7 +106,8 @@ public final class AnimIRCompiler {
             lottie.layers,
             compId: AnimIR.rootCompId,
             animRef: animRef,
-            fallbackOp: lottie.outPoint
+            fallbackOp: lottie.outPoint,
+            pathRegistry: &pathRegistry
         )
         comps[AnimIR.rootCompId] = Composition(
             id: AnimIR.rootCompId,
@@ -122,7 +128,8 @@ public final class AnimIRCompiler {
                 assetLayers,
                 compId: compId,
                 animRef: animRef,
-                fallbackOp: lottie.outPoint
+                fallbackOp: lottie.outPoint,
+                pathRegistry: &pathRegistry
             )
             comps[compId] = Composition(id: compId, size: compSize, layers: layers)
         }
@@ -152,13 +159,48 @@ public final class AnimIRCompiler {
 
         let assetsIR = AssetIndexIR(byId: namespacedById, sizeById: namespacedSizeById)
 
+        // Return AnimIR with empty local pathRegistry
+        // Scene pipeline uses scene-level registry, not AnimIR.pathRegistry
         return AnimIR(
             meta: meta,
             rootComp: AnimIR.rootCompId,
             comps: comps,
             assets: assetsIR,
-            binding: binding
+            binding: binding,
+            pathRegistry: PathRegistry() // Empty - scene uses merged registry
         )
+    }
+
+    /// Compiles a Lottie animation into AnimIR (legacy/standalone mode).
+    ///
+    /// This method creates a local PathRegistry and registers paths into it.
+    /// Use `compile(..., pathRegistry:)` for scene compilation with shared registry.
+    ///
+    /// - Parameters:
+    ///   - lottie: Parsed Lottie JSON
+    ///   - animRef: Animation reference identifier
+    ///   - bindingKey: Layer name to bind for content replacement
+    ///   - assetIndex: Asset index from AnimLoader
+    /// - Returns: Compiled AnimIR with paths registered in local pathRegistry
+    /// - Throws: AnimIRCompilerError or UnsupportedFeature if compilation fails
+    @available(*, deprecated, message: "Use compile(..., pathRegistry:) for scene-level path registration")
+    public func compile(
+        lottie: LottieJSON,
+        animRef: String,
+        bindingKey: String,
+        assetIndex: AssetIndex
+    ) throws -> AnimIR {
+        var localRegistry = PathRegistry()
+        var animIR = try compile(
+            lottie: lottie,
+            animRef: animRef,
+            bindingKey: bindingKey,
+            assetIndex: assetIndex,
+            pathRegistry: &localRegistry
+        )
+        // For standalone usage, store local registry in AnimIR
+        animIR.pathRegistry = localRegistry
+        return animIR
     }
 
     // MARK: - Layer Compilation
@@ -168,7 +210,8 @@ public final class AnimIRCompiler {
         _ lottieLayers: [LottieLayer],
         compId: CompID,
         animRef: String,
-        fallbackOp: Double
+        fallbackOp: Double,
+        pathRegistry: inout PathRegistry
     ) throws -> [Layer] {
         // First pass: identify matte source → consumer relationships
         // In Lottie, matte source (td=1) is immediately followed by consumer (tt=1|2)
@@ -199,12 +242,13 @@ public final class AnimIRCompiler {
             }
 
             let layer = try compileLayer(
-                lottieLayer,
+                lottie: lottieLayer,
                 index: index,
                 compId: compId,
                 animRef: animRef,
                 fallbackOp: fallbackOp,
-                matteInfo: matteInfo
+                matteInfo: matteInfo,
+                pathRegistry: &pathRegistry
             )
             layers.append(layer)
         }
@@ -214,12 +258,13 @@ public final class AnimIRCompiler {
 
     /// Compiles a single Lottie layer into IR layer
     private func compileLayer(
-        _ lottie: LottieLayer,
+        lottie: LottieLayer,
         index: Int,
         compId: CompID,
         animRef: String,
         fallbackOp: Double,
-        matteInfo: MatteInfo?
+        matteInfo: MatteInfo?,
+        pathRegistry: inout PathRegistry
     ) throws -> Layer {
         // Determine layer ID (from ind or index)
         let layerId: LayerID = lottie.index ?? index
@@ -244,18 +289,30 @@ public final class AnimIRCompiler {
         // Build transform
         let transform = TransformTrack(from: lottie.transform)
 
-        // Build masks
-        let masks = compileMasks(from: lottie.masksProperties)
+        // Build masks with path registration
+        let layerName = lottie.name ?? "Layer_\(index)"
+        let masks = try compileMasks(
+            from: lottie.masksProperties,
+            animRef: animRef,
+            layerName: layerName,
+            pathRegistry: &pathRegistry
+        )
 
-        // Determine content (with namespaced asset IDs)
-        let content = compileContent(from: lottie, layerType: layerType, animRef: animRef)
+        // Determine content (with namespaced asset IDs and path registration for shapeMatte)
+        let content = try compileContent(
+            from: lottie,
+            layerType: layerType,
+            animRef: animRef,
+            layerName: layerName,
+            pathRegistry: &pathRegistry
+        )
 
         // Check if this is a matte source
         let isMatteSource = (lottie.isMatteSource ?? 0) == 1
 
         return Layer(
             id: layerId,
-            name: lottie.name ?? "Layer_\(index)",
+            name: layerName,
             type: layerType,
             timing: timing,
             parent: lottie.parent,
@@ -267,19 +324,50 @@ public final class AnimIRCompiler {
         )
     }
 
-    /// Compiles masks from Lottie mask properties
-    private func compileMasks(from lottieMasks: [LottieMask]?) -> [Mask] {
+    /// Compiles masks from Lottie mask properties with path registration
+    /// - Throws: UnsupportedFeature if mask path cannot be triangulated
+    private func compileMasks(
+        from lottieMasks: [LottieMask]?,
+        animRef: String,
+        layerName: String,
+        pathRegistry: inout PathRegistry
+    ) throws -> [Mask] {
         guard let lottieMasks = lottieMasks else { return [] }
-        return lottieMasks.compactMap { Mask(from: $0) }
+
+        var masks: [Mask] = []
+
+        for (index, lottieMask) in lottieMasks.enumerated() {
+            guard var mask = Mask(from: lottieMask) else { continue }
+
+            // Build PathResource with dummy PathID - rely only on assignedId from register()
+            guard let resource = PathResourceBuilder.build(from: mask.path, pathId: PathID(0)) else {
+                throw UnsupportedFeature(
+                    code: "MASK_PATH_BUILD_FAILED",
+                    message: "Cannot triangulate/flatten mask path (topology mismatch or too few vertices)",
+                    path: "anim(\(animRef)).layer(\(layerName)).mask[\(index)]"
+                )
+            }
+
+            // Register path and use only the assigned ID
+            let assignedId = pathRegistry.register(resource)
+            mask.pathId = assignedId
+
+            masks.append(mask)
+        }
+
+        return masks
     }
 
-    /// Compiles layer content based on type
+    /// Compiles layer content based on type with path registration for shapeMatte
     /// Image asset IDs are namespaced with animRef to avoid collisions across animations
+    /// - Throws: UnsupportedFeature if shapeMatte path cannot be triangulated
     private func compileContent(
         from lottie: LottieLayer,
         layerType: LayerType,
-        animRef: String
-    ) -> LayerContent {
+        animRef: String,
+        layerName: String,
+        pathRegistry: inout PathRegistry
+    ) throws -> LayerContent {
         switch layerType {
         case .image:
             if let refId = lottie.refId, !refId.isEmpty {
@@ -302,11 +390,29 @@ public final class AnimIRCompiler {
             let fillColor = ShapePathExtractor.extractFillColor(from: lottie.shapes)
             let fillOpacity = ShapePathExtractor.extractFillOpacity(from: lottie.shapes)
 
-            return .shapes(ShapeGroup(
+            var shapeGroup = ShapeGroup(
                 animPath: animPath,
                 fillColor: fillColor,
                 fillOpacity: fillOpacity
-            ))
+            )
+
+            // Register path if animPath exists
+            if let animPath = animPath {
+                // Build PathResource with dummy PathID - rely only on assignedId from register()
+                guard let resource = PathResourceBuilder.build(from: animPath, pathId: PathID(0)) else {
+                    throw UnsupportedFeature(
+                        code: "MATTE_PATH_BUILD_FAILED",
+                        message: "Cannot triangulate/flatten matte shape path (topology mismatch or too few vertices)",
+                        path: "anim(\(animRef)).layer(\(layerName)).shapeMatte"
+                    )
+                }
+
+                // Register path and use only the assigned ID
+                let assignedId = pathRegistry.register(resource)
+                shapeGroup.pathId = assignedId
+            }
+
+            return .shapes(shapeGroup)
 
         case .null:
             return .none

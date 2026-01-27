@@ -94,19 +94,16 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        guard let mergedIndex = player.mergedAssetIndex else {
-            throw XCTSkip("No merged asset index available")
-        }
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
             package: package,
-            mergedAssetIndex: mergedIndex
+            mergedAssetIndex: compiled.mergedAssetIndex
         )
 
         // When - render frame 30 (anim-1 opacity should be 100%)
-        let commands = runtime.renderCommands(sceneFrameIndex: 30)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 30)
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -114,7 +111,7 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
             sizePx: (canvasWidth, canvasHeight),
             animSize: SizeD(width: Double(canvasWidth), height: Double(canvasHeight)),
             textureProvider: textureProvider,
-            pathRegistry: player.mergedPathRegistry ?? PathRegistry()
+            pathRegistry: compiled.pathRegistry
         )
 
         // Then - block 1 center should have non-zero alpha (check 9x9 area)
@@ -132,19 +129,16 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        guard let mergedIndex = player.mergedAssetIndex else {
-            throw XCTSkip("No merged asset index available")
-        }
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
             package: package,
-            mergedAssetIndex: mergedIndex
+            mergedAssetIndex: compiled.mergedAssetIndex
         )
 
         // When - render frame 60 (anim-2 position animation complete)
-        let commands = runtime.renderCommands(sceneFrameIndex: 60)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 60)
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -152,7 +146,7 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
             sizePx: (canvasWidth, canvasHeight),
             animSize: SizeD(width: Double(canvasWidth), height: Double(canvasHeight)),
             textureProvider: textureProvider,
-            pathRegistry: player.mergedPathRegistry ?? PathRegistry()
+            pathRegistry: compiled.pathRegistry
         )
 
         // Then - block 2 center should have non-zero alpha (check 9x9 area)
@@ -172,19 +166,16 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        guard let mergedIndex = player.mergedAssetIndex else {
-            throw XCTSkip("No merged asset index available")
-        }
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
             package: package,
-            mergedAssetIndex: mergedIndex
+            mergedAssetIndex: compiled.mergedAssetIndex
         )
 
         // When - render frame 90 (anim-3 scale animation complete)
-        let commands = runtime.renderCommands(sceneFrameIndex: 90)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 90)
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -192,7 +183,7 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
             sizePx: (canvasWidth, canvasHeight),
             animSize: SizeD(width: Double(canvasWidth), height: Double(canvasHeight)),
             textureProvider: textureProvider,
-            pathRegistry: player.mergedPathRegistry ?? PathRegistry()
+            pathRegistry: compiled.pathRegistry
         )
 
         // Then - with alphaInverted matte, check top-right corner of block 3
@@ -214,19 +205,16 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        guard let mergedIndex = player.mergedAssetIndex else {
-            throw XCTSkip("No merged asset index available")
-        }
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
             package: package,
-            mergedAssetIndex: mergedIndex
+            mergedAssetIndex: compiled.mergedAssetIndex
         )
 
         // When - render frame 120 (anim-4 scale animation complete)
-        let commands = runtime.renderCommands(sceneFrameIndex: 120)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 120)
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -234,7 +222,7 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
             sizePx: (canvasWidth, canvasHeight),
             animSize: SizeD(width: Double(canvasWidth), height: Double(canvasHeight)),
             textureProvider: textureProvider,
-            pathRegistry: player.mergedPathRegistry ?? PathRegistry()
+            pathRegistry: compiled.pathRegistry
         )
 
         // Then - block 4 center should have non-zero alpha (check 9x9 area)
@@ -251,19 +239,16 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        guard let mergedIndex = player.mergedAssetIndex else {
-            throw XCTSkip("No merged asset index available")
-        }
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
             package: package,
-            mergedAssetIndex: mergedIndex
+            mergedAssetIndex: compiled.mergedAssetIndex
         )
 
         // When - render frame 150 (all anims fully visible)
-        let commands = runtime.renderCommands(sceneFrameIndex: 150)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 150)
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -271,7 +256,7 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
             sizePx: (canvasWidth, canvasHeight),
             animSize: SizeD(width: Double(canvasWidth), height: Double(canvasHeight)),
             textureProvider: textureProvider,
-            pathRegistry: player.mergedPathRegistry ?? PathRegistry()
+            pathRegistry: compiled.pathRegistry
         )
 
         // Then - block 4 center should have non-zero alpha (check 9x9 area)
@@ -288,19 +273,16 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        guard let mergedIndex = player.mergedAssetIndex else {
-            throw XCTSkip("No merged asset index available")
-        }
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
             package: package,
-            mergedAssetIndex: mergedIndex
+            mergedAssetIndex: compiled.mergedAssetIndex
         )
 
         // When - render frame 150
-        let commands = runtime.renderCommands(sceneFrameIndex: 150)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 150)
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -308,7 +290,7 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
             sizePx: (canvasWidth, canvasHeight),
             animSize: SizeD(width: Double(canvasWidth), height: Double(canvasHeight)),
             textureProvider: textureProvider,
-            pathRegistry: player.mergedPathRegistry ?? PathRegistry()
+            pathRegistry: compiled.pathRegistry
         )
 
         // Then - all 4 blocks should have content
@@ -331,10 +313,10 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
         // When - render at frame 150
-        let commands = runtime.renderCommands(sceneFrameIndex: 150)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 150)
 
         // Then - should have 4 pushClipRect commands (one per block)
         var pushClipCount = 0
@@ -362,10 +344,10 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
         // When - render at frame 150
-        let commands = runtime.renderCommands(sceneFrameIndex: 150)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 150)
 
         // Then - count transforms that are identity
         var identityTransformCount = 0

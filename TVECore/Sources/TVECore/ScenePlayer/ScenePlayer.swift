@@ -8,14 +8,10 @@ public final class ScenePlayer {
 
     // MARK: - Properties
 
-    /// Compiled scene runtime
-    public private(set) var runtime: SceneRuntime?
-
-    /// Merged asset index containing all assets from all animations (namespaced)
-    public private(set) var mergedAssetIndex: AssetIndexIR?
-
-    /// Merged path registry containing all paths from all animations
-    public private(set) var mergedPathRegistry: PathRegistry?
+    /// Compiled scene (single source of truth after compilation)
+    /// Contains runtime, merged assets, and path registry.
+    /// Nil before compile() is called.
+    public private(set) var compiledScene: CompiledScene?
 
     /// Animation compiler
     private let compiler = AnimIRCompiler()
@@ -26,34 +22,45 @@ public final class ScenePlayer {
 
     // MARK: - Compilation
 
-    /// Compiles a scene package into runtime representation
+    /// Compiles a scene package into a CompiledScene.
+    ///
+    /// PathIDs are assigned deterministically during compilation into a shared
+    /// scene-level registry. This ensures:
+    /// - No runtime path registration needed
+    /// - Variant switching works without registry rebuild
+    /// - Each AnimIR has empty pathRegistry (scene uses CompiledScene.pathRegistry)
     ///
     /// - Parameters:
     ///   - package: Scene package with scene.json and animation files
     ///   - loadedAnimations: Pre-loaded Lottie animations from AnimLoader
-    /// - Returns: Compiled SceneRuntime
+    /// - Returns: CompiledScene containing runtime, assets, and path registry
     /// - Throws: ScenePlayerError if compilation fails
     @discardableResult
     public func compile(
         package: ScenePackage,
         loadedAnimations: LoadedAnimations
-    ) throws -> SceneRuntime {
+    ) throws -> CompiledScene {
         let scene = package.scene
 
         guard !scene.mediaBlocks.isEmpty else {
             throw ScenePlayerError.noMediaBlocks
         }
 
+        // Scene-level path registry - paths are registered during compilation
+        var sharedPathRegistry = PathRegistry()
+
         // Compile all blocks
         var blockRuntimes: [BlockRuntime] = []
         var allAssetsByIdMerged: [String: String] = [:]
         var allSizesByIdMerged: [String: AssetSize] = [:]
 
-        for mediaBlock in scene.mediaBlocks {
+        for (index, mediaBlock) in scene.mediaBlocks.enumerated() {
             let blockRuntime = try compileBlock(
                 mediaBlock: mediaBlock,
+                orderIndex: index,
                 loadedAnimations: loadedAnimations,
-                sceneDurationFrames: scene.canvas.durationFrames
+                sceneDurationFrames: scene.canvas.durationFrames,
+                pathRegistry: &sharedPathRegistry
             )
             blockRuntimes.append(blockRuntime)
 
@@ -69,21 +76,11 @@ public final class ScenePlayer {
         }
 
         // Sort blocks by zIndex for correct render order (lower zIndex rendered first)
-        blockRuntimes.sort { $0.zIndex < $1.zIndex }
+        // Use orderIndex as tiebreaker for stable sorting when zIndex is equal
+        blockRuntimes.sort { ($0.zIndex, $0.orderIndex) < ($1.zIndex, $1.orderIndex) }
 
         // Create merged asset index
-        let merged = AssetIndexIR(byId: allAssetsByIdMerged, sizeById: allSizesByIdMerged)
-        self.mergedAssetIndex = merged
-
-        // Register paths from all blocks using a shared registry
-        // This ensures globally unique pathIds across all animations
-        var sharedPathRegistry = PathRegistry()
-        for blockIndex in blockRuntimes.indices {
-            for variantIndex in blockRuntimes[blockIndex].variants.indices {
-                blockRuntimes[blockIndex].variants[variantIndex].animIR.registerPaths(into: &sharedPathRegistry)
-            }
-        }
-        self.mergedPathRegistry = sharedPathRegistry
+        let mergedAssets = AssetIndexIR(byId: allAssetsByIdMerged, sizeById: allSizesByIdMerged)
 
         // Create runtime
         let sceneRuntime = SceneRuntime(
@@ -94,8 +91,15 @@ public final class ScenePlayer {
             fps: scene.canvas.fps
         )
 
-        self.runtime = sceneRuntime
-        return sceneRuntime
+        // Create CompiledScene (single source of truth)
+        let compiled = CompiledScene(
+            runtime: sceneRuntime,
+            mergedAssetIndex: mergedAssets,
+            pathRegistry: sharedPathRegistry
+        )
+
+        self.compiledScene = compiled
+        return compiled
     }
 
     // MARK: - Block Compilation
@@ -103,8 +107,10 @@ public final class ScenePlayer {
     /// Compiles a single media block
     private func compileBlock(
         mediaBlock: MediaBlock,
+        orderIndex: Int,
         loadedAnimations: LoadedAnimations,
-        sceneDurationFrames: Int
+        sceneDurationFrames: Int,
+        pathRegistry: inout PathRegistry
     ) throws -> BlockRuntime {
         guard !mediaBlock.variants.isEmpty else {
             throw ScenePlayerError.noVariantsForBlock(blockId: mediaBlock.id)
@@ -128,7 +134,8 @@ public final class ScenePlayer {
                 variant: variant,
                 bindingKey: mediaBlock.input.bindingKey,
                 blockId: mediaBlock.id,
-                loadedAnimations: loadedAnimations
+                loadedAnimations: loadedAnimations,
+                pathRegistry: &pathRegistry
             )
             variantRuntimes.append(variantRuntime)
         }
@@ -139,6 +146,7 @@ public final class ScenePlayer {
         return BlockRuntime(
             blockId: mediaBlock.id,
             zIndex: mediaBlock.zIndex,
+            orderIndex: orderIndex,
             rectCanvas: RectD(from: mediaBlock.rect),
             inputRect: RectD(from: mediaBlock.input.rect),
             timing: timing,
@@ -150,12 +158,13 @@ public final class ScenePlayer {
 
     // MARK: - Variant Compilation
 
-    /// Compiles a single variant
+    /// Compiles a single variant with path registration into scene-level registry
     private func compileVariant(
         variant: Variant,
         bindingKey: String,
         blockId: String,
-        loadedAnimations: LoadedAnimations
+        loadedAnimations: LoadedAnimations,
+        pathRegistry: inout PathRegistry
     ) throws -> VariantRuntime {
         let animRef = variant.animRef
 
@@ -169,15 +178,16 @@ public final class ScenePlayer {
             throw ScenePlayerError.animRefNotFound(animRef: animRef, blockId: blockId)
         }
 
-        // Compile AnimIR (with namespaced asset IDs)
-        // Note: path registration is deferred to compile() where we use a shared registry
+        // Compile AnimIR with scene-level path registry
+        // PathIDs are assigned during compilation, no post-pass registerPaths needed
         let animIR: AnimIR
         do {
             animIR = try compiler.compile(
                 lottie: lottie,
                 animRef: animRef,
                 bindingKey: bindingKey,
-                assetIndex: assetIndex
+                assetIndex: assetIndex,
+                pathRegistry: &pathRegistry
             )
         } catch {
             throw ScenePlayerError.compilationFailed(
@@ -201,9 +211,9 @@ public final class ScenePlayer {
     /// - Parameter sceneFrameIndex: Frame index in scene timeline
     /// - Returns: Render commands for all visible blocks, or empty array if not compiled
     public func renderCommands(sceneFrameIndex: Int) -> [RenderCommand] {
-        guard let runtime = runtime else {
+        guard let compiledScene = compiledScene else {
             return []
         }
-        return runtime.renderCommands(sceneFrameIndex: sceneFrameIndex)
+        return compiledScene.runtime.renderCommands(sceneFrameIndex: sceneFrameIndex)
     }
 }

@@ -56,18 +56,16 @@ final class MetalRendererAnimatedMatteMorphTests: XCTestCase {
         // Build asset index (anim-3 has image_0 asset)
         let assetIndex = AssetIndex(byId: ["image_0": "images/img_3.png"])
 
-        // Compile to AnimIR
-        // bindingKey "img_3.png" matches the layer name in comp_0
+        // Compile to AnimIR with scene-level path registry
+        // Paths are registered during compilation, no registerPaths() call needed
+        var pathRegistry = PathRegistry()
         var animIR = try compiler.compile(
             lottie: lottie,
             animRef: "anim-3",
             bindingKey: "img_3.png",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &pathRegistry
         )
-
-        // Register paths (this is the crucial step that was broken before PR-C1)
-        animIR.registerPaths()
-        let pathRegistry = animIR.pathRegistry
 
         // Create mock texture provider with white texture for the image asset
         let animSize = SizeD(width: Double(lottie.width), height: Double(lottie.height))
@@ -138,13 +136,16 @@ final class MetalRendererAnimatedMatteMorphTests: XCTestCase {
         let data = try Data(contentsOf: url)
         let lottie = try JSONDecoder().decode(LottieJSON.self, from: data)
         let assetIndex = AssetIndex(byId: ["image_0": "images/img_3.png"])
+
+        // Use new compile API with scene-level path registry
+        var pathRegistry = PathRegistry()
         var animIR = try compiler.compile(
             lottie: lottie,
             animRef: "anim-3",
             bindingKey: "img_3.png",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &pathRegistry
         )
-        animIR.registerPaths()
 
         let animSize = SizeD(width: Double(lottie.width), height: Double(lottie.height))
         let renderSize = (width: 108, height: 192)
@@ -157,7 +158,7 @@ final class MetalRendererAnimatedMatteMorphTests: XCTestCase {
             sizePx: renderSize,
             animSize: animSize,
             textureProvider: textureProvider,
-            pathRegistry: animIR.pathRegistry
+            pathRegistry: pathRegistry
         )
 
         // Check total non-zero pixels at frame 90
@@ -188,13 +189,16 @@ final class MetalRendererAnimatedMatteMorphTests: XCTestCase {
         let data = try Data(contentsOf: url)
         let lottie = try JSONDecoder().decode(LottieJSON.self, from: data)
         let assetIndex = AssetIndex(byId: ["image_0": "images/img_3.png"])
+
+        // Use new compile API with scene-level path registry
+        var pathRegistry = PathRegistry()
         var animIR = try compiler.compile(
             lottie: lottie,
             animRef: "anim-3",
             bindingKey: "img_3.png",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &pathRegistry
         )
-        animIR.registerPaths()
 
         let animSize = SizeD(width: Double(lottie.width), height: Double(lottie.height))
         let renderSize = (width: 108, height: 192)
@@ -208,7 +212,7 @@ final class MetalRendererAnimatedMatteMorphTests: XCTestCase {
             sizePx: renderSize,
             animSize: animSize,
             textureProvider: textureProvider,
-            pathRegistry: animIR.pathRegistry
+            pathRegistry: pathRegistry
         )
 
         // Frame 90: opacity=100%, path at final wide position
@@ -219,7 +223,7 @@ final class MetalRendererAnimatedMatteMorphTests: XCTestCase {
             sizePx: renderSize,
             animSize: animSize,
             textureProvider: textureProvider,
-            pathRegistry: animIR.pathRegistry
+            pathRegistry: pathRegistry
         )
 
         let bounds75 = findContentBounds(texture: texture75)

@@ -67,25 +67,41 @@ extension AnimIR {
     }
 }
 
-// MARK: - Path Registration
+// MARK: - Path Registration (Legacy)
 
 extension AnimIR {
     /// Registers all paths (masks and shapes) in the PathRegistry.
-    /// Should be called once after compilation before rendering.
-    /// This method mutates the AnimIR to store pathIds.
+    /// - Note: Deprecated no-op. Paths are now registered during compilation.
+    ///   Use `AnimIRCompiler.compile(..., pathRegistry:)` for scene-level path registration.
+    @available(*, deprecated, message: "Paths are now registered during compilation. Use AnimIRCompiler.compile(..., pathRegistry:)")
     public mutating func registerPaths() {
-        var localRegistry = pathRegistry
-        registerPaths(into: &localRegistry)
-        pathRegistry = localRegistry
+        // NO-OP: Paths are registered during compilation.
+        // This method is kept only for API compatibility.
+        // Do not call - use compile(..., pathRegistry:) instead.
     }
 
     /// Registers all paths into an external PathRegistry.
-    /// Use this when coordinating path registration across multiple AnimIRs
-    /// to ensure globally unique pathIds.
+    ///
+    /// - Note: This is **legacy/debug** behavior. Paths are now registered during compilation.
+    ///   Use `AnimIRCompiler.compile(..., pathRegistry:)` for scene-level path registration.
+    ///
+    /// - Important: Best-effort legacy path registration. May silently skip untriangulatable
+    ///   paths (when `PathResourceBuilder.build` returns nil). For guaranteed registration
+    ///   with proper error handling, use `AnimIRCompiler.compile(..., pathRegistry:)`.
+    ///
     /// - Parameter registry: External registry to register paths into
+    @available(*, deprecated, message: "Paths are now registered during compilation. Use AnimIRCompiler.compile(..., pathRegistry:)")
     public mutating func registerPaths(into registry: inout PathRegistry) {
-        // Iterate all compositions and layers
-        for (compId, comp) in comps {
+        // Collect keys in deterministic order to ensure consistent PathID assignment
+        // Root composition first, then precomps sorted alphabetically
+        let compIds = comps.keys.sorted { lhs, rhs in
+            if lhs == AnimIR.rootCompId { return true }
+            if rhs == AnimIR.rootCompId { return false }
+            return lhs < rhs
+        }
+
+        for compId in compIds {
+            guard let comp = comps[compId] else { continue }
             var updatedLayers: [Layer] = []
 
             for var layer in comp.layers {
@@ -93,10 +109,10 @@ extension AnimIR {
                 var updatedMasks: [Mask] = []
                 for var mask in layer.masks {
                     if mask.pathId == nil {
-                        let pathId = PathID(registry.count)
-                        if let resource = PathResourceBuilder.build(from: mask.path, pathId: pathId) {
-                            registry.register(resource)
-                            mask.pathId = pathId
+                        // Use dummy PathID for build, rely only on assignedId from register()
+                        if let resource = PathResourceBuilder.build(from: mask.path, pathId: PathID(0)) {
+                            let assignedId = registry.register(resource)
+                            mask.pathId = assignedId
                         }
                     }
                     updatedMasks.append(mask)
@@ -106,10 +122,10 @@ extension AnimIR {
                 var updatedContent = layer.content
                 if case .shapes(var shapeGroup) = layer.content {
                     if shapeGroup.pathId == nil, let animPath = shapeGroup.animPath {
-                        let pathId = PathID(registry.count)
-                        if let resource = PathResourceBuilder.build(from: animPath, pathId: pathId) {
-                            registry.register(resource)
-                            shapeGroup.pathId = pathId
+                        // Use dummy PathID for build, rely only on assignedId from register()
+                        if let resource = PathResourceBuilder.build(from: animPath, pathId: PathID(0)) {
+                            let assignedId = registry.register(resource)
+                            shapeGroup.pathId = assignedId
                             updatedContent = .shapes(shapeGroup)
                         }
                     }
@@ -136,8 +152,10 @@ extension AnimIR {
             comps[compId] = updatedComp
         }
 
-        // Also store in local registry for single-AnimIR use
-        pathRegistry = registry
+        // IMPORTANT: Do NOT copy registry to pathRegistry here.
+        // This was the source of the duplication bug where each AnimIR
+        // stored the entire merged registry.
+        // Scene pipeline should use scene-level registry, not AnimIR.pathRegistry.
     }
 }
 

@@ -31,7 +31,8 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
     func testDiagnostic_sceneLevel() throws {
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        let runtime = compiled.runtime
 
         print("\n" + String(repeating: "=", count: 80))
         print("SCENE-LEVEL DIAGNOSTIC (Passport)")
@@ -92,7 +93,8 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
     func testDiagnostic_perFrameSummary() throws {
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        let runtime = compiled.runtime
 
         let testFrames = [0, 30, 60, 90, 150]
 
@@ -124,7 +126,8 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
     func testDiagnostic_blockLevelScope() throws {
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        let runtime = compiled.runtime
 
         let frame = 150
         let commands = runtime.renderCommands(sceneFrameIndex: frame)
@@ -152,7 +155,7 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
         }
 
         // For each block, extract key info
-        for block in runtime.blocks {
+        for block in compiled.runtime.blocks {
             let blockId = block.blockId
             guard let cmds = blockCommands[blockId] else {
                 print("\n[Block: \(blockId)] - NO COMMANDS FOUND")
@@ -231,10 +234,10 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
     func testDiagnostic_effectiveMatrixAndScissor() throws {
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
         let frame = 150
-        let commands = runtime.renderCommands(sceneFrameIndex: frame)
+        let commands = compiled.runtime.renderCommands(sceneFrameIndex: frame)
 
         print("\n" + String(repeating: "=", count: 80))
         print("EFFECTIVE MATRIX + SCISSOR PER DRAWIMAGE (Frame \(frame))")

@@ -39,14 +39,17 @@ final class TestProfileTransformsTests: XCTestCase {
         }
 
         let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
-        var ir = try compiler.compile(
+
+        // Use new compile API with scene-level registry
+        // Paths are registered during compilation, no registerPaths() call needed
+        var registry = PathRegistry()
+        let ir = try compiler.compile(
             lottie: lottie,
             animRef: animRef,
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &registry
         )
-        // Register paths for mask and shape rendering
-        ir.registerPaths()
         return ir
     }
 

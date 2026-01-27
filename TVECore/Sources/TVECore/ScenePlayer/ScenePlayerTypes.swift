@@ -1,5 +1,27 @@
 import Foundation
 
+// MARK: - Compiled Scene
+
+/// Single source of truth for a compiled scene.
+/// Contains all artifacts from compilation: runtime, assets, and path registry.
+/// Guarantees that if you have a CompiledScene, all required data is present.
+public struct CompiledScene: Sendable {
+    /// Compiled scene runtime with blocks and timing
+    public let runtime: SceneRuntime
+
+    /// Merged asset index containing all assets from all animations (namespaced)
+    public let mergedAssetIndex: AssetIndexIR
+
+    /// Scene-level path registry with globally unique PathIDs assigned during compilation
+    public let pathRegistry: PathRegistry
+
+    public init(runtime: SceneRuntime, mergedAssetIndex: AssetIndexIR, pathRegistry: PathRegistry) {
+        self.runtime = runtime
+        self.mergedAssetIndex = mergedAssetIndex
+        self.pathRegistry = pathRegistry
+    }
+}
+
 // MARK: - Scene Runtime
 
 /// Runtime representation of a compiled scene ready for playback
@@ -32,25 +54,6 @@ public struct SceneRuntime: Sendable {
         self.fps = fps
     }
 
-    /// Returns merged PathRegistry containing all paths from all animations.
-    /// The PathIDs are only valid when used with commands from this runtime's renderCommands().
-    public var mergedPathRegistry: PathRegistry {
-        var merged = PathRegistry()
-        // Collect paths from all variants of all blocks
-        // Since each AnimIR has its own PathRegistry with IDs starting from 0,
-        // commands already reference the correct pathId within their AnimIR.
-        // The renderer will look up paths by pathId in the registry passed to draw().
-        // We merge all registries, but this only works if pathIds don't collide.
-        // For now, return the first block's selected variant registry (TODO: proper merging)
-        for block in blocks {
-            if let variant = block.selectedVariant {
-                for path in variant.animIR.pathRegistry.paths {
-                    merged.register(path)
-                }
-            }
-        }
-        return merged
-    }
 }
 
 // MARK: - Block Runtime
@@ -62,6 +65,9 @@ public struct BlockRuntime: Sendable {
 
     /// Z-index for render ordering (lower = back, higher = front)
     public let zIndex: Int
+
+    /// Original order index from scene.mediaBlocks for stable sorting
+    public let orderIndex: Int
 
     /// Block rectangle in canvas coordinates
     public let rectCanvas: RectD
@@ -89,6 +95,7 @@ public struct BlockRuntime: Sendable {
     public init(
         blockId: String,
         zIndex: Int,
+        orderIndex: Int,
         rectCanvas: RectD,
         inputRect: RectD,
         timing: BlockTiming,
@@ -98,6 +105,7 @@ public struct BlockRuntime: Sendable {
     ) {
         self.blockId = blockId
         self.zIndex = zIndex
+        self.orderIndex = orderIndex
         self.rectCanvas = rectCanvas
         self.inputRect = inputRect
         self.timing = timing

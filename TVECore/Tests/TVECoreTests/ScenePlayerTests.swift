@@ -32,22 +32,22 @@ final class ScenePlayerTests: XCTestCase {
         let player = ScenePlayer()
 
         // When
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
         // Then
-        XCTAssertEqual(runtime.blocks.count, 4, "Should have 4 blocks")
+        XCTAssertEqual(compiled.runtime.blocks.count, 4, "Should have 4 blocks")
 
         // Verify each block has compiled variant
-        for block in runtime.blocks {
+        for block in compiled.runtime.blocks {
             XCTAssertFalse(block.variants.isEmpty, "Block \(block.blockId) should have variants")
             XCTAssertNotNil(block.selectedVariant, "Block \(block.blockId) should have selected variant")
         }
 
         // Verify canvas size
-        XCTAssertEqual(runtime.canvas.width, 1080)
-        XCTAssertEqual(runtime.canvas.height, 1920)
-        XCTAssertEqual(runtime.fps, 30)
-        XCTAssertEqual(runtime.durationFrames, 300)
+        XCTAssertEqual(compiled.runtime.canvas.width, 1080)
+        XCTAssertEqual(compiled.runtime.canvas.height, 1920)
+        XCTAssertEqual(compiled.runtime.fps, 30)
+        XCTAssertEqual(compiled.runtime.durationFrames, 300)
     }
 
     /// Test: Frame 0 generates commands for visible blocks
@@ -169,11 +169,11 @@ final class ScenePlayerTests: XCTestCase {
         let player = ScenePlayer()
 
         // When
-        let runtime = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
         // Then - blocks should be sorted by zIndex ascending
         var previousZIndex = Int.min
-        for block in runtime.blocks {
+        for block in compiled.runtime.blocks {
             XCTAssertGreaterThanOrEqual(
                 block.zIndex,
                 previousZIndex,
@@ -190,13 +190,10 @@ final class ScenePlayerTests: XCTestCase {
         let player = ScenePlayer()
 
         // When
-        _ = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // Then
-        guard let mergedIndex = player.mergedAssetIndex else {
-            XCTFail("Merged asset index should not be nil")
-            return
-        }
+        // Then - use CompiledScene.mergedAssetIndex
+        let mergedIndex = compiled.mergedAssetIndex
 
         // Should have assets from all 4 animations
         XCTAssertGreaterThanOrEqual(mergedIndex.byId.count, 4, "Should have at least 4 assets")
