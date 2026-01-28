@@ -90,15 +90,10 @@ extension AnimValidator {
             // Validate animated p/s keyframes consistency and size validity
             validateEllipseKeyframes(ellipse: ellipse, basePath: basePath, issues: &issues)
 
-        case .polystar:
-            // Polystar is decoded but not yet supported for rendering (until PR-09)
-            // Fail-fast to prevent silent incorrect render
-            issues.append(ValidationIssue(
-                code: AnimValidationCode.unsupportedShapeItem,
-                severity: .error,
-                path: "\(basePath).ty",
-                message: "Shape type 'sr' not supported. Supported: gr, sh, fl, tr, rc, el"
-            ))
+        case .polystar(let polystar):
+            // Polystar shape is supported (PR-09)
+            // Validate star type, points, roundness, radii, and keyframe consistency
+            validatePolystarKeyframes(polystar: polystar, basePath: basePath, issues: &issues)
 
         case .stroke:
             // Stroke is decoded but not yet supported for rendering (until PR-10)
@@ -107,7 +102,7 @@ extension AnimValidator {
                 code: AnimValidationCode.unsupportedShapeItem,
                 severity: .error,
                 path: "\(basePath).ty",
-                message: "Shape type 'st' not supported. Supported: gr, sh, fl, tr, rc, el"
+                message: "Shape type 'st' not supported. Supported: gr, sh, fl, tr, rc, el, sr"
             ))
 
         case .unknown(let type):
@@ -116,7 +111,7 @@ extension AnimValidator {
                 code: AnimValidationCode.unsupportedShapeItem,
                 severity: .error,
                 path: "\(basePath).ty",
-                message: "Shape type '\(type)' not supported. Supported: gr, sh, fl, tr, rc, el"
+                message: "Shape type '\(type)' not supported. Supported: gr, sh, fl, tr, rc, el, sr"
             ))
         }
     }
@@ -420,6 +415,401 @@ extension AnimValidator {
                     ))
                 }
             }
+        }
+    }
+
+    // MARK: - Polystar Validation
+
+    /// Maximum allowed points for polystar (to prevent excessive vertex count)
+    private static let maxPolystarPoints = 100
+
+    /// Validates polystar shape parameters and keyframe consistency
+    /// - Star type must be 1 (star) or 2 (polygon)
+    /// - Points must be static, integer, >= 3, <= 100
+    /// - Roundness (is/os) must be static and zero
+    /// - Radii must be valid (or > 0, for star: ir > 0 and ir < or)
+    /// - Animated keyframes must have matching count and times
+    private func validatePolystarKeyframes(
+        polystar: LottieShapePolystar,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        // 1) Validate star type (sy)
+        guard let starType = polystar.starType, (starType == 1 || starType == 2) else {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedPolystarStarType,
+                severity: .error,
+                path: "\(basePath).sy",
+                message: "Polystar has invalid star type: \(polystar.starType ?? -1). Must be 1 (star) or 2 (polygon)."
+            ))
+            return // Can't validate further without valid star type
+        }
+
+        let isStar = starType == 1
+
+        // 2) Validate points (pt) - must be static
+        if let points = polystar.points {
+            if points.isAnimated {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedPolystarPointsAnimated,
+                    severity: .error,
+                    path: "\(basePath).pt.a",
+                    message: "Polystar points animation not supported. Topology would change between keyframes."
+                ))
+            } else {
+                // Extract static points value
+                if let pointsData = points.value {
+                    let pointsValue: Double?
+                    switch pointsData {
+                    case .number(let num):
+                        pointsValue = num
+                    case .array(let arr) where !arr.isEmpty:
+                        pointsValue = arr[0]
+                    default:
+                        pointsValue = nil
+                    }
+
+                    if let pv = pointsValue {
+                        // Check if integer
+                        if pv != pv.rounded() {
+                            issues.append(ValidationIssue(
+                                code: AnimValidationCode.unsupportedPolystarPointsNonInteger,
+                                severity: .error,
+                                path: "\(basePath).pt.k",
+                                message: "Polystar points must be an integer. Got: \(pv)."
+                            ))
+                        } else {
+                            let intPoints = Int(pv)
+                            if intPoints < 3 || intPoints > Self.maxPolystarPoints {
+                                issues.append(ValidationIssue(
+                                    code: AnimValidationCode.unsupportedPolystarPointsInvalid,
+                                    severity: .error,
+                                    path: "\(basePath).pt.k",
+                                    message: "Polystar points must be between 3 and \(Self.maxPolystarPoints). Got: \(intPoints)."
+                                ))
+                            }
+                        }
+                    } else {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedPolystarPointsFormat,
+                            severity: .error,
+                            path: "\(basePath).pt.k",
+                            message: "Polystar points has invalid format. Expected a number."
+                        ))
+                    }
+                }
+            }
+        }
+
+        // 3) Validate roundness (is/os) - must be static and zero
+        validatePolystarRoundness(
+            value: polystar.innerRoundness,
+            fieldName: "innerRoundness",
+            fieldPath: "is",
+            basePath: basePath,
+            issues: &issues
+        )
+        validatePolystarRoundness(
+            value: polystar.outerRoundness,
+            fieldName: "outerRoundness",
+            fieldPath: "os",
+            basePath: basePath,
+            issues: &issues
+        )
+
+        // 4) Validate radii - extract static values for validation
+        let outerRadiusAnimated = polystar.outerRadius?.isAnimated ?? false
+        let innerRadiusAnimated = polystar.innerRadius?.isAnimated ?? false
+
+        // Validate static outer radius
+        if !outerRadiusAnimated {
+            if let orValue = extractStaticDouble(from: polystar.outerRadius) {
+                if orValue <= 0 {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedPolystarInvalidRadius,
+                        severity: .error,
+                        path: "\(basePath).or.k",
+                        message: "Polystar outer radius must be > 0. Got: \(orValue)."
+                    ))
+                }
+            }
+        }
+
+        // Validate static inner radius (only for star)
+        if isStar && !innerRadiusAnimated {
+            if let irValue = extractStaticDouble(from: polystar.innerRadius) {
+                if irValue <= 0 {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedPolystarInvalidRadius,
+                        severity: .error,
+                        path: "\(basePath).ir.k",
+                        message: "Polystar inner radius must be > 0. Got: \(irValue)."
+                    ))
+                }
+                // Check ir < or if both static
+                if !outerRadiusAnimated, let orValue = extractStaticDouble(from: polystar.outerRadius) {
+                    if irValue >= orValue {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedPolystarInvalidRadius,
+                            severity: .error,
+                            path: "\(basePath).ir.k",
+                            message: "Polystar inner radius (\(irValue)) must be < outer radius (\(orValue))."
+                        ))
+                    }
+                }
+            }
+        }
+
+        // 5) Validate animated keyframes consistency
+        validatePolystarAnimatedKeyframes(
+            polystar: polystar,
+            isStar: isStar,
+            basePath: basePath,
+            issues: &issues
+        )
+    }
+
+    /// Validates polystar roundness field (must be static and zero)
+    private func validatePolystarRoundness(
+        value: LottieAnimatedValue?,
+        fieldName: String,
+        fieldPath: String,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        guard let roundness = value else { return }
+
+        if roundness.isAnimated {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedPolystarRoundnessAnimated,
+                severity: .error,
+                path: "\(basePath).\(fieldPath).a",
+                message: "Polystar \(fieldName) animation not supported."
+            ))
+        } else {
+            // Check if non-zero
+            if let data = roundness.value {
+                let roundnessValue: Double?
+                switch data {
+                case .number(let num):
+                    roundnessValue = num
+                case .array(let arr) where !arr.isEmpty:
+                    roundnessValue = arr[0]
+                default:
+                    roundnessValue = nil
+                }
+
+                if let rv = roundnessValue, abs(rv) > 0.001 {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedPolystarRoundnessNonzero,
+                        severity: .error,
+                        path: "\(basePath).\(fieldPath).k",
+                        message: "Polystar \(fieldName) must be 0. Got: \(rv). Roundness not supported in current version."
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Validates animated keyframes for polystar (p, r, or, ir)
+    private func validatePolystarAnimatedKeyframes(
+        polystar: LottieShapePolystar,
+        isStar: Bool,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        let positionAnimated = polystar.position?.isAnimated ?? false
+        let rotationAnimated = polystar.rotation?.isAnimated ?? false
+        let outerRadiusAnimated = polystar.outerRadius?.isAnimated ?? false
+        let innerRadiusAnimated = isStar && (polystar.innerRadius?.isAnimated ?? false)
+
+        // If nothing is animated, no keyframe validation needed
+        guard positionAnimated || rotationAnimated || outerRadiusAnimated || innerRadiusAnimated else { return }
+
+        // Extract keyframes from animated fields
+        var allKeyframeArrays: [(name: String, path: String, keyframes: [LottieKeyframe]?)] = []
+
+        if positionAnimated {
+            let kfs = extractKeyframes(from: polystar.position)
+            allKeyframeArrays.append(("position", "p", kfs))
+            if kfs == nil {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).p",
+                    message: "Polystar position is animated but keyframes could not be decoded."
+                ))
+            }
+        }
+
+        if rotationAnimated {
+            let kfs = extractKeyframes(from: polystar.rotation)
+            allKeyframeArrays.append(("rotation", "r", kfs))
+            if kfs == nil {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).r",
+                    message: "Polystar rotation is animated but keyframes could not be decoded."
+                ))
+            }
+        }
+
+        if outerRadiusAnimated {
+            let kfs = extractKeyframes(from: polystar.outerRadius)
+            allKeyframeArrays.append(("outerRadius", "or", kfs))
+            if kfs == nil {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).or",
+                    message: "Polystar outer radius is animated but keyframes could not be decoded."
+                ))
+            }
+        }
+
+        if innerRadiusAnimated {
+            let kfs = extractKeyframes(from: polystar.innerRadius)
+            allKeyframeArrays.append(("innerRadius", "ir", kfs))
+            if kfs == nil {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).ir",
+                    message: "Polystar inner radius is animated but keyframes could not be decoded."
+                ))
+            }
+        }
+
+        // Get valid keyframe arrays
+        let validArrays = allKeyframeArrays.compactMap { item -> (name: String, path: String, keyframes: [LottieKeyframe])? in
+            guard let kfs = item.keyframes else { return nil }
+            return (item.name, item.path, kfs)
+        }
+
+        // If we have 2+ animated fields, validate they match
+        if validArrays.count >= 2 {
+            let referenceKfs = validArrays[0].keyframes
+            let referenceName = validArrays[0].name
+
+            for i in 1..<validArrays.count {
+                let otherKfs = validArrays[i].keyframes
+                let otherName = validArrays[i].name
+
+                // Check count match
+                if referenceKfs.count != otherKfs.count {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedPolystarKeyframesMismatch,
+                        severity: .error,
+                        path: basePath,
+                        message: "Polystar \(referenceName) has \(referenceKfs.count) keyframes but \(otherName) has \(otherKfs.count). All animated fields must have same keyframe count."
+                    ))
+                    continue
+                }
+
+                // Check time match for each keyframe
+                for j in 0..<referenceKfs.count {
+                    let refTime = referenceKfs[j].time
+                    let otherTime = otherKfs[j].time
+
+                    if refTime == nil || otherTime == nil {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                            severity: .error,
+                            path: basePath,
+                            message: "Polystar keyframe[\(j)] missing time value."
+                        ))
+                        continue
+                    }
+
+                    if let rt = refTime, let ot = otherTime, abs(rt - ot) >= 0.001 {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedPolystarKeyframesMismatch,
+                            severity: .error,
+                            path: basePath,
+                            message: "Polystar keyframe[\(j)] time mismatch: \(referenceName).t=\(rt), \(otherName).t=\(ot)."
+                        ))
+                    }
+                }
+            }
+        }
+
+        // Validate individual keyframe format for each animated field
+        for (name, fieldPath, keyframes) in validArrays {
+            let isVec2D = (name == "position")
+
+            for (i, kf) in keyframes.enumerated() {
+                // Check time exists
+                if kf.time == nil {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                        severity: .error,
+                        path: "\(basePath).\(fieldPath).k[\(i)]",
+                        message: "Polystar \(name) keyframe[\(i)] missing time (t)."
+                    ))
+                }
+
+                // Check startValue exists and has correct format
+                if let startValue = kf.startValue {
+                    if isVec2D {
+                        // Position expects [x, y] array
+                        switch startValue {
+                        case .numbers(let arr) where arr.count >= 2:
+                            break // Valid
+                        default:
+                            issues.append(ValidationIssue(
+                                code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                                severity: .error,
+                                path: "\(basePath).\(fieldPath).k[\(i)].s",
+                                message: "Polystar \(name) keyframe[\(i)] has invalid startValue format. Expected [x, y] array."
+                            ))
+                        }
+                    } else {
+                        // Rotation/radius expect a number (stored as single-element array)
+                        switch startValue {
+                        case .numbers(let arr) where !arr.isEmpty:
+                            break // Valid
+                        default:
+                            issues.append(ValidationIssue(
+                                code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                                severity: .error,
+                                path: "\(basePath).\(fieldPath).k[\(i)].s",
+                                message: "Polystar \(name) keyframe[\(i)] has invalid startValue format. Expected a number."
+                            ))
+                        }
+                    }
+                } else {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedPolystarKeyframeFormat,
+                        severity: .error,
+                        path: "\(basePath).\(fieldPath).k[\(i)].s",
+                        message: "Polystar \(name) keyframe[\(i)] missing startValue (s)."
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Extracts keyframes array from LottieAnimatedValue
+    private func extractKeyframes(from value: LottieAnimatedValue?) -> [LottieKeyframe]? {
+        guard let value = value,
+              let data = value.value,
+              case .keyframes(let kfs) = data else {
+            return nil
+        }
+        return kfs
+    }
+
+    /// Extracts static Double value from LottieAnimatedValue
+    private func extractStaticDouble(from value: LottieAnimatedValue?) -> Double? {
+        guard let value = value, let data = value.value else { return nil }
+        switch data {
+        case .number(let num):
+            return num
+        case .array(let arr) where !arr.isEmpty:
+            return arr[0]
+        default:
+            return nil
         }
     }
 }

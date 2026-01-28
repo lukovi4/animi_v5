@@ -612,6 +612,10 @@ public enum ShapePathExtractor {
             // Ellipse shape - build bezier path from position and size
             return buildEllipseBezierPath(from: ellipse)
 
+        case .polystar(let polystar):
+            // Polystar shape - build bezier path from position, points, radii, rotation
+            return buildPolystarBezierPath(from: polystar)
+
         case .group(let shapeGroup):
             // Group - recurse into items and apply group transform
             guard let items = shapeGroup.items else { return nil }
@@ -654,6 +658,10 @@ public enum ShapePathExtractor {
         case .ellipse(let ellipse):
             // Ellipse shape - extract static or animated path
             return extractEllipseAnimPath(from: ellipse)
+
+        case .polystar(let polystar):
+            // Polystar shape - extract static or animated path
+            return extractPolystarAnimPath(from: polystar)
 
         case .group(let shapeGroup):
             // Group - recurse into items and apply group transform
@@ -1330,6 +1338,391 @@ public enum ShapePathExtractor {
         }
 
         return .keyframedBezier(keyframes)
+    }
+
+    // MARK: - Polystar Path Building
+
+    /// Builds a static BezierPath from a LottieShapePolystar
+    /// - Parameter polystar: The polystar shape definition
+    /// - Returns: BezierPath or nil if parameters cannot be extracted or are invalid
+    private static func buildPolystarBezierPath(from polystar: LottieShapePolystar) -> BezierPath? {
+        // Extract star type (1 = star, 2 = polygon)
+        guard let starType = polystar.starType, (starType == 1 || starType == 2) else { return nil }
+
+        // Extract static position [cx, cy]
+        guard let position = extractVec2D(from: polystar.position) else { return nil }
+
+        // Extract static points count (must be integer in 3...100)
+        guard let points = extractDouble(from: polystar.points),
+              points >= 3, points <= 100, points == points.rounded() else { return nil }
+        let pointsInt = Int(points)
+
+        // Extract static outer radius
+        guard let outerRadius = extractDouble(from: polystar.outerRadius),
+              outerRadius > 0 else { return nil }
+
+        // Extract inner radius (required for star, ignored for polygon)
+        let innerRadius: Double
+        if starType == 1 {
+            guard let ir = extractDouble(from: polystar.innerRadius),
+                  ir > 0, ir < outerRadius else { return nil }
+            innerRadius = ir
+        } else {
+            innerRadius = 0 // Not used for polygon
+        }
+
+        // Extract static rotation (default 0)
+        let rotationDeg = extractDouble(from: polystar.rotation) ?? 0
+
+        // Validate roundness is zero (or absent)
+        if let innerRoundness = extractDouble(from: polystar.innerRoundness), abs(innerRoundness) > 0.001 {
+            return nil
+        }
+        if let outerRoundness = extractDouble(from: polystar.outerRoundness), abs(outerRoundness) > 0.001 {
+            return nil
+        }
+
+        // Direction: 1 = clockwise (default), 2 = counter-clockwise
+        let direction = polystar.direction ?? 1
+
+        return buildPolystarBezierPath(
+            cx: position.x,
+            cy: position.y,
+            points: pointsInt,
+            outerRadius: outerRadius,
+            innerRadius: innerRadius,
+            rotationDeg: rotationDeg,
+            starType: starType,
+            direction: direction
+        )
+    }
+
+    /// Builds a BezierPath for a polystar with given parameters
+    /// - Parameters:
+    ///   - cx: Center X position
+    ///   - cy: Center Y position
+    ///   - points: Number of points (>= 3)
+    ///   - outerRadius: Outer radius (> 0)
+    ///   - innerRadius: Inner radius (only used for star, > 0 and < outerRadius)
+    ///   - rotationDeg: Rotation in degrees
+    ///   - starType: 1 = star (2N vertices), 2 = polygon (N vertices)
+    ///   - direction: 1 = clockwise, 2 = counter-clockwise
+    /// - Returns: BezierPath representing the polystar (sharp corners, no roundness)
+    private static func buildPolystarBezierPath(
+        cx: Double,
+        cy: Double,
+        points: Int,
+        outerRadius: Double,
+        innerRadius: Double,
+        rotationDeg: Double,
+        starType: Int,
+        direction: Int
+    ) -> BezierPath {
+        // Convert rotation to radians
+        let rotationRad = rotationDeg * .pi / 180.0
+
+        // Start angle: -π/2 so that 0° rotation points "up" (matching AE/Lottie convention)
+        let startAngle = -.pi / 2.0
+
+        var vertices: [Vec2D] = []
+
+        if starType == 2 {
+            // Polygon: N vertices at equal angles
+            let step = 2.0 * .pi / Double(points)
+            for i in 0..<points {
+                let angle = startAngle + rotationRad + Double(i) * step
+                let x = cx + outerRadius * cos(angle)
+                let y = cy + outerRadius * sin(angle)
+                vertices.append(Vec2D(x: x, y: y))
+            }
+        } else {
+            // Star: 2N vertices alternating outer/inner radius
+            let step = .pi / Double(points)
+            let totalVertices = points * 2
+            for k in 0..<totalVertices {
+                let angle = startAngle + rotationRad + Double(k) * step
+                let radius = (k % 2 == 0) ? outerRadius : innerRadius
+                let x = cx + radius * cos(angle)
+                let y = cy + radius * sin(angle)
+                vertices.append(Vec2D(x: x, y: y))
+            }
+        }
+
+        // For counter-clockwise (d=2), reverse vertices
+        if direction == 2 {
+            vertices.reverse()
+        }
+
+        // Sharp corners: all tangents are zero
+        let zeroTangents = Array(repeating: Vec2D.zero, count: vertices.count)
+
+        return BezierPath(
+            vertices: vertices,
+            inTangents: zeroTangents,
+            outTangents: zeroTangents,
+            closed: true
+        )
+    }
+
+    /// Extracts AnimPath from a LottieShapePolystar (supports animated position/rotation/radii)
+    /// - Parameter polystar: The polystar shape definition
+    /// - Returns: AnimPath (static or keyframed) or nil if extraction fails
+    private static func extractPolystarAnimPath(from polystar: LottieShapePolystar) -> AnimPath? {
+        // Extract star type (1 = star, 2 = polygon)
+        guard let starType = polystar.starType, (starType == 1 || starType == 2) else { return nil }
+        let isStar = starType == 1
+
+        // Validate roundness is zero or absent
+        if polystar.innerRoundness?.isAnimated == true || polystar.outerRoundness?.isAnimated == true {
+            return nil
+        }
+        if let innerRoundness = extractDouble(from: polystar.innerRoundness), abs(innerRoundness) > 0.001 {
+            return nil
+        }
+        if let outerRoundness = extractDouble(from: polystar.outerRoundness), abs(outerRoundness) > 0.001 {
+            return nil
+        }
+
+        // Points must be static (animated would change topology)
+        if polystar.points?.isAnimated == true {
+            return nil
+        }
+        // Points must be integer in 3...100
+        guard let points = extractDouble(from: polystar.points),
+              points >= 3, points <= 100, points == points.rounded() else { return nil }
+        let pointsInt = Int(points)
+
+        // Direction (static)
+        let direction = polystar.direction ?? 1
+
+        // Check which fields are animated
+        let positionAnimated = polystar.position?.isAnimated ?? false
+        let rotationAnimated = polystar.rotation?.isAnimated ?? false
+        let outerRadiusAnimated = polystar.outerRadius?.isAnimated ?? false
+        let innerRadiusAnimated = isStar && (polystar.innerRadius?.isAnimated ?? false)
+
+        // If nothing is animated, return static path
+        if !positionAnimated && !rotationAnimated && !outerRadiusAnimated && !innerRadiusAnimated {
+            if let bezier = buildPolystarBezierPath(from: polystar) {
+                return .staticBezier(bezier)
+            }
+            return nil
+        }
+
+        // Extract keyframes from animated fields
+        let positionKeyframes: [LottieKeyframe]?
+        let rotationKeyframes: [LottieKeyframe]?
+        let outerRadiusKeyframes: [LottieKeyframe]?
+        let innerRadiusKeyframes: [LottieKeyframe]?
+
+        if positionAnimated {
+            guard let posValue = polystar.position,
+                  let posData = posValue.value,
+                  case .keyframes(let kfs) = posData else { return nil }
+            positionKeyframes = kfs
+        } else {
+            positionKeyframes = nil
+        }
+
+        if rotationAnimated {
+            guard let rotValue = polystar.rotation,
+                  let rotData = rotValue.value,
+                  case .keyframes(let kfs) = rotData else { return nil }
+            rotationKeyframes = kfs
+        } else {
+            rotationKeyframes = nil
+        }
+
+        if outerRadiusAnimated {
+            guard let orValue = polystar.outerRadius,
+                  let orData = orValue.value,
+                  case .keyframes(let kfs) = orData else { return nil }
+            outerRadiusKeyframes = kfs
+        } else {
+            outerRadiusKeyframes = nil
+        }
+
+        if innerRadiusAnimated {
+            guard let irValue = polystar.innerRadius,
+                  let irData = irValue.value,
+                  case .keyframes(let kfs) = irData else { return nil }
+            innerRadiusKeyframes = kfs
+        } else {
+            innerRadiusKeyframes = nil
+        }
+
+        // Collect all animated keyframe arrays
+        var allKeyframeArrays: [[LottieKeyframe]] = []
+        if let kfs = outerRadiusKeyframes { allKeyframeArrays.append(kfs) }
+        if let kfs = positionKeyframes { allKeyframeArrays.append(kfs) }
+        if let kfs = rotationKeyframes { allKeyframeArrays.append(kfs) }
+        if let kfs = innerRadiusKeyframes { allKeyframeArrays.append(kfs) }
+
+        // If 2+ animated fields, validate they match
+        if allKeyframeArrays.count >= 2 {
+            let referenceCount = allKeyframeArrays[0].count
+            for i in 1..<allKeyframeArrays.count {
+                guard allKeyframeArrays[i].count == referenceCount else {
+                    return nil // Count mismatch - fail-fast
+                }
+            }
+
+            // Validate time match
+            for i in 0..<referenceCount {
+                let refTime = allKeyframeArrays[0][i].time
+                guard let rt = refTime else { return nil }
+                for j in 1..<allKeyframeArrays.count {
+                    guard let ot = allKeyframeArrays[j][i].time else { return nil }
+                    guard abs(rt - ot) < 0.001 else { return nil }
+                }
+            }
+        }
+
+        // Extract static values for non-animated fields
+        let staticPosition: Vec2D?
+        if !positionAnimated {
+            guard let pos = extractVec2D(from: polystar.position) else { return nil }
+            staticPosition = pos
+        } else {
+            staticPosition = nil
+        }
+
+        let staticRotation: Double?
+        if !rotationAnimated {
+            staticRotation = extractDouble(from: polystar.rotation) ?? 0
+        } else {
+            staticRotation = nil
+        }
+
+        let staticOuterRadius: Double?
+        if !outerRadiusAnimated {
+            guard let or = extractDouble(from: polystar.outerRadius), or > 0 else { return nil }
+            staticOuterRadius = or
+        } else {
+            staticOuterRadius = nil
+        }
+
+        let staticInnerRadius: Double?
+        if isStar && !innerRadiusAnimated {
+            guard let ir = extractDouble(from: polystar.innerRadius), ir > 0 else { return nil }
+            staticInnerRadius = ir
+        } else {
+            staticInnerRadius = nil
+        }
+
+        // Determine driver keyframes (priority: or > p > r > ir)
+        let driverKeyframes: [LottieKeyframe]
+        if let kfs = outerRadiusKeyframes {
+            driverKeyframes = kfs
+        } else if let kfs = positionKeyframes {
+            driverKeyframes = kfs
+        } else if let kfs = rotationKeyframes {
+            driverKeyframes = kfs
+        } else if let kfs = innerRadiusKeyframes {
+            driverKeyframes = kfs
+        } else {
+            return nil // Should not happen
+        }
+
+        var keyframes: [Keyframe<BezierPath>] = []
+
+        for (index, driverKf) in driverKeyframes.enumerated() {
+            // Time is required - fail-fast if missing
+            guard let time = driverKf.time else { return nil }
+
+            // Get position at this keyframe
+            let position: Vec2D
+            if let posKfs = positionKeyframes {
+                guard let pos = extractVec2DFromKeyframe(posKfs[index]) else { return nil }
+                position = pos
+            } else if let staticPos = staticPosition {
+                position = staticPos
+            } else {
+                return nil
+            }
+
+            // Get rotation at this keyframe
+            let rotationDeg: Double
+            if let rotKfs = rotationKeyframes {
+                guard let rot = extractDoubleFromKeyframe(rotKfs[index]) else { return nil }
+                rotationDeg = rot
+            } else if let staticRot = staticRotation {
+                rotationDeg = staticRot
+            } else {
+                rotationDeg = 0
+            }
+
+            // Get outer radius at this keyframe
+            let outerRadius: Double
+            if let orKfs = outerRadiusKeyframes {
+                guard let or = extractDoubleFromKeyframe(orKfs[index]), or > 0 else { return nil }
+                outerRadius = or
+            } else if let staticOr = staticOuterRadius {
+                outerRadius = staticOr
+            } else {
+                return nil
+            }
+
+            // Get inner radius at this keyframe (only for star)
+            let innerRadius: Double
+            if isStar {
+                if let irKfs = innerRadiusKeyframes {
+                    guard let ir = extractDoubleFromKeyframe(irKfs[index]), ir > 0, ir < outerRadius else { return nil }
+                    innerRadius = ir
+                } else if let staticIr = staticInnerRadius {
+                    guard staticIr < outerRadius else { return nil }
+                    innerRadius = staticIr
+                } else {
+                    return nil
+                }
+            } else {
+                innerRadius = 0
+            }
+
+            // Build bezier path for this keyframe
+            let bezier = buildPolystarBezierPath(
+                cx: position.x,
+                cy: position.y,
+                points: pointsInt,
+                outerRadius: outerRadius,
+                innerRadius: innerRadius,
+                rotationDeg: rotationDeg,
+                starType: starType,
+                direction: direction
+            )
+
+            // Extract easing from driver keyframe
+            let inTan = extractTangent(from: driverKf.inTangent)
+            let outTan = extractTangent(from: driverKf.outTangent)
+            let hold = (driverKf.hold ?? 0) == 1
+
+            keyframes.append(Keyframe(
+                time: time,
+                value: bezier,
+                inTangent: inTan,
+                outTangent: outTan,
+                hold: hold
+            ))
+        }
+
+        guard !keyframes.isEmpty else { return nil }
+
+        if keyframes.count == 1 {
+            return .staticBezier(keyframes[0].value)
+        }
+
+        return .keyframedBezier(keyframes)
+    }
+
+    /// Extracts Double from a keyframe's startValue
+    private static func extractDoubleFromKeyframe(_ kf: LottieKeyframe) -> Double? {
+        guard let startValue = kf.startValue else { return nil }
+        switch startValue {
+        case .numbers(let arr) where !arr.isEmpty:
+            return arr[0]
+        default:
+            return nil
+        }
     }
 
     // MARK: - Path Keyframe Extraction

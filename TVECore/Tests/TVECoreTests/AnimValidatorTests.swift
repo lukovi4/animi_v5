@@ -1482,10 +1482,10 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertTrue(error?.message.contains("width=0") ?? false || error?.message.contains("width=0.0") ?? false, "Error should mention width=0")
     }
 
-    // MARK: - Polystar Shape Validation (PR-05)
+    // MARK: - Polystar Shape Validation (PR-09)
 
-    func testValidate_polystarShape_returnsErrorWithCorrectPath() throws {
-        // Polystar (sr) is decoded but NOT yet supported for rendering (until PR-09)
+    func testValidate_polystarShape_noError() throws {
+        // Polystar (sr) is now supported (PR-09) - valid polygon should produce no error
         let scene = sceneJSON()
         let anim = """
         {
@@ -1496,7 +1496,7 @@ final class AnimValidatorTests: XCTestCase {
           ],
           "layers": [
             { "ty": 0, "refId": "comp_0" },
-            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 1, "pt": {"a": 0, "k": 5}, "or": {"a": 0, "k": 50} }] }
+            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 2, "pt": {"a": 0, "k": 5}, "or": {"a": 0, "k": 50}, "os": {"a": 0, "k": 0}, "r": {"a": 0, "k": 0} }] }
           ]
         }
         """
@@ -1505,13 +1505,11 @@ final class AnimValidatorTests: XCTestCase {
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'sr'")
         }
-        XCTAssertNotNil(error, "Polystar shape should produce unsupportedShapeItem error")
-        // Verify path contains .shapes[0].ty for top-level shape
-        XCTAssertTrue(error?.path.contains(".shapes[0].ty") == true, "Path should contain .shapes[0].ty, got: \(error?.path ?? "nil")")
+        XCTAssertNil(error, "Polystar shape should NOT produce unsupportedShapeItem error (now supported)")
     }
 
-    func testValidate_polystarInGroupShape_returnsErrorWithCorrectNestedPath() throws {
-        // Polystar nested inside a group should also be caught with correct path
+    func testValidate_polystarInGroupShape_noError() throws {
+        // Polystar nested inside a group should also pass (now supported)
         let scene = sceneJSON()
         let anim = """
         {
@@ -1522,7 +1520,7 @@ final class AnimValidatorTests: XCTestCase {
           ],
           "layers": [
             { "ty": 0, "refId": "comp_0" },
-            { "ty": 4, "shapes": [{ "ty": "gr", "it": [{ "ty": "sr", "sy": 1, "pt": {"a": 0, "k": 5}, "or": {"a": 0, "k": 50} }, { "ty": "fl" }, { "ty": "tr" }] }] }
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [{ "ty": "sr", "sy": 2, "pt": {"a": 0, "k": 5}, "or": {"a": 0, "k": 50}, "os": {"a": 0, "k": 0} }, { "ty": "fl" }, { "ty": "tr" }] }] }
           ]
         }
         """
@@ -1531,9 +1529,272 @@ final class AnimValidatorTests: XCTestCase {
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'sr'")
         }
-        XCTAssertNotNil(error, "Polystar inside group should also produce error")
-        // Verify path is correct: should contain .it[0].ty for nested shape inside group
-        XCTAssertTrue(error?.path.contains(".it[0].ty") == true, "Path should contain .it[0].ty for nested shape, got: \(error?.path ?? "nil")")
+        XCTAssertNil(error, "Polystar inside group should NOT produce unsupportedShapeItem error (now supported)")
+    }
+
+    func testValidate_polystarInvalidStarType_returnsError() throws {
+        // Polystar with invalid star type (sy=3) should produce error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 3, "pt": {"a": 0, "k": 5}, "or": {"a": 0, "k": 50} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarStarType
+        }
+        XCTAssertNotNil(error, "Polystar with invalid star type should produce error")
+        XCTAssertTrue(error?.path.contains(".sy") ?? false, "Error path should reference .sy")
+    }
+
+    func testValidate_polystarPointsAnimated_returnsError() throws {
+        // Polystar with animated points should produce error (topology would change)
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 2, "pt": {"a": 1, "k": [{"t": 0, "s": [5]}, {"t": 10, "s": [8]}]}, "or": {"a": 0, "k": 50}, "os": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarPointsAnimated
+        }
+        XCTAssertNotNil(error, "Polystar with animated points should produce error")
+        XCTAssertTrue(error?.message.contains("Topology") ?? false, "Error should mention topology")
+    }
+
+    func testValidate_polystarPointsNonInteger_returnsError() throws {
+        // Polystar with non-integer points should produce error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 2, "pt": {"a": 0, "k": 5.5}, "or": {"a": 0, "k": 50}, "os": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarPointsNonInteger
+        }
+        XCTAssertNotNil(error, "Polystar with non-integer points should produce error")
+    }
+
+    func testValidate_polystarPointsInvalid_returnsError() throws {
+        // Polystar with points < 3 should produce error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 2, "pt": {"a": 0, "k": 2}, "or": {"a": 0, "k": 50}, "os": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarPointsInvalid
+        }
+        XCTAssertNotNil(error, "Polystar with points < 3 should produce error")
+    }
+
+    func testValidate_polystarRoundnessAnimated_returnsError() throws {
+        // Polystar with animated roundness should produce error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 2, "pt": {"a": 0, "k": 5}, "or": {"a": 0, "k": 50}, "os": {"a": 1, "k": [{"t": 0, "s": [0]}, {"t": 10, "s": [50]}]} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarRoundnessAnimated
+        }
+        XCTAssertNotNil(error, "Polystar with animated roundness should produce error")
+    }
+
+    func testValidate_polystarRoundnessNonzero_returnsError() throws {
+        // Polystar with non-zero roundness should produce error (not supported in PR-09)
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 2, "pt": {"a": 0, "k": 5}, "or": {"a": 0, "k": 50}, "os": {"a": 0, "k": 25} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarRoundnessNonzero
+        }
+        XCTAssertNotNil(error, "Polystar with non-zero roundness should produce error")
+    }
+
+    func testValidate_polystarInvalidOuterRadius_returnsError() throws {
+        // Polystar with or <= 0 should produce error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "sr", "sy": 2, "pt": {"a": 0, "k": 5}, "or": {"a": 0, "k": 0}, "os": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarInvalidRadius
+        }
+        XCTAssertNotNil(error, "Polystar with or=0 should produce error")
+        XCTAssertTrue(error?.path.contains(".or") ?? false, "Error path should reference .or")
+    }
+
+    func testValidate_polystarMismatchedKeyframeCounts_returnsError() throws {
+        // Polystar with p having 2 keyframes and or having 3 keyframes should produce error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{
+                "ty": "sr", "sy": 2,
+                "pt": {"a": 0, "k": 5},
+                "or": {"a": 1, "k": [{"t": 0, "s": [50]}, {"t": 5, "s": [75]}, {"t": 10, "s": [100]}]},
+                "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]},
+                "os": {"a": 0, "k": 0}
+            }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarKeyframesMismatch
+        }
+        XCTAssertNotNil(error, "Polystar with mismatched keyframe counts should produce error")
+    }
+
+    func testValidate_polystarMismatchedKeyframeTimes_returnsError() throws {
+        // Polystar with p and or having different keyframe times should produce error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{
+                "ty": "sr", "sy": 2,
+                "pt": {"a": 0, "k": 5},
+                "or": {"a": 1, "k": [{"t": 0, "s": [50]}, {"t": 15, "s": [100]}]},
+                "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]},
+                "os": {"a": 0, "k": 0}
+            }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarKeyframesMismatch
+        }
+        XCTAssertNotNil(error, "Polystar with mismatched keyframe times should produce error")
+    }
+
+    func testValidate_polystarMatchingKeyframes_noError() throws {
+        // Polystar with matching keyframes should pass
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{
+                "ty": "sr", "sy": 2,
+                "pt": {"a": 0, "k": 5},
+                "or": {"a": 1, "k": [{"t": 0, "s": [50]}, {"t": 10, "s": [100]}]},
+                "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]},
+                "os": {"a": 0, "k": 0}
+            }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let keyframeMismatchError = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarKeyframesMismatch
+        }
+        let keyframeFormatError = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedPolystarKeyframeFormat
+        }
+        XCTAssertNil(keyframeMismatchError, "Polystar with matching keyframes should NOT produce mismatch error")
+        XCTAssertNil(keyframeFormatError, "Polystar with valid keyframes should NOT produce format error")
     }
 
     // MARK: - Stroke Shape Validation (PR-06)

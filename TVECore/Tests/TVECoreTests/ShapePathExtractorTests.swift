@@ -1380,4 +1380,566 @@ final class ShapePathExtractorTests: XCTestCase {
             XCTFail("Expected staticBezier for static ellipse")
         }
     }
+
+    // MARK: - Polystar Shape (sr) Tests - PR-09
+
+    /// Test static polygon (sy=2) builds N vertices
+    /// polygon: p=[0,0], pt=5, or=100, d=1
+    /// Expected: 5 vertices, closed, zero tangents
+    func testPolystar_polygon_static_buildsNVertices() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Polygon 1",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 5},
+            "or": {"a": 0, "k": 100},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from polygon")
+        guard let extractedPath = path else { return }
+
+        // Polygon with 5 points has 5 vertices
+        XCTAssertEqual(extractedPath.vertexCount, 5, "Pentagon should have 5 vertices")
+        XCTAssertTrue(extractedPath.closed, "Polygon path should be closed")
+
+        // All tangents should be zero (sharp corners)
+        let allZeroIn = extractedPath.inTangents.allSatisfy { $0.x == 0 && $0.y == 0 }
+        let allZeroOut = extractedPath.outTangents.allSatisfy { $0.x == 0 && $0.y == 0 }
+        XCTAssertTrue(allZeroIn, "All in tangents should be zero")
+        XCTAssertTrue(allZeroOut, "All out tangents should be zero")
+    }
+
+    /// Test static star (sy=1) builds 2N vertices
+    /// star: p=[0,0], pt=5, or=100, ir=50, d=1
+    /// Expected: 10 vertices (2*5), closed, zero tangents
+    func testPolystar_star_static_builds2NVertices() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Star 1",
+            "sy": 1,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 5},
+            "or": {"a": 0, "k": 100},
+            "ir": {"a": 0, "k": 50},
+            "os": {"a": 0, "k": 0},
+            "is": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from star")
+        guard let extractedPath = path else { return }
+
+        // Star with 5 points has 2*5=10 vertices
+        XCTAssertEqual(extractedPath.vertexCount, 10, "5-point star should have 10 vertices")
+        XCTAssertTrue(extractedPath.closed, "Star path should be closed")
+    }
+
+    /// Test that rotation=0 means first point is "up" (top of shape)
+    /// polygon: p=[0,0], pt=4, or=100, r=0
+    /// First vertex should be at (0, -100) = top
+    func testPolystar_rotation0_pointsUp() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Square Polygon",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 4},
+            "or": {"a": 0, "k": 100},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from polygon")
+        guard let extractedPath = path else { return }
+
+        let epsilon = 0.001
+
+        // First vertex should be at top: (0, -100)
+        XCTAssertEqual(extractedPath.vertices[0].x, 0, accuracy: epsilon, "First vertex X should be 0")
+        XCTAssertEqual(extractedPath.vertices[0].y, -100, accuracy: epsilon, "First vertex Y should be -100 (top)")
+    }
+
+    /// Test direction CCW (d=2) keeps AABB the same
+    func testPolystar_directionCCW_keepsAABB() throws {
+        let jsonCW = """
+        {
+            "ty": "sr",
+            "nm": "Polygon CW",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 5},
+            "or": {"a": 0, "k": 100},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let jsonCCW = """
+        {
+            "ty": "sr",
+            "nm": "Polygon CCW",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 5},
+            "or": {"a": 0, "k": 100},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 2
+        }
+        """
+
+        let dataCW = jsonCW.data(using: .utf8)!
+        let shapeCW = try JSONDecoder().decode(ShapeItem.self, from: dataCW)
+        let pathCW = ShapePathExtractor.extractPath(from: [shapeCW])
+
+        let dataCCW = jsonCCW.data(using: .utf8)!
+        let shapeCCW = try JSONDecoder().decode(ShapeItem.self, from: dataCCW)
+        let pathCCW = ShapePathExtractor.extractPath(from: [shapeCCW])
+
+        XCTAssertNotNil(pathCW, "CW path should be extracted")
+        XCTAssertNotNil(pathCCW, "CCW path should be extracted")
+
+        guard let cw = pathCW, let ccw = pathCCW else { return }
+
+        let epsilon = 0.001
+
+        // Both should have same AABB
+        XCTAssertEqual(cw.aabb.minX, ccw.aabb.minX, accuracy: epsilon)
+        XCTAssertEqual(cw.aabb.maxX, ccw.aabb.maxX, accuracy: epsilon)
+        XCTAssertEqual(cw.aabb.minY, ccw.aabb.minY, accuracy: epsilon)
+        XCTAssertEqual(cw.aabb.maxY, ccw.aabb.maxY, accuracy: epsilon)
+    }
+
+    /// Test polystar inside group with transform
+    func testPolystar_insideGroupWithTransform_appliesMatrix() throws {
+        let json = """
+        {
+            "ty": "gr",
+            "nm": "Group 1",
+            "it": [
+                {
+                    "ty": "sr",
+                    "nm": "Polygon 1",
+                    "sy": 2,
+                    "p": {"a": 0, "k": [0, 0]},
+                    "pt": {"a": 0, "k": 4},
+                    "or": {"a": 0, "k": 50},
+                    "os": {"a": 0, "k": 0},
+                    "r": {"a": 0, "k": 0},
+                    "d": 1
+                },
+                {
+                    "ty": "tr",
+                    "p": {"a": 0, "k": [100, 100]},
+                    "a": {"a": 0, "k": [0, 0]},
+                    "s": {"a": 0, "k": [100, 100]},
+                    "r": {"a": 0, "k": 0}
+                }
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from polystar in group")
+        guard let extractedPath = path else { return }
+
+        let epsilon = 0.001
+
+        // Original AABB at center (0,0) with or=50: (-50,-50) to (50,50)
+        // After translation (100,100): (50, 50) to (150, 150)
+        let aabb = extractedPath.aabb
+        XCTAssertEqual(aabb.minX, 50, accuracy: epsilon)
+        XCTAssertEqual(aabb.maxX, 150, accuracy: epsilon)
+        XCTAssertEqual(aabb.minY, 50, accuracy: epsilon)
+        XCTAssertEqual(aabb.maxY, 150, accuracy: epsilon)
+    }
+
+    /// Test animated outer radius builds keyframed AnimPath
+    func testPolystar_animatedOuterRadius_buildsKeyframedAnimPath() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Animated OR Polygon",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 4},
+            "or": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [50]},
+                    {"t": 10, "s": [100]}
+                ]
+            },
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNotNil(animPath, "AnimPath should be extracted from animated polystar")
+
+        if case .keyframedBezier(let keyframes) = animPath {
+            XCTAssertEqual(keyframes.count, 2, "Should have 2 keyframes")
+        } else {
+            XCTFail("Expected keyframedBezier")
+        }
+    }
+
+    /// Test animated position builds keyframed AnimPath
+    func testPolystar_animatedPosition_buildsKeyframedAnimPath() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Animated Position Polygon",
+            "sy": 2,
+            "p": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [0, 0]},
+                    {"t": 10, "s": [100, 100]}
+                ]
+            },
+            "pt": {"a": 0, "k": 4},
+            "or": {"a": 0, "k": 50},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNotNil(animPath, "AnimPath should be extracted from animated polystar")
+
+        if case .keyframedBezier(let keyframes) = animPath {
+            XCTAssertEqual(keyframes.count, 2, "Should have 2 keyframes")
+        } else {
+            XCTFail("Expected keyframedBezier")
+        }
+    }
+
+    /// Test animated multiple fields with matching times
+    func testPolystar_animatedMultiple_matchingTimes_works() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Animated Multiple Polygon",
+            "sy": 2,
+            "p": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [0, 0]},
+                    {"t": 10, "s": [50, 50]}
+                ]
+            },
+            "pt": {"a": 0, "k": 4},
+            "or": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [50]},
+                    {"t": 10, "s": [100]}
+                ]
+            },
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNotNil(animPath, "AnimPath should be extracted when multiple fields have matching keyframes")
+
+        if case .keyframedBezier(let keyframes) = animPath {
+            XCTAssertEqual(keyframes.count, 2, "Should have 2 keyframes")
+        } else {
+            XCTFail("Expected keyframedBezier")
+        }
+    }
+
+    /// Test animated multiple fields with mismatched counts returns nil
+    func testPolystar_animatedMultiple_mismatchCounts_returnsNil() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Mismatched Counts Polygon",
+            "sy": 2,
+            "p": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [0, 0]},
+                    {"t": 10, "s": [50, 50]}
+                ]
+            },
+            "pt": {"a": 0, "k": 4},
+            "or": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [50]},
+                    {"t": 5, "s": [75]},
+                    {"t": 10, "s": [100]}
+                ]
+            },
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNil(animPath, "extractAnimPath should return nil when animated fields have different keyframe counts")
+    }
+
+    /// Test animated multiple fields with mismatched times returns nil
+    func testPolystar_animatedMultiple_mismatchTimes_returnsNil() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Mismatched Times Polygon",
+            "sy": 2,
+            "p": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [0, 0]},
+                    {"t": 10, "s": [50, 50]}
+                ]
+            },
+            "pt": {"a": 0, "k": 4},
+            "or": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [50]},
+                    {"t": 15, "s": [100]}
+                ]
+            },
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNil(animPath, "extractAnimPath should return nil when animated fields have different keyframe times")
+    }
+
+    /// Test animated points returns nil (topology would change)
+    func testPolystar_pointsAnimated_returnsNil() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Animated Points Polygon",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [4]},
+                    {"t": 10, "s": [6]}
+                ]
+            },
+            "or": {"a": 0, "k": 50},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNil(animPath, "extractAnimPath should return nil when points are animated")
+    }
+
+    /// Test non-zero roundness returns nil
+    func testPolystar_roundnessNonZero_returnsNil() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Rounded Polygon",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 5},
+            "or": {"a": 0, "k": 100},
+            "os": {"a": 0, "k": 50},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNil(path, "extractPath should return nil when roundness is non-zero")
+    }
+
+    /// Test invalid outer radius (or <= 0) returns nil
+    func testPolystar_invalidOuterRadius_returnsNil() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Invalid OR Polygon",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 5},
+            "or": {"a": 0, "k": 0},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNil(path, "extractPath should return nil when outer radius is 0")
+    }
+
+    /// Test invalid inner radius for star (ir >= or) returns nil
+    func testPolystar_star_invalidInnerRadius_returnsNil() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Invalid IR Star",
+            "sy": 1,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 5},
+            "or": {"a": 0, "k": 100},
+            "ir": {"a": 0, "k": 100},
+            "os": {"a": 0, "k": 0},
+            "is": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNil(path, "extractPath should return nil when inner radius >= outer radius")
+    }
+
+    /// Test extractAnimPath returns staticBezier for non-animated polystar
+    func testPolystar_extractAnimPath_staticReturnsStaticBezier() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Static Polygon",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 5},
+            "or": {"a": 0, "k": 100},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNotNil(animPath, "AnimPath should be extracted from static polystar")
+
+        if case .staticBezier(let bezier) = animPath {
+            XCTAssertEqual(bezier.vertexCount, 5, "Static polygon should have 5 vertices")
+            XCTAssertTrue(bezier.closed, "Polygon should be closed")
+            XCTAssertFalse(animPath!.isAnimated, "Static polystar should not be animated")
+        } else {
+            XCTFail("Expected staticBezier for static polystar")
+        }
+    }
+
+    /// Test polygon with pt > 100 returns nil (upper bound check)
+    func testPolystar_polygon_pointsExceedsMax_returnsNil() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Polygon 101 points",
+            "sy": 2,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 101},
+            "or": {"a": 0, "k": 100},
+            "os": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNil(path, "extractPath should return nil when pt > 100")
+    }
+
+    /// Test star with pt > 100 returns nil (upper bound check)
+    func testPolystar_star_pointsExceedsMax_returnsNil() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Star 101 points",
+            "sy": 1,
+            "p": {"a": 0, "k": [0, 0]},
+            "pt": {"a": 0, "k": 101},
+            "or": {"a": 0, "k": 100},
+            "ir": {"a": 0, "k": 50},
+            "os": {"a": 0, "k": 0},
+            "is": {"a": 0, "k": 0},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNil(path, "extractPath should return nil when pt > 100 for star")
+    }
 }

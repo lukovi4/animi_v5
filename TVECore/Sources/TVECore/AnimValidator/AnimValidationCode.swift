@@ -73,6 +73,36 @@ public enum AnimValidationCode {
     /// Ellipse has invalid size (width or height <= 0)
     public static let unsupportedEllipseInvalidSize = "UNSUPPORTED_ELLIPSE_INVALID_SIZE"
 
+    /// Polystar has invalid star type (sy not 1 or 2)
+    public static let unsupportedPolystarStarType = "UNSUPPORTED_POLYSTAR_STAR_TYPE"
+
+    /// Polystar points are animated (pt.a == 1) - topology would change
+    public static let unsupportedPolystarPointsAnimated = "UNSUPPORTED_POLYSTAR_POINTS_ANIMATED"
+
+    /// Polystar points have invalid format (not a number)
+    public static let unsupportedPolystarPointsFormat = "UNSUPPORTED_POLYSTAR_POINTS_FORMAT"
+
+    /// Polystar points value is not an integer
+    public static let unsupportedPolystarPointsNonInteger = "UNSUPPORTED_POLYSTAR_POINTS_NON_INTEGER"
+
+    /// Polystar points value is invalid (< 3 or > 100)
+    public static let unsupportedPolystarPointsInvalid = "UNSUPPORTED_POLYSTAR_POINTS_INVALID"
+
+    /// Polystar roundness is animated (is.a or os.a == 1)
+    public static let unsupportedPolystarRoundnessAnimated = "UNSUPPORTED_POLYSTAR_ROUNDNESS_ANIMATED"
+
+    /// Polystar roundness is non-zero (not supported in PR-09)
+    public static let unsupportedPolystarRoundnessNonzero = "UNSUPPORTED_POLYSTAR_ROUNDNESS_NONZERO"
+
+    /// Polystar has invalid radius (or <= 0, or for star: ir <= 0 or ir >= or)
+    public static let unsupportedPolystarInvalidRadius = "UNSUPPORTED_POLYSTAR_INVALID_RADIUS"
+
+    /// Polystar animated keyframes have mismatched count or times
+    public static let unsupportedPolystarKeyframesMismatch = "UNSUPPORTED_POLYSTAR_KEYFRAMES_MISMATCH"
+
+    /// Polystar keyframe has invalid format (missing time, startValue, or unparseable)
+    public static let unsupportedPolystarKeyframeFormat = "UNSUPPORTED_POLYSTAR_KEYFRAME_FORMAT"
+
     /// Path keyframes have mismatched topology (vertex count or closed flag differ)
     public static let pathTopologyMismatch = "PATH_TOPOLOGY_MISMATCH"
 
