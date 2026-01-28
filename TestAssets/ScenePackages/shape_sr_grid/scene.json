@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "0.1",
+  "sceneId": "scene_shape_sr_grid",
+  "canvas": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "durationFrames": 90
+  },
+  "mediaBlocks": [
+    {
+      "blockId": "block_01",
+      "zIndex": 0,
+      "rect": { "x": 0.0, "y": 0.0, "width": 1080.0, "height": 1920.0 },
+      "containerClip": "slotRect",
+      "timing": { "startFrame": 0, "endFrame": 90 },
+      "input": {
+        "rect": { "x": 0.0, "y": 0.0, "width": 1080.0, "height": 1920.0 },
+        "bindingKey": "media",
+        "hitTest": "rect",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "v1",
+          "animRef": "anim.json",
+          "defaultDurationFrames": 90,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ]
+    }
+  ]
+}
