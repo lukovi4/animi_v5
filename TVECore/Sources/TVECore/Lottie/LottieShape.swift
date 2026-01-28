@@ -4,11 +4,13 @@ import Foundation
 
 /// Shape item in a shape layer (ty=4)
 /// Part 1 subset supports: gr (group), sh (path), fl (fill), tr (transform)
+/// Decoded but not yet rendered: rc (rectangle)
 public enum ShapeItem: Equatable, Sendable {
     case group(LottieShapeGroup)
     case path(LottieShapePath)
     case fill(LottieShapeFill)
     case transform(LottieShapeTransform)
+    case rect(LottieShapeRect)
     case unknown(type: String)
 }
 
@@ -36,6 +38,9 @@ extension ShapeItem: Decodable {
         case "tr":
             let transform = try LottieShapeTransform(from: decoder)
             self = .transform(transform)
+        case "rc":
+            let rect = try LottieShapeRect(from: decoder)
+            self = .rect(rect)
         default:
             self = .unknown(type: type)
         }
@@ -305,6 +310,75 @@ public struct LottieShapeTransform: Decodable, Equatable, Sendable {
         case opacity = "o"
         case skew = "sk"
         case skewAxis = "sa"
+    }
+}
+
+// MARK: - LottieShapeRect (ty="rc")
+
+/// Rectangle path shape
+/// Note: "r" field is roundness (LottieAnimatedValue), different from:
+/// - fill "r" which is fillRule (Int)
+/// - transform "r" which is rotation (LottieAnimatedValue)
+public struct LottieShapeRect: Decodable, Equatable, Sendable {
+    /// Shape type (always "rc")
+    public let type: String
+
+    /// Shape name
+    public let name: String?
+
+    /// Match name (After Effects internal)
+    public let matchName: String?
+
+    /// Hidden flag
+    public let hidden: Bool?
+
+    /// Index
+    public let index: Int?
+
+    /// Position - center of rectangle in local shape group space
+    public let position: LottieAnimatedValue?
+
+    /// Size - width and height [w, h]
+    public let size: LottieAnimatedValue?
+
+    /// Roundness - corner radius (can be animated)
+    public let roundness: LottieAnimatedValue?
+
+    /// Direction - path direction
+    public let direction: Int?
+
+    public init(
+        type: String = "rc",
+        name: String? = nil,
+        matchName: String? = nil,
+        hidden: Bool? = nil,
+        index: Int? = nil,
+        position: LottieAnimatedValue? = nil,
+        size: LottieAnimatedValue? = nil,
+        roundness: LottieAnimatedValue? = nil,
+        direction: Int? = nil
+    ) {
+        self.type = type
+        self.name = name
+        self.matchName = matchName
+        self.hidden = hidden
+        self.index = index
+        self.position = position
+        self.size = size
+        self.roundness = roundness
+        self.direction = direction
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "ty"
+        case name = "nm"
+        case matchName = "mn"
+        case hidden = "hd"
+        case index = "ix"
+        case position = "p"
+        case size = "s"
+        case roundness = "r"
+        case direction = "d"
     }
 }
 

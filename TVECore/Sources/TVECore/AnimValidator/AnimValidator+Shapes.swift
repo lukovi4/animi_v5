@@ -11,38 +11,33 @@ extension AnimValidator {
         issues: inout [ValidationIssue]
     ) {
         for (shapeIndex, shape) in shapes.enumerated() {
-            validateShapeItem(
+            let basePath = "anim(\(animRef)).\(context)[\(layerIndex)].shapes[\(shapeIndex)]"
+            validateShapeItemRecursive(
                 shape: shape,
-                shapeIndex: shapeIndex,
-                layerIndex: layerIndex,
-                context: context,
-                animRef: animRef,
+                basePath: basePath,
                 issues: &issues
             )
         }
     }
 
-    func validateShapeItem(
+    /// Recursively validates a shape item and its children.
+    /// - Parameters:
+    ///   - shape: The shape item to validate
+    ///   - basePath: Full path to this shape item (e.g., "anim(ref).layers[0].shapes[0]" or "anim(ref).layers[0].shapes[0].it[1]")
+    ///   - issues: Collection to append validation issues to
+    private func validateShapeItemRecursive(
         shape: ShapeItem,
-        shapeIndex: Int,
-        layerIndex: Int,
-        context: String,
-        animRef: String,
+        basePath: String,
         issues: inout [ValidationIssue]
     ) {
-        let basePath = "anim(\(animRef)).\(context)[\(layerIndex)].shapes[\(shapeIndex)]"
-
         switch shape {
         case .group(let shapeGroup):
             // Recursively validate group items
             if let items = shapeGroup.items {
                 for (itemIndex, item) in items.enumerated() {
-                    validateShapeItem(
+                    validateShapeItemRecursive(
                         shape: item,
-                        shapeIndex: itemIndex,
-                        layerIndex: layerIndex,
-                        context: "\(context)[\(layerIndex)].shapes[\(shapeIndex)].it",
-                        animRef: animRef,
+                        basePath: "\(basePath).it[\(itemIndex)]",
                         issues: &issues
                     )
                 }
@@ -74,6 +69,16 @@ extension AnimValidator {
         case .transform:
             // Transform shape is supported, no validation issues
             break
+
+        case .rect:
+            // Rectangle is decoded but not yet supported for rendering (until PR-07)
+            // Fail-fast to prevent silent incorrect render
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedShapeItem,
+                severity: .error,
+                path: "\(basePath).ty",
+                message: "Shape type 'rc' not supported. Supported: gr, sh, fl, tr"
+            ))
 
         case .unknown(let type):
             // Unknown shape type - report as unsupported

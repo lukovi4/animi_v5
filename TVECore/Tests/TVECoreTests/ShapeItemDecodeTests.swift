@@ -196,6 +196,126 @@ final class ShapeItemDecodeTests: XCTestCase {
         }
     }
 
+    // MARK: - Rectangle Shape (ty="rc")
+
+    func testRectShape_decodesWithStaticValues() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Rectangle 1",
+            "mn": "ADBE Vector Shape - Rect",
+            "hd": false,
+            "ix": 1,
+            "p": {"a": 0, "k": [100, 200]},
+            "s": {"a": 0, "k": [300, 400]},
+            "r": {"a": 0, "k": 12},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .rect(let rect) = shape else {
+            XCTFail("Expected .rect case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(rect.type, "rc", "Type should be 'rc'")
+        XCTAssertEqual(rect.name, "Rectangle 1")
+        XCTAssertEqual(rect.matchName, "ADBE Vector Shape - Rect")
+        XCTAssertEqual(rect.hidden, false)
+        XCTAssertEqual(rect.index, 1)
+        XCTAssertEqual(rect.direction, 1)
+
+        // Verify position
+        XCTAssertNotNil(rect.position, "Position should be present")
+        XCTAssertEqual(rect.position?.isAnimated, false, "Position should be static")
+
+        // Verify size
+        XCTAssertNotNil(rect.size, "Size should be present")
+        XCTAssertEqual(rect.size?.isAnimated, false, "Size should be static")
+
+        // Verify roundness
+        XCTAssertNotNil(rect.roundness, "Roundness should be present")
+        XCTAssertEqual(rect.roundness?.isAnimated, false, "Roundness should be static")
+    }
+
+    func testRectShape_decodesWithAnimatedRoundness() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Animated Rect",
+            "p": {"a": 0, "k": [50, 50]},
+            "s": {"a": 0, "k": [100, 100]},
+            "r": {"a": 1, "k": [{"t": 0, "s": [0]}, {"t": 30, "s": [20]}]}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .rect(let rect) = shape else {
+            XCTFail("Expected .rect case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(rect.type, "rc")
+        XCTAssertNotNil(rect.roundness, "Roundness should be present")
+        XCTAssertEqual(rect.roundness?.isAnimated, true, "Roundness should be animated (a=1)")
+    }
+
+    func testRectShape_decodesMinimalFields() throws {
+        // Minimal rc - only type is required
+        let json = """
+        {
+            "ty": "rc"
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .rect(let rect) = shape else {
+            XCTFail("Expected .rect case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(rect.type, "rc")
+        XCTAssertNil(rect.name)
+        XCTAssertNil(rect.position)
+        XCTAssertNil(rect.size)
+        XCTAssertNil(rect.roundness)
+    }
+
+    func testRectShape_rFieldIsRoundness_notFillRule() throws {
+        // Critical: verify "r" is decoded as roundness (LottieAnimatedValue), not fillRule (Int)
+        let json = """
+        {
+            "ty": "rc",
+            "r": {"a": 0, "k": 15}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .rect(let rect) = shape else {
+            XCTFail("Expected .rect case, got \(shape)")
+            return
+        }
+
+        // "r" should be decoded as roundness (LottieAnimatedValue), not as Int
+        XCTAssertNotNil(rect.roundness, "Roundness should be decoded from 'r' field")
+
+        // Verify the value is correct
+        if let value = rect.roundness?.value, case .number(let num) = value {
+            XCTAssertEqual(num, 15, "Roundness value should be 15")
+        } else {
+            XCTFail("Roundness should have numeric value")
+        }
+    }
+
     // MARK: - Unknown Shape Types
 
     func testUnknownShape_decodesTolerantly() throws {
@@ -218,7 +338,8 @@ final class ShapeItemDecodeTests: XCTestCase {
     }
 
     func testUnknownShape_multipleTypes() throws {
-        let unknownTypes = ["st", "gs", "gf", "rd", "tm", "mm", "rp", "sr", "el", "rc"]
+        // Note: "rc" is no longer unknown - it's decoded as .rect
+        let unknownTypes = ["st", "gs", "gf", "rd", "tm", "mm", "rp", "sr", "el"]
 
         for typeStr in unknownTypes {
             let json = "{\"ty\": \"\(typeStr)\"}"

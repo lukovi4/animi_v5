@@ -1108,6 +1108,58 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertTrue(error?.message.contains("'tm'") ?? false)
     }
 
+    func testValidate_shapeLayerWithRect_returnsError() throws {
+        // Rectangle (rc) is decoded but NOT yet supported for rendering (until PR-07)
+        // Validator must fail-fast to prevent silent incorrect render
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "rc", "nm": "Rectangle 1", "p": {"a": 0, "k": [50, 50]}, "s": {"a": 0, "k": [100, 100]}, "r": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'rc'")
+        }
+        XCTAssertNotNil(error, "Rectangle shape should produce unsupportedShapeItem error (fail-fast until PR-07)")
+        XCTAssertTrue(error?.path.contains(".shapes[0].ty") ?? false, "Error path should point to shape type")
+    }
+
+    func testValidate_rectInGroupShape_returnsError() throws {
+        // Rectangle nested inside a group should also be caught
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [{ "ty": "rc", "p": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [50, 50]} }, { "ty": "fl" }, { "ty": "tr" }] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'rc'")
+        }
+        XCTAssertNotNil(error, "Rectangle inside group should also produce error")
+        // Verify path is correct: should contain .it[0].ty for nested shape inside group
+        XCTAssertTrue(error?.path.contains(".it[0].ty") == true, "Path should contain .it[0].ty for nested shape, got: \(error?.path ?? "nil")")
+    }
+
     // MARK: - Integration Tests
 
     func testValidate_validMask_noError() throws {
