@@ -1,95 +1,82 @@
-Ниже — **каноническое детальное ТЗ для PR-03: “Lottie decoding: Rectangle `rc`”**.
-Оно основано на **реальном текущем коде** (`TVECore/Sources/TVECore/Lottie/LottieShape.swift`, `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`, `TVECore/Tests/TVECoreTests/ShapeItemDecodeTests.swift`) и на нашем релизном принципе **fail-fast / no silent ignore**.
+Ниже — **каноническое ТЗ для PR-04: “Lottie decoding: Ellipse `ty:"el"`”**, с учётом уроков PR-03 (особенно про **корректный path в валидаторе** и обязательный тест на него).
 
 ---
 
-# PR-03 — Lottie decoding: Rectangle (`ty:"rc"`)
+# PR-04 — Lottie decoding: Ellipse (`ty:"el"`)
 
 ## 0) Цель PR
 
-Добавить **полноценное декодирование** ShapeItem типа Rectangle Path (`ty="rc"`) из Lottie JSON в модель `TVECore`, **без изменения рендера/компиляции**.
+Добавить **релизное, полное декодирование** shape item Ellipse Path (`ty="el"`) в модель Lottie внутри `TVECore`.
 
-Важное: до PR-07 (path extraction) прямоугольник **не считается поддержанным для финального результата**, поэтому валидатор **обязан продолжать fail-fast**, чтобы не получить “тихий неправильный рендер”.
+PR-04 **не добавляет рендер/компиляцию** ellipse → path.
+До PR-08 валидатор должен **fail-fast** на `.ellipse`, чтобы не было “тихо пропало”.
 
 ---
 
-# 1) Scope PR-03
+# 1) Scope PR-04
 
 ## 1.1 Что делаем
 
-1. В `LottieShape.swift`:
+1. `LottieShape.swift`
 
-   * добавить новую модель `LottieShapeRect`
-   * добавить новый case в `ShapeItem`: `.rect(LottieShapeRect)`
-   * добавить `case "rc":` в `ShapeItem.init(from:)`
+   * добавить `LottieShapeEllipse` (Decodable/Equatable/Sendable)
+   * добавить case `.ellipse(LottieShapeEllipse)` в `ShapeItem`
+   * добавить `case "el":` в `ShapeItem.init(from:)`
 
-2. В `AnimValidator+Shapes.swift`:
+2. `AnimValidator+Shapes.swift`
 
-   * добавить обработку `case .rect(...)`
-   * **на этом шаге** валидатор должен эмитить ошибку “unsupported shape item” (fail-fast), т.к. рендера/компиляции ещё нет.
+   * добавить обработку `.ellipse` с **fail-fast error** `unsupportedShapeItem`
+   * использовать уже исправленную рекурсивную валидацию (как после PR-03) — **не возвращать старый баг**.
 
-3. В тестах:
+3. Тесты
 
-   * добавить unit-тесты на декодирование `ty:"rc"` → `.rect(...)`
-   * добавить unit-тест, что валидатор на shape layer с `rc` возвращает `unsupportedShapeItem` (чтобы защититься от silent ignore между PR-03 и PR-07)
+   * decode-тесты на `ty:"el"`
+   * validator-тесты:
 
-## 1.2 Что НЕ делаем (строго)
+     * ellipse на верхнем уровне shape layer → error + path
+     * ellipse внутри `gr.it[]` → error + path `.it[0].ty`
 
-* НЕ добавлять конвертацию Rectangle → BezierPath / AnimPath (это PR-07)
-* НЕ менять Metal renderer / AnimIR / Shape extraction
-* НЕ менять “supported features” в смысле “начало рендериться” — PR-03 только про decoding + fail-fast в validator
-* НЕ добавлять новые файлы/модули/утилиты вне текущих файлов (кроме тестов)
+## 1.2 Что НЕ делаем
+
+* НЕ конвертируем ellipse в bezier (это PR-08)
+* НЕ меняем Metal/AnimIR/Shape extraction
+* НЕ меняем поведение валидатора для других shape items
+* НЕ добавляем новые helper-утилиты/файлы
 
 ---
 
-# 2) Изменения в модели Lottie (TVECore/Lottie)
+# 2) Изменения в модели (`LottieShape.swift`)
 
 ## 2.1 ShapeItem enum
 
-Файл: `TVECore/Sources/TVECore/Lottie/LottieShape.swift`
-
-### Требование
-
-Добавить новый case:
+Добавить:
 
 ```swift
-case rect(LottieShapeRect)
+case ellipse(LottieShapeEllipse)
 ```
-
-### Decoder switch
 
 В `ShapeItem.init(from:)` добавить:
 
 ```swift
-case "rc":
-    let rect = try LottieShapeRect(from: decoder)
-    self = .rect(rect)
+case "el":
+    let ellipse = try LottieShapeEllipse(from: decoder)
+    self = .ellipse(ellipse)
 ```
 
----
-
-## 2.2 Новый struct: LottieShapeRect
+## 2.2 Новый struct: `LottieShapeEllipse`
 
 Файл: `TVECore/Sources/TVECore/Lottie/LottieShape.swift`
 
-### Требования к полям (минимум релизного декодирования)
+### Обязательные поля (релизные)
 
-Добавить структуру, аналогичную стилю `LottieShapePath`, `LottieShapeFill`:
-
-Обязательные поля:
-
-* `type: String` (ty) — всегда `"rc"`
+* `type: String` (`ty`) — `"el"`
 * `name: String?` (`nm`)
 * `matchName: String?` (`mn`)
 * `hidden: Bool?` (`hd`)
 * `index: Int?` (`ix`)
-
-Geometry-поля (ключевые для Rectangle Path):
-
-* `position: LottieAnimatedValue?` (`p`) — центр прямоугольника в локальном пространстве shape group
-* `size: LottieAnimatedValue?` (`s`) — ширина/высота `[w, h]`
-* `roundness: LottieAnimatedValue?` (`r`) — радиус скругления (может быть 0, может быть анимирован)
-* `direction: Int?` (`d`) — направление (если есть)
+* `position: LottieAnimatedValue?` (`p`) — центр эллипса
+* `size: LottieAnimatedValue?` (`s`) — `[w,h]`
+* `direction: Int?` (`d`) — optional
 
 ### CodingKeys
 
@@ -102,121 +89,125 @@ private enum CodingKeys: String, CodingKey {
     case index = "ix"
     case position = "p"
     case size = "s"
-    case roundness = "r"
     case direction = "d"
 }
 ```
 
-### Важно про `r`
+### Требование по типам `p/s`
 
-В проекте уже есть кейс “перегруженного `r`”:
-
-* у fill (`ty:"fl"`) `r` — это `Int` fillRule
-* у transform (`ty:"tr"`) `r` — это rotation (LottieAnimatedValue)
-* у rect (`ty:"rc"`) `r` — это roundness (LottieAnimatedValue)
-
-Никаких костылей/дубликатов не нужно — просто корректный `CodingKeys` и тип `LottieAnimatedValue?`.
+* `p` и `s` — `LottieAnimatedValue?`
+* static значение: ожидается `.array([Double])`
+* animated: `.keyframes(...)` (как принято в вашем `LottieAnimatedValue`)
 
 ---
 
-# 3) Валидатор: fail-fast для rc до реализации рендера
+# 3) Валидатор (`AnimValidator+Shapes.swift`) — fail-fast (релизно)
 
-Файл: `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`
+## 3.1 Обязательное поведение
 
-## 3.1 Требование
+Для `.ellipse(...)` валидатор должен эмитить:
 
-Добавить case `.rect` в `validateShapeItem(...)`.
+* `code: AnimValidationCode.unsupportedShapeItem`
+* `severity: .error`
+* `path: "\(basePath).ty"`
+* message с указанием `el` и списка поддерживаемых на текущем этапе
 
-## 3.2 Поведение (релизное!)
+Пример:
+`"Shape type 'el' not supported. Supported: gr, sh, fl, tr"`
 
-До PR-07 Rectangle ещё **не поддержан для вывода**, поэтому валидатор обязан:
+## 3.2 Критично: путь должен быть корректным (урок PR-03)
 
-* эмитить `ValidationIssue` с:
+В этом PR **запрещено** трогать рекурсивный механизм построения путей, который уже исправлен в PR-03.
 
-  * `code: AnimValidationCode.unsupportedShapeItem`
-  * `severity: .error`
-  * `path: "\(basePath).ty"`
-  * `message`: в стиле существующих сообщений, но с `rc`
+Требование:
 
-Пример текста:
-`"Shape type 'rc' not supported. Supported: gr, sh, fl, tr"`
-
-> Это намеренно: PR-03 добавляет decoding, но не “support”. Без этого валидатор пропустит сцену, а рендер тихо не нарисует прямоугольники — это запрещено нашим правилом релиза.
+* для вложенного элемента внутри группы путь обязан быть вида:
+  `...shapes[0].it[0].ty`
 
 ---
 
 # 4) Тесты
 
-## 4.1 Decode tests
+## 4.1 ShapeItemDecodeTests.swift
 
-Файл: `TVECore/Tests/TVECoreTests/ShapeItemDecodeTests.swift`
+Добавить минимум 3 теста:
 
-Добавить минимум 2 теста:
+### (A) Static ellipse decode
 
-### (A) `rc` декодируется в `.rect`
+JSON:
 
-JSON должен содержать:
+```json
+{ "ty":"el", "p":{"a":0,"k":[100,200]}, "s":{"a":0,"k":[300,400]}, "d":1 }
+```
 
-* `"ty":"rc"`
-* `"p"`, `"s"` как static значения (`a:0`) с массивами
-* `"r"` как static number (`a:0,k:12`) (roundness)
-
-Проверки:
-
-* `shape` = `.rect(let rect)`
-* `rect.type == "rc"`
-* `rect.position != nil`, `rect.size != nil`, `rect.roundness != nil`
-
-### (B) `rc` roundness декодируется как animated value (a=1)
-
-Дать `"r": {"a":1,"k":[...keyframes...]}` (можно пустой массив, если декодер это допускает, но лучше 2 keyframes).
 Проверить:
 
-* `rect.roundness?.isAnimated == true`
+* `.ellipse(let el)`
+* `el.position != nil`, `el.size != nil`
+* `el.direction == 1`
 
-## 4.2 Validator fail-fast test (важно!)
+### (B) Animated position decode
 
-Файл: `TVECore/Tests/TVECoreTests/AnimValidatorTests.swift`
+`p: {a:1,k:[...2 keyframes...]}`
+Проверить `el.position?.isAnimated == true`
 
-Добавить тест, который создаёт minimal anim JSON:
+### (C) Unknown shape test remains valid
 
-* 1 layer `ty=4` shape layer
-* shapes содержит один item `{"ty":"rc", ...}`
+Не ломать существующий тест unknown; при необходимости обновить ожидания, но без “обходных” проверок.
 
-Запустить `validatePackage(sceneJSON:..., animJSON:...)` (как уже используется в тестах).
-Ожидание:
+---
 
-* среди `report.errors` есть issue с `code == AnimValidationCode.unsupportedShapeItem`
+## 4.2 AnimValidatorTests.swift
+
+Добавить 2 теста (обязательные) — аналогично rc, но для el:
+
+### (A) `testValidate_ellipseShape_returnsErrorWithCorrectPath()`
+
+Создать minimal anim JSON:
+
+* один `ty=4` shape layer
+* shapes: `[{"ty":"el", ...}]`
+  Ожидания:
+* есть ошибка `unsupportedShapeItem`
+* message содержит `'el'`
 * `path` содержит `.shapes[0].ty`
-* message содержит `'rc'`
+
+### (B) `testValidate_ellipseInGroupShape_returnsErrorWithCorrectNestedPath()`
+
+Shape layer:
+
+* shapes: `[{"ty":"gr","it":[{"ty":"el", ...},{"ty":"fl",...},{"ty":"tr",...}]}]`
+  Ожидания:
+* ошибка `unsupportedShapeItem` по ellipse
+* `path` содержит `.it[0].ty` (и/или точный `...shapes[0].it[0].ty`)
+
+> Важно: тест должен проверять path явно — это предотвращает возврат багов PR-03.
 
 ---
 
-# 5) Нефункциональные требования (качество PR)
+# 5) Нефункциональные требования
 
-* Без новых “utility” классов/файлов ради парсинга: используем существующий `LottieAnimatedValue` и общий стиль моделей.
-* Новые поля/структуры должны быть `Decodable, Equatable, Sendable` как остальные.
-* Код должен собираться без предупреждений.
-* Все текущие тесты + новые тесты проходят.
-
----
-
-# 6) Acceptance Criteria (что значит PR-03 принят)
-
-1. `ShapeItem` умеет декодировать `ty:"rc"` как `.rect(LottieShapeRect)`
-2. `LottieShapeRect` содержит все обязательные поля и правильно декодит `p/s/r/d`
-3. Валидатор не допускает silent ignore: при встрече `.rect` **возвращает error unsupportedShapeItem**
-4. Добавлены unit-тесты:
-
-   * на decode `.rect`
-   * на validator fail-fast для `rc`
-5. Все тесты в TVECore проходят
+* Код компилируется без warnings
+* Новые структуры соответствуют стилю проекта (`public`, `Sendable`, `Equatable`)
+* Никакого дублирования логики распаковки значений — используем существующий `LottieAnimatedValue`
+* Все существующие тесты + новые проходят
 
 ---
 
-Если всё понятно — пусть программист присылает PR-03. На ревью я буду смотреть строго:
+# 6) Acceptance Criteria
 
-* `CodingKeys` и типы полей (`p/s/r` именно `LottieAnimatedValue?`)
-* отсутствие лишних/дублирующих структур
-* что валидатор реально выдаёт ошибку на `.rect` (до PR-07)
-* что тесты минимальные и детерминированные (без “случайных” зависимостей от ассетов).
+PR-04 принят, если:
+
+1. `ShapeItem` декодирует `ty:"el"` в `.ellipse(LottieShapeEllipse)`
+2. `LottieShapeEllipse` корректно декодит `p/s/d` (static + animated)
+3. Валидатор выдаёт fail-fast error на `.ellipse` с корректным path
+4. Есть тест на nested path `.it[0].ty`
+5. Все тесты проекта проходят
+
+---
+
+Если программист сделает PR-04 по этому ТЗ — на ревью я буду смотреть прежде всего:
+
+* что `el` не перепутан с `rc` (нет roundness `r`)
+* что валидатор использует `basePath` и не ломает рекурсивный path
+* что тесты реально ловят nested `.it[0].ty` path.

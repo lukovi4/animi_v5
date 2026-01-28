@@ -11,6 +11,7 @@ public enum ShapeItem: Equatable, Sendable {
     case fill(LottieShapeFill)
     case transform(LottieShapeTransform)
     case rect(LottieShapeRect)
+    case ellipse(LottieShapeEllipse)
     case unknown(type: String)
 }
 
@@ -41,6 +42,9 @@ extension ShapeItem: Decodable {
         case "rc":
             let rect = try LottieShapeRect(from: decoder)
             self = .rect(rect)
+        case "el":
+            let ellipse = try LottieShapeEllipse(from: decoder)
+            self = .ellipse(ellipse)
         default:
             self = .unknown(type: type)
         }
@@ -378,6 +382,66 @@ public struct LottieShapeRect: Decodable, Equatable, Sendable {
         case position = "p"
         case size = "s"
         case roundness = "r"
+        case direction = "d"
+    }
+}
+
+// MARK: - LottieShapeEllipse (ty="el")
+
+/// Ellipse path shape
+public struct LottieShapeEllipse: Decodable, Equatable, Sendable {
+    /// Shape type (always "el")
+    public let type: String
+
+    /// Shape name
+    public let name: String?
+
+    /// Match name (After Effects internal)
+    public let matchName: String?
+
+    /// Hidden flag
+    public let hidden: Bool?
+
+    /// Index
+    public let index: Int?
+
+    /// Position - center of ellipse in local shape group space
+    public let position: LottieAnimatedValue?
+
+    /// Size - width and height [w, h]
+    public let size: LottieAnimatedValue?
+
+    /// Direction - path direction
+    public let direction: Int?
+
+    public init(
+        type: String = "el",
+        name: String? = nil,
+        matchName: String? = nil,
+        hidden: Bool? = nil,
+        index: Int? = nil,
+        position: LottieAnimatedValue? = nil,
+        size: LottieAnimatedValue? = nil,
+        direction: Int? = nil
+    ) {
+        self.type = type
+        self.name = name
+        self.matchName = matchName
+        self.hidden = hidden
+        self.index = index
+        self.position = position
+        self.size = size
+        self.direction = direction
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "ty"
+        case name = "nm"
+        case matchName = "mn"
+        case hidden = "hd"
+        case index = "ix"
+        case position = "p"
+        case size = "s"
         case direction = "d"
     }
 }

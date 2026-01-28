@@ -80,6 +80,16 @@ extension AnimValidator {
                 message: "Shape type 'rc' not supported. Supported: gr, sh, fl, tr"
             ))
 
+        case .ellipse:
+            // Ellipse is decoded but not yet supported for rendering (until PR-08)
+            // Fail-fast to prevent silent incorrect render
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedShapeItem,
+                severity: .error,
+                path: "\(basePath).ty",
+                message: "Shape type 'el' not supported. Supported: gr, sh, fl, tr"
+            ))
+
         case .unknown(let type):
             // Unknown shape type - report as unsupported
             issues.append(ValidationIssue(

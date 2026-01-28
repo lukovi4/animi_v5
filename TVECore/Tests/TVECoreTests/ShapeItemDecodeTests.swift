@@ -316,6 +316,93 @@ final class ShapeItemDecodeTests: XCTestCase {
         }
     }
 
+    // MARK: - Ellipse Shape (ty="el")
+
+    func testEllipseShape_decodesWithStaticValues() throws {
+        let json = """
+        {
+            "ty": "el",
+            "nm": "Ellipse 1",
+            "mn": "ADBE Vector Shape - Ellipse",
+            "hd": false,
+            "ix": 1,
+            "p": {"a": 0, "k": [100, 200]},
+            "s": {"a": 0, "k": [300, 400]},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .ellipse(let ellipse) = shape else {
+            XCTFail("Expected .ellipse case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(ellipse.type, "el", "Type should be 'el'")
+        XCTAssertEqual(ellipse.name, "Ellipse 1")
+        XCTAssertEqual(ellipse.matchName, "ADBE Vector Shape - Ellipse")
+        XCTAssertEqual(ellipse.hidden, false)
+        XCTAssertEqual(ellipse.index, 1)
+        XCTAssertEqual(ellipse.direction, 1)
+
+        // Verify position
+        XCTAssertNotNil(ellipse.position, "Position should be present")
+        XCTAssertEqual(ellipse.position?.isAnimated, false, "Position should be static")
+
+        // Verify size
+        XCTAssertNotNil(ellipse.size, "Size should be present")
+        XCTAssertEqual(ellipse.size?.isAnimated, false, "Size should be static")
+    }
+
+    func testEllipseShape_decodesWithAnimatedPosition() throws {
+        let json = """
+        {
+            "ty": "el",
+            "nm": "Animated Ellipse",
+            "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 30, "s": [100, 100]}]},
+            "s": {"a": 0, "k": [50, 50]}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .ellipse(let ellipse) = shape else {
+            XCTFail("Expected .ellipse case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(ellipse.type, "el")
+        XCTAssertNotNil(ellipse.position, "Position should be present")
+        XCTAssertEqual(ellipse.position?.isAnimated, true, "Position should be animated (a=1)")
+        XCTAssertEqual(ellipse.size?.isAnimated, false, "Size should be static")
+    }
+
+    func testEllipseShape_decodesMinimalFields() throws {
+        // Minimal el - only type is required
+        let json = """
+        {
+            "ty": "el"
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .ellipse(let ellipse) = shape else {
+            XCTFail("Expected .ellipse case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(ellipse.type, "el")
+        XCTAssertNil(ellipse.name)
+        XCTAssertNil(ellipse.position)
+        XCTAssertNil(ellipse.size)
+        XCTAssertNil(ellipse.direction)
+    }
+
     // MARK: - Unknown Shape Types
 
     func testUnknownShape_decodesTolerantly() throws {
@@ -338,8 +425,8 @@ final class ShapeItemDecodeTests: XCTestCase {
     }
 
     func testUnknownShape_multipleTypes() throws {
-        // Note: "rc" is no longer unknown - it's decoded as .rect
-        let unknownTypes = ["st", "gs", "gf", "rd", "tm", "mm", "rp", "sr", "el"]
+        // Note: "rc" and "el" are no longer unknown - they're decoded as .rect and .ellipse
+        let unknownTypes = ["st", "gs", "gf", "rd", "tm", "mm", "rp", "sr"]
 
         for typeStr in unknownTypes {
             let json = "{\"ty\": \"\(typeStr)\"}"
