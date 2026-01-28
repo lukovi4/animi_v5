@@ -383,7 +383,8 @@ final class AnimValidatorTests: XCTestCase {
 
     // MARK: - Mask Validation Tests
 
-    func testValidate_maskModeSubtract_returnsError() throws {
+    func testValidate_maskModeSubtract_noError() throws {
+        // Subtract mode (s) is now supported
         let scene = sceneJSON()
         let maskJSON = """
         { "mode": "s", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 } }
@@ -394,11 +395,59 @@ final class AnimValidatorTests: XCTestCase {
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedMaskMode
         }
-        XCTAssertNotNil(error)
-        XCTAssertTrue(error?.message.contains("'s'") ?? false)
+        XCTAssertNil(error, "Subtract mode (s) should be supported")
     }
 
-    func testValidate_maskInverted_returnsError() throws {
+    func testValidate_maskModeIntersect_noError() throws {
+        // Intersect mode (i) is now supported
+        let scene = sceneJSON()
+        let maskJSON = """
+        { "mode": "i", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskMode
+        }
+        XCTAssertNil(error, "Intersect mode (i) should be supported")
+    }
+
+    func testValidate_maskModeLighten_returnsError() throws {
+        // Lighten mode (l) is NOT supported
+        let scene = sceneJSON()
+        let maskJSON = """
+        { "mode": "l", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskMode
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.message.contains("'l'") ?? false)
+        XCTAssertTrue(error?.message.contains("a (add), s (subtract), i (intersect)") ?? false)
+    }
+
+    func testValidate_maskModeDarken_returnsError() throws {
+        // Darken mode (d) is NOT supported
+        let scene = sceneJSON()
+        let maskJSON = """
+        { "mode": "d", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskMode
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.message.contains("'d'") ?? false)
+    }
+
+    func testValidate_maskInverted_noError() throws {
+        // Inverted masks are now supported
         let scene = sceneJSON()
         let maskJSON = """
         { "mode": "a", "inv": true, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 } }
@@ -409,7 +458,7 @@ final class AnimValidatorTests: XCTestCase {
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedMaskInvert
         }
-        XCTAssertNotNil(error)
+        XCTAssertNil(error, "Inverted masks should be supported")
     }
 
     func testValidate_maskPathAnimated_returnsError_whenDisabled() throws {
@@ -456,6 +505,86 @@ final class AnimValidatorTests: XCTestCase {
             $0.code == AnimValidationCode.unsupportedMaskOpacityAnimated
         }
         XCTAssertNotNil(error)
+    }
+
+    // MARK: - Mask Expansion Tests
+
+    func testValidate_maskExpansionNonZero_returnsError() throws {
+        let scene = sceneJSON()
+        let maskJSON = """
+        { "mode": "a", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 }, "x": { "a": 0, "k": 10 } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskExpansionNonZero
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".x.k") ?? false)
+        XCTAssertTrue(error?.message.contains("10") ?? false)
+    }
+
+    func testValidate_maskExpansionAnimated_returnsError() throws {
+        let scene = sceneJSON()
+        let maskJSON = """
+        { "mode": "a", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 }, "x": { "a": 1, "k": [{"t": 0, "s": [0]}, {"t": 30, "s": [10]}] } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskExpansionAnimated
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".x.a") ?? false)
+    }
+
+    func testValidate_maskExpansionZero_noError() throws {
+        let scene = sceneJSON()
+        let maskJSON = """
+        { "mode": "a", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 }, "x": { "a": 0, "k": 0 } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskExpansionNonZero ||
+            $0.code == AnimValidationCode.unsupportedMaskExpansionAnimated
+        }
+        XCTAssertNil(error, "Mask expansion x=0 should be allowed")
+    }
+
+    func testValidate_maskExpansionAbsent_noError() throws {
+        let scene = sceneJSON()
+        let maskJSON = """
+        { "mode": "a", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskExpansionNonZero ||
+            $0.code == AnimValidationCode.unsupportedMaskExpansionAnimated
+        }
+        XCTAssertNil(error, "Absent mask expansion should be allowed")
+    }
+
+    func testValidate_maskExpansionUnknownFormat_returnsError() throws {
+        // Test fail-fast: unknown format (e.g., object instead of number) should error
+        let scene = sceneJSON()
+        // Using keyframes format for static value - this is an invalid/unexpected format
+        let maskJSON = """
+        { "mode": "a", "inv": false, "pt": { "a": 0, "k": {} }, "o": { "a": 0, "k": 100 }, "x": { "a": 0, "k": {"invalid": "format"} } }
+        """
+        let anim = animJSON(masksJSON: maskJSON)
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskExpansionFormat
+        }
+        XCTAssertNotNil(error, "Unknown mask expansion format should produce error (no silent ignore)")
+        XCTAssertTrue(error?.path.contains(".x.k") ?? false)
     }
 
     // MARK: - Track Matte Tests
@@ -715,6 +844,270 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertNil(topologyError, "Consistent topology should not produce errors")
     }
 
+    // MARK: - Forbidden Layer Flags Tests
+
+    func testValidate_layer3D_returnsError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "ddd": 1 }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayer3D
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".ddd") ?? false)
+    }
+
+    func testValidate_layerAutoOrient_returnsError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "ao": 1 }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerAutoOrient
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".ao") ?? false)
+    }
+
+    func testValidate_layerStretch_returnsError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "sr": 2 }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerStretch
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".sr") ?? false)
+        XCTAssertTrue(error?.message.contains("sr=2") ?? false)
+    }
+
+    func testValidate_layerCollapseTransform_returnsError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "ct": 1 }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".ct") ?? false)
+    }
+
+    func testValidate_blendMode_returnsError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "bm": 3 }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedBlendMode
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".bm") ?? false)
+        XCTAssertTrue(error?.message.contains("bm=3") ?? false)
+    }
+
+    func testValidate_normalBlendMode_noError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "bm": 0 }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedBlendMode
+        }
+        XCTAssertNil(error, "Normal blend mode (bm=0) should be allowed")
+    }
+
+    // MARK: - Skew Validation Tests
+
+    func testValidate_skewNonZero_returnsError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "ks": { "o": { "a": 0, "k": 100 }, "sk": { "a": 0, "k": 15 } } }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedSkew
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".ks.sk.k") ?? false)
+        XCTAssertTrue(error?.message.contains("sk=15") ?? false)
+    }
+
+    func testValidate_skewAnimated_returnsError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "ks": { "o": { "a": 0, "k": 100 }, "sk": { "a": 1, "k": [{"t": 0, "s": [0]}, {"t": 30, "s": [15]}] } } }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedSkew
+        }
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error?.path.contains(".ks.sk.a") ?? false)
+    }
+
+    func testValidate_skewZero_noError() throws {
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "ks": { "o": { "a": 0, "k": 100 }, "sk": { "a": 0, "k": 0 } } }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedSkew
+        }
+        XCTAssertNil(error, "Skew sk=0 should be allowed")
+    }
+
+    func testValidate_skewUnknownFormat_returnsError() throws {
+        // Test fail-fast: unknown format (e.g., object instead of number) should error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0", "ks": { "o": { "a": 0, "k": 100 }, "sk": { "a": 0, "k": {"invalid": "format"} } } }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedSkew
+        }
+        XCTAssertNotNil(error, "Unknown skew format should produce error (no silent ignore)")
+        XCTAssertTrue(error?.path.contains(".ks.sk.k") ?? false)
+        XCTAssertTrue(error?.message.contains("unrecognized") ?? false)
+    }
+
+    // MARK: - Shape Layer Validation Tests (All ty=4, not just td=1)
+
+    func testValidate_shapeLayerWithTrimPaths_returnsError() throws {
+        // Shape layer WITHOUT td=1 (not a matte source) should still be validated
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "tm", "nm": "Trim Paths" }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedShapeItem
+        }
+        XCTAssertNotNil(error, "Shape layer without td=1 should still validate shapes")
+        XCTAssertTrue(error?.message.contains("'tm'") ?? false)
+    }
+
     // MARK: - Integration Tests
 
     func testValidate_validMask_noError() throws {
@@ -740,5 +1133,140 @@ final class AnimValidatorTests: XCTestCase {
             $0.code == AnimValidationCode.bindingLayerNotFound
         }
         XCTAssertNil(bindingError)
+    }
+
+    // MARK: - PR-01 Negative Asset Tests (Bundle.module)
+
+    /// Helper to load and validate a negative test case from Bundle.module
+    /// Uses a scene with mediaBlock referencing the anim.json so it gets validated
+    private func validateNegativeCase(_ caseName: String) throws -> ValidationReport {
+        guard let animURL = Bundle.module.url(
+            forResource: "anim",
+            withExtension: "json",
+            subdirectory: "Resources/negative/\(caseName)"
+        ) else {
+            XCTFail("Could not find anim.json for negative case: \(caseName)")
+            throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing test asset"])
+        }
+
+        let animData = try Data(contentsOf: animURL)
+        let animJSONString = String(data: animData, encoding: .utf8)!
+
+        // Create scene with a media block that references our anim.json
+        // Use a placeholder binding key that may or may not exist in the anim
+        let sceneWithBlock = """
+        {
+          "schemaVersion": "0.1",
+          "canvas": { "width": 1080, "height": 1920, "fps": 30, "durationFrames": 90 },
+          "mediaBlocks": [{
+            "blockId": "test_block",
+            "zIndex": 0,
+            "rect": { "x": 0, "y": 0, "width": 1080, "height": 1920 },
+            "containerClip": "slotRect",
+            "input": {
+              "rect": { "x": 0, "y": 0, "width": 1080, "height": 1920 },
+              "bindingKey": "_test_placeholder_",
+              "allowedMedia": ["photo"]
+            },
+            "variants": [{ "variantId": "v1", "animRef": "anim.json" }]
+          }]
+        }
+        """
+
+        tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let sceneURL = tempDir.appendingPathComponent("scene.json")
+        try sceneWithBlock.write(to: sceneURL, atomically: true, encoding: .utf8)
+
+        let animFileURL = tempDir.appendingPathComponent("anim.json")
+        try animJSONString.write(to: animFileURL, atomically: true, encoding: .utf8)
+
+        let package = try packageLoader.load(from: tempDir)
+        let loaded = try loader.loadAnimations(from: package)
+
+        return validator.validate(scene: package.scene, package: package, loaded: loaded)
+    }
+
+    func testNegativeAsset_trimPaths_returnsUnsupportedShapeItem() throws {
+        let report = try validateNegativeCase("neg_trim_paths_tm")
+
+        // Filter to find specifically the tm (trim paths) error
+        let tmError = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'tm'")
+        }
+        XCTAssertNotNil(tmError, "neg_trim_paths_tm should produce UNSUPPORTED_SHAPE_ITEM error for 'tm'")
+    }
+
+    func testNegativeAsset_maskExpansion_returnsUnsupportedMaskExpansionNonZero() throws {
+        let report = try validateNegativeCase("neg_mask_expansion_x")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskExpansionNonZero
+        }
+        XCTAssertNotNil(error, "neg_mask_expansion_x should produce UNSUPPORTED_MASK_EXPANSION_NONZERO error")
+    }
+
+    func testNegativeAsset_maskOpacityAnimated_returnsUnsupportedMaskOpacityAnimated() throws {
+        let report = try validateNegativeCase("neg_mask_opacity_animated")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedMaskOpacityAnimated
+        }
+        XCTAssertNotNil(error, "neg_mask_opacity_animated should produce UNSUPPORTED_MASK_OPACITY_ANIMATED error")
+    }
+
+    func testNegativeAsset_skewNonZero_returnsUnsupportedSkew() throws {
+        let report = try validateNegativeCase("neg_skew_sk_nonzero")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedSkew
+        }
+        XCTAssertNotNil(error, "neg_skew_sk_nonzero should produce UNSUPPORTED_SKEW error")
+    }
+
+    func testNegativeAsset_layer3D_returnsUnsupportedLayer3D() throws {
+        let report = try validateNegativeCase("neg_layer_ddd_3d")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayer3D
+        }
+        XCTAssertNotNil(error, "neg_layer_ddd_3d should produce UNSUPPORTED_LAYER_3D error")
+    }
+
+    func testNegativeAsset_autoOrient_returnsUnsupportedLayerAutoOrient() throws {
+        let report = try validateNegativeCase("neg_layer_ao_auto_orient")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerAutoOrient
+        }
+        XCTAssertNotNil(error, "neg_layer_ao_auto_orient should produce UNSUPPORTED_LAYER_AUTO_ORIENT error")
+    }
+
+    func testNegativeAsset_stretch_returnsUnsupportedLayerStretch() throws {
+        let report = try validateNegativeCase("neg_layer_sr_stretch")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerStretch
+        }
+        XCTAssertNotNil(error, "neg_layer_sr_stretch should produce UNSUPPORTED_LAYER_STRETCH error")
+    }
+
+    func testNegativeAsset_collapseTransform_returnsUnsupportedLayerCollapseTransform() throws {
+        let report = try validateNegativeCase("neg_layer_ct_collapse_transform")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
+        }
+        XCTAssertNotNil(error, "neg_layer_ct_collapse_transform should produce UNSUPPORTED_LAYER_COLLAPSE_TRANSFORM error")
+    }
+
+    func testNegativeAsset_blendMode_returnsUnsupportedBlendMode() throws {
+        let report = try validateNegativeCase("neg_layer_bm_blend_mode")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedBlendMode
+        }
+        XCTAssertNotNil(error, "neg_layer_bm_blend_mode should produce UNSUPPORTED_BLEND_MODE error")
     }
 }

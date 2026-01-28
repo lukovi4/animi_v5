@@ -350,14 +350,32 @@ extension AnimValidator {
         animRef: String,
         issues: inout [ValidationIssue]
     ) {
+        let basePath = "anim(\(animRef)).\(context)[\(index)]"
+
         // Check layer type
         if !Self.supportedLayerTypes.contains(layer.type) {
             issues.append(ValidationIssue(
                 code: AnimValidationCode.unsupportedLayerType,
                 severity: .error,
-                path: "anim(\(animRef)).\(context)[\(index)].ty",
+                path: "\(basePath).ty",
                 message: "Layer type \(layer.type) not supported. Supported: 0,2,3,4"
             ))
+        }
+
+        // Validate forbidden layer flags
+        validateForbiddenLayerFlags(
+            layer: layer,
+            basePath: basePath,
+            issues: &issues
+        )
+
+        // Validate transform (skew)
+        if let transform = layer.transform {
+            validateTransform(
+                transform: transform,
+                basePath: "\(basePath).ks",
+                issues: &issues
+            )
         }
 
         // Validate masks
@@ -380,15 +398,14 @@ extension AnimValidator {
                 issues.append(ValidationIssue(
                     code: AnimValidationCode.unsupportedMatteType,
                     severity: .error,
-                    path: "anim(\(animRef)).\(context)[\(index)].tt",
-                    message: "Track matte type \(matteType) not supported. Supported: 1,2"
+                    path: "\(basePath).tt",
+                    message: "Track matte type \(matteType) not supported. Supported: 1,2,3,4"
                 ))
             }
         }
 
-        // Validate shape items for matte source shape layers
-        let isMatteSourceShapeLayer = layer.type == 4 && layer.isMatteSource == 1
-        if isMatteSourceShapeLayer, let shapes = layer.shapes {
+        // Validate shape items for ALL shape layers (ty=4), not just matte sources
+        if layer.type == 4, let shapes = layer.shapes {
             validateShapes(
                 shapes: shapes,
                 layerIndex: index,
@@ -398,6 +415,119 @@ extension AnimValidator {
             )
         }
     }
+
+    /// Validates forbidden layer flags that are not supported
+    private func validateForbiddenLayerFlags(
+        layer: LottieLayer,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        // 3D layer (ddd == 1)
+        if layer.is3D == 1 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedLayer3D,
+                severity: .error,
+                path: "\(basePath).ddd",
+                message: "3D layers (ddd=1) not supported"
+            ))
+        }
+
+        // Auto-orient (ao == 1)
+        if layer.autoOrient == 1 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedLayerAutoOrient,
+                severity: .error,
+                path: "\(basePath).ao",
+                message: "Auto-orient (ao=1) not supported"
+            ))
+        }
+
+        // Time stretch (sr != 1)
+        if let stretch = layer.stretch, stretch != 1.0 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedLayerStretch,
+                severity: .error,
+                path: "\(basePath).sr",
+                message: "Time stretch (sr=\(stretch)) not supported. Only sr=1 is allowed"
+            ))
+        }
+
+        // Collapse transform (ct != 0)
+        if let ct = layer.collapseTransform, ct != 0 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedLayerCollapseTransform,
+                severity: .error,
+                path: "\(basePath).ct",
+                message: "Collapse transform (ct=\(ct)) not supported"
+            ))
+        }
+
+        // Blend mode (bm != 0)
+        if let bm = layer.blendMode, bm != 0 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedBlendMode,
+                severity: .error,
+                path: "\(basePath).bm",
+                message: "Blend mode (bm=\(bm)) not supported. Only normal (bm=0) is allowed"
+            ))
+        }
+    }
+
+    /// Validates transform properties (skew)
+    private func validateTransform(
+        transform: LottieTransform,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        // Validate skew (must be absent or static 0)
+        guard let skew = transform.skew else { return }
+
+        if skew.isAnimated {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedSkew,
+                severity: .error,
+                path: "\(basePath).sk.a",
+                message: "Animated skew not supported"
+            ))
+            return
+        }
+
+        // Check static value (must be 0)
+        guard let value = skew.value else { return }
+
+        let numericValue: Double?
+        switch value {
+        case .number(let num):
+            numericValue = num
+        case .array(let arr):
+            numericValue = arr.first
+        default:
+            numericValue = nil
+        }
+
+        // Fail-fast: unrecognized format is an error (no silent ignore)
+        guard let num = numericValue else {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedSkew,
+                severity: .error,
+                path: "\(basePath).sk.k",
+                message: "Skew has unrecognized value format"
+            ))
+            return
+        }
+
+        if num != 0 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedSkew,
+                severity: .error,
+                path: "\(basePath).sk.k",
+                message: "Skew (sk=\(num)) not supported. Only sk=0 is allowed"
+            ))
+        }
+    }
+
+    /// Supported mask modes: add, subtract, intersect
+    private static let supportedMaskModes: Set<String> = ["a", "s", "i"]
 
     func validateMask(
         mask: LottieMask,
@@ -409,25 +539,17 @@ extension AnimValidator {
     ) {
         let basePath = "anim(\(animRef)).\(context)[\(layerIndex)].masksProperties[\(maskIndex)]"
 
-        // Check mode (must be "a" = add)
-        if let mode = mask.mode, mode != "a" {
+        // Check mode (must be "a", "s", or "i"; nil defaults to "a")
+        if let mode = mask.mode, !Self.supportedMaskModes.contains(mode) {
             issues.append(ValidationIssue(
                 code: AnimValidationCode.unsupportedMaskMode,
                 severity: .error,
                 path: "\(basePath).mode",
-                message: "Mask mode '\(mode)' not supported. Only 'a' (add) is supported"
+                message: "Mask mode '\(mode)' not supported. Supported: a (add), s (subtract), i (intersect)"
             ))
         }
 
-        // Check inverted flag
-        if mask.inverted == true {
-            issues.append(ValidationIssue(
-                code: AnimValidationCode.unsupportedMaskInvert,
-                severity: .error,
-                path: "\(basePath).inv",
-                message: "Inverted masks not supported"
-            ))
-        }
+        // Note: inverted masks (inv == true) are now allowed - no validation needed
 
         // Check animated path
         if let path = mask.path, path.isAnimated {
@@ -455,6 +577,66 @@ extension AnimValidator {
                 severity: .error,
                 path: "\(basePath).o.a",
                 message: "Animated mask opacity not supported"
+            ))
+        }
+
+        // Check mask expansion
+        validateMaskExpansion(
+            expansion: mask.expansion,
+            basePath: basePath,
+            issues: &issues
+        )
+    }
+
+    /// Validates mask expansion: must be absent, or static with value 0
+    private func validateMaskExpansion(
+        expansion: LottieAnimatedValue?,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        guard let expansion = expansion else { return }
+
+        // Check if animated
+        if expansion.isAnimated {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedMaskExpansionAnimated,
+                severity: .error,
+                path: "\(basePath).x.a",
+                message: "Animated mask expansion not supported"
+            ))
+            return
+        }
+
+        // Check static value (must be 0)
+        guard let value = expansion.value else { return }
+
+        let numericValue: Double?
+        switch value {
+        case .number(let num):
+            numericValue = num
+        case .array(let arr):
+            numericValue = arr.first
+        default:
+            numericValue = nil
+        }
+
+        // Fail-fast: unrecognized format is an error (no silent ignore)
+        guard let num = numericValue else {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedMaskExpansionFormat,
+                severity: .error,
+                path: "\(basePath).x.k",
+                message: "Mask expansion has unrecognized value format"
+            ))
+            return
+        }
+
+        if num != 0 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedMaskExpansionNonZero,
+                severity: .error,
+                path: "\(basePath).x.k",
+                message: "Non-zero mask expansion (\(num)) not supported. Only x=0 is allowed"
             ))
         }
     }

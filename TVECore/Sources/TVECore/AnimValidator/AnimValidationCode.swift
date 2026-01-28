@@ -37,10 +37,10 @@ public enum AnimValidationCode {
     /// Layer type not supported (ty not in {0, 2, 3, 4})
     public static let unsupportedLayerType = "UNSUPPORTED_LAYER_TYPE"
 
-    /// Mask mode not supported (mode != "a")
+    /// Mask mode not supported (only a/s/i allowed)
     public static let unsupportedMaskMode = "UNSUPPORTED_MASK_MODE"
 
-    /// Inverted mask not supported (inv == true)
+    /// Inverted mask not supported (legacy code, inv is now allowed)
     public static let unsupportedMaskInvert = "UNSUPPORTED_MASK_INVERT"
 
     /// Animated mask path not supported (pt.a == 1)
@@ -60,6 +60,39 @@ public enum AnimValidationCode {
 
     /// Path keyframes are missing or invalid
     public static let pathKeyframesMissing = "PATH_KEYFRAMES_MISSING"
+
+    // MARK: - Mask Expansion Errors
+
+    /// Animated mask expansion not supported (x.a == 1)
+    public static let unsupportedMaskExpansionAnimated = "UNSUPPORTED_MASK_EXPANSION_ANIMATED"
+
+    /// Non-zero static mask expansion not supported (x.k != 0)
+    public static let unsupportedMaskExpansionNonZero = "UNSUPPORTED_MASK_EXPANSION_NONZERO"
+
+    /// Mask expansion value has invalid/unrecognized format
+    public static let unsupportedMaskExpansionFormat = "UNSUPPORTED_MASK_EXPANSION_FORMAT"
+
+    // MARK: - Forbidden Layer Flags
+
+    /// 3D layer not supported (ddd == 1)
+    public static let unsupportedLayer3D = "UNSUPPORTED_LAYER_3D"
+
+    /// Auto-orient not supported (ao == 1)
+    public static let unsupportedLayerAutoOrient = "UNSUPPORTED_LAYER_AUTO_ORIENT"
+
+    /// Non-default time stretch not supported (sr != 1)
+    public static let unsupportedLayerStretch = "UNSUPPORTED_LAYER_STRETCH"
+
+    /// Collapse transform not supported (ct != 0)
+    public static let unsupportedLayerCollapseTransform = "UNSUPPORTED_LAYER_COLLAPSE_TRANSFORM"
+
+    /// Blend mode not supported (bm != 0)
+    public static let unsupportedBlendMode = "UNSUPPORTED_BLEND_MODE"
+
+    // MARK: - Transform Errors
+
+    /// Skew transform not supported (sk != 0 or sk animated)
+    public static let unsupportedSkew = "UNSUPPORTED_SKEW"
 
     // MARK: - Warnings
 
