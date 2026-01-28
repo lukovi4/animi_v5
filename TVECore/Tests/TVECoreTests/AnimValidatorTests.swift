@@ -1287,10 +1287,10 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertTrue(error?.message.contains("could not be decoded") ?? false, "Error should mention keyframes could not be decoded")
     }
 
-    // MARK: - Ellipse Shape Validation (PR-04)
+    // MARK: - Ellipse Shape Validation (PR-08)
 
-    func testValidate_ellipseShape_returnsErrorWithCorrectPath() throws {
-        // Ellipse (el) is decoded but NOT yet supported for rendering (until PR-08)
+    func testValidate_ellipseShape_noError() throws {
+        // Ellipse (el) is now supported (PR-08)
         let scene = sceneJSON()
         let anim = """
         {
@@ -1310,13 +1310,11 @@ final class AnimValidatorTests: XCTestCase {
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'el'")
         }
-        XCTAssertNotNil(error, "Ellipse shape should produce unsupportedShapeItem error")
-        // Verify path contains .shapes[0].ty for top-level shape
-        XCTAssertTrue(error?.path.contains(".shapes[0].ty") == true, "Path should contain .shapes[0].ty, got: \(error?.path ?? "nil")")
+        XCTAssertNil(error, "Ellipse shape should NOT produce unsupportedShapeItem error (now supported)")
     }
 
-    func testValidate_ellipseInGroupShape_returnsErrorWithCorrectNestedPath() throws {
-        // Ellipse nested inside a group should also be caught with correct path
+    func testValidate_ellipseInGroupShape_noError() throws {
+        // Ellipse nested inside a group should also pass (now supported)
         let scene = sceneJSON()
         let anim = """
         {
@@ -1336,9 +1334,152 @@ final class AnimValidatorTests: XCTestCase {
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'el'")
         }
-        XCTAssertNotNil(error, "Ellipse inside group should also produce error")
-        // Verify path is correct: should contain .it[0].ty for nested shape inside group
-        XCTAssertTrue(error?.path.contains(".it[0].ty") == true, "Path should contain .it[0].ty for nested shape, got: \(error?.path ?? "nil")")
+        XCTAssertNil(error, "Ellipse inside group should NOT produce unsupportedShapeItem error (now supported)")
+    }
+
+    func testValidate_ellipseWithMismatchedKeyframeCounts_returnsError() throws {
+        // Ellipse with p having 2 keyframes and s having 3 keyframes - should produce mismatch error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{
+                "ty": "el",
+                "nm": "Ellipse Mismatch",
+                "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]},
+                "s": {"a": 1, "k": [{"t": 0, "s": [100, 100]}, {"t": 5, "s": [150, 150]}, {"t": 10, "s": [200, 200]}]}
+            }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedEllipseKeyframesMismatch
+        }
+        XCTAssertNotNil(error, "Ellipse with mismatched keyframe counts should produce error")
+        XCTAssertTrue(error?.message.contains("2 keyframes") ?? false, "Error should mention position has 2 keyframes")
+        XCTAssertTrue(error?.message.contains("3") ?? false, "Error should mention size has 3 keyframes")
+    }
+
+    func testValidate_ellipseWithMismatchedKeyframeTimes_returnsError() throws {
+        // Ellipse with p and s having different keyframe times - should produce mismatch error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{
+                "ty": "el",
+                "nm": "Ellipse Time Mismatch",
+                "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]},
+                "s": {"a": 1, "k": [{"t": 0, "s": [100, 100]}, {"t": 15, "s": [200, 200]}]}
+            }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedEllipseKeyframesMismatch
+        }
+        XCTAssertNotNil(error, "Ellipse with mismatched keyframe times should produce error")
+        XCTAssertTrue(error?.message.contains("time mismatch") ?? false, "Error should mention time mismatch")
+    }
+
+    func testValidate_ellipseAnimatedPositionInvalidFormat_returnsError() throws {
+        // Ellipse with animated position (a=1) but k is not a keyframes array
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "el", "nm": "Invalid Anim Ellipse", "p": {"a": 1, "k": [50, 50]}, "s": {"a": 0, "k": [100, 100]} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedEllipseKeyframeFormat
+        }
+        XCTAssertNotNil(error, "Ellipse with animated position but invalid keyframes format should produce error")
+        XCTAssertTrue(error?.path.contains(".p") ?? false, "Error path should reference position (.p)")
+        XCTAssertTrue(error?.message.contains("could not be decoded") ?? false, "Error should mention keyframes could not be decoded")
+    }
+
+    func testValidate_ellipseWithMatchingKeyframes_noError() throws {
+        // Ellipse with p and s having matching keyframe count and times - should pass
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{
+                "ty": "el",
+                "nm": "Ellipse Matching",
+                "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]},
+                "s": {"a": 1, "k": [{"t": 0, "s": [100, 100]}, {"t": 10, "s": [200, 200]}]}
+            }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let keyframeMismatchError = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedEllipseKeyframesMismatch
+        }
+        let keyframeFormatError = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedEllipseKeyframeFormat
+        }
+        XCTAssertNil(keyframeMismatchError, "Ellipse with matching keyframes should NOT produce mismatch error")
+        XCTAssertNil(keyframeFormatError, "Ellipse with valid keyframes should NOT produce format error")
+    }
+
+    func testValidate_ellipseInvalidStaticSize_returnsError() throws {
+        // Ellipse with static size that has zero width - should produce invalid size error
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "el", "nm": "Zero Width Ellipse", "p": {"a": 0, "k": [50, 50]}, "s": {"a": 0, "k": [0, 100]} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedEllipseInvalidSize
+        }
+        XCTAssertNotNil(error, "Ellipse with zero width should produce invalid size error")
+        XCTAssertTrue(error?.message.contains("width=0") ?? false || error?.message.contains("width=0.0") ?? false, "Error should mention width=0")
     }
 
     // MARK: - Polystar Shape Validation (PR-05)

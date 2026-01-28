@@ -608,6 +608,10 @@ public enum ShapePathExtractor {
             // Rectangle shape - build bezier path from position, size, roundness
             return buildRectBezierPath(from: rect)
 
+        case .ellipse(let ellipse):
+            // Ellipse shape - build bezier path from position and size
+            return buildEllipseBezierPath(from: ellipse)
+
         case .group(let shapeGroup):
             // Group - recurse into items and apply group transform
             guard let items = shapeGroup.items else { return nil }
@@ -646,6 +650,10 @@ public enum ShapePathExtractor {
         case .rect(let rect):
             // Rectangle shape - extract static or animated path
             return extractRectAnimPath(from: rect)
+
+        case .ellipse(let ellipse):
+            // Ellipse shape - extract static or animated path
+            return extractEllipseAnimPath(from: ellipse)
 
         case .group(let shapeGroup):
             // Group - recurse into items and apply group transform
@@ -1042,6 +1050,286 @@ public enum ShapePathExtractor {
         default:
             return nil
         }
+    }
+
+    // MARK: - Ellipse Path Building
+
+    /// Builds a static BezierPath from a LottieShapeEllipse
+    /// - Parameter ellipse: The ellipse shape definition
+    /// - Returns: BezierPath or nil if position/size cannot be extracted or size is invalid
+    private static func buildEllipseBezierPath(from ellipse: LottieShapeEllipse) -> BezierPath? {
+        // Extract static position [cx, cy]
+        guard let position = extractVec2D(from: ellipse.position) else { return nil }
+
+        // Extract static size [w, h]
+        guard let size = extractVec2D(from: ellipse.size) else { return nil }
+
+        // Validate size - must be positive
+        guard size.x > 0 && size.y > 0 else { return nil }
+
+        // Direction: 1 = clockwise (default), 2 = counter-clockwise
+        let direction = ellipse.direction ?? 1
+
+        return buildEllipseBezierPath(
+            cx: position.x,
+            cy: position.y,
+            width: size.x,
+            height: size.y,
+            direction: direction
+        )
+    }
+
+    /// Builds a BezierPath for an ellipse with given parameters
+    /// Uses 4-point cubic bezier approximation (kappa constant)
+    /// - Parameters:
+    ///   - cx: Center X position
+    ///   - cy: Center Y position
+    ///   - width: Ellipse width
+    ///   - height: Ellipse height
+    ///   - direction: 1 = clockwise, 2 = counter-clockwise
+    /// - Returns: BezierPath representing the ellipse (always 4 vertices)
+    private static func buildEllipseBezierPath(
+        cx: Double,
+        cy: Double,
+        width: Double,
+        height: Double,
+        direction: Int
+    ) -> BezierPath {
+        let rx = width / 2   // horizontal radius
+        let ry = height / 2  // vertical radius
+
+        // Control point offsets for quarter-circle arc approximation
+        let cpx = rx * kappa
+        let cpy = ry * kappa
+
+        // 4 anchor points in clockwise order (d=1): top, right, bottom, left
+        let top = Vec2D(x: cx, y: cy - ry)
+        let right = Vec2D(x: cx + rx, y: cy)
+        let bottom = Vec2D(x: cx, y: cy + ry)
+        let left = Vec2D(x: cx - rx, y: cy)
+
+        var vertices = [top, right, bottom, left]
+
+        // Tangents for clockwise direction
+        // Each vertex has in-tangent (from previous segment) and out-tangent (to next segment)
+        // Tangents are RELATIVE to the vertex
+
+        // top: in from left arc (-cpx, 0), out to right arc (+cpx, 0)
+        // right: in from top arc (0, -cpy), out to bottom arc (0, +cpy)
+        // bottom: in from right arc (+cpx, 0), out to left arc (-cpx, 0)
+        // left: in from bottom arc (0, +cpy), out to top arc (0, -cpy)
+
+        var inTangents = [
+            Vec2D(x: -cpx, y: 0),    // top: from left arc
+            Vec2D(x: 0, y: -cpy),    // right: from top arc
+            Vec2D(x: cpx, y: 0),     // bottom: from right arc
+            Vec2D(x: 0, y: cpy)      // left: from bottom arc
+        ]
+
+        var outTangents = [
+            Vec2D(x: cpx, y: 0),     // top: to right arc
+            Vec2D(x: 0, y: cpy),     // right: to bottom arc
+            Vec2D(x: -cpx, y: 0),    // bottom: to left arc
+            Vec2D(x: 0, y: -cpy)     // left: to top arc
+        ]
+
+        // For counter-clockwise (d=2), reverse vertices and swap/negate tangents
+        if direction == 2 {
+            vertices.reverse()
+            inTangents.reverse()
+            outTangents.reverse()
+
+            // After reversing, swap in/out and negate tangent directions
+            let tempIn = inTangents
+            inTangents = outTangents.map { Vec2D(x: -$0.x, y: -$0.y) }
+            outTangents = tempIn.map { Vec2D(x: -$0.x, y: -$0.y) }
+        }
+
+        return BezierPath(
+            vertices: vertices,
+            inTangents: inTangents,
+            outTangents: outTangents,
+            closed: true
+        )
+    }
+
+    /// Extracts AnimPath from a LottieShapeEllipse (supports animated position/size)
+    /// - Parameter ellipse: The ellipse shape definition
+    /// - Returns: AnimPath (static or keyframed) or nil if extraction fails
+    private static func extractEllipseAnimPath(from ellipse: LottieShapeEllipse) -> AnimPath? {
+        let positionAnimated = ellipse.position?.isAnimated ?? false
+        let sizeAnimated = ellipse.size?.isAnimated ?? false
+
+        // Direction (static)
+        let direction = ellipse.direction ?? 1
+
+        // If both position and size are static, return static path
+        if !positionAnimated && !sizeAnimated {
+            if let bezier = buildEllipseBezierPath(from: ellipse) {
+                return .staticBezier(bezier)
+            }
+            return nil
+        }
+
+        // Extract keyframes arrays
+        let positionKeyframes: [LottieKeyframe]?
+        let sizeKeyframes: [LottieKeyframe]?
+
+        if positionAnimated {
+            guard let posValue = ellipse.position,
+                  let posData = posValue.value,
+                  case .keyframes(let posKfs) = posData else {
+                return nil
+            }
+            positionKeyframes = posKfs
+        } else {
+            positionKeyframes = nil
+        }
+
+        if sizeAnimated {
+            guard let sizeValue = ellipse.size,
+                  let sizeData = sizeValue.value,
+                  case .keyframes(let sizeKfs) = sizeData else {
+                return nil
+            }
+            sizeKeyframes = sizeKfs
+        } else {
+            sizeKeyframes = nil
+        }
+
+        // STRICT VALIDATION: If both p and s are animated, they must have matching keyframes
+        if let posKfs = positionKeyframes, let sizeKfs = sizeKeyframes {
+            // Check count match
+            guard posKfs.count == sizeKfs.count else {
+                return nil // Keyframe count mismatch - fail-fast
+            }
+
+            // Check time match for each keyframe
+            for i in 0..<posKfs.count {
+                let posTime = posKfs[i].time
+                let sizeTime = sizeKfs[i].time
+
+                // Both must have time
+                guard let pt = posTime, let st = sizeTime else {
+                    return nil // Missing time - fail-fast
+                }
+
+                // Times must match (using small epsilon for floating point)
+                guard abs(pt - st) < 0.001 else {
+                    return nil // Time mismatch - fail-fast
+                }
+            }
+        }
+
+        // Extract static values strictly (no fallbacks for animated properties)
+        let staticPosition: Vec2D?
+        if !positionAnimated {
+            // Position is static - must extract successfully
+            guard let pos = extractVec2D(from: ellipse.position) else {
+                return nil // Cannot extract static position - fail-fast
+            }
+            staticPosition = pos
+        } else {
+            staticPosition = nil
+        }
+
+        let staticSize: Vec2D?
+        if !sizeAnimated {
+            // Size is static - must extract successfully
+            guard let sz = extractVec2D(from: ellipse.size) else {
+                return nil // Cannot extract static size - fail-fast
+            }
+            // Validate static size is positive
+            guard sz.x > 0 && sz.y > 0 else {
+                return nil // Invalid size - fail-fast
+            }
+            staticSize = sz
+        } else {
+            staticSize = nil
+        }
+
+        // Determine driver keyframes (prefer size, then position)
+        let driverKeyframes: [LottieKeyframe]
+        if let sizeKfs = sizeKeyframes {
+            driverKeyframes = sizeKfs
+        } else if let posKfs = positionKeyframes {
+            driverKeyframes = posKfs
+        } else {
+            return nil // Should not happen given earlier checks
+        }
+
+        var keyframes: [Keyframe<BezierPath>] = []
+
+        for (index, driverKf) in driverKeyframes.enumerated() {
+            // Time is required - fail-fast if missing
+            guard let time = driverKf.time else {
+                return nil // Missing keyframe time - fail-fast
+            }
+
+            // Get position at this keyframe - no fallbacks
+            let position: Vec2D
+            if let posKfs = positionKeyframes {
+                // Position is animated - must extract from keyframe
+                guard let pos = extractVec2DFromKeyframe(posKfs[index]) else {
+                    return nil // Cannot extract animated position - fail-fast
+                }
+                position = pos
+            } else if let staticPos = staticPosition {
+                // Position is static - use extracted value
+                position = staticPos
+            } else {
+                return nil // Should not happen
+            }
+
+            // Get size at this keyframe - no fallbacks
+            let size: Vec2D
+            if let sizeKfs = sizeKeyframes {
+                // Size is animated - must extract from keyframe
+                guard let sz = extractVec2DFromKeyframe(sizeKfs[index]) else {
+                    return nil // Cannot extract animated size - fail-fast
+                }
+                // Validate animated size is positive
+                guard sz.x > 0 && sz.y > 0 else {
+                    return nil // Invalid size in keyframe - fail-fast
+                }
+                size = sz
+            } else if let staticSz = staticSize {
+                // Size is static - use extracted value
+                size = staticSz
+            } else {
+                return nil // Should not happen
+            }
+
+            // Build bezier path for this keyframe
+            let bezier = buildEllipseBezierPath(
+                cx: position.x,
+                cy: position.y,
+                width: size.x,
+                height: size.y,
+                direction: direction
+            )
+
+            // Extract easing from driver keyframe
+            let inTan = extractTangent(from: driverKf.inTangent)
+            let outTan = extractTangent(from: driverKf.outTangent)
+            let hold = (driverKf.hold ?? 0) == 1
+
+            keyframes.append(Keyframe(
+                time: time,
+                value: bezier,
+                inTangent: inTan,
+                outTangent: outTan,
+                hold: hold
+            ))
+        }
+
+        guard !keyframes.isEmpty else { return nil }
+
+        if keyframes.count == 1 {
+            return .staticBezier(keyframes[0].value)
+        }
+
+        return .keyframedBezier(keyframes)
     }
 
     // MARK: - Path Keyframe Extraction

@@ -64,6 +64,15 @@ public enum AnimValidationCode {
     /// Rectangle keyframe has invalid format (missing time or startValue)
     public static let unsupportedRectKeyframeFormat = "UNSUPPORTED_RECT_KEYFRAME_FORMAT"
 
+    /// Ellipse position and size keyframes have mismatched count or times
+    public static let unsupportedEllipseKeyframesMismatch = "UNSUPPORTED_ELLIPSE_KEYFRAMES_MISMATCH"
+
+    /// Ellipse keyframe has invalid format (missing time, startValue, or unparseable)
+    public static let unsupportedEllipseKeyframeFormat = "UNSUPPORTED_ELLIPSE_KEYFRAME_FORMAT"
+
+    /// Ellipse has invalid size (width or height <= 0)
+    public static let unsupportedEllipseInvalidSize = "UNSUPPORTED_ELLIPSE_INVALID_SIZE"
+
     /// Path keyframes have mismatched topology (vertex count or closed flag differ)
     public static let pathTopologyMismatch = "PATH_TOPOLOGY_MISMATCH"
 
