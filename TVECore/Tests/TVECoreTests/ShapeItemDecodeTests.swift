@@ -403,6 +403,133 @@ final class ShapeItemDecodeTests: XCTestCase {
         XCTAssertNil(ellipse.direction)
     }
 
+    // MARK: - Polystar Shape (ty="sr")
+
+    func testPolystarShape_decodesWithStaticValues() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "nm": "Star 1",
+            "mn": "ADBE Vector Shape - Star",
+            "hd": false,
+            "ix": 1,
+            "sy": 1,
+            "p": {"a": 0, "k": [100, 200]},
+            "r": {"a": 0, "k": 0},
+            "pt": {"a": 0, "k": 5},
+            "ir": {"a": 0, "k": 40},
+            "or": {"a": 0, "k": 80},
+            "is": {"a": 0, "k": 0},
+            "os": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .polystar(let star) = shape else {
+            XCTFail("Expected .polystar case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(star.type, "sr", "Type should be 'sr'")
+        XCTAssertEqual(star.name, "Star 1")
+        XCTAssertEqual(star.matchName, "ADBE Vector Shape - Star")
+        XCTAssertEqual(star.hidden, false)
+        XCTAssertEqual(star.index, 1)
+        XCTAssertEqual(star.starType, 1, "Star type should be 1 (star)")
+        XCTAssertEqual(star.direction, 1)
+
+        // Verify key geometry fields are present
+        XCTAssertNotNil(star.position, "Position should be present")
+        XCTAssertNotNil(star.rotation, "Rotation should be present")
+        XCTAssertNotNil(star.points, "Points should be present")
+        XCTAssertNotNil(star.innerRadius, "Inner radius should be present")
+        XCTAssertNotNil(star.outerRadius, "Outer radius should be present")
+        XCTAssertNotNil(star.innerRoundness, "Inner roundness should be present")
+        XCTAssertNotNil(star.outerRoundness, "Outer roundness should be present")
+
+        // Verify static values
+        XCTAssertEqual(star.position?.isAnimated, false)
+        XCTAssertEqual(star.points?.isAnimated, false)
+    }
+
+    func testPolystarShape_decodesWithAnimatedPoints() throws {
+        let json = """
+        {
+            "ty": "sr",
+            "sy": 1,
+            "pt": {"a": 1, "k": [{"t": 0, "s": [5]}, {"t": 30, "s": [8]}]},
+            "or": {"a": 0, "k": 50}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .polystar(let star) = shape else {
+            XCTFail("Expected .polystar case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(star.type, "sr")
+        XCTAssertNotNil(star.points, "Points should be present")
+        XCTAssertEqual(star.points?.isAnimated, true, "Points should be animated (a=1)")
+        XCTAssertEqual(star.outerRadius?.isAnimated, false, "Outer radius should be static")
+    }
+
+    func testPolystarShape_decodesMinimalFields() throws {
+        // Minimal sr - only type is required
+        let json = """
+        {
+            "ty": "sr",
+            "pt": {"a": 0, "k": 6}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .polystar(let star) = shape else {
+            XCTFail("Expected .polystar case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(star.type, "sr")
+        XCTAssertNil(star.name)
+        XCTAssertNil(star.starType)
+        XCTAssertNil(star.position)
+        XCTAssertNotNil(star.points)
+        XCTAssertNil(star.innerRadius)
+        XCTAssertNil(star.outerRadius)
+    }
+
+    func testPolystarShape_polygonType() throws {
+        // Polygon (sy=2) has no inner radius
+        let json = """
+        {
+            "ty": "sr",
+            "sy": 2,
+            "pt": {"a": 0, "k": 6},
+            "or": {"a": 0, "k": 100}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .polystar(let star) = shape else {
+            XCTFail("Expected .polystar case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(star.starType, 2, "Star type should be 2 (polygon)")
+        XCTAssertNotNil(star.points)
+        XCTAssertNotNil(star.outerRadius)
+        XCTAssertNil(star.innerRadius, "Polygon typically has no inner radius")
+    }
+
     // MARK: - Unknown Shape Types
 
     func testUnknownShape_decodesTolerantly() throws {
@@ -425,8 +552,8 @@ final class ShapeItemDecodeTests: XCTestCase {
     }
 
     func testUnknownShape_multipleTypes() throws {
-        // Note: "rc" and "el" are no longer unknown - they're decoded as .rect and .ellipse
-        let unknownTypes = ["st", "gs", "gf", "rd", "tm", "mm", "rp", "sr"]
+        // Note: "rc", "el", "sr" are no longer unknown - they're decoded as .rect, .ellipse, .polystar
+        let unknownTypes = ["st", "gs", "gf", "rd", "tm", "mm", "rp"]
 
         for typeStr in unknownTypes {
             let json = "{\"ty\": \"\(typeStr)\"}"

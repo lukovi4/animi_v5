@@ -12,6 +12,7 @@ public enum ShapeItem: Equatable, Sendable {
     case transform(LottieShapeTransform)
     case rect(LottieShapeRect)
     case ellipse(LottieShapeEllipse)
+    case polystar(LottieShapePolystar)
     case unknown(type: String)
 }
 
@@ -45,6 +46,9 @@ extension ShapeItem: Decodable {
         case "el":
             let ellipse = try LottieShapeEllipse(from: decoder)
             self = .ellipse(ellipse)
+        case "sr":
+            let polystar = try LottieShapePolystar(from: decoder)
+            self = .polystar(polystar)
         default:
             self = .unknown(type: type)
         }
@@ -442,6 +446,103 @@ public struct LottieShapeEllipse: Decodable, Equatable, Sendable {
         case index = "ix"
         case position = "p"
         case size = "s"
+        case direction = "d"
+    }
+}
+
+// MARK: - LottieShapePolystar (ty="sr")
+
+/// Polystar/Polygon path shape
+/// starType: 1 = star (with inner radius), 2 = polygon (no inner radius)
+public struct LottieShapePolystar: Decodable, Equatable, Sendable {
+    /// Shape type (always "sr")
+    public let type: String
+
+    /// Shape name
+    public let name: String?
+
+    /// Match name (After Effects internal)
+    public let matchName: String?
+
+    /// Hidden flag
+    public let hidden: Bool?
+
+    /// Index
+    public let index: Int?
+
+    /// Star type: 1 = star, 2 = polygon
+    public let starType: Int?
+
+    /// Position - center of polystar in local shape group space
+    public let position: LottieAnimatedValue?
+
+    /// Rotation in degrees
+    public let rotation: LottieAnimatedValue?
+
+    /// Number of points/rays
+    public let points: LottieAnimatedValue?
+
+    /// Inner radius (for star type only)
+    public let innerRadius: LottieAnimatedValue?
+
+    /// Outer radius
+    public let outerRadius: LottieAnimatedValue?
+
+    /// Inner roundness (0-100%)
+    public let innerRoundness: LottieAnimatedValue?
+
+    /// Outer roundness (0-100%)
+    public let outerRoundness: LottieAnimatedValue?
+
+    /// Direction - path direction
+    public let direction: Int?
+
+    public init(
+        type: String = "sr",
+        name: String? = nil,
+        matchName: String? = nil,
+        hidden: Bool? = nil,
+        index: Int? = nil,
+        starType: Int? = nil,
+        position: LottieAnimatedValue? = nil,
+        rotation: LottieAnimatedValue? = nil,
+        points: LottieAnimatedValue? = nil,
+        innerRadius: LottieAnimatedValue? = nil,
+        outerRadius: LottieAnimatedValue? = nil,
+        innerRoundness: LottieAnimatedValue? = nil,
+        outerRoundness: LottieAnimatedValue? = nil,
+        direction: Int? = nil
+    ) {
+        self.type = type
+        self.name = name
+        self.matchName = matchName
+        self.hidden = hidden
+        self.index = index
+        self.starType = starType
+        self.position = position
+        self.rotation = rotation
+        self.points = points
+        self.innerRadius = innerRadius
+        self.outerRadius = outerRadius
+        self.innerRoundness = innerRoundness
+        self.outerRoundness = outerRoundness
+        self.direction = direction
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "ty"
+        case name = "nm"
+        case matchName = "mn"
+        case hidden = "hd"
+        case index = "ix"
+        case starType = "sy"
+        case position = "p"
+        case rotation = "r"
+        case points = "pt"
+        case innerRadius = "ir"
+        case outerRadius = "or"
+        case innerRoundness = "is"
+        case outerRoundness = "os"
         case direction = "d"
     }
 }

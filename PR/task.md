@@ -1,82 +1,96 @@
-Ниже — **каноническое ТЗ для PR-04: “Lottie decoding: Ellipse `ty:"el"`”**, с учётом уроков PR-03 (особенно про **корректный path в валидаторе** и обязательный тест на него).
+Ниже — **каноническое финальное ТЗ для PR-05: “Lottie decoding: Polystar `ty:"sr"`”**. Оно повторяет проверенную схему PR-03/PR-04 (decode + fail-fast + тесты с проверкой path), без временных решений и без лишнего кода.
 
 ---
 
-# PR-04 — Lottie decoding: Ellipse (`ty:"el"`)
+# PR-05 — Lottie decoding: Polystar (`ty:"sr"`)
 
 ## 0) Цель PR
 
-Добавить **релизное, полное декодирование** shape item Ellipse Path (`ty="el"`) в модель Lottie внутри `TVECore`.
+Добавить **полное релизное декодирование** shape item Polystar/Polygon (`ty="sr"`) в модель Lottie `TVECore`.
 
-PR-04 **не добавляет рендер/компиляцию** ellipse → path.
-До PR-08 валидатор должен **fail-fast** на `.ellipse`, чтобы не было “тихо пропало”.
+Важно:
+
+* PR-05 **не реализует** конвертацию polystar → bezier/path (это будет PR-09).
+* До PR-09 валидатор обязан **fail-fast** на `.polystar`, чтобы не было silent ignore.
 
 ---
 
-# 1) Scope PR-04
+# 1) Scope PR-05
 
 ## 1.1 Что делаем
 
-1. `LottieShape.swift`
+1. `TVECore/Sources/TVECore/Lottie/LottieShape.swift`
 
-   * добавить `LottieShapeEllipse` (Decodable/Equatable/Sendable)
-   * добавить case `.ellipse(LottieShapeEllipse)` в `ShapeItem`
-   * добавить `case "el":` в `ShapeItem.init(from:)`
+   * добавить `LottieShapePolystar`
+   * добавить case `.polystar(LottieShapePolystar)` в `ShapeItem`
+   * добавить `case "sr":` в `ShapeItem.init(from:)`
 
-2. `AnimValidator+Shapes.swift`
+2. `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`
 
-   * добавить обработку `.ellipse` с **fail-fast error** `unsupportedShapeItem`
-   * использовать уже исправленную рекурсивную валидацию (как после PR-03) — **не возвращать старый баг**.
+   * добавить обработку `.polystar` → `unsupportedShapeItem` (fail-fast)
+   * **не трогать** существующую рекурсивную логику path (`basePath` + `.it[i]`)
 
 3. Тесты
 
-   * decode-тесты на `ty:"el"`
-   * validator-тесты:
+   * decode tests на `sr` (static + animated)
+   * validator tests:
 
-     * ellipse на верхнем уровне shape layer → error + path
-     * ellipse внутри `gr.it[]` → error + path `.it[0].ty`
+     * top-level `sr` → error + `.shapes[0].ty`
+     * nested `sr` в группе → error + `.it[0].ty`
 
 ## 1.2 Что НЕ делаем
 
-* НЕ конвертируем ellipse в bezier (это PR-08)
-* НЕ меняем Metal/AnimIR/Shape extraction
-* НЕ меняем поведение валидатора для других shape items
-* НЕ добавляем новые helper-утилиты/файлы
+* Не добавлять поддержку рендера/AnimIR/ShapePathExtractor
+* Не менять правила валидатора для других shape items
+* Не добавлять новые хелперы/файлы, кроме минимальных тестов
 
 ---
 
-# 2) Изменения в модели (`LottieShape.swift`)
+# 2) Модель `LottieShapePolystar` (LottieShape.swift)
 
 ## 2.1 ShapeItem enum
 
 Добавить:
 
 ```swift
-case ellipse(LottieShapeEllipse)
+case polystar(LottieShapePolystar)
 ```
 
-В `ShapeItem.init(from:)` добавить:
+В декодере:
 
 ```swift
-case "el":
-    let ellipse = try LottieShapeEllipse(from: decoder)
-    self = .ellipse(ellipse)
+case "sr":
+    let star = try LottieShapePolystar(from: decoder)
+    self = .polystar(star)
 ```
 
-## 2.2 Новый struct: `LottieShapeEllipse`
+## 2.2 Новый struct: `LottieShapePolystar`
 
 Файл: `TVECore/Sources/TVECore/Lottie/LottieShape.swift`
 
-### Обязательные поля (релизные)
+### Обязательные поля (релизные, полный decode)
 
-* `type: String` (`ty`) — `"el"`
+Метаданные:
+
+* `type: String` (`ty`) — `"sr"`
 * `name: String?` (`nm`)
 * `matchName: String?` (`mn`)
 * `hidden: Bool?` (`hd`)
 * `index: Int?` (`ix`)
-* `position: LottieAnimatedValue?` (`p`) — центр эллипса
-* `size: LottieAnimatedValue?` (`s`) — `[w,h]`
-* `direction: Int?` (`d`) — optional
+
+Polystar параметры (как в Bodymovin/Lottie):
+
+* `starType: Int?` (`sy`)
+
+  * `1` = star, `2` = polygon (встречается)
+* `position: LottieAnimatedValue?` (`p`)
+* `rotation: LottieAnimatedValue?` (`r`)
+* `points: LottieAnimatedValue?` (`pt`) — число вершин/лучей (может быть анимированное)
+* `innerRadius: LottieAnimatedValue?` (`ir`) — для star
+* `outerRadius: LottieAnimatedValue?` (`or`)
+* `innerRoundness: LottieAnimatedValue?` (`is`) — проценты 0..100
+* `outerRoundness: LottieAnimatedValue?` (`os`) — проценты 0..100
+* `direction: Int?` (`d`)
 
 ### CodingKeys
 
@@ -87,42 +101,49 @@ private enum CodingKeys: String, CodingKey {
     case matchName = "mn"
     case hidden = "hd"
     case index = "ix"
+
+    case starType = "sy"
     case position = "p"
-    case size = "s"
+    case rotation = "r"
+    case points = "pt"
+    case innerRadius = "ir"
+    case outerRadius = "or"
+    case innerRoundness = "is"
+    case outerRoundness = "os"
     case direction = "d"
 }
 ```
 
-### Требование по типам `p/s`
+### Требование по типам
 
-* `p` и `s` — `LottieAnimatedValue?`
-* static значение: ожидается `.array([Double])`
-* animated: `.keyframes(...)` (как принято в вашем `LottieAnimatedValue`)
+Все геометрические поля — `LottieAnimatedValue?`, как в остальном коде.
+
+> Да, тут тоже есть “overloaded” поля по ключам (`r` уже используется в transform как rotation, но это другой struct — конфликтов быть не должно, как в PR-03).
 
 ---
 
-# 3) Валидатор (`AnimValidator+Shapes.swift`) — fail-fast (релизно)
+# 3) Валидатор: fail-fast для `sr` до PR-09
 
-## 3.1 Обязательное поведение
+Файл: `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`
 
-Для `.ellipse(...)` валидатор должен эмитить:
+## 3.1 Требование
 
-* `code: AnimValidationCode.unsupportedShapeItem`
-* `severity: .error`
-* `path: "\(basePath).ty"`
-* message с указанием `el` и списка поддерживаемых на текущем этапе
+Добавить:
 
-Пример:
-`"Shape type 'el' not supported. Supported: gr, sh, fl, tr"`
+```swift
+case .polystar:
+    issues.append(ValidationIssue(
+        code: AnimValidationCode.unsupportedShapeItem,
+        severity: .error,
+        path: "\(basePath).ty",
+        message: "Shape type 'sr' not supported. Supported: gr, sh, fl, tr"
+    ))
+```
 
-## 3.2 Критично: путь должен быть корректным (урок PR-03)
+### Критично
 
-В этом PR **запрещено** трогать рекурсивный механизм построения путей, который уже исправлен в PR-03.
-
-Требование:
-
-* для вложенного элемента внутри группы путь обязан быть вида:
-  `...shapes[0].it[0].ty`
+* `path` должен быть **ровно** `\(basePath).ty`
+* Вложенные items должны давать путь вида `.it[0].ty` (фикс PR-03 не ломать)
 
 ---
 
@@ -132,82 +153,85 @@ private enum CodingKeys: String, CodingKey {
 
 Добавить минимум 3 теста:
 
-### (A) Static ellipse decode
+### (A) Static decode (полный набор ключей)
 
-JSON:
+Минимальный JSON:
 
 ```json
-{ "ty":"el", "p":{"a":0,"k":[100,200]}, "s":{"a":0,"k":[300,400]}, "d":1 }
+{
+  "ty":"sr",
+  "sy":1,
+  "p":{"a":0,"k":[100,200]},
+  "r":{"a":0,"k":0},
+  "pt":{"a":0,"k":5},
+  "ir":{"a":0,"k":40},
+  "or":{"a":0,"k":80},
+  "is":{"a":0,"k":0},
+  "os":{"a":0,"k":0},
+  "d":1
+}
 ```
 
 Проверить:
 
-* `.ellipse(let el)`
-* `el.position != nil`, `el.size != nil`
-* `el.direction == 1`
+* `.polystar(let s)`
+* `s.starType == 1`
+* ключевые поля не nil: `position/points/outerRadius`
 
-### (B) Animated position decode
+### (B) Animated points decode
 
-`p: {a:1,k:[...2 keyframes...]}`
-Проверить `el.position?.isAnimated == true`
+`pt` как animated (`a:1,k:[...]`) → `s.points?.isAnimated == true`
 
-### (C) Unknown shape test remains valid
+### (C) Minimal fields decode
 
-Не ломать существующий тест unknown; при необходимости обновить ожидания, но без “обходных” проверок.
+JSON только с `"ty":"sr"` и одним параметром (например `pt`) — должен декодироваться.
+
+### Обновить unknown test
+
+Удалить `"sr"` из массива unknownTypes (как делали для rc/el).
 
 ---
 
 ## 4.2 AnimValidatorTests.swift
 
-Добавить 2 теста (обязательные) — аналогично rc, но для el:
+Добавить 2 теста (обязательные) с проверкой path:
 
-### (A) `testValidate_ellipseShape_returnsErrorWithCorrectPath()`
+### (A) `testValidate_polystarShape_returnsErrorWithCorrectPath()`
 
-Создать minimal anim JSON:
-
-* один `ty=4` shape layer
-* shapes: `[{"ty":"el", ...}]`
-  Ожидания:
-* есть ошибка `unsupportedShapeItem`
-* message содержит `'el'`
+* shape layer `ty=4`
+* shapes[0] = `{"ty":"sr", ...}`
+  Ожидаем:
+* `unsupportedShapeItem`
 * `path` содержит `.shapes[0].ty`
+* message содержит `'sr'`
 
-### (B) `testValidate_ellipseInGroupShape_returnsErrorWithCorrectNestedPath()`
+### (B) `testValidate_polystarInGroupShape_returnsErrorWithCorrectNestedPath()`
 
-Shape layer:
-
-* shapes: `[{"ty":"gr","it":[{"ty":"el", ...},{"ty":"fl",...},{"ty":"tr",...}]}]`
-  Ожидания:
-* ошибка `unsupportedShapeItem` по ellipse
-* `path` содержит `.it[0].ty` (и/или точный `...shapes[0].it[0].ty`)
-
-> Важно: тест должен проверять path явно — это предотвращает возврат багов PR-03.
+* shapes[0] = group `{"ty":"gr","it":[{"ty":"sr",...}, ...]}`
+  Ожидаем:
+* `path` содержит `.it[0].ty`
 
 ---
 
 # 5) Нефункциональные требования
 
-* Код компилируется без warnings
-* Новые структуры соответствуют стилю проекта (`public`, `Sendable`, `Equatable`)
-* Никакого дублирования логики распаковки значений — используем существующий `LottieAnimatedValue`
-* Все существующие тесты + новые проходят
+* Никаких новых файлов в `Sources` кроме добавления struct/case в существующий `LottieShape.swift`
+* Никаких дубликатов валидатора; использовать текущий рекурсивный helper
+* Все тесты TVECore проходят
 
 ---
 
 # 6) Acceptance Criteria
 
-PR-04 принят, если:
+PR-05 принят, если:
 
-1. `ShapeItem` декодирует `ty:"el"` в `.ellipse(LottieShapeEllipse)`
-2. `LottieShapeEllipse` корректно декодит `p/s/d` (static + animated)
-3. Валидатор выдаёт fail-fast error на `.ellipse` с корректным path
-4. Есть тест на nested path `.it[0].ty`
-5. Все тесты проекта проходят
+1. `ShapeItem` декодит `ty:"sr"` → `.polystar(LottieShapePolystar)`
+2. `LottieShapePolystar` покрывает ключи `sy,p,r,pt,ir,or,is,os,d` корректными типами
+3. Валидатор fail-fast для `.polystar` с `unsupportedShapeItem` и корректными path’ами (включая nested `.it[i].ty`)
+4. Добавлены тесты decode + validator (с явной проверкой path)
+5. Обновлён unknown test (убран `sr`)
+6. Все тесты проходят
 
 ---
 
-Если программист сделает PR-04 по этому ТЗ — на ревью я буду смотреть прежде всего:
-
-* что `el` не перепутан с `rc` (нет roundness `r`)
-* что валидатор использует `basePath` и не ломает рекурсивный path
-* что тесты реально ловят nested `.it[0].ty` path.
+Если всё ок — программист делает PR-05 по этому ТЗ. После мержа логичный следующий шаг — **PR-06 (Stroke `st` decode)**.
