@@ -8,6 +8,13 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - UI Components
 
+    private lazy var sceneSelector: UISegmentedControl = {
+        let control = UISegmentedControl(items: ["4 Blocks", "Alpha Matte"])
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.selectedSegmentIndex = 0
+        return control
+    }()
+
     private lazy var loadButton: UIButton = {
         makeButton(title: "Load Scene", action: #selector(loadTestPackageTapped))
     }()
@@ -124,9 +131,12 @@ final class PlayerViewController: UIViewController {
 
     private func setupUI() {
         view.backgroundColor = .systemBackground
-        [loadButton, metalView, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
+        [sceneSelector, loadButton, metalView, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
         NSLayoutConstraint.activate([
-            loadButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            sceneSelector.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            sceneSelector.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            sceneSelector.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            loadButton.topAnchor.constraint(equalTo: sceneSelector.bottomAnchor, constant: 8),
             loadButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             loadButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             loadButton.heightAnchor.constraint(equalToConstant: 44),
@@ -171,9 +181,10 @@ final class PlayerViewController: UIViewController {
         stopPlayback()
         renderErrorLogged = false
         log("---\nLoading scene package...")
-        let subdir = "TestAssets/ScenePackages/example_4blocks"
+        let sceneName = sceneSelector.selectedSegmentIndex == 0 ? "example_4blocks" : "alpha_matte_test"
+        let subdir = "TestAssets/ScenePackages/\(sceneName)"
         guard let url = Bundle.main.url(forResource: "scene", withExtension: "json", subdirectory: subdir) else {
-            log("ERROR: Test package not found"); return
+            log("ERROR: Test package '\(sceneName)' not found"); return
         }
         do {
             try loadAndValidatePackage(from: url.deletingLastPathComponent())
