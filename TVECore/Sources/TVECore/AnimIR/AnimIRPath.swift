@@ -604,6 +604,10 @@ public enum ShapePathExtractor {
             // Path shape - extract vertices
             return BezierPath(from: pathShape.vertices)
 
+        case .rect(let rect):
+            // Rectangle shape - build bezier path from position, size, roundness
+            return buildRectBezierPath(from: rect)
+
         case .group(let shapeGroup):
             // Group - recurse into items and apply group transform
             guard let items = shapeGroup.items else { return nil }
@@ -639,6 +643,10 @@ public enum ShapePathExtractor {
                 return nil
             }
 
+        case .rect(let rect):
+            // Rectangle shape - extract static or animated path
+            return extractRectAnimPath(from: rect)
+
         case .group(let shapeGroup):
             // Group - recurse into items and apply group transform
             guard let items = shapeGroup.items else { return nil }
@@ -656,6 +664,387 @@ public enum ShapePathExtractor {
             return nil
         }
     }
+
+    // MARK: - Rectangle Path Building
+
+    /// Kappa constant for circular arc approximation with cubic Bezier
+    /// This produces a quarter circle with < 0.02% error
+    private static let kappa: Double = 0.5522847498307936
+
+    /// Builds a static BezierPath from a LottieShapeRect
+    /// - Parameter rect: The rectangle shape definition
+    /// - Returns: BezierPath or nil if position/size cannot be extracted
+    private static func buildRectBezierPath(from rect: LottieShapeRect) -> BezierPath? {
+        // Extract static position [cx, cy]
+        guard let position = extractVec2D(from: rect.position) else { return nil }
+
+        // Extract static size [w, h]
+        guard let size = extractVec2D(from: rect.size) else { return nil }
+
+        // Extract static roundness (default 0)
+        let roundness = extractDouble(from: rect.roundness) ?? 0
+
+        // Direction: 1 = clockwise (default), 2 = counter-clockwise
+        let direction = rect.direction ?? 1
+
+        return buildRectBezierPath(
+            cx: position.x,
+            cy: position.y,
+            width: size.x,
+            height: size.y,
+            roundness: roundness,
+            direction: direction
+        )
+    }
+
+    /// Builds a BezierPath for a rectangle with given parameters
+    /// - Parameters:
+    ///   - cx: Center X position
+    ///   - cy: Center Y position
+    ///   - width: Rectangle width
+    ///   - height: Rectangle height
+    ///   - roundness: Corner radius (will be clamped to valid range)
+    ///   - direction: 1 = clockwise, 2 = counter-clockwise
+    /// - Returns: BezierPath representing the rectangle
+    private static func buildRectBezierPath(
+        cx: Double,
+        cy: Double,
+        width: Double,
+        height: Double,
+        roundness: Double,
+        direction: Int
+    ) -> BezierPath {
+        let halfW = width / 2
+        let halfH = height / 2
+
+        // Clamp roundness to valid range: 0 <= r <= min(halfW, halfH)
+        let radius = max(0, min(roundness, min(halfW, halfH)))
+
+        if radius == 0 {
+            // Sharp corners: 4 vertices, no tangents
+            return buildSharpRectPath(cx: cx, cy: cy, halfW: halfW, halfH: halfH, direction: direction)
+        } else {
+            // Rounded corners: 8 vertices with cubic bezier tangents
+            return buildRoundedRectPath(cx: cx, cy: cy, halfW: halfW, halfH: halfH, radius: radius, direction: direction)
+        }
+    }
+
+    /// Builds a sharp-cornered rectangle (4 vertices)
+    private static func buildSharpRectPath(
+        cx: Double,
+        cy: Double,
+        halfW: Double,
+        halfH: Double,
+        direction: Int
+    ) -> BezierPath {
+        // Vertices in clockwise order (d=1): top-left, top-right, bottom-right, bottom-left
+        let topLeft = Vec2D(x: cx - halfW, y: cy - halfH)
+        let topRight = Vec2D(x: cx + halfW, y: cy - halfH)
+        let bottomRight = Vec2D(x: cx + halfW, y: cy + halfH)
+        let bottomLeft = Vec2D(x: cx - halfW, y: cy + halfH)
+
+        var vertices = [topLeft, topRight, bottomRight, bottomLeft]
+
+        // Reverse for counter-clockwise (d=2)
+        if direction == 2 {
+            vertices.reverse()
+        }
+
+        // Zero tangents for sharp corners
+        let zeroTangents = [Vec2D.zero, Vec2D.zero, Vec2D.zero, Vec2D.zero]
+
+        return BezierPath(
+            vertices: vertices,
+            inTangents: zeroTangents,
+            outTangents: zeroTangents,
+            closed: true
+        )
+    }
+
+    /// Builds a rounded rectangle (8 vertices with bezier tangents)
+    /// Each corner has 2 vertices: one at the start of the arc, one at the end
+    private static func buildRoundedRectPath(
+        cx: Double,
+        cy: Double,
+        halfW: Double,
+        halfH: Double,
+        radius: Double,
+        direction: Int
+    ) -> BezierPath {
+        // Control point offset for quarter circle
+        let c = radius * kappa
+
+        // Build vertices and tangents for clockwise direction (d=1)
+        // Starting from top edge, going clockwise: TR corner, right edge, BR corner, etc.
+
+        // Top edge end (before top-right corner arc)
+        let p0 = Vec2D(x: cx + halfW - radius, y: cy - halfH)
+        // Top-right corner arc end (start of right edge)
+        let p1 = Vec2D(x: cx + halfW, y: cy - halfH + radius)
+        // Right edge end (before bottom-right corner arc)
+        let p2 = Vec2D(x: cx + halfW, y: cy + halfH - radius)
+        // Bottom-right corner arc end (start of bottom edge)
+        let p3 = Vec2D(x: cx + halfW - radius, y: cy + halfH)
+        // Bottom edge end (before bottom-left corner arc)
+        let p4 = Vec2D(x: cx - halfW + radius, y: cy + halfH)
+        // Bottom-left corner arc end (start of left edge)
+        let p5 = Vec2D(x: cx - halfW, y: cy + halfH - radius)
+        // Left edge end (before top-left corner arc)
+        let p6 = Vec2D(x: cx - halfW, y: cy - halfH + radius)
+        // Top-left corner arc end (start of top edge)
+        let p7 = Vec2D(x: cx - halfW + radius, y: cy - halfH)
+
+        var vertices = [p0, p1, p2, p3, p4, p5, p6, p7]
+
+        // Tangents for clockwise direction
+        // For each arc: outTangent points toward next vertex, inTangent points toward previous
+        // Straight segments have zero tangents at their endpoints
+
+        // p0 (before TR arc): in=0 (from straight), out=(+c, 0) toward arc
+        // p1 (after TR arc): in=(0, -c) from arc, out=0 (to straight)
+        // p2 (before BR arc): in=0 (from straight), out=(0, +c) toward arc
+        // p3 (after BR arc): in=(+c, 0) from arc, out=0 (to straight) -- note: in is toward p2
+        // p4 (before BL arc): in=0 (from straight), out=(-c, 0) toward arc
+        // p5 (after BL arc): in=(0, +c) from arc, out=0 (to straight)
+        // p6 (before TL arc): in=0 (from straight), out=(0, -c) toward arc
+        // p7 (after TL arc): in=(-c, 0) from arc, out=0 (to straight)
+
+        var inTangents = [
+            Vec2D.zero,            // p0: straight segment before
+            Vec2D(x: 0, y: -c),    // p1: from TR arc
+            Vec2D.zero,            // p2: straight segment before
+            Vec2D(x: c, y: 0),     // p3: from BR arc
+            Vec2D.zero,            // p4: straight segment before
+            Vec2D(x: 0, y: c),     // p5: from BL arc
+            Vec2D.zero,            // p6: straight segment before
+            Vec2D(x: -c, y: 0)     // p7: from TL arc
+        ]
+
+        var outTangents = [
+            Vec2D(x: c, y: 0),     // p0: to TR arc
+            Vec2D.zero,            // p1: straight segment after
+            Vec2D(x: 0, y: c),     // p2: to BR arc
+            Vec2D.zero,            // p3: straight segment after
+            Vec2D(x: -c, y: 0),    // p4: to BL arc
+            Vec2D.zero,            // p5: straight segment after
+            Vec2D(x: 0, y: -c),    // p6: to TL arc
+            Vec2D.zero             // p7: straight segment after (to p0)
+        ]
+
+        // For counter-clockwise (d=2), reverse vertices and swap in/out tangents
+        if direction == 2 {
+            vertices.reverse()
+            inTangents.reverse()
+            outTangents.reverse()
+
+            // After reversing, we need to swap in/out and negate tangent directions
+            // But since we reversed the array, we actually need to swap in<->out at each position
+            let tempIn = inTangents
+            inTangents = outTangents.map { Vec2D(x: -$0.x, y: -$0.y) }
+            outTangents = tempIn.map { Vec2D(x: -$0.x, y: -$0.y) }
+        }
+
+        return BezierPath(
+            vertices: vertices,
+            inTangents: inTangents,
+            outTangents: outTangents,
+            closed: true
+        )
+    }
+
+    /// Extracts AnimPath from a LottieShapeRect (supports animated position/size)
+    /// - Parameter rect: The rectangle shape definition
+    /// - Returns: AnimPath (static or keyframed) or nil if extraction fails
+    private static func extractRectAnimPath(from rect: LottieShapeRect) -> AnimPath? {
+        let positionAnimated = rect.position?.isAnimated ?? false
+        let sizeAnimated = rect.size?.isAnimated ?? false
+        let roundnessAnimated = rect.roundness?.isAnimated ?? false
+
+        // Animated roundness not supported in PR-07 (topology would change)
+        if roundnessAnimated {
+            return nil
+        }
+
+        // Static roundness value (default 0)
+        let roundness = extractDouble(from: rect.roundness) ?? 0
+
+        // Direction (static)
+        let direction = rect.direction ?? 1
+
+        // If both position and size are static, return static path
+        if !positionAnimated && !sizeAnimated {
+            if let bezier = buildRectBezierPath(from: rect) {
+                return .staticBezier(bezier)
+            }
+            return nil
+        }
+
+        // Extract keyframes arrays
+        let positionKeyframes: [LottieKeyframe]?
+        let sizeKeyframes: [LottieKeyframe]?
+
+        if positionAnimated {
+            guard let posValue = rect.position,
+                  let posData = posValue.value,
+                  case .keyframes(let posKfs) = posData else {
+                return nil
+            }
+            positionKeyframes = posKfs
+        } else {
+            positionKeyframes = nil
+        }
+
+        if sizeAnimated {
+            guard let sizeValue = rect.size,
+                  let sizeData = sizeValue.value,
+                  case .keyframes(let sizeKfs) = sizeData else {
+                return nil
+            }
+            sizeKeyframes = sizeKfs
+        } else {
+            sizeKeyframes = nil
+        }
+
+        // STRICT VALIDATION: If both p and s are animated, they must have matching keyframes
+        if let posKfs = positionKeyframes, let sizeKfs = sizeKeyframes {
+            // Check count match
+            guard posKfs.count == sizeKfs.count else {
+                return nil // Keyframe count mismatch - fail-fast
+            }
+
+            // Check time match for each keyframe
+            for i in 0..<posKfs.count {
+                let posTime = posKfs[i].time
+                let sizeTime = sizeKfs[i].time
+
+                // Both must have time
+                guard let pt = posTime, let st = sizeTime else {
+                    return nil // Missing time - fail-fast
+                }
+
+                // Times must match (using small epsilon for floating point)
+                guard abs(pt - st) < 0.001 else {
+                    return nil // Time mismatch - fail-fast
+                }
+            }
+        }
+
+        // Extract static values strictly (no fallbacks for animated properties)
+        let staticPosition: Vec2D?
+        if !positionAnimated {
+            // Position is static - must extract successfully
+            guard let pos = extractVec2D(from: rect.position) else {
+                return nil // Cannot extract static position - fail-fast
+            }
+            staticPosition = pos
+        } else {
+            staticPosition = nil
+        }
+
+        let staticSize: Vec2D?
+        if !sizeAnimated {
+            // Size is static - must extract successfully
+            guard let sz = extractVec2D(from: rect.size) else {
+                return nil // Cannot extract static size - fail-fast
+            }
+            staticSize = sz
+        } else {
+            staticSize = nil
+        }
+
+        // Determine driver keyframes (prefer size, then position)
+        let driverKeyframes: [LottieKeyframe]
+        if let sizeKfs = sizeKeyframes {
+            driverKeyframes = sizeKfs
+        } else if let posKfs = positionKeyframes {
+            driverKeyframes = posKfs
+        } else {
+            return nil // Should not happen given earlier checks
+        }
+
+        var keyframes: [Keyframe<BezierPath>] = []
+
+        for (index, driverKf) in driverKeyframes.enumerated() {
+            // Time is required - fail-fast if missing
+            guard let time = driverKf.time else {
+                return nil // Missing keyframe time - fail-fast
+            }
+
+            // Get position at this keyframe - no fallbacks
+            let position: Vec2D
+            if let posKfs = positionKeyframes {
+                // Position is animated - must extract from keyframe
+                guard let pos = extractVec2DFromKeyframe(posKfs[index]) else {
+                    return nil // Cannot extract animated position - fail-fast
+                }
+                position = pos
+            } else if let staticPos = staticPosition {
+                // Position is static - use extracted value
+                position = staticPos
+            } else {
+                return nil // Should not happen
+            }
+
+            // Get size at this keyframe - no fallbacks
+            let size: Vec2D
+            if let sizeKfs = sizeKeyframes {
+                // Size is animated - must extract from keyframe
+                guard let sz = extractVec2DFromKeyframe(sizeKfs[index]) else {
+                    return nil // Cannot extract animated size - fail-fast
+                }
+                size = sz
+            } else if let staticSz = staticSize {
+                // Size is static - use extracted value
+                size = staticSz
+            } else {
+                return nil // Should not happen
+            }
+
+            // Build bezier path for this keyframe
+            let bezier = buildRectBezierPath(
+                cx: position.x,
+                cy: position.y,
+                width: size.x,
+                height: size.y,
+                roundness: roundness,
+                direction: direction
+            )
+
+            // Extract easing from driver keyframe
+            let inTan = extractTangent(from: driverKf.inTangent)
+            let outTan = extractTangent(from: driverKf.outTangent)
+            let hold = (driverKf.hold ?? 0) == 1
+
+            keyframes.append(Keyframe(
+                time: time,
+                value: bezier,
+                inTangent: inTan,
+                outTangent: outTan,
+                hold: hold
+            ))
+        }
+
+        guard !keyframes.isEmpty else { return nil }
+
+        if keyframes.count == 1 {
+            return .staticBezier(keyframes[0].value)
+        }
+
+        return .keyframedBezier(keyframes)
+    }
+
+    /// Extracts Vec2D from a keyframe's startValue
+    private static func extractVec2DFromKeyframe(_ kf: LottieKeyframe) -> Vec2D? {
+        guard let startValue = kf.startValue else { return nil }
+        switch startValue {
+        case .numbers(let arr) where arr.count >= 2:
+            return Vec2D(x: arr[0], y: arr[1])
+        default:
+            return nil
+        }
+    }
+
+    // MARK: - Path Keyframe Extraction
 
     /// Extracts keyframed path from LottieAnimatedValue
     /// Validates topology: all keyframes must have same vertex count and closed flag

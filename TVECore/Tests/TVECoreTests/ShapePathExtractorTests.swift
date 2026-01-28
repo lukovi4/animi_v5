@@ -444,4 +444,469 @@ final class ShapePathExtractorTests: XCTestCase {
         XCTAssertEqual(width, 540, accuracy: epsilon, "Width should remain 540")
         XCTAssertEqual(height, 960, accuracy: epsilon, "Height should remain 960")
     }
+
+    // MARK: - Rectangle Shape (rc) Tests - PR-07
+
+    /// Test static rectangle with no roundness (r=0)
+    /// rect: p=[0,0], s=[100,200], r=0, d=1 (clockwise)
+    /// Expected AABB: minX=-50, maxX=50, minY=-100, maxY=100
+    /// Expected vertex count: 4
+    func testRect_staticSharpCorners() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Rectangle 1",
+            "p": {"a": 0, "k": [0, 0]},
+            "s": {"a": 0, "k": [100, 200]},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from rectangle")
+        guard let extractedPath = path else { return }
+
+        let epsilon = 0.001
+
+        // Verify vertex count for sharp corners
+        XCTAssertEqual(extractedPath.vertexCount, 4, "Sharp rectangle should have 4 vertices")
+
+        // Verify AABB
+        let aabb = extractedPath.aabb
+        XCTAssertEqual(aabb.minX, -50, accuracy: epsilon, "minX should be -50 (cx - w/2)")
+        XCTAssertEqual(aabb.maxX, 50, accuracy: epsilon, "maxX should be 50 (cx + w/2)")
+        XCTAssertEqual(aabb.minY, -100, accuracy: epsilon, "minY should be -100 (cy - h/2)")
+        XCTAssertEqual(aabb.maxY, 100, accuracy: epsilon, "maxY should be 100 (cy + h/2)")
+
+        // Verify closed path
+        XCTAssertTrue(extractedPath.closed, "Rectangle path should be closed")
+    }
+
+    /// Test static rectangle with roundness (r>0)
+    /// rect: p=[0,0], s=[100,200], r=20
+    /// Expected vertex count: 8 (2 per corner)
+    /// Expected AABB: same as sharp rectangle (corners don't extend past original bounds)
+    func testRect_staticRoundedCorners() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Rounded Rectangle",
+            "p": {"a": 0, "k": [0, 0]},
+            "s": {"a": 0, "k": [100, 200]},
+            "r": {"a": 0, "k": 20},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from rounded rectangle")
+        guard let extractedPath = path else { return }
+
+        let epsilon = 0.001
+
+        // Verify vertex count for rounded corners
+        XCTAssertEqual(extractedPath.vertexCount, 8, "Rounded rectangle should have 8 vertices")
+
+        // Verify AABB is same as sharp rectangle (rounded corners don't extend past bounds)
+        let aabb = extractedPath.aabb
+        XCTAssertEqual(aabb.minX, -50, accuracy: epsilon, "minX should be -50")
+        XCTAssertEqual(aabb.maxX, 50, accuracy: epsilon, "maxX should be 50")
+        XCTAssertEqual(aabb.minY, -100, accuracy: epsilon, "minY should be -100")
+        XCTAssertEqual(aabb.maxY, 100, accuracy: epsilon, "maxY should be 100")
+
+        // Verify closed path
+        XCTAssertTrue(extractedPath.closed, "Rectangle path should be closed")
+
+        // Verify tangent arrays have correct count
+        XCTAssertEqual(extractedPath.inTangents.count, 8, "Should have 8 in tangents")
+        XCTAssertEqual(extractedPath.outTangents.count, 8, "Should have 8 out tangents")
+    }
+
+    /// Test animated rectangle size
+    /// s: keyframes at t=0 [100,100], t=10 [200,100]
+    /// p: static [0,0]
+    /// Expected: keyframedBezier with 2 keyframes
+    func testRect_animatedSize() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Animated Size Rectangle",
+            "p": {"a": 0, "k": [0, 0]},
+            "s": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [100, 100]},
+                    {"t": 10, "s": [200, 100]}
+                ]
+            },
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNotNil(animPath, "AnimPath should be extracted from animated rectangle")
+        guard let extractedAnimPath = animPath else { return }
+
+        // Verify it's keyframed
+        if case .keyframedBezier(let keyframes) = extractedAnimPath {
+            XCTAssertEqual(keyframes.count, 2, "Should have 2 keyframes")
+
+            // Sample at frame 0: width should be 100 (AABB -50 to 50)
+            let path0 = extractedAnimPath.sample(frame: 0)
+            XCTAssertNotNil(path0)
+            if let p0 = path0 {
+                let aabb0 = p0.aabb
+                XCTAssertEqual(aabb0.maxX - aabb0.minX, 100, accuracy: 0.001, "Width at t=0 should be 100")
+            }
+
+            // Sample at frame 10: width should be 200 (AABB -100 to 100)
+            let path10 = extractedAnimPath.sample(frame: 10)
+            XCTAssertNotNil(path10)
+            if let p10 = path10 {
+                let aabb10 = p10.aabb
+                XCTAssertEqual(aabb10.maxX - aabb10.minX, 200, accuracy: 0.001, "Width at t=10 should be 200")
+            }
+        } else {
+            XCTFail("Expected keyframedBezier, got static")
+        }
+    }
+
+    /// Test rectangle inside group with transform
+    /// Group contains rc + tr with translation
+    /// Verifies group transform is applied to rectangle path
+    func testRect_insideGroupWithTransform() throws {
+        let json = """
+        {
+            "ty": "gr",
+            "nm": "Group with Rectangle",
+            "it": [
+                {
+                    "ty": "rc",
+                    "nm": "Rectangle",
+                    "p": {"a": 0, "k": [0, 0]},
+                    "s": {"a": 0, "k": [100, 100]},
+                    "r": {"a": 0, "k": 0},
+                    "d": 1
+                },
+                {
+                    "ty": "fl",
+                    "c": {"a": 0, "k": [1, 0, 0, 1]}
+                },
+                {
+                    "ty": "tr",
+                    "p": {"a": 0, "k": [50, 100]},
+                    "a": {"a": 0, "k": [0, 0]},
+                    "s": {"a": 0, "k": [100, 100]},
+                    "r": {"a": 0, "k": 0}
+                }
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from group containing rectangle")
+        guard let extractedPath = path else { return }
+
+        let epsilon = 0.001
+
+        // Original rectangle: center (0,0), size 100x100
+        // AABB before transform: (-50, -50) to (50, 50)
+        // After translation by (50, 100): (0, 50) to (100, 150)
+        let aabb = extractedPath.aabb
+        XCTAssertEqual(aabb.minX, 0, accuracy: epsilon, "minX after translation should be 0")
+        XCTAssertEqual(aabb.maxX, 100, accuracy: epsilon, "maxX after translation should be 100")
+        XCTAssertEqual(aabb.minY, 50, accuracy: epsilon, "minY after translation should be 50")
+        XCTAssertEqual(aabb.maxY, 150, accuracy: epsilon, "maxY after translation should be 150")
+    }
+
+    /// Test rectangle with counter-clockwise direction (d=2)
+    func testRect_counterClockwiseDirection() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "CCW Rectangle",
+            "p": {"a": 0, "k": [0, 0]},
+            "s": {"a": 0, "k": [100, 100]},
+            "r": {"a": 0, "k": 0},
+            "d": 2
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from CCW rectangle")
+        guard let extractedPath = path else { return }
+
+        // AABB should be the same regardless of direction
+        let epsilon = 0.001
+        let aabb = extractedPath.aabb
+        XCTAssertEqual(aabb.minX, -50, accuracy: epsilon)
+        XCTAssertEqual(aabb.maxX, 50, accuracy: epsilon)
+        XCTAssertEqual(aabb.minY, -50, accuracy: epsilon)
+        XCTAssertEqual(aabb.maxY, 50, accuracy: epsilon)
+
+        // Vertex count should still be 4
+        XCTAssertEqual(extractedPath.vertexCount, 4)
+    }
+
+    /// Test rectangle roundness is clamped to valid range
+    /// When r > min(w/2, h/2), it should be clamped
+    func testRect_roundnessClampedToValidRange() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Over-rounded Rectangle",
+            "p": {"a": 0, "k": [0, 0]},
+            "s": {"a": 0, "k": [100, 50]},
+            "r": {"a": 0, "k": 100},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let path = ShapePathExtractor.extractPath(from: [shape])
+
+        XCTAssertNotNil(path, "Path should be extracted from over-rounded rectangle")
+        guard let extractedPath = path else { return }
+
+        // Should still have 8 vertices (rounded)
+        XCTAssertEqual(extractedPath.vertexCount, 8, "Should have 8 vertices for rounded corners")
+
+        // AABB should match original bounds (clamped radius doesn't extend past edges)
+        let epsilon = 0.001
+        let aabb = extractedPath.aabb
+        XCTAssertEqual(aabb.minX, -50, accuracy: epsilon)
+        XCTAssertEqual(aabb.maxX, 50, accuracy: epsilon)
+        XCTAssertEqual(aabb.minY, -25, accuracy: epsilon)
+        XCTAssertEqual(aabb.maxY, 25, accuracy: epsilon)
+    }
+
+    /// Test that extractAnimPath returns static for non-animated rectangle
+    func testRect_extractAnimPath_staticReturnsStaticBezier() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Static Rectangle",
+            "p": {"a": 0, "k": [0, 0]},
+            "s": {"a": 0, "k": [100, 100]},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNotNil(animPath)
+        guard let extractedAnimPath = animPath else { return }
+
+        if case .staticBezier(let bezier) = extractedAnimPath {
+            XCTAssertEqual(bezier.vertexCount, 4)
+            XCTAssertFalse(extractedAnimPath.isAnimated)
+        } else {
+            XCTFail("Expected staticBezier for non-animated rectangle")
+        }
+    }
+
+    // MARK: - Rectangle Keyframe Mismatch Tests (PR-07 Fix)
+
+    /// Test that animated p and s with different keyframe counts returns nil (fail-fast)
+    func testRect_animatedPAndS_differentKeyframeCounts_returnsNil() throws {
+        // p has 2 keyframes, s has 3 keyframes - must fail
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Mismatched Keyframe Count Rectangle",
+            "p": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [0, 0]},
+                    {"t": 10, "s": [50, 50]}
+                ]
+            },
+            "s": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [100, 100]},
+                    {"t": 5, "s": [150, 150]},
+                    {"t": 10, "s": [200, 200]}
+                ]
+            },
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNil(animPath, "extractAnimPath should return nil when p and s have different keyframe counts")
+    }
+
+    /// Test that animated p and s with same count but different times returns nil (fail-fast)
+    func testRect_animatedPAndS_differentKeyframeTimes_returnsNil() throws {
+        // p and s both have 2 keyframes, but times don't match
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Mismatched Keyframe Times Rectangle",
+            "p": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [0, 0]},
+                    {"t": 10, "s": [50, 50]}
+                ]
+            },
+            "s": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [100, 100]},
+                    {"t": 15, "s": [200, 200]}
+                ]
+            },
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNil(animPath, "extractAnimPath should return nil when p and s have different keyframe times")
+    }
+
+    /// Test that keyframe with missing startValue returns nil (fail-fast)
+    func testRect_keyframeWithMissingStartValue_returnsNil() throws {
+        // Size keyframe at t=10 has no startValue ("s" field)
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Missing StartValue Rectangle",
+            "p": {"a": 0, "k": [0, 0]},
+            "s": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [100, 100]},
+                    {"t": 10}
+                ]
+            },
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNil(animPath, "extractAnimPath should return nil when keyframe is missing startValue")
+    }
+
+    /// Test that animated p with static s works correctly (no mismatch validation needed)
+    func testRect_animatedP_staticS_works() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Animated Position Only Rectangle",
+            "p": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [0, 0]},
+                    {"t": 10, "s": [50, 50]}
+                ]
+            },
+            "s": {"a": 0, "k": [100, 100]},
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNotNil(animPath, "extractAnimPath should work when only p is animated")
+
+        if case .keyframedBezier(let keyframes) = animPath {
+            XCTAssertEqual(keyframes.count, 2)
+        } else {
+            XCTFail("Expected keyframedBezier")
+        }
+    }
+
+    /// Test that animated p and s with matching keyframes works correctly
+    func testRect_animatedPAndS_matchingKeyframes_works() throws {
+        let json = """
+        {
+            "ty": "rc",
+            "nm": "Matching Keyframes Rectangle",
+            "p": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [0, 0]},
+                    {"t": 10, "s": [50, 50]}
+                ]
+            },
+            "s": {
+                "a": 1,
+                "k": [
+                    {"t": 0, "s": [100, 100]},
+                    {"t": 10, "s": [200, 200]}
+                ]
+            },
+            "r": {"a": 0, "k": 0},
+            "d": 1
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+        let animPath = ShapePathExtractor.extractAnimPath(from: [shape])
+
+        XCTAssertNotNil(animPath, "extractAnimPath should work when p and s have matching keyframes")
+
+        if case .keyframedBezier(let keyframes) = animPath {
+            XCTAssertEqual(keyframes.count, 2)
+
+            // Sample at frame 0: p=(0,0), s=(100,100) -> AABB (-50,-50) to (50,50)
+            let path0 = animPath?.sample(frame: 0)
+            XCTAssertNotNil(path0)
+            if let p0 = path0 {
+                let aabb0 = p0.aabb
+                XCTAssertEqual(aabb0.minX, -50, accuracy: 0.001)
+                XCTAssertEqual(aabb0.maxX, 50, accuracy: 0.001)
+            }
+
+            // Sample at frame 10: p=(50,50), s=(200,200) -> AABB (-50,-50) to (150,150)
+            let path10 = animPath?.sample(frame: 10)
+            XCTAssertNotNil(path10)
+            if let p10 = path10 {
+                let aabb10 = p10.aabb
+                XCTAssertEqual(aabb10.minX, -50, accuracy: 0.001)
+                XCTAssertEqual(aabb10.maxX, 150, accuracy: 0.001)
+            }
+        } else {
+            XCTFail("Expected keyframedBezier")
+        }
+    }
 }

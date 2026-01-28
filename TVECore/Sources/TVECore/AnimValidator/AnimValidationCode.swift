@@ -55,6 +55,15 @@ public enum AnimValidationCode {
     /// Shape item type not supported in matte source
     public static let unsupportedShapeItem = "UNSUPPORTED_SHAPE_ITEM"
 
+    /// Animated rectangle roundness not supported (topology changes between keyframes)
+    public static let unsupportedRectRoundnessAnimated = "UNSUPPORTED_RECT_ROUNDNESS_ANIMATED"
+
+    /// Rectangle position and size keyframes have mismatched count or times
+    public static let unsupportedRectKeyframesMismatch = "UNSUPPORTED_RECT_KEYFRAMES_MISMATCH"
+
+    /// Rectangle keyframe has invalid format (missing time or startValue)
+    public static let unsupportedRectKeyframeFormat = "UNSUPPORTED_RECT_KEYFRAME_FORMAT"
+
     /// Path keyframes have mismatched topology (vertex count or closed flag differ)
     public static let pathTopologyMismatch = "PATH_TOPOLOGY_MISMATCH"
 

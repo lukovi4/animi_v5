@@ -1108,9 +1108,8 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertTrue(error?.message.contains("'tm'") ?? false)
     }
 
-    func testValidate_shapeLayerWithRect_returnsError() throws {
-        // Rectangle (rc) is decoded but NOT yet supported for rendering (until PR-07)
-        // Validator must fail-fast to prevent silent incorrect render
+    func testValidate_shapeLayerWithRect_noError() throws {
+        // Rectangle (rc) is now supported (PR-07)
         let scene = sceneJSON()
         let anim = """
         {
@@ -1130,12 +1129,11 @@ final class AnimValidatorTests: XCTestCase {
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'rc'")
         }
-        XCTAssertNotNil(error, "Rectangle shape should produce unsupportedShapeItem error (fail-fast until PR-07)")
-        XCTAssertTrue(error?.path.contains(".shapes[0].ty") ?? false, "Error path should point to shape type")
+        XCTAssertNil(error, "Rectangle shape should NOT produce unsupportedShapeItem error (supported since PR-07)")
     }
 
-    func testValidate_rectInGroupShape_returnsError() throws {
-        // Rectangle nested inside a group should also be caught
+    func testValidate_rectInGroupShape_noError() throws {
+        // Rectangle nested inside a group should be allowed
         let scene = sceneJSON()
         let anim = """
         {
@@ -1155,9 +1153,138 @@ final class AnimValidatorTests: XCTestCase {
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'rc'")
         }
-        XCTAssertNotNil(error, "Rectangle inside group should also produce error")
-        // Verify path is correct: should contain .it[0].ty for nested shape inside group
-        XCTAssertTrue(error?.path.contains(".it[0].ty") == true, "Path should contain .it[0].ty for nested shape, got: \(error?.path ?? "nil")")
+        XCTAssertNil(error, "Rectangle inside group should NOT produce error (supported since PR-07)")
+    }
+
+    func testValidate_rectWithAnimatedRoundness_returnsError() throws {
+        // Rectangle with animated roundness should fail (not supported)
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "rc", "nm": "Animated Roundness Rect", "p": {"a": 0, "k": [50, 50]}, "s": {"a": 0, "k": [100, 100]}, "r": {"a": 1, "k": [{"t": 0, "s": [0]}, {"t": 30, "s": [20]}]} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedRectRoundnessAnimated
+        }
+        XCTAssertNotNil(error, "Animated rectangle roundness should produce error")
+        XCTAssertTrue(error?.path.contains(".r.a") ?? false, "Error path should point to roundness animation flag")
+    }
+
+    func testValidate_rectWithMismatchedKeyframeCounts_returnsError() throws {
+        // Rectangle with p having 2 keyframes and s having 3 keyframes should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "rc", "nm": "Mismatched Rect", "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]}, "s": {"a": 1, "k": [{"t": 0, "s": [100, 100]}, {"t": 5, "s": [150, 150]}, {"t": 10, "s": [200, 200]}]}, "r": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedRectKeyframesMismatch
+        }
+        XCTAssertNotNil(error, "Rectangle with mismatched keyframe counts should produce error")
+        XCTAssertTrue(error?.message.contains("2 keyframes") ?? false, "Error should mention position keyframe count")
+        XCTAssertTrue(error?.message.contains("3") ?? false, "Error should mention size keyframe count")
+    }
+
+    func testValidate_rectWithMismatchedKeyframeTimes_returnsError() throws {
+        // Rectangle with p and s having same count but different times should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "rc", "nm": "Time Mismatch Rect", "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]}, "s": {"a": 1, "k": [{"t": 0, "s": [100, 100]}, {"t": 15, "s": [200, 200]}]}, "r": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedRectKeyframesMismatch
+        }
+        XCTAssertNotNil(error, "Rectangle with mismatched keyframe times should produce error")
+        XCTAssertTrue(error?.message.contains("time mismatch") ?? false, "Error should mention time mismatch")
+    }
+
+    func testValidate_rectWithMatchingKeyframes_noError() throws {
+        // Rectangle with p and s having matching keyframes should pass
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "rc", "nm": "Matching Rect", "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 10, "s": [50, 50]}]}, "s": {"a": 1, "k": [{"t": 0, "s": [100, 100]}, {"t": 10, "s": [200, 200]}]}, "r": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let keyframeMismatchError = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedRectKeyframesMismatch
+        }
+        let keyframeFormatError = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedRectKeyframeFormat
+        }
+        XCTAssertNil(keyframeMismatchError, "Rectangle with matching keyframes should NOT produce mismatch error")
+        XCTAssertNil(keyframeFormatError, "Rectangle with valid keyframes should NOT produce format error")
+    }
+
+    func testValidate_rectWithAnimatedPositionInvalidFormat_returnsError() throws {
+        // Rectangle with animated position (a=1) but k is not a keyframes array
+        // This tests the fail-fast when keyframes can't be decoded
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "rc", "nm": "Invalid Anim Rect", "p": {"a": 1, "k": [50, 50]}, "s": {"a": 0, "k": [100, 100]}, "r": {"a": 0, "k": 0} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedRectKeyframeFormat
+        }
+        XCTAssertNotNil(error, "Rectangle with animated position but invalid keyframes format should produce error")
+        XCTAssertTrue(error?.path.contains(".p") ?? false, "Error path should reference position (.p)")
+        XCTAssertTrue(error?.message.contains("could not be decoded") ?? false, "Error should mention keyframes could not be decoded")
     }
 
     // MARK: - Ellipse Shape Validation (PR-04)
