@@ -1268,6 +1268,60 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertTrue(error?.path.contains(".it[0].ty") == true, "Path should contain .it[0].ty for nested shape, got: \(error?.path ?? "nil")")
     }
 
+    // MARK: - Stroke Shape Validation (PR-06)
+
+    func testValidate_strokeShape_returnsErrorWithCorrectPath() throws {
+        // Stroke (st) is decoded but NOT yet supported for rendering (until PR-10)
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "st", "c": {"a": 0, "k": [1, 0, 0]}, "o": {"a": 0, "k": 100}, "w": {"a": 0, "k": 5} }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'st'")
+        }
+        XCTAssertNotNil(error, "Stroke shape should produce unsupportedShapeItem error")
+        // Verify path contains .shapes[0].ty for top-level shape
+        XCTAssertTrue(error?.path.contains(".shapes[0].ty") == true, "Path should contain .shapes[0].ty, got: \(error?.path ?? "nil")")
+    }
+
+    func testValidate_strokeInGroupShape_returnsErrorWithCorrectNestedPath() throws {
+        // Stroke nested inside a group should also be caught with correct path
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [{ "ty": "st", "c": {"a": 0, "k": [1, 0, 0]}, "w": {"a": 0, "k": 2} }, { "ty": "sh" }, { "ty": "tr" }] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'st'")
+        }
+        XCTAssertNotNil(error, "Stroke inside group should also produce error")
+        // Verify path is correct: should contain .it[0].ty for nested shape inside group
+        XCTAssertTrue(error?.path.contains(".it[0].ty") == true, "Path should contain .it[0].ty for nested shape, got: \(error?.path ?? "nil")")
+    }
+
     // MARK: - Integration Tests
 
     func testValidate_validMask_noError() throws {

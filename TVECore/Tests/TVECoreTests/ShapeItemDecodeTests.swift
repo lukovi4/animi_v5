@@ -530,13 +530,141 @@ final class ShapeItemDecodeTests: XCTestCase {
         XCTAssertNil(star.innerRadius, "Polygon typically has no inner radius")
     }
 
+    // MARK: - Stroke Shape (ty="st")
+
+    func testStrokeShape_decodesWithStaticValues() throws {
+        let json = """
+        {
+            "ty": "st",
+            "nm": "Stroke 1",
+            "mn": "ADBE Vector Graphic - Stroke",
+            "hd": false,
+            "ix": 1,
+            "c": {"a": 0, "k": [1, 0, 0]},
+            "o": {"a": 0, "k": 100},
+            "w": {"a": 0, "k": 12},
+            "lc": 2,
+            "lj": 1,
+            "ml": 4
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .stroke(let stroke) = shape else {
+            XCTFail("Expected .stroke case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(stroke.type, "st", "Type should be 'st'")
+        XCTAssertEqual(stroke.name, "Stroke 1")
+        XCTAssertEqual(stroke.matchName, "ADBE Vector Graphic - Stroke")
+        XCTAssertEqual(stroke.hidden, false)
+        XCTAssertEqual(stroke.index, 1)
+        XCTAssertEqual(stroke.lineCap, 2, "Line cap should be 2 (round)")
+        XCTAssertEqual(stroke.lineJoin, 1, "Line join should be 1 (miter)")
+        XCTAssertEqual(stroke.miterLimit, 4)
+
+        // Verify animated values are present and static
+        XCTAssertNotNil(stroke.color, "Color should be present")
+        XCTAssertNotNil(stroke.opacity, "Opacity should be present")
+        XCTAssertNotNil(stroke.width, "Width should be present")
+        XCTAssertEqual(stroke.color?.isAnimated, false)
+        XCTAssertEqual(stroke.opacity?.isAnimated, false)
+        XCTAssertEqual(stroke.width?.isAnimated, false)
+    }
+
+    func testStrokeShape_decodesWithAnimatedWidth() throws {
+        let json = """
+        {
+            "ty": "st",
+            "c": {"a": 0, "k": [0, 0, 1]},
+            "o": {"a": 0, "k": 100},
+            "w": {"a": 1, "k": [{"t": 0, "s": [2]}, {"t": 30, "s": [10]}]}
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .stroke(let stroke) = shape else {
+            XCTFail("Expected .stroke case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(stroke.type, "st")
+        XCTAssertNotNil(stroke.width, "Width should be present")
+        XCTAssertEqual(stroke.width?.isAnimated, true, "Width should be animated (a=1)")
+        XCTAssertEqual(stroke.color?.isAnimated, false, "Color should be static")
+    }
+
+    func testStrokeShape_decodesWithDashArray() throws {
+        let json = """
+        {
+            "ty": "st",
+            "c": {"a": 0, "k": [1, 1, 1]},
+            "o": {"a": 0, "k": 100},
+            "w": {"a": 0, "k": 5},
+            "d": [
+                {"n": "d", "v": {"a": 0, "k": 10}},
+                {"n": "g", "v": {"a": 0, "k": 5}},
+                {"n": "o", "v": {"a": 0, "k": 0}}
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .stroke(let stroke) = shape else {
+            XCTFail("Expected .stroke case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(stroke.type, "st")
+        XCTAssertNotNil(stroke.dash, "Dash array should be present")
+        XCTAssertEqual(stroke.dash?.count, 3, "Should have 3 dash items")
+
+        // Verify dash item structure
+        XCTAssertEqual(stroke.dash?[0].name, "d", "First dash item should be 'd' (dash)")
+        XCTAssertNotNil(stroke.dash?[0].value, "Dash value should be present")
+        XCTAssertEqual(stroke.dash?[1].name, "g", "Second dash item should be 'g' (gap)")
+        XCTAssertEqual(stroke.dash?[2].name, "o", "Third dash item should be 'o' (offset)")
+    }
+
+    func testStrokeShape_decodesMinimalFields() throws {
+        // Minimal st - only type is required
+        let json = """
+        {
+            "ty": "st"
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        guard case .stroke(let stroke) = shape else {
+            XCTFail("Expected .stroke case, got \(shape)")
+            return
+        }
+
+        XCTAssertEqual(stroke.type, "st")
+        XCTAssertNil(stroke.name)
+        XCTAssertNil(stroke.color)
+        XCTAssertNil(stroke.width)
+        XCTAssertNil(stroke.dash)
+        XCTAssertNil(stroke.lineCap)
+        XCTAssertNil(stroke.lineJoin)
+    }
+
     // MARK: - Unknown Shape Types
 
     func testUnknownShape_decodesTolerantly() throws {
         let json = """
         {
-            "ty": "st",
-            "nm": "Stroke 1"
+            "ty": "gs",
+            "nm": "Gradient Stroke"
         }
         """
 
@@ -548,12 +676,12 @@ final class ShapeItemDecodeTests: XCTestCase {
             return
         }
 
-        XCTAssertEqual(type, "st", "Unknown type should be 'st' (stroke)")
+        XCTAssertEqual(type, "gs", "Unknown type should be 'gs' (gradient stroke)")
     }
 
     func testUnknownShape_multipleTypes() throws {
-        // Note: "rc", "el", "sr" are no longer unknown - they're decoded as .rect, .ellipse, .polystar
-        let unknownTypes = ["st", "gs", "gf", "rd", "tm", "mm", "rp"]
+        // Note: "rc", "el", "sr", "st" are no longer unknown - they're decoded as .rect, .ellipse, .polystar, .stroke
+        let unknownTypes = ["gs", "gf", "rd", "tm", "mm", "rp"]
 
         for typeStr in unknownTypes {
             let json = "{\"ty\": \"\(typeStr)\"}"

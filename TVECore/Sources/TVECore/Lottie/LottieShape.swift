@@ -13,6 +13,7 @@ public enum ShapeItem: Equatable, Sendable {
     case rect(LottieShapeRect)
     case ellipse(LottieShapeEllipse)
     case polystar(LottieShapePolystar)
+    case stroke(LottieShapeStroke)
     case unknown(type: String)
 }
 
@@ -49,6 +50,9 @@ extension ShapeItem: Decodable {
         case "sr":
             let polystar = try LottieShapePolystar(from: decoder)
             self = .polystar(polystar)
+        case "st":
+            let stroke = try LottieShapeStroke(from: decoder)
+            self = .stroke(stroke)
         default:
             self = .unknown(type: type)
         }
@@ -544,6 +548,115 @@ public struct LottieShapePolystar: Decodable, Equatable, Sendable {
         case innerRoundness = "is"
         case outerRoundness = "os"
         case direction = "d"
+    }
+}
+
+// MARK: - LottieShapeStroke (ty="st")
+
+/// Stroke shape - draws outline around paths
+public struct LottieShapeStroke: Decodable, Equatable, Sendable {
+    /// Shape type (always "st")
+    public let type: String
+
+    /// Shape name
+    public let name: String?
+
+    /// Match name (After Effects internal)
+    public let matchName: String?
+
+    /// Hidden flag
+    public let hidden: Bool?
+
+    /// Index
+    public let index: Int?
+
+    /// Stroke color [r, g, b] (0..1)
+    public let color: LottieAnimatedValue?
+
+    /// Opacity (0..100)
+    public let opacity: LottieAnimatedValue?
+
+    /// Stroke width
+    public let width: LottieAnimatedValue?
+
+    /// Line cap: 1 = butt, 2 = round, 3 = square
+    public let lineCap: Int?
+
+    /// Line join: 1 = miter, 2 = round, 3 = bevel
+    public let lineJoin: Int?
+
+    /// Miter limit
+    public let miterLimit: Double?
+
+    /// Dash pattern array (optional)
+    public let dash: [LottieShapeStrokeDash]?
+
+    public init(
+        type: String = "st",
+        name: String? = nil,
+        matchName: String? = nil,
+        hidden: Bool? = nil,
+        index: Int? = nil,
+        color: LottieAnimatedValue? = nil,
+        opacity: LottieAnimatedValue? = nil,
+        width: LottieAnimatedValue? = nil,
+        lineCap: Int? = nil,
+        lineJoin: Int? = nil,
+        miterLimit: Double? = nil,
+        dash: [LottieShapeStrokeDash]? = nil
+    ) {
+        self.type = type
+        self.name = name
+        self.matchName = matchName
+        self.hidden = hidden
+        self.index = index
+        self.color = color
+        self.opacity = opacity
+        self.width = width
+        self.lineCap = lineCap
+        self.lineJoin = lineJoin
+        self.miterLimit = miterLimit
+        self.dash = dash
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type = "ty"
+        case name = "nm"
+        case matchName = "mn"
+        case hidden = "hd"
+        case index = "ix"
+        case color = "c"
+        case opacity = "o"
+        case width = "w"
+        case lineCap = "lc"
+        case lineJoin = "lj"
+        case miterLimit = "ml"
+        case dash = "d"
+    }
+}
+
+// MARK: - LottieShapeStrokeDash
+
+/// Dash pattern item for stroke
+/// name: "d" = dash, "g" = gap, "o" = offset
+public struct LottieShapeStrokeDash: Decodable, Equatable, Sendable {
+    /// Dash type: "d" = dash, "g" = gap, "o" = offset
+    public let name: String?
+
+    /// Dash/gap/offset value
+    public let value: LottieAnimatedValue?
+
+    public init(
+        name: String? = nil,
+        value: LottieAnimatedValue? = nil
+    ) {
+        self.name = name
+        self.value = value
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name = "n"
+        case value = "v"
     }
 }
 

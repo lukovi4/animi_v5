@@ -100,6 +100,16 @@ extension AnimValidator {
                 message: "Shape type 'sr' not supported. Supported: gr, sh, fl, tr"
             ))
 
+        case .stroke:
+            // Stroke is decoded but not yet supported for rendering (until PR-10)
+            // Fail-fast to prevent silent incorrect render (stroke would disappear)
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedShapeItem,
+                severity: .error,
+                path: "\(basePath).ty",
+                message: "Shape type 'st' not supported. Supported: gr, sh, fl, tr"
+            ))
+
         case .unknown(let type):
             // Unknown shape type - report as unsupported
             issues.append(ValidationIssue(

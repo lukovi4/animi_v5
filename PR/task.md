@@ -1,96 +1,91 @@
-Ниже — **каноническое финальное ТЗ для PR-05: “Lottie decoding: Polystar `ty:"sr"`”**. Оно повторяет проверенную схему PR-03/PR-04 (decode + fail-fast + тесты с проверкой path), без временных решений и без лишнего кода.
+Ниже — **каноническое финальное ТЗ для PR-06: “Lottie decoding: Stroke `ty:"st"`”**. Оно строго следует шаблону PR-03/04/05: **decode → fail-fast в валидаторе → тесты с проверкой path**, без рендера и без временных решений.
 
 ---
 
-# PR-05 — Lottie decoding: Polystar (`ty:"sr"`)
+# PR-06 — Lottie decoding: Stroke (`ty="st"`)
 
 ## 0) Цель PR
 
-Добавить **полное релизное декодирование** shape item Polystar/Polygon (`ty="sr"`) в модель Lottie `TVECore`.
+Добавить **полное релизное декодирование** shape item Stroke (`ty="st"`) в модель Lottie (`TVECore`).
 
 Важно:
 
-* PR-05 **не реализует** конвертацию polystar → bezier/path (это будет PR-09).
-* До PR-09 валидатор обязан **fail-fast** на `.polystar`, чтобы не было silent ignore.
+* PR-06 **не делает** рендер stroke / outline / triangulation (это PR-10).
+* До PR-10 валидатор обязан **fail-fast** на `.stroke`, чтобы не было silent ignore (иначе обводка “пропадёт”).
 
 ---
 
-# 1) Scope PR-05
+# 1) Scope PR-06
 
 ## 1.1 Что делаем
 
 1. `TVECore/Sources/TVECore/Lottie/LottieShape.swift`
 
-   * добавить `LottieShapePolystar`
-   * добавить case `.polystar(LottieShapePolystar)` в `ShapeItem`
-   * добавить `case "sr":` в `ShapeItem.init(from:)`
+   * добавить `LottieShapeStroke`
+   * добавить case `.stroke(LottieShapeStroke)` в `ShapeItem`
+   * добавить `case "st":` в `ShapeItem.init(from:)`
 
 2. `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`
 
-   * добавить обработку `.polystar` → `unsupportedShapeItem` (fail-fast)
-   * **не трогать** существующую рекурсивную логику path (`basePath` + `.it[i]`)
+   * добавить обработку `.stroke` → `unsupportedShapeItem` (fail-fast)
+   * не менять рекурсивную схему `basePath` / `.it[i]`
 
 3. Тесты
 
-   * decode tests на `sr` (static + animated)
-   * validator tests:
-
-     * top-level `sr` → error + `.shapes[0].ty`
-     * nested `sr` в группе → error + `.it[0].ty`
+   * decode tests на `st` (static + animated width)
+   * validator tests (top-level и nested group) с проверкой path
 
 ## 1.2 Что НЕ делаем
 
-* Не добавлять поддержку рендера/AnimIR/ShapePathExtractor
-* Не менять правила валидатора для других shape items
-* Не добавлять новые хелперы/файлы, кроме минимальных тестов
+* Не реализуем dash patterns
+* Не реализуем line cap/join поведение (это для рендера)
+* Не реализуем stroke → filled outline geometry
+* Не меняем AnimIR/Metal/ShapePathExtractor
 
 ---
 
-# 2) Модель `LottieShapePolystar` (LottieShape.swift)
+# 2) Модель `LottieShapeStroke` (LottieShape.swift)
 
 ## 2.1 ShapeItem enum
 
 Добавить:
 
 ```swift
-case polystar(LottieShapePolystar)
+case stroke(LottieShapeStroke)
 ```
 
 В декодере:
 
 ```swift
-case "sr":
-    let star = try LottieShapePolystar(from: decoder)
-    self = .polystar(star)
+case "st":
+    let stroke = try LottieShapeStroke(from: decoder)
+    self = .stroke(stroke)
 ```
 
-## 2.2 Новый struct: `LottieShapePolystar`
+## 2.2 Новый struct: `LottieShapeStroke`
 
 Файл: `TVECore/Sources/TVECore/Lottie/LottieShape.swift`
 
-### Обязательные поля (релизные, полный decode)
+### Обязательные поля (релизный decode)
 
 Метаданные:
 
-* `type: String` (`ty`) — `"sr"`
+* `type: String` (`ty`) — `"st"`
 * `name: String?` (`nm`)
 * `matchName: String?` (`mn`)
 * `hidden: Bool?` (`hd`)
 * `index: Int?` (`ix`)
 
-Polystar параметры (как в Bodymovin/Lottie):
+Stroke свойства (ключевые и реально используемые):
 
-* `starType: Int?` (`sy`)
-
-  * `1` = star, `2` = polygon (встречается)
-* `position: LottieAnimatedValue?` (`p`)
-* `rotation: LottieAnimatedValue?` (`r`)
-* `points: LottieAnimatedValue?` (`pt`) — число вершин/лучей (может быть анимированное)
-* `innerRadius: LottieAnimatedValue?` (`ir`) — для star
-* `outerRadius: LottieAnimatedValue?` (`or`)
-* `innerRoundness: LottieAnimatedValue?` (`is`) — проценты 0..100
-* `outerRoundness: LottieAnimatedValue?` (`os`) — проценты 0..100
-* `direction: Int?` (`d`)
+* `color: LottieAnimatedValue?` (`c`) — цвет (обычно `[r,g,b]` 0..1 или 0..255 в зависимости от source; мы просто декодим как есть)
+* `opacity: LottieAnimatedValue?` (`o`) — 0..100
+* `width: LottieAnimatedValue?` (`w`) — stroke width (важно: может быть animated)
+* `lineCap: Int?` (`lc`) — 1..3 (butt/round/square)
+* `lineJoin: Int?` (`lj`) — 1..3 (miter/round/bevel)
+* `miterLimit: Double?` (`ml`) — miter limit
+* `dash: [LottieShapeStrokeDash]?` (`d`) — **декодируем**, но **считаем unsupported позже** (см. валидатор ниже)
+* `dashOffset: LottieAnimatedValue?` (`d` элемент с `n:"o"` или отдельное поле в зависимости от export) — см. примечание
 
 ### CodingKeys
 
@@ -102,48 +97,87 @@ private enum CodingKeys: String, CodingKey {
     case hidden = "hd"
     case index = "ix"
 
-    case starType = "sy"
-    case position = "p"
-    case rotation = "r"
-    case points = "pt"
-    case innerRadius = "ir"
-    case outerRadius = "or"
-    case innerRoundness = "is"
-    case outerRoundness = "os"
-    case direction = "d"
+    case color = "c"
+    case opacity = "o"
+    case width = "w"
+    case lineCap = "lc"
+    case lineJoin = "lj"
+    case miterLimit = "ml"
+    case dash = "d"
 }
 ```
 
-### Требование по типам
+### Примечание про dash format (важно для релиза)
 
-Все геометрические поля — `LottieAnimatedValue?`, как в остальном коде.
+Lottie stroke dash обычно приходит как массив объектов в `"d"`:
 
-> Да, тут тоже есть “overloaded” поля по ключам (`r` уже используется в transform как rotation, но это другой struct — конфликтов быть не должно, как в PR-03).
+* элементы вида `{ "n": "d", "v": { ... } }` (dash length),
+* `{ "n": "g", "v": { ... } }` (gap length),
+* `{ "n": "o", "v": { ... } }` (offset)
+
+Поэтому нужно **декодировать “d” как массив структур**, а не как `LottieAnimatedValue`.
+
+✅ В PR-06 требуется реализовать декодирование этого массива корректно, **но** мы пока не поддерживаем dash в рендере — значит валидатор должен fail-fast при наличии dash (см. ниже).
 
 ---
 
-# 3) Валидатор: fail-fast для `sr` до PR-09
-
-Файл: `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`
-
-## 3.1 Требование
+## 2.3 Структура dash item (если `d` присутствует)
 
 Добавить:
 
 ```swift
-case .polystar:
-    issues.append(ValidationIssue(
-        code: AnimValidationCode.unsupportedShapeItem,
-        severity: .error,
-        path: "\(basePath).ty",
-        message: "Shape type 'sr' not supported. Supported: gr, sh, fl, tr"
-    ))
+public struct LottieShapeStrokeDash: Decodable, Equatable, Sendable {
+    public let name: String?   // "n"
+    public let value: LottieAnimatedValue? // "v"
+
+    private enum CodingKeys: String, CodingKey {
+        case name = "n"
+        case value = "v"
+    }
+}
 ```
 
-### Критично
+> Это релизно: мы не делаем рендер dash, но мы должны корректно декодировать и валидировать входные данные, а не терять их.
 
-* `path` должен быть **ровно** `\(basePath).ty`
-* Вложенные items должны давать путь вида `.it[0].ty` (фикс PR-03 не ломать)
+---
+
+# 3) Валидатор: fail-fast для `st` до PR-10
+
+Файл: `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`
+
+## 3.1 Поведение для `.stroke`
+
+До реализации рендера stroke (PR-10), любое `st` должно давать:
+
+* `code: AnimValidationCode.unsupportedShapeItem`
+* `severity: .error`
+* `path: "\(basePath).ty"`
+* message: `"Shape type 'st' not supported. Supported: gr, sh, fl, tr"`
+
+## 3.2 Дополнительное релизное правило для dash (важно!)
+
+Даже после того как stroke станет поддержан (позже), **dash пока не в scope**.
+Поэтому уже сейчас стоит подготовить fail-fast правило на dash:
+
+Если `LottieShapeStroke.dash` **не пустой** и содержит элементы с `name in {"d","g","o"}` → это **отдельный** валидаторский error “unsupported stroke dash”.
+
+Но чтобы не вводить новую семантику до того, как stroke вообще поддержан, в PR-06 можно сделать проще:
+
+✅ В PR-06 (пока `st` сам unsupported) — достаточно общего `unsupportedShapeItem`.
+
+🟦 Рекомендация (не обязательна в PR-06, но хорошо для релиза):
+добавить отдельный код на dash уже сейчас, чтобы потом, когда `st` станет supported, dash не стал silent-ignore.
+
+Если решаем сделать сразу (предпочтительно):
+
+* добавить в `AnimValidationCode.swift`:
+
+  * `UNSUPPORTED_STROKE_DASH`
+* и в `validateShapeItemRecursive` для `.stroke(let s)`:
+
+  * если `s.dash?.isEmpty == false` → добавить issue `UNSUPPORTED_STROKE_DASH` path `\(basePath).d`
+
+Но это опционально; если хочешь строго минимально — оставить на PR-10/следующий.
 
 ---
 
@@ -151,87 +185,98 @@ case .polystar:
 
 ## 4.1 ShapeItemDecodeTests.swift
 
-Добавить минимум 3 теста:
+Добавить минимум 4 теста:
 
-### (A) Static decode (полный набор ключей)
+### (A) Static stroke decode
 
-Минимальный JSON:
+JSON:
 
 ```json
 {
-  "ty":"sr",
-  "sy":1,
-  "p":{"a":0,"k":[100,200]},
-  "r":{"a":0,"k":0},
-  "pt":{"a":0,"k":5},
-  "ir":{"a":0,"k":40},
-  "or":{"a":0,"k":80},
-  "is":{"a":0,"k":0},
-  "os":{"a":0,"k":0},
-  "d":1
+  "ty":"st",
+  "c":{"a":0,"k":[1,0,0]},
+  "o":{"a":0,"k":100},
+  "w":{"a":0,"k":12},
+  "lc":2,
+  "lj":1,
+  "ml":4
 }
 ```
 
 Проверить:
 
-* `.polystar(let s)`
-* `s.starType == 1`
-* ключевые поля не nil: `position/points/outerRadius`
+* `.stroke(let s)`
+* `s.width != nil`, `s.opacity != nil`, `s.color != nil`
+* `s.lineCap == 2`, `s.lineJoin == 1`, `s.miterLimit == 4`
 
-### (B) Animated points decode
+### (B) Animated width decode
 
-`pt` как animated (`a:1,k:[...]`) → `s.points?.isAnimated == true`
+`"w": {"a":1,"k":[...2 keyframes...]}` → `s.width?.isAnimated == true`
 
-### (C) Minimal fields decode
+### (C) Dash array decode
 
-JSON только с `"ty":"sr"` и одним параметром (например `pt`) — должен декодироваться.
+JSON с `d`:
 
-### Обновить unknown test
+```json
+"d":[{"n":"d","v":{"a":0,"k":10}}, {"n":"g","v":{"a":0,"k":5}}, {"n":"o","v":{"a":0,"k":0}}]
+```
 
-Удалить `"sr"` из массива unknownTypes (как делали для rc/el).
+Проверить:
+
+* `s.dash?.count == 3`
+* `dash[0].name == "d"`, `dash[0].value != nil`
+
+### (D) Update unknown test
+
+Убрать `"st"` из `unknownTypes`.
 
 ---
 
 ## 4.2 AnimValidatorTests.swift
 
-Добавить 2 теста (обязательные) с проверкой path:
+Добавить 2 теста с проверкой path (как делали для rc/el/sr):
 
-### (A) `testValidate_polystarShape_returnsErrorWithCorrectPath()`
+### (A) `testValidate_strokeShape_returnsErrorWithCorrectPath()`
 
-* shape layer `ty=4`
-* shapes[0] = `{"ty":"sr", ...}`
-  Ожидаем:
+Shape layer `ty=4`, shapes[0] = stroke `{"ty":"st", ...}`
+Ожидаем:
+
 * `unsupportedShapeItem`
 * `path` содержит `.shapes[0].ty`
-* message содержит `'sr'`
+* message содержит `'st'`
 
-### (B) `testValidate_polystarInGroupShape_returnsErrorWithCorrectNestedPath()`
+### (B) `testValidate_strokeInGroupShape_returnsErrorWithCorrectNestedPath()`
 
-* shapes[0] = group `{"ty":"gr","it":[{"ty":"sr",...}, ...]}`
-  Ожидаем:
+Group → `it[0]` = stroke
+Ожидаем:
+
 * `path` содержит `.it[0].ty`
+
+Если вы добавите отдельный код `UNSUPPORTED_STROKE_DASH`, добавьте третий тест:
+
+* stroke с `"d":[...]` → error `UNSUPPORTED_STROKE_DASH` path `.d`
 
 ---
 
 # 5) Нефункциональные требования
 
-* Никаких новых файлов в `Sources` кроме добавления struct/case в существующий `LottieShape.swift`
-* Никаких дубликатов валидатора; использовать текущий рекурсивный helper
+* Никакого изменения существующих архитектурных частей
+* Никаких новых “общих” парсеров: используем текущие типы `LottieAnimatedValue`
+* Код соответствует стилю: `Decodable, Equatable, Sendable`
 * Все тесты TVECore проходят
 
 ---
 
 # 6) Acceptance Criteria
 
-PR-05 принят, если:
+PR-06 принят, если:
 
-1. `ShapeItem` декодит `ty:"sr"` → `.polystar(LottieShapePolystar)`
-2. `LottieShapePolystar` покрывает ключи `sy,p,r,pt,ir,or,is,os,d` корректными типами
-3. Валидатор fail-fast для `.polystar` с `unsupportedShapeItem` и корректными path’ами (включая nested `.it[i].ty`)
-4. Добавлены тесты decode + validator (с явной проверкой path)
-5. Обновлён unknown test (убран `sr`)
-6. Все тесты проходят
+1. `ShapeItem` декодирует `ty:"st"` → `.stroke(LottieShapeStroke)`
+2. `LottieShapeStroke` корректно декодит `c/o/w/lc/lj/ml` и `d` как массив dash items
+3. Валидатор fail-fast для `.stroke` (и path корректный, включая nested `.it[i].ty`)
+4. Тесты: decode (включая dash), validator (включая path), unknown test обновлён (убран `st`)
+5. Все тесты проекта проходят
 
 ---
 
-Если всё ок — программист делает PR-05 по этому ТЗ. После мержа логичный следующий шаг — **PR-06 (Stroke `st` decode)**.
+Если хочешь, я сразу зафиксирую решение по dash: **делаем отдельный `UNSUPPORTED_STROKE_DASH` уже в PR-06 или переносим на PR-10**. Но базовый канонический вариант выше уже релизный и безопасный (потому что stroke пока всё равно fail-fast как unsupported).
