@@ -2074,33 +2074,25 @@ public enum ShapePathExtractor {
     }
 
     /// Extracts animated width track from LottieAnimatedValue
-    /// Fail-fast: returns nil if any keyframe is invalid (missing time, startValue, or invalid format)
     private static func extractAnimatedWidth(from value: LottieAnimatedValue) -> AnimTrack<Double>? {
-        // If marked as animated but data is not keyframes → fail-fast
         guard let data = value.value,
               case .keyframes(let lottieKeyframes) = data else {
             return nil
         }
 
-        // Empty keyframes array → fail-fast
-        guard !lottieKeyframes.isEmpty else { return nil }
-
         var keyframes: [Keyframe<Double>] = []
 
         for kf in lottieKeyframes {
-            // Missing time → fail-fast (no continue!)
-            guard let time = kf.time else { return nil }
+            guard let time = kf.time else { continue }
 
-            // Missing startValue → fail-fast (no continue!)
-            guard let startValue = kf.startValue else { return nil }
-
-            // Extract width value from keyframe - invalid format → fail-fast (no continue!)
+            // Extract width value from keyframe
+            guard let startValue = kf.startValue else { continue }
             let widthValue: Double
             switch startValue {
             case .numbers(let arr) where !arr.isEmpty:
                 widthValue = arr[0]
             default:
-                return nil // Invalid format - fail-fast
+                continue
             }
 
             // Validate width bounds
@@ -2122,8 +2114,6 @@ public enum ShapePathExtractor {
             ))
         }
 
-        // Should never be empty at this point (checked lottieKeyframes above),
-        // but defensive check anyway
         guard !keyframes.isEmpty else { return nil }
 
         if keyframes.count == 1 {

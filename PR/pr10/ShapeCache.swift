@@ -223,7 +223,7 @@ final class ShapeCache {
     ///   - size: Target texture size in pixels
     ///   - strokeColor: RGB stroke color (0.0 to 1.0)
     ///   - opacity: Overall opacity (0.0 to 1.0)
-    ///   - strokeWidth: Stroke width in Lottie units (will be scaled by transform)
+    ///   - strokeWidth: Stroke width in pixels
     ///   - lineCap: Line cap style (1=butt, 2=round, 3=square)
     ///   - lineJoin: Line join style (1=miter, 2=round, 3=bevel)
     ///   - miterLimit: Miter limit for miter joins
@@ -239,22 +239,13 @@ final class ShapeCache {
         lineJoin: Int,
         miterLimit: Double
     ) -> MTLTexture? {
-        // Compute uniform scale from transform (length of X-basis vector)
-        // This scales stroke width from Lottie coords to viewport pixels
-        let uniformScale = Self.computeUniformScale(from: transform)
-        let scaledStrokeWidth = strokeWidth * uniformScale
-
-        // Quantize stroke width for cache key to reduce cache misses with animated width
-        // Round to nearest 0.125 (1/8 pixel precision)
-        let quantizedWidth = (scaledStrokeWidth * 8).rounded() / 8
-
         let key = StrokeCacheKey(
             path: path,
             size: size,
             transform: transform,
             strokeColor: strokeColor,
             opacity: opacity,
-            strokeWidth: quantizedWidth,
+            strokeWidth: strokeWidth,
             lineCap: lineCap,
             lineJoin: lineJoin,
             miterLimit: miterLimit
@@ -267,14 +258,13 @@ final class ShapeCache {
         }
 
         // Rasterize stroke to BGRA bytes using CoreGraphics
-        // Use actual scaled width (not quantized) for best visual quality
         let bgraBytes = rasterizeStroke(
             path: path,
             transform: transform,
             size: size,
             strokeColor: strokeColor,
             opacity: opacity,
-            scaledStrokeWidth: scaledStrokeWidth,
+            strokeWidth: strokeWidth,
             lineCap: lineCap,
             lineJoin: lineJoin,
             miterLimit: miterLimit
@@ -409,14 +399,6 @@ final class ShapeCache {
 
     // MARK: - Stroke Rasterization (CoreGraphics)
 
-    /// Computes uniform scale factor from transform matrix (length of X-basis vector)
-    /// Used to scale stroke width from Lottie coords to viewport pixels
-    static func computeUniformScale(from transform: Matrix2D) -> Double {
-        // hypot(a, b) = length of X-basis vector = uniform scale factor
-        // This is correct for rotation and uniform scale transforms
-        return hypot(transform.a, transform.b)
-    }
-
     // swiftlint:disable:next function_parameter_count
     private func rasterizeStroke(
         path: BezierPath,
@@ -424,7 +406,7 @@ final class ShapeCache {
         size: (width: Int, height: Int),
         strokeColor: [Double],
         opacity: Double,
-        scaledStrokeWidth: Double,
+        strokeWidth: Double,
         lineCap: Int,
         lineJoin: Int,
         miterLimit: Double
@@ -459,8 +441,12 @@ final class ShapeCache {
 
         context.setStrokeColor(red: red, green: green, blue: blue, alpha: alpha)
 
-        // Stroke width is already scaled by caller (strokeTexture)
-        context.setLineWidth(CGFloat(scaledStrokeWidth))
+        // Set stroke width (apply transform scale to width)
+        // For uniform scale, use the average of sx and sy
+        let scaleX = sqrt(transform.a * transform.a + transform.c * transform.c)
+        let scaleY = sqrt(transform.b * transform.b + transform.d * transform.d)
+        let avgScale = (scaleX + scaleY) / 2.0
+        context.setLineWidth(CGFloat(strokeWidth * avgScale))
 
         // Set line cap
         let cgLineCap: CGLineCap

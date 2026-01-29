@@ -1562,6 +1562,41 @@ struct MatteCompositeUniforms {
     }
 }
 
+// MARK: - Diagnostic Helpers
+
+extension MetalRenderer {
+    /// Computes max alpha value in texture (for matte diagnostic per review.md)
+    /// Samples every 8th pixel for performance
+    func computeMaxAlpha(texture: MTLTexture) -> UInt8 {
+        #if os(iOS) || os(tvOS)
+        guard texture.storageMode == .shared else {
+            return 0 // Cannot read from private textures on iOS
+        }
+        #else
+        guard texture.storageMode == .shared || texture.storageMode == .managed else {
+            return 0 // Cannot read from private textures
+        }
+        #endif
+        let width = texture.width
+        let height = texture.height
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        texture.getBytes(&pixels, bytesPerRow: bytesPerRow, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+
+        var maxAlpha: UInt8 = 0
+        let step = 8 // Sample every 8th pixel for performance
+        for y in stride(from: 0, to: height, by: step) {
+            for x in stride(from: 0, to: width, by: step) {
+                let idx = (y * width + x) * 4 + 3 // Alpha is at offset 3 (BGRA)
+                if pixels[idx] > maxAlpha {
+                    maxAlpha = pixels[idx]
+                }
+            }
+        }
+        return maxAlpha
+    }
+}
+
 // MARK: - RenderMatteMode Shader Value
 
 extension RenderMatteMode {

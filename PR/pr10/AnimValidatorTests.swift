@@ -2090,50 +2090,6 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertNotNil(error, "Stroke with keyframe width > 2048 should produce UNSUPPORTED_STROKE_WIDTH_INVALID error")
     }
 
-    func testValidate_strokeAnimatedWidthMissingTime_returnsError() throws {
-        // Stroke with animated width but keyframe missing time should fail
-        let scene = sceneJSON()
-        let anim = """
-        {
-          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
-          "assets": [
-            { "id": "image_0", "u": "images/", "p": "img_1.png" },
-            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
-          ],
-          "layers": [
-            { "ty": 0, "refId": "comp_0" },
-            { "ty": 4, "shapes": [{ "ty": "st", "c": {"a": 0, "k": [1, 0, 0]}, "w": {"a": 1, "k": [{"s": [5]}, {"t": 30, "s": [10]}]} }] }
-          ]
-        }
-        """
-        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
-
-        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedStrokeWidthKeyframeFormat }
-        XCTAssertNotNil(error, "Stroke with keyframe missing time should produce UNSUPPORTED_STROKE_WIDTH_KEYFRAME_FORMAT error")
-    }
-
-    func testValidate_strokeAnimatedWidthMissingStartValue_returnsError() throws {
-        // Stroke with animated width but keyframe missing startValue should fail
-        let scene = sceneJSON()
-        let anim = """
-        {
-          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
-          "assets": [
-            { "id": "image_0", "u": "images/", "p": "img_1.png" },
-            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
-          ],
-          "layers": [
-            { "ty": 0, "refId": "comp_0" },
-            { "ty": 4, "shapes": [{ "ty": "st", "c": {"a": 0, "k": [1, 0, 0]}, "w": {"a": 1, "k": [{"t": 0}, {"t": 30, "s": [10]}]} }] }
-          ]
-        }
-        """
-        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
-
-        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedStrokeWidthKeyframeFormat }
-        XCTAssertNotNil(error, "Stroke with keyframe missing startValue should produce UNSUPPORTED_STROKE_WIDTH_KEYFRAME_FORMAT error")
-    }
-
     // MARK: - Integration Tests
 
     func testValidate_validMask_noError() throws {

@@ -1,282 +1,401 @@
-Ниже — **каноническое финальное ТЗ для PR-06: “Lottie decoding: Stroke `ty:"st"`”**. Оно строго следует шаблону PR-03/04/05: **decode → fail-fast в валидаторе → тесты с проверкой path**, без рендера и без временных решений.
+Ниже — **каноническое финальное ТЗ для PR-10: “Stroke `st` → render/path pipeline”** (релизное решение, без “потом доделаем”). Я специально **встроил все уже встреченные грабли** (fallback’и, mismatch keyframes, unparseable animated, синхронизация валидатора/экстрактора, корректные `path` для nested `.it[]`, актуализация “Supported: …” сообщений).
 
 ---
 
-# PR-06 — Lottie decoding: Stroke (`ty="st"`)
+# PR-10 — Stroke `st` → Render/Path Pipeline (Canonical Spec)
 
 ## 0) Цель PR
 
-Добавить **полное релизное декодирование** shape item Stroke (`ty="st"`) в модель Lottie (`TVECore`).
+Добавить **полную поддержку stroke-элемента Lottie Shape** (`ty:"st"`) в пайплайн:
 
-Важно:
+**Lottie JSON → Decode → Validate (fail-fast) → AnimIR → RenderGraph → MetalRenderer**
 
-* PR-06 **не делает** рендер stroke / outline / triangulation (это PR-10).
-* До PR-10 валидатор обязан **fail-fast** на `.stroke`, чтобы не было silent ignore (иначе обводка “пропадёт”).
+Чтобы stroke **реально рендерился** (а не только декодился), и поведение было:
 
----
-
-# 1) Scope PR-06
-
-## 1.1 Что делаем
-
-1. `TVECore/Sources/TVECore/Lottie/LottieShape.swift`
-
-   * добавить `LottieShapeStroke`
-   * добавить case `.stroke(LottieShapeStroke)` в `ShapeItem`
-   * добавить `case "st":` в `ShapeItem.init(from:)`
-
-2. `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`
-
-   * добавить обработку `.stroke` → `unsupportedShapeItem` (fail-fast)
-   * не менять рекурсивную схему `basePath` / `.it[i]`
-
-3. Тесты
-
-   * decode tests на `st` (static + animated width)
-   * validator tests (top-level и nested group) с проверкой path
-
-## 1.2 Что НЕ делаем
-
-* Не реализуем dash patterns
-* Не реализуем line cap/join поведение (это для рендера)
-* Не реализуем stroke → filled outline geometry
-* Не меняем AnimIR/Metal/ShapePathExtractor
+* детерминированным,
+* безопасным (без silent ignore),
+* согласованным между **validator** и **extractor**,
+* покрытым тестами (unit-level).
 
 ---
 
-# 2) Модель `LottieShapeStroke` (LottieShape.swift)
+## 1) Входные данные и контекст
 
-## 2.1 ShapeItem enum
+### 1.1 Уже сделано ранее
+
+* PR-06: `st` **декодится** в `ShapeItem.stroke(LottieShapeStroke)` + `LottieShapeStrokeDash`.
+* PR-07/08/09: построение `BezierPath/AnimPath` для `rc/el/sr` + строгие правила:
+
+  * **NO FALLBACKS**
+  * **keyframes count/time match**
+  * **fail-fast validator** (в т.ч. “isAnimated==true, но keyframes не распарсились”)
+
+### 1.2 Текущее состояние до PR-10
+
+* Validator сейчас либо:
+
+  * всё ещё блокирует `st` как unsupported (если не обновляли), либо
+  * сообщает unsupported только для dash (если добавляли позже).
+* RenderGraph/MetalRenderer **не умеют** рисовать stroke как отдельный примитив.
+
+---
+
+## 2) Область работ (Scope)
+
+### 2.1 MUST: что PR-10 обязан сделать
+
+1. **Разблокировать** `ty:"st"` в validator (stroke теперь “supported for rendering”).
+2. Добавить **render-команду** для stroke и её выполнение в MetalRenderer.
+3. Добавить **AnimIR-представление stroke** (стили + анимируемые параметры, если поддерживаем).
+4. Реализовать **rasterization/caching** stroke (аналогично shape fill), без деградации детерминизма.
+5. Добавить **строгую валидацию stroke**, включая **dash** (чтобы не было “stroke supported, но dash silently ignored”).
+6. Тесты:
+
+   * validator tests (валидные/невалидные сценарии, path для nested),
+   * extractor/render-graph level tests (минимальный smoke: stroke попадает в команды),
+   * (опционально) renderer baseline test, если уже есть инфраструктура.
+
+### 2.2 MUST NOT (явно не делаем в PR-10)
+
+* Trim Paths (`tm`)
+* Gradient Stroke (`gs`)
+* Dash rendering (dash остаётся **unsupported**, но должен **валидироваться** и fail-fast)
+* Roundness stroke join special cases beyond CoreGraphics default (кроме lc/lj/ml)
+* Stroke over open-path semantics если текущий пайплайн поддерживает только closed (см. ниже — если `BezierPath.closed` уже есть, поддержим; иначе валидатор запрещает open).
+
+---
+
+## 3) Поддерживаемый поднабор stroke (Release constraints)
+
+### 3.1 Поддерживаемые поля `st`
+
+* `c` (color) — **static only** (в PR-10)
+* `o` (opacity) — **static only** (в PR-10)
+* `w` (width) — **animated allowed** (обязательно, т.к. есть тест-ассет `shape_stroke_basic`)
+* `lc` (lineCap: 1/2/3) — static
+* `lj` (lineJoin: 1/2/3) — static
+* `ml` (miterLimit) — static
+
+### 3.2 Жёсткие запреты (fail-fast)
+
+* `d` (dash array) — **запрещён**, любая непустая `d` → ошибка `UNSUPPORTED_STROKE_DASH`
+* `c` animated (`c.a==1`) → `UNSUPPORTED_STROKE_COLOR_ANIMATED`
+* `o` animated (`o.a==1`) → `UNSUPPORTED_STROKE_OPACITY_ANIMATED`
+* `w`:
+
+  * `w` отсутствует → `UNSUPPORTED_STROKE_WIDTH_MISSING`
+  * `w <= 0` (static или любой keyframe) → `UNSUPPORTED_STROKE_WIDTH_INVALID`
+  * `w.a==1`, но keyframes не распарсились / формат не keyframes → `UNSUPPORTED_STROKE_WIDTH_KEYFRAME_FORMAT`
+* `lc` not in {1,2,3} → `UNSUPPORTED_STROKE_LINECAP`
+* `lj` not in {1,2,3} → `UNSUPPORTED_STROKE_LINEJOIN`
+* `ml <= 0` → `UNSUPPORTED_STROKE_MITERLIMIT`
+
+### 3.3 Ограничение безопасности по ширине
+
+Чтобы предотвратить pathological input:
+
+* `w` MUST be `<= MAX_STROKE_WIDTH` (канонически: `2048`).
+  Иначе `UNSUPPORTED_STROKE_WIDTH_INVALID` (в сообщении указать фактическое значение).
+
+> Важно: это правило должно быть **и в validator, и в extractor** (как урок из PR-09: pt<=100 синхронизировали).
+
+---
+
+## 4) Изменения в коде (каноническая архитектура)
+
+### 4.1 AnimValidationCode.swift
+
+Добавить новые коды (минимальный набор, без лишней грануляции):
+
+* `UNSUPPORTED_STROKE_DASH`
+* `UNSUPPORTED_STROKE_COLOR_ANIMATED`
+* `UNSUPPORTED_STROKE_OPACITY_ANIMATED`
+* `UNSUPPORTED_STROKE_WIDTH_MISSING`
+* `UNSUPPORTED_STROKE_WIDTH_INVALID`
+* `UNSUPPORTED_STROKE_WIDTH_KEYFRAME_FORMAT`
+* `UNSUPPORTED_STROKE_LINECAP`
+* `UNSUPPORTED_STROKE_LINEJOIN`
+* `UNSUPPORTED_STROKE_MITERLIMIT`
+
+**Сообщения** должны быть однозначными и fail-fast ориентированными (“not supported”, “must be …”).
+
+---
+
+### 4.2 AnimValidator+Shapes.swift
+
+#### A) Убрать fail-fast “unsupportedShapeItem” для `.stroke`
+
+Вместо этого — **полная validateStroke(...)**.
+
+#### B) ValidateStroke: правила
+
+Функция `validateStroke(stroke: LottieShapeStroke, basePath: String, issues: inout [ValidationIssue])`:
+
+1. Dash:
+
+* если `stroke.dash != nil` и массив не пустой → `UNSUPPORTED_STROKE_DASH`
+* если dash есть, но пустой — разрешить (или трактовать как запрещён тоже; канонически лучше: **любое наличие `d` = ошибка**, чтобы не было ambiguous)
+
+2. Color `c`:
+
+* `c` MUST exist и быть static numbers[3] (RGB) либо numbers[4] (RGBA) — если ваш декодер возвращает 3, то фиксируем 3.
+* если `c.isAnimated == true` → `UNSUPPORTED_STROKE_COLOR_ANIMATED`
+* если формат не распарсился → `UNSUPPORTED_STROKE_COLOR_ANIMATED` или отдельный `FORMAT` (можно без отдельного, но сообщение “unrecognized format” MUST быть)
+
+3. Opacity `o`:
+
+* MUST exist, static only (0…100)
+* animated → `UNSUPPORTED_STROKE_OPACITY_ANIMATED`
+
+4. Width `w`:
+
+* MUST exist, static или keyframed
+* если static → `w > 0 && w <= MAX_STROKE_WIDTH`
+* если animated:
+
+  * **fail-fast** если `isAnimated==true`, но не удалось извлечь keyframes (`k` не keyframes array) → `UNSUPPORTED_STROKE_WIDTH_KEYFRAME_FORMAT`
+  * каждый keyframe MUST иметь `t` и `s`
+  * каждое `s` должно быть number и `0 < s <= MAX_STROKE_WIDTH`
+
+> Это повторяет “v3 fix” из PR-07: animated flag без распарсенных keyframes не может “молчаливо пройти”.
+
+5. LineCap/LineJoin/MiterLimit:
+
+* `lc ∈ {1,2,3}`, иначе `UNSUPPORTED_STROKE_LINECAP`
+* `lj ∈ {1,2,3}`, иначе `UNSUPPORTED_STROKE_LINEJOIN`
+* `ml` MUST be `> 0`, иначе `UNSUPPORTED_STROKE_MITERLIMIT`
+
+#### C) Обновить “Supported: …” сообщения
+
+Во всех местах, где формируется сообщение `unsupportedShapeItem` для других типов (`sr`, `unknown`, etc.) — список Supported обязан включать актуальные:
+`gr, sh, fl, tr, rc, el, sr, st` (в зависимости от текущего статуса).
+Это уже всплывало в PR-08 fixes — здесь закрепляем как MUST.
+
+---
+
+### 4.3 AnimIR: модель stroke и генерация команд
+
+#### A) AnimIRTypes.swift
+
+Добавить структуру стиля stroke, которую можно семплить по кадру:
+
+```swift
+public struct StrokeStyle: Equatable, Sendable {
+    public let color: [Double]          // static RGB (0...1)
+    public let opacity: Double          // static 0...1
+    public let width: AnimTrack<Double> // static или keyframed
+    public let lineCap: Int             // 1/2/3
+    public let lineJoin: Int            // 1/2/3
+    public let miterLimit: Double
+}
+```
+
+`ShapeGroup` расширить:
+
+* либо добавить `stroke: StrokeStyle?`
+* либо (если ShapeGroup переиспользуется только для matte) — ввести новый контейнер (но канонически проще: расширить `ShapeGroup`).
+
+#### B) AnimIRPath.swift / extractor
+
+Добавить extraction stroke из shape items:
+
+* `extractStrokeFromShapeGroup(_ group: LottieShapeGroup) -> LottieShapeStroke?`
+* `extractStrokeStyle(...) -> StrokeStyle?` (с конвертацией width в `AnimTrack<Double>`)
+
+Правила экстрактора:
+
+* **никаких fallback’ов** (`?? default`) для обязательных значений
+* если validator гарантирует формат — экстрактор может `guard` и возвращать `nil` только при невозможности (но в идеале это не должно происходить на валидных данных)
+
+#### C) AnimIRCompiler.swift
+
+При компиляции shape layer:
+
+* Если есть `fill` → как раньше: `drawShape`
+* Если есть `stroke` → добавить `strokeStyle` и обеспечить, что pathId существует (stroke должен “привязаться” к тому же path)
+
+> Если в shape group есть stroke, но нет path/rect/el/sr — это ошибка валидатора уровня shapes (можно reuse existing “missing path” error или добавить новый, но лучше добавить: `UNSUPPORTED_STROKE_NO_PATH` — опционально).
+
+---
+
+### 4.4 RenderGraph / RenderCommand
+
+#### A) RenderCommand.swift
+
+Добавить новый кейс:
+
+```swift
+case drawStroke(
+  pathId: PathID,
+  transform: CGAffineTransform,
+  strokeColor: [Double],
+  strokeOpacity: Double,
+  strokeWidth: Double,
+  lineCap: Int,
+  lineJoin: Int,
+  miterLimit: Double
+)
+```
+
+(Цвет/opacity — уже нормализованные 0…1.)
+
+#### B) Генерация команд в AnimIR.swift (frame evaluation)
+
+На каждом кадре:
+
+* `strokeWidth = shapeGroup.stroke.width.value(frame)`
+* добавить `drawStroke(...)` в тот же список команд, где уже рисуется fill.
+
+**Порядок отрисовки (канон):**
+
+* если есть fill и stroke на одном path:
+
+  1. fill
+  2. stroke
+     Это соответствует типичному ожиданию и минимизирует сюрпризы.
+
+---
+
+### 4.5 MetalRenderer: выполнение drawStroke
+
+#### A) MetalRenderer+Execute.swift
+
+Добавить обработку `case .drawStroke` аналогично `.drawShape`:
+
+1. Сэмплить `BezierPath` через `pathRegistry.resource(for:)` + `samplePath(...)` (как сейчас).
+2. Получить `strokeTexture` из `ShapeCache` (новый метод).
+3. Отрисовать текстуру тем же пайплайном (quad), как сейчас для fill shape.
+
+> Важно: stroke должен уважать `transform` и clip stack так же, как fill.
+
+---
+
+### 4.6 ShapeCache + Rasterizer
+
+#### A) ShapeCache.swift
 
 Добавить:
 
-```swift
-case stroke(LottieShapeStroke)
-```
+* `struct StrokeCacheKey` (или расширить существующий ключ) включая:
 
-В декодере:
+  * `pathId`
+  * `frameIndex`
+  * `transform` (или `transformHash`)
+  * `strokeColor`, `strokeOpacity`
+  * `strokeWidth`
+  * `lineCap`, `lineJoin`, `miterLimit`
 
-```swift
-case "st":
-    let stroke = try LottieShapeStroke(from: decoder)
-    self = .stroke(stroke)
-```
+Добавить метод:
 
-## 2.2 Новый struct: `LottieShapeStroke`
+* `func strokeTexture(forStrokeCommand..., bezierPath: BezierPath, ...) -> MTLTexture?`
 
-Файл: `TVECore/Sources/TVECore/Lottie/LottieShape.swift`
+#### B) Rasterization stroke (CoreGraphics)
 
-### Обязательные поля (релизный decode)
+Добавить в rasterizer (или новый `ShapeRasterizer`):
 
-Метаданные:
+* построение `CGPath` из `BezierPath` (у вас уже есть для fill/alpha)
+* настройка:
 
-* `type: String` (`ty`) — `"st"`
-* `name: String?` (`nm`)
-* `matchName: String?` (`mn`)
-* `hidden: Bool?` (`hd`)
-* `index: Int?` (`ix`)
+  * `ctx.setLineWidth(strokeWidth)`
+  * `ctx.setLineCap(...)`
+  * `ctx.setLineJoin(...)`
+  * `ctx.setMiterLimit(...)`
+  * AA включён (как и для fill)
+* рисование:
 
-Stroke свойства (ключевые и реально используемые):
+  * `ctx.addPath(path)`
+  * `ctx.strokePath()`
 
-* `color: LottieAnimatedValue?` (`c`) — цвет (обычно `[r,g,b]` 0..1 или 0..255 в зависимости от source; мы просто декодим как есть)
-* `opacity: LottieAnimatedValue?` (`o`) — 0..100
-* `width: LottieAnimatedValue?` (`w`) — stroke width (важно: может быть animated)
-* `lineCap: Int?` (`lc`) — 1..3 (butt/round/square)
-* `lineJoin: Int?` (`lj`) — 1..3 (miter/round/bevel)
-* `miterLimit: Double?` (`ml`) — miter limit
-* `dash: [LottieShapeStrokeDash]?` (`d`) — **декодируем**, но **считаем unsupported позже** (см. валидатор ниже)
-* `dashOffset: LottieAnimatedValue?` (`d` элемент с `n:"o"` или отдельное поле в зависимости от export) — см. примечание
-
-### CodingKeys
-
-```swift
-private enum CodingKeys: String, CodingKey {
-    case type = "ty"
-    case name = "nm"
-    case matchName = "mn"
-    case hidden = "hd"
-    case index = "ix"
-
-    case color = "c"
-    case opacity = "o"
-    case width = "w"
-    case lineCap = "lc"
-    case lineJoin = "lj"
-    case miterLimit = "ml"
-    case dash = "d"
-}
-```
-
-### Примечание про dash format (важно для релиза)
-
-Lottie stroke dash обычно приходит как массив объектов в `"d"`:
-
-* элементы вида `{ "n": "d", "v": { ... } }` (dash length),
-* `{ "n": "g", "v": { ... } }` (gap length),
-* `{ "n": "o", "v": { ... } }` (offset)
-
-Поэтому нужно **декодировать “d” как массив структур**, а не как `LottieAnimatedValue`.
-
-✅ В PR-06 требуется реализовать декодирование этого массива корректно, **но** мы пока не поддерживаем dash в рендере — значит валидатор должен fail-fast при наличии dash (см. ниже).
+Output: alpha mask → затем сконвертировать в BGRA с premultiplied alpha **точно так же**, как сейчас для fill.
 
 ---
 
-## 2.3 Структура dash item (если `d` присутствует)
+## 5) Валидатор vs Экстрактор: канонические анти-грабли (MUST)
 
-Добавить:
+Это прям “уроки PR-07/08/09”, фиксируем для PR-10:
 
-```swift
-public struct LottieShapeStrokeDash: Decodable, Equatable, Sendable {
-    public let name: String?   // "n"
-    public let value: LottieAnimatedValue? // "v"
+1. **NO FALLBACKS** в extractor/renderer (никаких `?? .zero`, `?? 100`).
+2. Если `isAnimated==true`, но keyframes:
 
-    private enum CodingKeys: String, CodingKey {
-        case name = "n"
-        case value = "v"
-    }
-}
-```
+   * не keyframes array,
+   * не распарсились,
+   * нет `t`/`s`,
+     → валидатор обязан вернуть **ошибку**, иначе shape “исчезнет” молча.
+3. Любые “safety bounds” (например, `MAX_STROKE_WIDTH`) должны быть:
 
-> Это релизно: мы не делаем рендер dash, но мы должны корректно декодировать и валидировать входные данные, а не терять их.
+   * и в validator,
+   * и в extractor.
+4. Пути ошибок (`issue.path`) обязаны быть корректными для nested shapes:
 
----
-
-# 3) Валидатор: fail-fast для `st` до PR-10
-
-Файл: `TVECore/Sources/TVECore/AnimValidator/AnimValidator+Shapes.swift`
-
-## 3.1 Поведение для `.stroke`
-
-До реализации рендера stroke (PR-10), любое `st` должно давать:
-
-* `code: AnimValidationCode.unsupportedShapeItem`
-* `severity: .error`
-* `path: "\(basePath).ty"`
-* message: `"Shape type 'st' not supported. Supported: gr, sh, fl, tr"`
-
-## 3.2 Дополнительное релизное правило для dash (важно!)
-
-Даже после того как stroke станет поддержан (позже), **dash пока не в scope**.
-Поэтому уже сейчас стоит подготовить fail-fast правило на dash:
-
-Если `LottieShapeStroke.dash` **не пустой** и содержит элементы с `name in {"d","g","o"}` → это **отдельный** валидаторский error “unsupported stroke dash”.
-
-Но чтобы не вводить новую семантику до того, как stroke вообще поддержан, в PR-06 можно сделать проще:
-
-✅ В PR-06 (пока `st` сам unsupported) — достаточно общего `unsupportedShapeItem`.
-
-🟦 Рекомендация (не обязательна в PR-06, но хорошо для релиза):
-добавить отдельный код на dash уже сейчас, чтобы потом, когда `st` станет supported, dash не стал silent-ignore.
-
-Если решаем сделать сразу (предпочтительно):
-
-* добавить в `AnimValidationCode.swift`:
-
-  * `UNSUPPORTED_STROKE_DASH`
-* и в `validateShapeItemRecursive` для `.stroke(let s)`:
-
-  * если `s.dash?.isEmpty == false` → добавить issue `UNSUPPORTED_STROKE_DASH` path `\(basePath).d`
-
-Но это опционально; если хочешь строго минимально — оставить на PR-10/следующий.
+   * `.shapes[i].it[j].ty` и т.п.
+     (Т.е. используется подход из PR-03 fix: рекурсивный `basePath`, без дублирования `context`.)
 
 ---
 
-# 4) Тесты
+## 6) Тесты (Acceptance)
 
-## 4.1 ShapeItemDecodeTests.swift
+### 6.1 Unit tests — decoding (уже есть в PR-06)
 
-Добавить минимум 4 теста:
+Не трогаем, но при необходимости дополняем.
 
-### (A) Static stroke decode
+### 6.2 Validator tests (MUST)
 
-JSON:
+Добавить тесты:
 
-```json
-{
-  "ty":"st",
-  "c":{"a":0,"k":[1,0,0]},
-  "o":{"a":0,"k":100},
-  "w":{"a":0,"k":12},
-  "lc":2,
-  "lj":1,
-  "ml":4
-}
-```
+1. **Valid stroke with animated width** → **NO errors**
+2. `dash` присутствует → `UNSUPPORTED_STROKE_DASH`
+3. `w` отсутствует → `UNSUPPORTED_STROKE_WIDTH_MISSING`
+4. `w=0` static → `UNSUPPORTED_STROKE_WIDTH_INVALID`
+5. `w.a=1`, но `k` не keyframes array → `UNSUPPORTED_STROKE_WIDTH_KEYFRAME_FORMAT`
+6. `c.a=1` → `UNSUPPORTED_STROKE_COLOR_ANIMATED`
+7. `lc=99` → `UNSUPPORTED_STROKE_LINECAP`
+8. Nested stroke inside group → ошибка/успех + **проверка path содержит `.it[0]...`**
 
-Проверить:
+### 6.3 Extractor / RenderGraph tests (MUST)
 
-* `.stroke(let s)`
-* `s.width != nil`, `s.opacity != nil`, `s.color != nil`
-* `s.lineCap == 2`, `s.lineJoin == 1`, `s.miterLimit == 4`
+Минимальный smoke:
 
-### (B) Animated width decode
+* собрать мини-анимацию с одним shape layer:
 
-`"w": {"a":1,"k":[...2 keyframes...]}` → `s.width?.isAnimated == true`
+  * path (например, `rc`) + stroke
+  * сгенерировать AnimIR
+  * построить команды на кадр
+  * assert: присутствует `.drawStroke(...)` и его параметры корректны (width семплится).
 
-### (C) Dash array decode
+### 6.4 Renderer baseline (опционально, но желательно)
 
-JSON с `d`:
+Если у вас есть baseline infra:
 
-```json
-"d":[{"n":"d","v":{"a":0,"k":10}}, {"n":"g","v":{"a":0,"k":5}}, {"n":"o","v":{"a":0,"k":0}}]
-```
+* отрендерить 1 кадр со stroke и проверить:
 
-Проверить:
-
-* `s.dash?.count == 3`
-* `dash[0].name == "d"`, `dash[0].value != nil`
-
-### (D) Update unknown test
-
-Убрать `"st"` из `unknownTypes`.
+  * картинка не пустая (есть non-transparent пиксели)
+  * и/или snapshot compare.
 
 ---
 
-## 4.2 AnimValidatorTests.swift
+## 7) Definition of Done (Merge checklist)
 
-Добавить 2 теста с проверкой path (как делали для rc/el/sr):
+PR-10 считается готовым только если:
 
-### (A) `testValidate_strokeShape_returnsErrorWithCorrectPath()`
+* ✅ `st` реально **рендерится** через новый `drawStroke` путь
+* ✅ Validator: fail-fast на dash, анимированные color/opacity, invalid width, invalid lc/lj/ml, unparseable width keyframes
+* ✅ Никаких fallback’ов в новом коде
+* ✅ “Supported: …” сообщения обновлены (включают `rc, el, sr, st`)
+* ✅ Тесты:
 
-Shape layer `ty=4`, shapes[0] = stroke `{"ty":"st", ...}`
-Ожидаем:
-
-* `unsupportedShapeItem`
-* `path` содержит `.shapes[0].ty`
-* message содержит `'st'`
-
-### (B) `testValidate_strokeInGroupShape_returnsErrorWithCorrectNestedPath()`
-
-Group → `it[0]` = stroke
-Ожидаем:
-
-* `path` содержит `.it[0].ty`
-
-Если вы добавите отдельный код `UNSUPPORTED_STROKE_DASH`, добавьте третий тест:
-
-* stroke с `"d":[...]` → error `UNSUPPORTED_STROKE_DASH` path `.d`
+  * validator tests покрывают edge cases + nested path correctness
+  * render-graph smoke test подтверждает появление `drawStroke`
+* ✅ `swift test` / `swift build` без warning’ов/ошибок
 
 ---
 
-# 5) Нефункциональные требования
+## 8) Явные продуктовые ограничения (зафиксировать в README/Spec)
 
-* Никакого изменения существующих архитектурных частей
-* Никаких новых “общих” парсеров: используем текущие типы `LottieAnimatedValue`
-* Код соответствует стилю: `Decodable, Equatable, Sendable`
-* Все тесты TVECore проходят
+В `README` для shapes (tests/resources) добавить таблицу:
 
----
-
-# 6) Acceptance Criteria
-
-PR-06 принят, если:
-
-1. `ShapeItem` декодирует `ty:"st"` → `.stroke(LottieShapeStroke)`
-2. `LottieShapeStroke` корректно декодит `c/o/w/lc/lj/ml` и `d` как массив dash items
-3. Валидатор fail-fast для `.stroke` (и path корректный, включая nested `.it[i].ty`)
-4. Тесты: decode (включая dash), validator (включая path), unknown test обновлён (убран `st`)
-5. Все тесты проекта проходят
-
----
-
-Если хочешь, я сразу зафиксирую решение по dash: **делаем отдельный `UNSUPPORTED_STROKE_DASH` уже в PR-06 или переносим на PR-10**. Но базовый канонический вариант выше уже релизный и безопасный (потому что stroke пока всё равно fail-fast как unsupported).
+* Stroke supported: **YES** (PR-10)
+* Dash: **NO** (валидатор блокирует)
+* Animated width: **YES**
+* Animated color/opacity: **NO**
+* Trim paths: **NO**
+* Gradient stroke: **NO**
