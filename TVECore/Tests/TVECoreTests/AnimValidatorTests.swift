@@ -933,11 +933,18 @@ final class AnimValidatorTests: XCTestCase {
         """
         let report = try validatePackage(sceneJSON: scene, animJSON: anim)
 
+        // ct=1 is now a WARNING (not error) - best-effort rendering
+        let warning = report.warnings.first {
+            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
+        }
+        XCTAssertNotNil(warning, "ct=1 should produce a warning")
+        XCTAssertTrue(warning?.path.contains(".ct") ?? false)
+
+        // Should NOT be an error
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
         }
-        XCTAssertNotNil(error)
-        XCTAssertTrue(error?.path.contains(".ct") ?? false)
+        XCTAssertNil(error, "ct=1 should NOT be an error (downgraded to warning)")
     }
 
     func testValidate_blendMode_returnsError() throws {
@@ -2508,13 +2515,20 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertNotNil(error, "neg_layer_sr_stretch should produce UNSUPPORTED_LAYER_STRETCH error")
     }
 
-    func testNegativeAsset_collapseTransform_returnsUnsupportedLayerCollapseTransform() throws {
+    func testNegativeAsset_collapseTransform_returnsWarning() throws {
         let report = try validateNegativeCase("neg_layer_ct_collapse_transform")
 
+        // ct=1 is now a WARNING (not error) - best-effort rendering
+        let warning = report.warnings.first {
+            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
+        }
+        XCTAssertNotNil(warning, "neg_layer_ct_collapse_transform should produce UNSUPPORTED_LAYER_COLLAPSE_TRANSFORM warning")
+
+        // Should NOT be an error
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
         }
-        XCTAssertNotNil(error, "neg_layer_ct_collapse_transform should produce UNSUPPORTED_LAYER_COLLAPSE_TRANSFORM error")
+        XCTAssertNil(error, "ct=1 should NOT be an error (downgraded to warning)")
     }
 
     func testNegativeAsset_blendMode_returnsUnsupportedBlendMode() throws {

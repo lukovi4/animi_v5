@@ -119,6 +119,15 @@ final class PlayerViewController: UIViewController {
     private static let maxFramesInFlight = 3
     private let inFlightSemaphore = DispatchSemaphore(value: maxFramesInFlight)
 
+    // Fullscreen mode
+    private var isFullscreen = false
+    private var metalViewHeightConstraint: NSLayoutConstraint?
+    private var metalViewTopToLoadButtonConstraint: NSLayoutConstraint?
+    private var metalViewTopToSafeAreaConstraint: NSLayoutConstraint?
+    private var metalViewBottomConstraint: NSLayoutConstraint?
+    private var metalViewLeadingConstraint: NSLayoutConstraint?
+    private var metalViewTrailingConstraint: NSLayoutConstraint?
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -132,6 +141,24 @@ final class PlayerViewController: UIViewController {
     private func setupUI() {
         view.backgroundColor = .systemBackground
         [sceneSelector, loadButton, metalView, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
+
+        // MetalView constraints for normal mode
+        metalViewTopToLoadButtonConstraint = metalView.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 12)
+        metalViewTopToSafeAreaConstraint = metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12)
+        metalViewTopToSafeAreaConstraint?.isActive = false
+
+        // Height constraint with aspect ratio (default 16:9, will be updated when scene loads)
+        metalViewHeightConstraint = metalView.heightAnchor.constraint(equalTo: metalView.widthAnchor, multiplier: 9.0 / 16.0)
+        metalViewHeightConstraint?.priority = .defaultHigh
+
+        // Bottom constraint for fullscreen mode
+        metalViewBottomConstraint = metalView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
+        metalViewBottomConstraint?.isActive = false
+
+        // Leading/trailing constraints (need references for fullscreen toggle)
+        metalViewLeadingConstraint = metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16)
+        metalViewTrailingConstraint = metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
+
         NSLayoutConstraint.activate([
             sceneSelector.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             sceneSelector.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
@@ -140,10 +167,10 @@ final class PlayerViewController: UIViewController {
             loadButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             loadButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             loadButton.heightAnchor.constraint(equalToConstant: 44),
-            metalView.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 12),
-            metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            metalView.heightAnchor.constraint(equalTo: metalView.widthAnchor, multiplier: 16.0 / 9.0),
+            metalViewTopToLoadButtonConstraint!,
+            metalViewLeadingConstraint!,
+            metalViewTrailingConstraint!,
+            metalViewHeightConstraint!,
             controlsStack.topAnchor.constraint(equalTo: metalView.bottomAnchor, constant: 12),
             controlsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             controlsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
@@ -156,6 +183,10 @@ final class PlayerViewController: UIViewController {
             logTextView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             logTextView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16)
         ])
+
+        // Tap gesture for fullscreen toggle
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(metalViewTapped))
+        metalView.addGestureRecognizer(tapGesture)
     }
 
     private func setupRenderer() {
@@ -209,6 +240,57 @@ final class PlayerViewController: UIViewController {
         metalView.setNeedsDisplay()
     }
 
+    @objc private func metalViewTapped() {
+        isFullscreen.toggle()
+
+        UIView.animate(withDuration: 0.3) { [self] in
+            // Hide/show UI elements
+            sceneSelector.alpha = isFullscreen ? 0 : 1
+            loadButton.alpha = isFullscreen ? 0 : 1
+            controlsStack.alpha = isFullscreen ? 0 : 1
+            frameLabel.alpha = isFullscreen ? 0 : 1
+            logTextView.alpha = isFullscreen ? 0 : 1
+
+            // Toggle top constraint
+            metalViewTopToLoadButtonConstraint?.isActive = !isFullscreen
+            metalViewTopToSafeAreaConstraint?.isActive = isFullscreen
+
+            // Toggle bottom constraint for fullscreen
+            metalViewBottomConstraint?.isActive = isFullscreen
+
+            // Update corner radius
+            metalView.layer.cornerRadius = isFullscreen ? 0 : 8
+
+            // Update leading/trailing margins
+            metalViewLeadingConstraint?.constant = isFullscreen ? 0 : 16
+            metalViewTrailingConstraint?.constant = isFullscreen ? 0 : -16
+
+            view.layoutIfNeeded()
+        }
+
+        // Update status bar
+        setNeedsStatusBarAppearanceUpdate()
+    }
+
+    override var prefersStatusBarHidden: Bool {
+        isFullscreen
+    }
+
+    private func updateMetalViewAspectRatio(width: Double, height: Double) {
+        guard width > 0, height > 0 else { return }
+
+        // Remove old height constraint
+        metalViewHeightConstraint?.isActive = false
+
+        // Create new constraint with correct aspect ratio (height/width)
+        let aspectRatio = height / width
+        metalViewHeightConstraint = metalView.heightAnchor.constraint(equalTo: metalView.widthAnchor, multiplier: aspectRatio)
+        metalViewHeightConstraint?.priority = .defaultHigh
+        metalViewHeightConstraint?.isActive = true
+
+        view.layoutIfNeeded()
+    }
+
     // MARK: - Package Loading
 
     private func loadAndValidatePackage(from rootURL: URL) throws {
@@ -248,6 +330,9 @@ final class PlayerViewController: UIViewController {
 
         // Store canvas size for render target
         canvasSize = compiled.runtime.canvasSize
+
+        // Update metalView aspect ratio to match canvas
+        updateMetalViewAspectRatio(width: canvasSize.width, height: canvasSize.height)
 
         // Store merged asset sizes for renderer
         mergedAssetSizes = compiled.mergedAssetIndex.sizeById

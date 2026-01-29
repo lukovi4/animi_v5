@@ -452,13 +452,13 @@ extension AnimValidator {
             ))
         }
 
-        // Collapse transform (ct != 0)
+        // Collapse transform (ct != 0) - warning only, best-effort rendering
         if let ct = layer.collapseTransform, ct != 0 {
             issues.append(ValidationIssue(
                 code: AnimValidationCode.unsupportedLayerCollapseTransform,
-                severity: .error,
+                severity: .warning,
                 path: "\(basePath).ct",
-                message: "Collapse transform (ct=\(ct)) not supported"
+                message: "Collapse transform (ct=\(ct)) currently ignored (best-effort)"
             ))
         }
 
