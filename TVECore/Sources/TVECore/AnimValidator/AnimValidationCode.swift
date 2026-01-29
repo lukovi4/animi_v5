@@ -132,6 +132,23 @@ public enum AnimValidationCode {
     /// Stroke miter limit is invalid (ml <= 0)
     public static let unsupportedStrokeMiterlimit = "UNSUPPORTED_STROKE_MITERLIMIT"
 
+    // MARK: - Group Transform Errors (PR-11)
+
+    /// Multiple transform items in a single group (only one tr allowed per gr)
+    public static let unsupportedGroupTransformMultiple = "UNSUPPORTED_GROUP_TRANSFORM_MULTIPLE"
+
+    /// Group transform has skew (sk != 0 or sk.a == 1)
+    public static let unsupportedGroupTransformSkew = "UNSUPPORTED_GROUP_TRANSFORM_SKEW"
+
+    /// Group transform has non-uniform scale (sx != sy) - breaks stroke width scaling
+    public static let unsupportedGroupTransformScaleNonuniform = "UNSUPPORTED_GROUP_TRANSFORM_SCALE_NONUNIFORM"
+
+    /// Group transform animated keyframes have mismatched count or times
+    public static let unsupportedGroupTransformKeyframesMismatch = "UNSUPPORTED_GROUP_TRANSFORM_KEYFRAMES_MISMATCH"
+
+    /// Group transform keyframe has invalid format (missing time, startValue, or unparseable)
+    public static let unsupportedGroupTransformKeyframeFormat = "UNSUPPORTED_GROUP_TRANSFORM_KEYFRAME_FORMAT"
+
     /// Path keyframes have mismatched topology (vertex count or closed flag differ)
     public static let pathTopologyMismatch = "PATH_TOPOLOGY_MISMATCH"
 

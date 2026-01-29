@@ -68,6 +68,76 @@ public enum LayerContent: Sendable, Equatable {
     case none
 }
 
+// MARK: - Group Transform (PR-11)
+
+/// Transform for shape groups (tr inside gr)
+/// Supports both static and animated position/anchor/scale/rotation/opacity
+/// Applied at render time, NOT baked into path vertices
+public struct GroupTransform: Sendable, Equatable {
+    /// Position (default: (0, 0))
+    public let position: AnimTrack<Vec2D>
+
+    /// Anchor point (default: (0, 0))
+    public let anchor: AnimTrack<Vec2D>
+
+    /// Scale in percentage (default: (100, 100))
+    public let scale: AnimTrack<Vec2D>
+
+    /// Rotation in degrees (default: 0)
+    public let rotation: AnimTrack<Double>
+
+    /// Opacity normalized 0...1 (default: 1.0)
+    public let opacity: AnimTrack<Double>
+
+    public init(
+        position: AnimTrack<Vec2D> = .static(Vec2D(x: 0, y: 0)),
+        anchor: AnimTrack<Vec2D> = .static(Vec2D(x: 0, y: 0)),
+        scale: AnimTrack<Vec2D> = .static(Vec2D(x: 100, y: 100)),
+        rotation: AnimTrack<Double> = .static(0),
+        opacity: AnimTrack<Double> = .static(1.0)
+    ) {
+        self.position = position
+        self.anchor = anchor
+        self.scale = scale
+        self.rotation = rotation
+        self.opacity = opacity
+    }
+
+    /// Identity transform (no transformation)
+    public static let identity = GroupTransform()
+
+    /// Computes the transformation matrix at the given frame
+    /// Formula: T(position) * R(rotation) * S(scale) * T(-anchor)
+    public func matrix(at frame: Double) -> Matrix2D {
+        let pos = position.sample(frame: frame)
+        let anc = anchor.sample(frame: frame)
+        let scl = scale.sample(frame: frame)
+        let rot = rotation.sample(frame: frame)
+
+        // Normalize scale from percentage (100 = 1.0)
+        let scaleX = scl.x / 100.0
+        let scaleY = scl.y / 100.0
+
+        // Build matrix: T(position) * R(rotation) * S(scale) * T(-anchor)
+        return Matrix2D.translation(x: pos.x, y: pos.y)
+            .concatenating(.rotationDegrees(rot))
+            .concatenating(.scale(x: scaleX, y: scaleY))
+            .concatenating(.translation(x: -anc.x, y: -anc.y))
+    }
+
+    /// Computes the opacity at the given frame (already normalized 0...1)
+    public func opacityValue(at frame: Double) -> Double {
+        opacity.sample(frame: frame)
+    }
+
+    /// Returns true if any transform property is animated
+    public var isAnimated: Bool {
+        position.isAnimated || anchor.isAnimated || scale.isAnimated ||
+        rotation.isAnimated || opacity.isAnimated
+    }
+
+}
+
 // MARK: - Stroke Style
 
 /// Stroke rendering style for shape layers (PR-10)
@@ -114,6 +184,7 @@ public struct StrokeStyle: Sendable, Equatable {
 /// Full shape rendering is not needed in Part 1 - shapes are used only as matte sources
 public struct ShapeGroup: Sendable, Equatable {
     /// Combined path from all shapes (supports static and animated paths)
+    /// Path is in LOCAL coordinates - NOT transformed by group transform
     public let animPath: AnimPath?
 
     /// Fill color (RGBA, 0-1)
@@ -124,6 +195,11 @@ public struct ShapeGroup: Sendable, Equatable {
 
     /// Stroke style (PR-10) - optional, nil if no stroke
     public let stroke: StrokeStyle?
+
+    /// Group transform stack (PR-11) - list of transforms from nested groups
+    /// Each GroupTransform is sampled and multiplied at render time: M = M[0] * M[1] * ... * M[n]
+    /// Empty array means identity transform (no group transform)
+    public let groupTransforms: [GroupTransform]
 
     /// Path ID in PathRegistry (set during compilation)
     public var pathId: PathID?
@@ -138,12 +214,14 @@ public struct ShapeGroup: Sendable, Equatable {
         fillColor: [Double]? = nil,
         fillOpacity: Double = 100,
         stroke: StrokeStyle? = nil,
+        groupTransforms: [GroupTransform] = [],
         pathId: PathID? = nil
     ) {
         self.animPath = animPath
         self.fillColor = fillColor
         self.fillOpacity = fillOpacity
         self.stroke = stroke
+        self.groupTransforms = groupTransforms
         self.pathId = pathId
     }
 
@@ -153,6 +231,7 @@ public struct ShapeGroup: Sendable, Equatable {
         self.fillColor = fillColor
         self.fillOpacity = fillOpacity
         self.stroke = nil
+        self.groupTransforms = []
         self.pathId = nil
     }
 }

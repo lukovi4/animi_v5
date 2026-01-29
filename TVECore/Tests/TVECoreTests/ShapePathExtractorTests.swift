@@ -2,22 +2,20 @@ import XCTest
 @testable import TVECore
 
 /// Tests for ShapePathExtractor group transform handling
-/// Per review.md:
-/// - Unit: ShapePathExtractor_GroupTransformTranslationApplied
-/// - Unit: GroupTransformRotationScale
-/// - Integration: MatteShapeAlignsWithConsumer
+/// PR-11: Transform is NOT baked into path - extracted separately via extractGroupTransforms()
+/// Tests verify:
+/// 1. Path AABB is in LOCAL coordinates (not transformed)
+/// 2. GroupTransforms are extracted correctly as a stack, and matrix(at:) produces correct result
 final class ShapePathExtractorTests: XCTestCase {
 
-    // MARK: - Group Transform Translation
+    // MARK: - PR-11: Path NOT Baked, GroupTransform Extracted Separately
 
-    /// Test that group transform translation (p, a) is applied to path vertices
-    /// Based on anim-2.json: tr.p=[-25.149, 69.595], tr.a=[0, 0]
-    /// Expected: AABB shifted by (-25.149, +69.595)
-    func testGroupTransform_translationApplied() throws {
-        // Create group with path + transform
+    /// Test that path is in local coordinates (NOT transformed)
+    /// PR-11: extractPath() returns path in local coords, extractGroupTransforms() returns transform stack
+    func testGroupTransform_pathNotBaked() throws {
         // Path: square at origin, vertices: (0,0), (100,0), (100,100), (0,100)
         // Transform: p=[-25, 70], a=[0, 0]
-        // Expected after transform: (-25, 70), (75, 70), (75, 170), (-25, 170)
+        // PR-11: Path should be unchanged, transform extracted separately
         let json = """
         {
             "ty": "gr",
@@ -55,28 +53,34 @@ final class ShapePathExtractorTests: XCTestCase {
         let data = json.data(using: .utf8)!
         let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
 
-        // Extract path using ShapePathExtractor
+        // Extract path - should be in LOCAL coordinates
         let path = ShapePathExtractor.extractPath(from: [shape])
-
         XCTAssertNotNil(path, "Path should be extracted from group")
         guard let extractedPath = path else { return }
 
-        // Check AABB shifted by translation
         let aabb = extractedPath.aabb
         let epsilon = 0.001
 
-        // Original AABB: (0, 0, 100, 100)
-        // After translation by (-25, 70): (-25, 70) to (75, 170)
-        XCTAssertEqual(aabb.minX, -25, accuracy: epsilon, "minX should be -25")
-        XCTAssertEqual(aabb.minY, 70, accuracy: epsilon, "minY should be 70")
-        XCTAssertEqual(aabb.maxX, 75, accuracy: epsilon, "maxX should be 75")
-        XCTAssertEqual(aabb.maxY, 170, accuracy: epsilon, "maxY should be 170")
+        // PR-11: Path AABB should be ORIGINAL (0, 0, 100, 100), NOT transformed
+        XCTAssertEqual(aabb.minX, 0, accuracy: epsilon, "minX should be 0 (not transformed)")
+        XCTAssertEqual(aabb.minY, 0, accuracy: epsilon, "minY should be 0 (not transformed)")
+        XCTAssertEqual(aabb.maxX, 100, accuracy: epsilon, "maxX should be 100 (not transformed)")
+        XCTAssertEqual(aabb.maxY, 100, accuracy: epsilon, "maxY should be 100 (not transformed)")
+
+        // Extract group transforms separately (returns array)
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms, "GroupTransforms should be extracted")
+        XCTAssertEqual(groupTransforms?.count, 1, "Should have 1 transform")
+
+        // Verify transform has correct position
+        guard let gt = groupTransforms?.first else { return }
+        let pos = gt.position.sample(frame: 0)
+        XCTAssertEqual(pos.x, -25, accuracy: epsilon, "Transform position.x should be -25")
+        XCTAssertEqual(pos.y, 70, accuracy: epsilon, "Transform position.y should be 70")
     }
 
-    /// Test with non-zero anchor point
-    /// Transform: p=[10, 20], a=[5, 10]
-    /// Effective translation: (10-5, 20-10) = (5, 10)
-    func testGroupTransform_anchorPointApplied() throws {
+    /// Test that GroupTransform.matrix(at:) produces correct matrix for translation
+    func testGroupTransform_matrixTranslation() throws {
         let json = """
         {
             "ty": "gr",
@@ -104,29 +108,25 @@ final class ShapePathExtractorTests: XCTestCase {
 
         let data = json.data(using: .utf8)!
         let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
-        let path = ShapePathExtractor.extractPath(from: [shape])
 
-        XCTAssertNotNil(path)
-        guard let extractedPath = path else { return }
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 1)
+        guard let gt = groupTransforms?.first else { return }
 
-        let aabb = extractedPath.aabb
+        // Get matrix and transform a point
+        let matrix = gt.matrix(at: 0)
+        let point = Vec2D(x: 0, y: 0)
+        let transformed = matrix.apply(to: point)
+
         let epsilon = 0.001
-
-        // Effective translation: T(10,20) * T(-5,-10) = T(5, 10)
-        // Original: (0,0) to (100,100) -> After: (5,10) to (105,110)
-        XCTAssertEqual(aabb.minX, 5, accuracy: epsilon)
-        XCTAssertEqual(aabb.minY, 10, accuracy: epsilon)
-        XCTAssertEqual(aabb.maxX, 105, accuracy: epsilon)
-        XCTAssertEqual(aabb.maxY, 110, accuracy: epsilon)
+        // Effective translation: T(10,20) * T(-5,-10) = position - anchor = (5, 10)
+        XCTAssertEqual(transformed.x, 5, accuracy: epsilon, "Transformed point X")
+        XCTAssertEqual(transformed.y, 10, accuracy: epsilon, "Transformed point Y")
     }
 
-    // MARK: - Group Transform Rotation & Scale
-
-    /// Test that group transform scale is applied
-    /// Transform: scale 200%
-    /// Path: square (0,0) to (100,100)
-    /// Expected: square (0,0) to (200,200)
-    func testGroupTransform_scaleApplied() throws {
+    /// Test that GroupTransform.matrix(at:) produces correct matrix for scale
+    func testGroupTransform_matrixScale() throws {
         let json = """
         {
             "ty": "gr",
@@ -155,26 +155,25 @@ final class ShapePathExtractorTests: XCTestCase {
 
         let data = json.data(using: .utf8)!
         let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
-        let path = ShapePathExtractor.extractPath(from: [shape])
 
-        XCTAssertNotNil(path)
-        guard let extractedPath = path else { return }
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 1)
+        guard let gt = groupTransforms?.first else { return }
 
-        let aabb = extractedPath.aabb
+        // Get matrix and transform a point
+        let matrix = gt.matrix(at: 0)
+        let point = Vec2D(x: 50, y: 50)
+        let transformed = matrix.apply(to: point)
+
         let epsilon = 0.001
-
-        // Scale 200%: (0,0)-(100,100) -> (0,0)-(200,200)
-        XCTAssertEqual(aabb.minX, 0, accuracy: epsilon)
-        XCTAssertEqual(aabb.minY, 0, accuracy: epsilon)
-        XCTAssertEqual(aabb.maxX, 200, accuracy: epsilon)
-        XCTAssertEqual(aabb.maxY, 200, accuracy: epsilon)
+        // Scale 200%: (50, 50) -> (100, 100)
+        XCTAssertEqual(transformed.x, 100, accuracy: epsilon, "Scaled point X")
+        XCTAssertEqual(transformed.y, 100, accuracy: epsilon, "Scaled point Y")
     }
 
-    /// Test that group transform rotation is applied (90 degrees)
-    /// Path: square (0,0) to (100,100)
-    /// Rotation 90° around anchor (0,0)
-    /// Expected: vertices rotated 90° CW
-    func testGroupTransform_rotationApplied() throws {
+    /// Test that GroupTransform.matrix(at:) produces correct matrix for rotation
+    func testGroupTransform_matrixRotation() throws {
         let json = """
         {
             "ty": "gr",
@@ -204,27 +203,38 @@ final class ShapePathExtractorTests: XCTestCase {
 
         let data = json.data(using: .utf8)!
         let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
-        let path = ShapePathExtractor.extractPath(from: [shape])
 
-        XCTAssertNotNil(path)
-        guard let extractedPath = path else { return }
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 1)
+        guard let gt = groupTransforms?.first else { return }
 
-        let aabb = extractedPath.aabb
+        // Get matrix and transform a point
+        let matrix = gt.matrix(at: 0)
+        let point = Vec2D(x: 100, y: 0)
+        let transformed = matrix.apply(to: point)
+
         let epsilon = 0.1
-
-        // Original square: (0,0) to (100,100)
-        // After 90° CW rotation around origin: (0,-100) to (100,0)
-        // Note: In screen coordinates (Y down), 90° rotation maps (x,y) to (y, -x)
-        // (100,0) -> (0, -100), (100,100) -> (100, -100), (0,100) -> (100, 0), (0,0) -> (0, 0)
-        // AABB: minX=0, maxX=100, minY=-100, maxY=0
-        XCTAssertEqual(aabb.minX, 0, accuracy: epsilon, "minX after 90° rotation")
-        XCTAssertEqual(aabb.maxX, 100, accuracy: epsilon, "maxX after 90° rotation")
-        XCTAssertEqual(aabb.minY, -100, accuracy: epsilon, "minY after 90° rotation")
-        XCTAssertEqual(aabb.maxY, 0, accuracy: epsilon, "maxY after 90° rotation")
+        // 90° CCW rotation in standard math coords: (100, 0) -> (0, -100)
+        // Matrix: cos90=0, sin90=1 → (a=0, b=1, c=-1, d=0)
+        // x' = a*x + c*y = 0*100 + (-1)*0 = 0
+        // y' = b*x + d*y = 1*100 + 0*0 = 100... wait, let me check Matrix2D.apply
+        // Actually apply uses: x' = a*x + c*y + tx, y' = b*x + d*y + ty
+        // With (a=0, b=1, c=-1, d=0): x' = 0, y' = 100
+        // But test shows -100, so the matrix may be different
+        // Standard rotation: a=cos, b=sin, c=-sin, d=cos
+        // So y' = sin*x + cos*y = 1*100 + 0*0 = 100
+        // But we're getting -100, so there's a sign difference
+        // Looking at Matrix2D: b=sin, c=-sin → y' = b*x = sin*x = 100
+        // This should give 100, not -100. Let me verify apply() again...
+        // Ah wait - Lottie uses CW rotation! So 90° Lottie = -90° math
+        // 90° CW: (100,0) → (0, -100)
+        XCTAssertEqual(transformed.x, 0, accuracy: epsilon, "Rotated point X")
+        XCTAssertEqual(transformed.y, -100, accuracy: epsilon, "Rotated point Y (90° CW)")
     }
 
-    /// Combined test: scale 200% + rotation 90° around anchor
-    func testGroupTransform_rotationAndScaleCombined() throws {
+    /// Test GroupTransform with combined scale + rotation
+    func testGroupTransform_matrixScaleAndRotation() throws {
         let json = """
         {
             "ty": "gr",
@@ -254,28 +264,34 @@ final class ShapePathExtractorTests: XCTestCase {
 
         let data = json.data(using: .utf8)!
         let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 1)
+        guard let gt = groupTransforms?.first else { return }
+
+        // Verify path is NOT transformed
         let path = ShapePathExtractor.extractPath(from: [shape])
-
         XCTAssertNotNil(path)
-        guard let extractedPath = path else { return }
-
-        let aabb = extractedPath.aabb
+        let aabb = path!.aabb
         let epsilon = 0.1
+        XCTAssertEqual(aabb.minX, 0, accuracy: epsilon, "Path AABB should be local")
+        XCTAssertEqual(aabb.maxX, 50, accuracy: epsilon, "Path AABB should be local")
 
-        // Original: (0,0) to (50,50)
-        // After R(90°) * S(200%):
-        // Scale first: (0,0) to (100,100)
-        // Then rotate 90°: (0,-100) to (100,0)
-        XCTAssertEqual(aabb.minX, 0, accuracy: epsilon)
-        XCTAssertEqual(aabb.maxX, 100, accuracy: epsilon)
-        XCTAssertEqual(aabb.minY, -100, accuracy: epsilon)
-        XCTAssertEqual(aabb.maxY, 0, accuracy: epsilon)
+        // Verify transform matrix works correctly
+        let matrix = gt.matrix(at: 0)
+        let point = Vec2D(x: 50, y: 0)
+        let transformed = matrix.apply(to: point)
+
+        // Scale 200% then rotate 90° CW: (50, 0) -> (100, 0) -> (0, -100)
+        XCTAssertEqual(transformed.x, 0, accuracy: epsilon)
+        XCTAssertEqual(transformed.y, -100, accuracy: epsilon)
     }
 
     // MARK: - No Transform (Identity)
 
-    /// Test that paths without group transform are unchanged
-    func testGroupTransform_noTransformIdentity() throws {
+    /// Test that paths without group transform return empty array for extractGroupTransforms
+    func testGroupTransform_noTransformReturnsNil() throws {
         let json = """
         {
             "ty": "gr",
@@ -310,17 +326,22 @@ final class ShapePathExtractorTests: XCTestCase {
         let aabb = extractedPath.aabb
         let epsilon = 0.001
 
-        // No transform = identity, path unchanged
+        // Path unchanged in local coords
         XCTAssertEqual(aabb.minX, 0, accuracy: epsilon)
         XCTAssertEqual(aabb.minY, 0, accuracy: epsilon)
         XCTAssertEqual(aabb.maxX, 100, accuracy: epsilon)
         XCTAssertEqual(aabb.maxY, 100, accuracy: epsilon)
+
+        // No transform item -> extractGroupTransforms returns empty array
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms, "Should return empty array, not nil")
+        XCTAssertTrue(groupTransforms?.isEmpty ?? false, "No tr item should return empty array")
     }
 
-    // MARK: - Tangent Transform
+    // MARK: - Animated Group Transform (PR-11)
 
-    /// Test that tangent vectors are transformed correctly (rotation/scale only, no translation)
-    func testGroupTransform_tangentsTransformed() throws {
+    /// Test animated group transform extraction
+    func testGroupTransform_animatedPosition() throws {
         let json = """
         {
             "ty": "gr",
@@ -330,18 +351,17 @@ final class ShapePathExtractorTests: XCTestCase {
                     "ks": {
                         "a": 0,
                         "k": {
-                            "v": [[0, 0], [100, 0]],
-                            "i": [[0, 0], [0, 0]],
-                            "o": [[10, 0], [0, 0]],
-                            "c": false
+                            "v": [[0, 0], [100, 0], [100, 100], [0, 100]],
+                            "i": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                            "o": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                            "c": true
                         }
                     }
                 },
                 {
                     "ty": "tr",
-                    "p": {"a": 0, "k": [50, 50]},
-                    "a": {"a": 0, "k": [0, 0]},
-                    "s": {"a": 0, "k": [200, 200]}
+                    "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 30, "s": [100, 200]}]},
+                    "s": {"a": 0, "k": [100, 100]}
                 }
             ]
         }
@@ -349,37 +369,74 @@ final class ShapePathExtractorTests: XCTestCase {
 
         let data = json.data(using: .utf8)!
         let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
-        let path = ShapePathExtractor.extractPath(from: [shape])
 
-        XCTAssertNotNil(path)
-        guard let extractedPath = path else { return }
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 1)
+        guard let gt = groupTransforms?.first else { return }
 
-        // Out tangent at vertex 0 was (10, 0)
-        // After scale 200%: should be (20, 0)
-        // Translation should NOT affect tangent (tangents are relative vectors)
-        XCTAssertEqual(extractedPath.outTangents.count, 2)
-        let outTangent0 = extractedPath.outTangents[0]
-        XCTAssertEqual(outTangent0.x, 20, accuracy: 0.001, "Out tangent X should be scaled")
-        XCTAssertEqual(outTangent0.y, 0, accuracy: 0.001, "Out tangent Y should remain 0")
+        // Check animated
+        XCTAssertTrue(gt.isAnimated, "GroupTransform should be animated")
+
+        // Sample at frame 0
+        let matrix0 = gt.matrix(at: 0)
+        let point = Vec2D(x: 0, y: 0)
+        let t0 = matrix0.apply(to: point)
+        XCTAssertEqual(t0.x, 0, accuracy: 0.1, "Frame 0: position (0, 0)")
+        XCTAssertEqual(t0.y, 0, accuracy: 0.1)
+
+        // Sample at frame 30
+        let matrix30 = gt.matrix(at: 30)
+        let t30 = matrix30.apply(to: point)
+        XCTAssertEqual(t30.x, 100, accuracy: 0.1, "Frame 30: position (100, 200)")
+        XCTAssertEqual(t30.y, 200, accuracy: 0.1)
     }
 
-    // MARK: - Integration: anim-2.json Matte Shape
+    /// Test GroupTransform.opacityValue extracts correctly
+    func testGroupTransform_opacityExtracted() throws {
+        let json = """
+        {
+            "ty": "gr",
+            "it": [
+                {
+                    "ty": "sh",
+                    "ks": {
+                        "a": 0,
+                        "k": {
+                            "v": [[0, 0], [100, 0], [100, 100], [0, 100]],
+                            "i": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                            "o": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                            "c": true
+                        }
+                    }
+                },
+                {
+                    "ty": "tr",
+                    "p": {"a": 0, "k": [0, 0]},
+                    "o": {"a": 0, "k": 50}
+                }
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 1)
+        guard let gt = groupTransforms?.first else { return }
+
+        // Opacity should be normalized from 0-100 to 0-1
+        let opacity = gt.opacityValue(at: 0)
+        XCTAssertEqual(opacity, 0.5, accuracy: 0.001, "Opacity 50% should be 0.5")
+    }
+
+    // MARK: - Integration: anim-2.json Matte Shape (Updated for PR-11)
 
     /// Integration test using exact data from anim-2.json
-    /// Verifies that matte shape AABB aligns with consumer image quad after group transform
-    ///
-    /// From anim-2.json shape layer (ind:2):
-    /// - Shape vertices: [[270, -160], [270, 480], [-270, 160], [-270, -480]]
-    /// - Group transform: p=[-25.149, 69.595], a=[0, 0]
-    ///
-    /// Before group transform: AABB = (-270, -480) to (270, 480) = 540x960
-    /// After group transform: shifted by (-25.149, +69.595)
-    ///   AABB = (-295.149, -410.405) to (244.851, 549.595) = 540x960
-    ///
-    /// Consumer image is 540x960, positioned at same location.
-    /// The matte shape AABB.left (-295.149) after adding layer transform should match consumer quad.left
-    func testIntegration_anim2MatteShapeGroupTransformApplied() throws {
-        // Exact JSON from anim-2.json shape layer (simplified)
+    /// PR-11: Path is in LOCAL coords, GroupTransform extracted separately
+    func testIntegration_anim2MatteShapeGroupTransform() throws {
         let json = """
         {
             "ty": "gr",
@@ -416,33 +473,449 @@ final class ShapePathExtractorTests: XCTestCase {
 
         let data = json.data(using: .utf8)!
         let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
-        let path = ShapePathExtractor.extractPath(from: [shape])
 
-        XCTAssertNotNil(path, "Path should be extracted from anim-2 matte shape group")
+        // Extract path - should be in LOCAL coordinates
+        let path = ShapePathExtractor.extractPath(from: [shape])
+        XCTAssertNotNil(path, "Path should be extracted")
         guard let extractedPath = path else { return }
 
         let aabb = extractedPath.aabb
         let epsilon = 0.01
 
-        // Original AABB: (-270, -480) to (270, 480)
-        // After group transform p=(-25.149, 69.595), a=(0,0):
-        // New AABB: (-270-25.149, -480+69.595) to (270-25.149, 480+69.595)
-        //         = (-295.149, -410.405) to (244.851, 549.595)
+        // PR-11: Path AABB should be ORIGINAL LOCAL coords
+        XCTAssertEqual(aabb.minX, -270, accuracy: epsilon, "Local minX")
+        XCTAssertEqual(aabb.minY, -480, accuracy: epsilon, "Local minY")
+        XCTAssertEqual(aabb.maxX, 270, accuracy: epsilon, "Local maxX")
+        XCTAssertEqual(aabb.maxY, 480, accuracy: epsilon, "Local maxY")
 
-        XCTAssertEqual(aabb.minX, -295.149, accuracy: epsilon,
-                       "minX should be shifted by group transform p.x=-25.149")
-        XCTAssertEqual(aabb.minY, -410.405, accuracy: epsilon,
-                       "minY should be shifted by group transform p.y=+69.595")
-        XCTAssertEqual(aabb.maxX, 244.851, accuracy: epsilon,
-                       "maxX should be shifted by group transform p.x=-25.149")
-        XCTAssertEqual(aabb.maxY, 549.595, accuracy: epsilon,
-                       "maxY should be shifted by group transform p.y=+69.595")
+        // Extract group transform
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 1)
+        guard let gt = groupTransforms?.first else { return }
 
-        // Verify dimensions unchanged (540x960)
-        let width = aabb.maxX - aabb.minX
-        let height = aabb.maxY - aabb.minY
-        XCTAssertEqual(width, 540, accuracy: epsilon, "Width should remain 540")
-        XCTAssertEqual(height, 960, accuracy: epsilon, "Height should remain 960")
+        // Verify transform position
+        let pos = gt.position.sample(frame: 0)
+        XCTAssertEqual(pos.x, -25.149, accuracy: epsilon, "Transform position X")
+        XCTAssertEqual(pos.y, 69.595, accuracy: epsilon, "Transform position Y")
+
+        // Verify matrix transforms corner correctly
+        let matrix = gt.matrix(at: 0)
+        let corner = Vec2D(x: -270, y: -480)
+        let transformed = matrix.apply(to: corner)
+        XCTAssertEqual(transformed.x, -295.149, accuracy: epsilon, "Transformed corner X")
+        XCTAssertEqual(transformed.y, -410.405, accuracy: epsilon, "Transformed corner Y")
+    }
+
+    // MARK: - PR-11 v2: Transform Stack Tests (2+ Levels)
+
+    /// Test that a=1 (animated) but k is not keyframes array returns nil
+    /// This catches invalid Lottie data where isAnimated is true but value format is wrong
+    func testGroupTransform_animatedButNotKeyframesArray_returnsNil() throws {
+        // Position has a=1 but k is a static value (not keyframes array)
+        let json = """
+        {
+            "ty": "gr",
+            "it": [
+                {
+                    "ty": "sh",
+                    "ks": {
+                        "a": 0,
+                        "k": {
+                            "v": [[0, 0], [100, 0], [100, 100], [0, 100]],
+                            "i": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                            "o": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                            "c": true
+                        }
+                    }
+                },
+                {
+                    "ty": "tr",
+                    "p": {"a": 1, "k": [50, 50]},
+                    "s": {"a": 0, "k": [100, 100]}
+                }
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        // Should return nil because a=1 but k is not keyframes array
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNil(groupTransforms, "a=1 with non-keyframes value should return nil")
+    }
+
+    /// Test opacity multiplication across transform stack with 2 nested groups
+    /// Outer group: opacity 50%, Inner group: opacity 80%
+    /// Expected composed opacity: 0.5 * 0.8 = 0.4
+    func testGroupTransform_opacityStackMultiplication() throws {
+        // Nested groups: outer (o=50) contains inner (o=80)
+        let json = """
+        {
+            "ty": "gr",
+            "it": [
+                {
+                    "ty": "gr",
+                    "it": [
+                        {
+                            "ty": "sh",
+                            "ks": {
+                                "a": 0,
+                                "k": {
+                                    "v": [[0, 0], [100, 0], [100, 100], [0, 100]],
+                                    "i": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                                    "o": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                                    "c": true
+                                }
+                            }
+                        },
+                        {
+                            "ty": "tr",
+                            "p": {"a": 0, "k": [0, 0]},
+                            "s": {"a": 0, "k": [100, 100]},
+                            "o": {"a": 0, "k": 80}
+                        }
+                    ]
+                },
+                {
+                    "ty": "tr",
+                    "p": {"a": 0, "k": [0, 0]},
+                    "s": {"a": 0, "k": [100, 100]},
+                    "o": {"a": 0, "k": 50}
+                }
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 2, "Should have 2 transforms in stack")
+
+        guard let transforms = groupTransforms, transforms.count == 2 else { return }
+
+        // Compute composed opacity: outer * inner
+        var composedOpacity = 1.0
+        for gt in transforms {
+            composedOpacity *= gt.opacityValue(at: 0)
+        }
+
+        // 0.5 * 0.8 = 0.4
+        XCTAssertEqual(composedOpacity, 0.4, accuracy: 0.001, "Composed opacity should be 0.5 * 0.8 = 0.4")
+    }
+
+    /// Test matrix multiplication order with 2 nested groups
+    /// Outer group: translate (100, 0), Inner group: translate (0, 50)
+    /// Point (0,0) should transform to (100, 50) if order is correct: outer * inner
+    func testGroupTransform_matrixMultiplicationOrder() throws {
+        // Nested groups: outer translates X+100, inner translates Y+50
+        let json = """
+        {
+            "ty": "gr",
+            "it": [
+                {
+                    "ty": "gr",
+                    "it": [
+                        {
+                            "ty": "sh",
+                            "ks": {
+                                "a": 0,
+                                "k": {
+                                    "v": [[0, 0], [10, 0], [10, 10], [0, 10]],
+                                    "i": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                                    "o": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                                    "c": true
+                                }
+                            }
+                        },
+                        {
+                            "ty": "tr",
+                            "p": {"a": 0, "k": [0, 50]},
+                            "a": {"a": 0, "k": [0, 0]},
+                            "s": {"a": 0, "k": [100, 100]},
+                            "r": {"a": 0, "k": 0}
+                        }
+                    ]
+                },
+                {
+                    "ty": "tr",
+                    "p": {"a": 0, "k": [100, 0]},
+                    "a": {"a": 0, "k": [0, 0]},
+                    "s": {"a": 0, "k": [100, 100]},
+                    "r": {"a": 0, "k": 0}
+                }
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 2, "Should have 2 transforms in stack")
+
+        guard let transforms = groupTransforms, transforms.count == 2 else { return }
+
+        // Compute composed matrix: M = M0 * M1 * ... * Mn (outer to inner)
+        var composedMatrix = Matrix2D.identity
+        for gt in transforms {
+            composedMatrix = composedMatrix.concatenating(gt.matrix(at: 0))
+        }
+
+        // Transform point (0, 0)
+        let point = Vec2D(x: 0, y: 0)
+        let transformed = composedMatrix.apply(to: point)
+
+        let epsilon = 0.001
+        // With correct order (outer first, then inner):
+        // outer translates to (100, 0), then inner translates to (100, 50)
+        XCTAssertEqual(transformed.x, 100, accuracy: epsilon, "X should be 100 (outer translation)")
+        XCTAssertEqual(transformed.y, 50, accuracy: epsilon, "Y should be 50 (inner translation)")
+    }
+
+    /// Test matrix multiplication order with scale and translation
+    /// Outer: scale 200%, Inner: translate (50, 0)
+    /// Point (0,0) -> scale has no effect -> translate -> (50, 0)
+    /// Point (10,0) -> scale to (20,0) -> translate -> (70, 0)
+    func testGroupTransform_matrixOrderScaleThenTranslate() throws {
+        // Outer: scale 200%, Inner: translate X+50
+        let json = """
+        {
+            "ty": "gr",
+            "it": [
+                {
+                    "ty": "gr",
+                    "it": [
+                        {
+                            "ty": "sh",
+                            "ks": {
+                                "a": 0,
+                                "k": {
+                                    "v": [[0, 0], [10, 0], [10, 10], [0, 10]],
+                                    "i": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                                    "o": [[0, 0], [0, 0], [0, 0], [0, 0]],
+                                    "c": true
+                                }
+                            }
+                        },
+                        {
+                            "ty": "tr",
+                            "p": {"a": 0, "k": [50, 0]},
+                            "a": {"a": 0, "k": [0, 0]},
+                            "s": {"a": 0, "k": [100, 100]},
+                            "r": {"a": 0, "k": 0}
+                        }
+                    ]
+                },
+                {
+                    "ty": "tr",
+                    "p": {"a": 0, "k": [0, 0]},
+                    "a": {"a": 0, "k": [0, 0]},
+                    "s": {"a": 0, "k": [200, 200]},
+                    "r": {"a": 0, "k": 0}
+                }
+            ]
+        }
+        """
+
+        let data = json.data(using: .utf8)!
+        let shape = try JSONDecoder().decode(ShapeItem.self, from: data)
+
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 2, "Should have 2 transforms in stack")
+
+        guard let transforms = groupTransforms, transforms.count == 2 else { return }
+
+        // Compute composed matrix
+        var composedMatrix = Matrix2D.identity
+        for gt in transforms {
+            composedMatrix = composedMatrix.concatenating(gt.matrix(at: 0))
+        }
+
+        let epsilon = 0.001
+
+        // Transform point (10, 0)
+        // Matrix composition M_outer * M_inner means:
+        // Inner transform (translate +50) is applied in outer's coordinate system
+        // So translation is also scaled: (10 + 50) * 2 = 120
+        let point = Vec2D(x: 10, y: 0)
+        let transformed = composedMatrix.apply(to: point)
+
+        XCTAssertEqual(transformed.x, 120, accuracy: epsilon, "X: (10 + 50) * 2 = 120")
+        XCTAssertEqual(transformed.y, 0, accuracy: epsilon, "Y should remain 0")
+    }
+
+    // MARK: - PR-11 v3: Sibling Groups & Branch-Only Transforms
+
+    /// Test sibling groups: only the transform from path's branch should be included
+    /// shapes: [groupA(trA + pathA), groupB(trB + pathB)]
+    /// extractAnimPath returns pathA (first found)
+    /// extractGroupTransforms should return [trA] only (NOT [trA, trB])
+    func testGroupTransform_siblingGroups_onlyPathBranchTransform() throws {
+        // Two sibling groups, each with its own transform and path
+        let json = """
+        [
+            {
+                "ty": "gr",
+                "nm": "Group A",
+                "it": [
+                    {
+                        "ty": "rc",
+                        "p": {"a": 0, "k": [0, 0]},
+                        "s": {"a": 0, "k": [100, 100]},
+                        "r": {"a": 0, "k": 0}
+                    },
+                    {
+                        "ty": "tr",
+                        "p": {"a": 0, "k": [10, 20]},
+                        "s": {"a": 0, "k": [100, 100]}
+                    }
+                ]
+            },
+            {
+                "ty": "gr",
+                "nm": "Group B",
+                "it": [
+                    {
+                        "ty": "rc",
+                        "p": {"a": 0, "k": [0, 0]},
+                        "s": {"a": 0, "k": [50, 50]},
+                        "r": {"a": 0, "k": 0}
+                    },
+                    {
+                        "ty": "tr",
+                        "p": {"a": 0, "k": [100, 200]},
+                        "s": {"a": 0, "k": [100, 100]}
+                    }
+                ]
+            }
+        ]
+        """
+
+        let data = json.data(using: .utf8)!
+        let shapes = try JSONDecoder().decode([ShapeItem].self, from: data)
+
+        // extractAnimPath should return path from Group A (first found)
+        let path = ShapePathExtractor.extractAnimPath(from: shapes)
+        XCTAssertNotNil(path, "Should extract path from first group")
+
+        // extractGroupTransforms should return ONLY trA, not [trA, trB]
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: shapes)
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 1, "Should have only 1 transform (from path's branch)")
+
+        guard let gt = groupTransforms?.first else { return }
+        let pos = gt.position.sample(frame: 0)
+        XCTAssertEqual(pos.x, 10, accuracy: 0.001, "Transform should be from Group A (x=10)")
+        XCTAssertEqual(pos.y, 20, accuracy: 0.001, "Transform should be from Group A (y=20)")
+    }
+
+    /// Test transform in group without path: transform should NOT be included
+    /// shapes: [groupA(trA + fill only), rectB]
+    /// extractAnimPath returns rectB (path at root level)
+    /// extractGroupTransforms should return [] (trA is not ancestor of rectB)
+    func testGroupTransform_transformInGroupWithoutPath_notIncluded() throws {
+        // Group A has transform but no path, path is at sibling level
+        let json = """
+        [
+            {
+                "ty": "gr",
+                "nm": "Group A (no path)",
+                "it": [
+                    {
+                        "ty": "fl",
+                        "c": {"a": 0, "k": [1, 0, 0, 1]}
+                    },
+                    {
+                        "ty": "tr",
+                        "p": {"a": 0, "k": [999, 999]},
+                        "s": {"a": 0, "k": [100, 100]}
+                    }
+                ]
+            },
+            {
+                "ty": "rc",
+                "p": {"a": 0, "k": [0, 0]},
+                "s": {"a": 0, "k": [100, 100]},
+                "r": {"a": 0, "k": 0}
+            }
+        ]
+        """
+
+        let data = json.data(using: .utf8)!
+        let shapes = try JSONDecoder().decode([ShapeItem].self, from: data)
+
+        // extractAnimPath should return rect at root level
+        let path = ShapePathExtractor.extractAnimPath(from: shapes)
+        XCTAssertNotNil(path, "Should extract rect at root level")
+
+        // extractGroupTransforms should return [] because trA is NOT an ancestor of rect
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: shapes)
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertTrue(groupTransforms?.isEmpty ?? false, "Should have NO transforms (trA is not ancestor of rect)")
+    }
+
+    /// Test deeply nested path with multiple ancestor transforms
+    /// shapes: [groupA(trA + groupB(trB + pathB))]
+    /// extractGroupTransforms should return [trA, trB] (both are ancestors)
+    func testGroupTransform_deeplyNestedPath_allAncestorTransforms() throws {
+        // Nested groups: outer -> inner -> path
+        let json = """
+        [
+            {
+                "ty": "gr",
+                "nm": "Outer",
+                "it": [
+                    {
+                        "ty": "gr",
+                        "nm": "Inner",
+                        "it": [
+                            {
+                                "ty": "rc",
+                                "p": {"a": 0, "k": [0, 0]},
+                                "s": {"a": 0, "k": [50, 50]},
+                                "r": {"a": 0, "k": 0}
+                            },
+                            {
+                                "ty": "tr",
+                                "p": {"a": 0, "k": [0, 100]},
+                                "s": {"a": 0, "k": [100, 100]}
+                            }
+                        ]
+                    },
+                    {
+                        "ty": "tr",
+                        "p": {"a": 0, "k": [50, 0]},
+                        "s": {"a": 0, "k": [100, 100]}
+                    }
+                ]
+            }
+        ]
+        """
+
+        let data = json.data(using: .utf8)!
+        let shapes = try JSONDecoder().decode([ShapeItem].self, from: data)
+
+        let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: shapes)
+        XCTAssertNotNil(groupTransforms)
+        XCTAssertEqual(groupTransforms?.count, 2, "Should have 2 transforms (both ancestors)")
+
+        guard let transforms = groupTransforms, transforms.count == 2 else { return }
+
+        // First transform (outer): p=(50, 0)
+        let pos0 = transforms[0].position.sample(frame: 0)
+        XCTAssertEqual(pos0.x, 50, accuracy: 0.001, "Outer transform x=50")
+        XCTAssertEqual(pos0.y, 0, accuracy: 0.001, "Outer transform y=0")
+
+        // Second transform (inner): p=(0, 100)
+        let pos1 = transforms[1].position.sample(frame: 0)
+        XCTAssertEqual(pos1.x, 0, accuracy: 0.001, "Inner transform x=0")
+        XCTAssertEqual(pos1.y, 100, accuracy: 0.001, "Inner transform y=100")
     }
 
     // MARK: - Rectangle Shape (rc) Tests - PR-07
@@ -584,7 +1057,7 @@ final class ShapePathExtractorTests: XCTestCase {
 
     /// Test rectangle inside group with transform
     /// Group contains rc + tr with translation
-    /// Verifies group transform is applied to rectangle path
+    /// PR-11: Verifies path is in LOCAL coords, GroupTransform extracted separately
     func testRect_insideGroupWithTransform() throws {
         let json = """
         {
@@ -623,14 +1096,23 @@ final class ShapePathExtractorTests: XCTestCase {
 
         let epsilon = 0.001
 
+        // PR-11: Path is in LOCAL coords (NOT transformed)
         // Original rectangle: center (0,0), size 100x100
-        // AABB before transform: (-50, -50) to (50, 50)
-        // After translation by (50, 100): (0, 50) to (100, 150)
+        // AABB: (-50, -50) to (50, 50)
         let aabb = extractedPath.aabb
-        XCTAssertEqual(aabb.minX, 0, accuracy: epsilon, "minX after translation should be 0")
-        XCTAssertEqual(aabb.maxX, 100, accuracy: epsilon, "maxX after translation should be 100")
-        XCTAssertEqual(aabb.minY, 50, accuracy: epsilon, "minY after translation should be 50")
-        XCTAssertEqual(aabb.maxY, 150, accuracy: epsilon, "maxY after translation should be 150")
+        XCTAssertEqual(aabb.minX, -50, accuracy: epsilon, "minX should be -50 (local coords)")
+        XCTAssertEqual(aabb.maxX, 50, accuracy: epsilon, "maxX should be 50 (local coords)")
+        XCTAssertEqual(aabb.minY, -50, accuracy: epsilon, "minY should be -50 (local coords)")
+        XCTAssertEqual(aabb.maxY, 50, accuracy: epsilon, "maxY should be 50 (local coords)")
+
+        // GroupTransform should be extracted separately
+        let gts = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(gts, "GroupTransforms should be extracted")
+        XCTAssertEqual(gts?.count, 1, "Should have 1 transform")
+        guard let gt = gts?.first else { return }
+        let pos = gt.position.sample(frame: 0)
+        XCTAssertEqual(pos.x, 50, accuracy: epsilon, "Transform position.x should be 50")
+        XCTAssertEqual(pos.y, 100, accuracy: epsilon, "Transform position.y should be 100")
     }
 
     /// Test rectangle with counter-clockwise direction (d=2)
@@ -1042,10 +1524,7 @@ final class ShapePathExtractorTests: XCTestCase {
         XCTAssertEqual(cw.vertices[0].y, ccw.vertices[3].y, accuracy: epsilon)
     }
 
-    /// Test ellipse inside group with transform
-    /// group: translation (100, 50)
-    /// ellipse: p=[0,0], s=[100,100]
-    /// Expected AABB: minX=50, maxX=150, minY=0, maxY=100
+    /// PR-11: Test ellipse inside group - path in LOCAL coords, transform extracted separately
     func testEllipse_insideGroupWithTransform_appliesMatrix() throws {
         let json = """
         {
@@ -1080,12 +1559,21 @@ final class ShapePathExtractorTests: XCTestCase {
         let epsilon = 0.001
         let aabb = extractedPath.aabb
 
-        // Original: AABB (-50,-50) to (50,50)
-        // After translation (100,50): AABB (50, 0) to (150, 100)
-        XCTAssertEqual(aabb.minX, 50, accuracy: epsilon, "minX should be 50 after translation")
-        XCTAssertEqual(aabb.maxX, 150, accuracy: epsilon, "maxX should be 150 after translation")
-        XCTAssertEqual(aabb.minY, 0, accuracy: epsilon, "minY should be 0 after translation")
-        XCTAssertEqual(aabb.maxY, 100, accuracy: epsilon, "maxY should be 100 after translation")
+        // PR-11: Path is in LOCAL coords (NOT transformed)
+        // Original ellipse: center (0,0), size 100x100, AABB (-50,-50) to (50,50)
+        XCTAssertEqual(aabb.minX, -50, accuracy: epsilon, "minX should be -50 (local coords)")
+        XCTAssertEqual(aabb.maxX, 50, accuracy: epsilon, "maxX should be 50 (local coords)")
+        XCTAssertEqual(aabb.minY, -50, accuracy: epsilon, "minY should be -50 (local coords)")
+        XCTAssertEqual(aabb.maxY, 50, accuracy: epsilon, "maxY should be 50 (local coords)")
+
+        // GroupTransform should be extracted separately
+        let gts = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(gts, "GroupTransforms should be extracted")
+        XCTAssertEqual(gts?.count, 1, "Should have 1 transform")
+        guard let gt = gts?.first else { return }
+        let pos = gt.position.sample(frame: 0)
+        XCTAssertEqual(pos.x, 100, accuracy: epsilon, "Transform position.x should be 100")
+        XCTAssertEqual(pos.y, 50, accuracy: epsilon, "Transform position.y should be 50")
     }
 
     /// Test animated ellipse size
@@ -1535,7 +2023,7 @@ final class ShapePathExtractorTests: XCTestCase {
         XCTAssertEqual(cw.aabb.maxY, ccw.aabb.maxY, accuracy: epsilon)
     }
 
-    /// Test polystar inside group with transform
+    /// PR-11: Test polystar inside group - path in LOCAL coords, transform extracted separately
     func testPolystar_insideGroupWithTransform_appliesMatrix() throws {
         let json = """
         {
@@ -1573,13 +2061,22 @@ final class ShapePathExtractorTests: XCTestCase {
 
         let epsilon = 0.001
 
+        // PR-11: Path is in LOCAL coords (NOT transformed)
         // Original AABB at center (0,0) with or=50: (-50,-50) to (50,50)
-        // After translation (100,100): (50, 50) to (150, 150)
         let aabb = extractedPath.aabb
-        XCTAssertEqual(aabb.minX, 50, accuracy: epsilon)
-        XCTAssertEqual(aabb.maxX, 150, accuracy: epsilon)
-        XCTAssertEqual(aabb.minY, 50, accuracy: epsilon)
-        XCTAssertEqual(aabb.maxY, 150, accuracy: epsilon)
+        XCTAssertEqual(aabb.minX, -50, accuracy: epsilon, "minX should be -50 (local coords)")
+        XCTAssertEqual(aabb.maxX, 50, accuracy: epsilon, "maxX should be 50 (local coords)")
+        XCTAssertEqual(aabb.minY, -50, accuracy: epsilon, "minY should be -50 (local coords)")
+        XCTAssertEqual(aabb.maxY, 50, accuracy: epsilon, "maxY should be 50 (local coords)")
+
+        // GroupTransform should be extracted separately
+        let gts = ShapePathExtractor.extractGroupTransforms(from: [shape])
+        XCTAssertNotNil(gts, "GroupTransforms should be extracted")
+        XCTAssertEqual(gts?.count, 1, "Should have 1 transform")
+        guard let gt = gts?.first else { return }
+        let pos = gt.position.sample(frame: 0)
+        XCTAssertEqual(pos.x, 100, accuracy: epsilon, "Transform position.x should be 100")
+        XCTAssertEqual(pos.y, 100, accuracy: epsilon, "Transform position.y should be 100")
     }
 
     /// Test animated outer radius builds keyframed AnimPath

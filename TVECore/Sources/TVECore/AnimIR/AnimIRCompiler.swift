@@ -399,11 +399,22 @@ public final class AnimIRCompiler {
             // Extract stroke style (PR-10)
             let strokeStyle = ShapePathExtractor.extractStrokeStyle(from: lottie.shapes)
 
+            // Extract group transforms stack (PR-11) - list of transforms from nested groups
+            // Returns nil if extraction fails (invalid data: skew, non-uniform scale, keyframe issues)
+            guard let groupTransforms = ShapePathExtractor.extractGroupTransforms(from: lottie.shapes) else {
+                throw UnsupportedFeature(
+                    code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                    message: "Invalid group transform data (skew, non-uniform scale, or keyframe format error)",
+                    path: "anim(\(animRef)).layer(\(layerName)).shapeMatte.groupTransform"
+                )
+            }
+
             var shapeGroup = ShapeGroup(
                 animPath: animPath,
                 fillColor: fillColor,
                 fillOpacity: fillOpacity,
-                stroke: strokeStyle
+                stroke: strokeStyle,
+                groupTransforms: groupTransforms
             )
 
             // Register path if animPath exists

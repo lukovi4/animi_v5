@@ -602,13 +602,32 @@ extension AnimIR {
         case .shapes(let shapeGroup):
             // Render shape as filled path (used for matte sources)
             if let pathId = shapeGroup.pathId {
+                // PR-11: Sample and compose all group transforms from stack
+                // Each transform is sampled at current frame, then matrices are multiplied
+                var composedMatrix = Matrix2D.identity
+                var composedOpacity = 1.0
+
+                for gt in shapeGroup.groupTransforms {
+                    composedMatrix = composedMatrix.concatenating(gt.matrix(at: context.frame))
+                    composedOpacity *= gt.opacityValue(at: context.frame)
+                }
+
+                // Compute effective layer opacity including group opacity
+                let effectiveOpacity = resolved.worldOpacity * composedOpacity
+
+                // Push composed group transform onto stack (will be composed with layer transform)
+                let hasGroupTransform = composedMatrix != .identity
+                if hasGroupTransform {
+                    commands.append(.pushTransform(composedMatrix))
+                }
+
                 // Draw fill first (if present)
                 if shapeGroup.fillColor != nil {
                     commands.append(.drawShape(
                         pathId: pathId,
                         fillColor: shapeGroup.fillColor,
                         fillOpacity: shapeGroup.fillOpacity,
-                        layerOpacity: resolved.worldOpacity,
+                        layerOpacity: effectiveOpacity,
                         frame: context.frame
                     ))
                 }
@@ -624,9 +643,14 @@ extension AnimIR {
                         lineCap: stroke.lineCap,
                         lineJoin: stroke.lineJoin,
                         miterLimit: stroke.miterLimit,
-                        layerOpacity: resolved.worldOpacity,
+                        layerOpacity: effectiveOpacity,
                         frame: context.frame
                     ))
+                }
+
+                // Pop group transform
+                if hasGroupTransform {
+                    commands.append(.popTransform)
                 }
             }
 

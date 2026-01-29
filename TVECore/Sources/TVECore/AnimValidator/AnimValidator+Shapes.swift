@@ -32,8 +32,11 @@ extension AnimValidator {
     ) {
         switch shape {
         case .group(let shapeGroup):
-            // Recursively validate group items
+            // PR-11: Validate group transform (tr inside gr)
             if let items = shapeGroup.items {
+                validateGroupTransform(items: items, basePath: basePath, issues: &issues)
+
+                // Recursively validate group items
                 for (itemIndex, item) in items.enumerated() {
                     validateShapeItemRecursive(
                         shape: item,
@@ -984,6 +987,340 @@ extension AnimValidator {
                     message: "Stroke width keyframe[\(i)] missing startValue (s)."
                 ))
             }
+        }
+    }
+
+    // MARK: - Group Transform Validation (PR-11)
+
+    /// Validates group transform (tr inside gr)
+    /// - Multiple tr items in a group → error
+    /// - Skew present → error
+    /// - Non-uniform scale (sx != sy) → error (breaks strokeWidth scaling)
+    /// - Animated keyframes must have matching count/times
+    private func validateGroupTransform(
+        items: [ShapeItem],
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        // Find all transform items in this group
+        let transforms = items.enumerated().compactMap { index, item -> (Int, LottieShapeTransform)? in
+            if case .transform(let tr) = item { return (index, tr) }
+            return nil
+        }
+
+        // 1) Check for multiple transforms
+        if transforms.count > 1 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedGroupTransformMultiple,
+                severity: .error,
+                path: "\(basePath).tr",
+                message: "Group has \(transforms.count) transform items. Only one tr per group is allowed."
+            ))
+            return // Can't validate further with multiple transforms
+        }
+
+        // If no transform, nothing to validate
+        guard let (trIndex, transform) = transforms.first else { return }
+        let trPath = "\(basePath).it[\(trIndex)]"
+
+        // 2) Validate skew is not present
+        if let skew = transform.skew {
+            if skew.isAnimated {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformSkew,
+                    severity: .error,
+                    path: "\(trPath).sk.a",
+                    message: "Animated group transform skew not supported."
+                ))
+            } else if let skewValue = extractStaticDouble(from: skew), abs(skewValue) > 0.001 {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformSkew,
+                    severity: .error,
+                    path: "\(trPath).sk.k",
+                    message: "Group transform skew must be 0. Got: \(skewValue)."
+                ))
+            }
+        }
+
+        if let skewAxis = transform.skewAxis {
+            if skewAxis.isAnimated {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformSkew,
+                    severity: .error,
+                    path: "\(trPath).sa.a",
+                    message: "Animated group transform skew axis not supported."
+                ))
+            }
+        }
+
+        // 3) Validate scale uniformity (sx == sy)
+        if let scale = transform.scale {
+            if scale.isAnimated {
+                // Check each keyframe for uniform scale
+                validateGroupTransformScaleKeyframes(scale: scale, basePath: trPath, issues: &issues)
+            } else {
+                // Static scale - check uniformity
+                if let scaleVec = extractStaticVec2D(from: scale) {
+                    if abs(scaleVec.x - scaleVec.y) > 0.001 {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedGroupTransformScaleNonuniform,
+                            severity: .error,
+                            path: "\(trPath).s.k",
+                            message: "Group transform scale must be uniform (sx == sy). Got: sx=\(scaleVec.x), sy=\(scaleVec.y)."
+                        ))
+                    }
+                }
+            }
+        }
+
+        // 4) Validate animated keyframes consistency
+        validateGroupTransformKeyframes(transform: transform, basePath: trPath, issues: &issues)
+    }
+
+    /// Validates animated scale keyframes for uniformity
+    private func validateGroupTransformScaleKeyframes(
+        scale: LottieAnimatedValue,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        guard let data = scale.value,
+              case .keyframes(let keyframes) = data else {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                severity: .error,
+                path: "\(basePath).s",
+                message: "Group transform scale is animated but keyframes could not be decoded."
+            ))
+            return
+        }
+
+        for (i, kf) in keyframes.enumerated() {
+            guard let startValue = kf.startValue else {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).s.k[\(i)].s",
+                    message: "Group transform scale keyframe[\(i)] missing startValue (s)."
+                ))
+                continue
+            }
+
+            switch startValue {
+            case .numbers(let arr) where arr.count >= 2:
+                let sx = arr[0]
+                let sy = arr[1]
+                if abs(sx - sy) > 0.001 {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedGroupTransformScaleNonuniform,
+                        severity: .error,
+                        path: "\(basePath).s.k[\(i)].s",
+                        message: "Group transform scale keyframe[\(i)] must be uniform. Got: sx=\(sx), sy=\(sy)."
+                    ))
+                }
+            default:
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).s.k[\(i)].s",
+                    message: "Group transform scale keyframe[\(i)] has invalid format. Expected [sx, sy] array."
+                ))
+            }
+        }
+    }
+
+    /// Validates animated keyframes consistency for group transform (p/a/s/r/o)
+    private func validateGroupTransformKeyframes(
+        transform: LottieShapeTransform,
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        let positionAnimated = transform.position?.isAnimated ?? false
+        let anchorAnimated = transform.anchor?.isAnimated ?? false
+        let scaleAnimated = transform.scale?.isAnimated ?? false
+        let rotationAnimated = transform.rotation?.isAnimated ?? false
+        let opacityAnimated = transform.opacity?.isAnimated ?? false
+
+        // If nothing is animated, no keyframe validation needed
+        guard positionAnimated || anchorAnimated || scaleAnimated || rotationAnimated || opacityAnimated else {
+            return
+        }
+
+        // Extract keyframes from animated fields
+        var allKeyframeArrays: [(name: String, path: String, keyframes: [LottieKeyframe]?)] = []
+
+        if positionAnimated {
+            let kfs = extractKeyframes(from: transform.position)
+            allKeyframeArrays.append(("position", "p", kfs))
+            if kfs == nil {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).p",
+                    message: "Group transform position is animated but keyframes could not be decoded."
+                ))
+            }
+        }
+
+        if anchorAnimated {
+            let kfs = extractKeyframes(from: transform.anchor)
+            allKeyframeArrays.append(("anchor", "a", kfs))
+            if kfs == nil {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).a",
+                    message: "Group transform anchor is animated but keyframes could not be decoded."
+                ))
+            }
+        }
+
+        if scaleAnimated {
+            let kfs = extractKeyframes(from: transform.scale)
+            allKeyframeArrays.append(("scale", "s", kfs))
+            // Note: scale keyframe format already validated above for uniformity
+        }
+
+        if rotationAnimated {
+            let kfs = extractKeyframes(from: transform.rotation)
+            allKeyframeArrays.append(("rotation", "r", kfs))
+            if kfs == nil {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).r",
+                    message: "Group transform rotation is animated but keyframes could not be decoded."
+                ))
+            }
+        }
+
+        if opacityAnimated {
+            let kfs = extractKeyframes(from: transform.opacity)
+            allKeyframeArrays.append(("opacity", "o", kfs))
+            if kfs == nil {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                    severity: .error,
+                    path: "\(basePath).o",
+                    message: "Group transform opacity is animated but keyframes could not be decoded."
+                ))
+            }
+        }
+
+        // Get valid keyframe arrays
+        let validArrays = allKeyframeArrays.compactMap { item -> (name: String, path: String, keyframes: [LottieKeyframe])? in
+            guard let kfs = item.keyframes else { return nil }
+            return (item.name, item.path, kfs)
+        }
+
+        // If we have 2+ animated fields, validate they match
+        if validArrays.count >= 2 {
+            let referenceKfs = validArrays[0].keyframes
+            let referenceName = validArrays[0].name
+
+            for i in 1..<validArrays.count {
+                let otherKfs = validArrays[i].keyframes
+                let otherName = validArrays[i].name
+
+                // Check count match
+                if referenceKfs.count != otherKfs.count {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedGroupTransformKeyframesMismatch,
+                        severity: .error,
+                        path: basePath,
+                        message: "Group transform \(referenceName) has \(referenceKfs.count) keyframes but \(otherName) has \(otherKfs.count). All animated fields must have same keyframe count."
+                    ))
+                    continue
+                }
+
+                // Check time match for each keyframe
+                for j in 0..<referenceKfs.count {
+                    let refTime = referenceKfs[j].time
+                    let otherTime = otherKfs[j].time
+
+                    if refTime == nil || otherTime == nil {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                            severity: .error,
+                            path: basePath,
+                            message: "Group transform keyframe[\(j)] missing time value."
+                        ))
+                        continue
+                    }
+
+                    if let rt = refTime, let ot = otherTime, abs(rt - ot) >= 0.001 {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedGroupTransformKeyframesMismatch,
+                            severity: .error,
+                            path: basePath,
+                            message: "Group transform keyframe[\(j)] time mismatch: \(referenceName).t=\(rt), \(otherName).t=\(ot)."
+                        ))
+                    }
+                }
+            }
+        }
+
+        // Validate individual keyframe format for each animated field
+        for (name, fieldPath, keyframes) in validArrays {
+            let isVec2D = (name == "position" || name == "anchor" || name == "scale")
+
+            for (i, kf) in keyframes.enumerated() {
+                // Check time exists
+                if kf.time == nil {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                        severity: .error,
+                        path: "\(basePath).\(fieldPath).k[\(i)]",
+                        message: "Group transform \(name) keyframe[\(i)] missing time (t)."
+                    ))
+                }
+
+                // Check startValue exists and has correct format
+                if let startValue = kf.startValue {
+                    if isVec2D {
+                        switch startValue {
+                        case .numbers(let arr) where arr.count >= 2:
+                            break // Valid
+                        default:
+                            issues.append(ValidationIssue(
+                                code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                                severity: .error,
+                                path: "\(basePath).\(fieldPath).k[\(i)].s",
+                                message: "Group transform \(name) keyframe[\(i)] has invalid format. Expected [x, y] array."
+                            ))
+                        }
+                    } else {
+                        switch startValue {
+                        case .numbers(let arr) where !arr.isEmpty:
+                            break // Valid
+                        default:
+                            issues.append(ValidationIssue(
+                                code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                                severity: .error,
+                                path: "\(basePath).\(fieldPath).k[\(i)].s",
+                                message: "Group transform \(name) keyframe[\(i)] has invalid format. Expected a number."
+                            ))
+                        }
+                    }
+                } else {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedGroupTransformKeyframeFormat,
+                        severity: .error,
+                        path: "\(basePath).\(fieldPath).k[\(i)].s",
+                        message: "Group transform \(name) keyframe[\(i)] missing startValue (s)."
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Extracts static Vec2D value from LottieAnimatedValue
+    private func extractStaticVec2D(from value: LottieAnimatedValue?) -> Vec2D? {
+        guard let value = value, let data = value.value else { return nil }
+        switch data {
+        case .array(let arr) where arr.count >= 2:
+            return Vec2D(x: arr[0], y: arr[1])
+        default:
+            return nil
         }
     }
 }

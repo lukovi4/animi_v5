@@ -617,17 +617,13 @@ public enum ShapePathExtractor {
             return buildPolystarBezierPath(from: polystar)
 
         case .group(let shapeGroup):
-            // Group - recurse into items and apply group transform
+            // Group - recurse into items
+            // NOTE (PR-11): Transform is NOT baked into path anymore!
+            // Group transform is extracted separately and applied at render time.
             guard let items = shapeGroup.items else { return nil }
 
-            // 1) Extract group transform matrix from tr element (identity if absent)
-            let groupMatrix = extractGroupTransformMatrix(from: items)
-
-            // 2) Extract path from items (recursive)
-            guard let path = extractPath(from: items) else { return nil }
-
-            // 3) Apply group matrix to path vertices and tangents
-            return path.applying(groupMatrix)
+            // Extract path from items (recursive) - NO transform baking
+            return extractPath(from: items)
 
         default:
             return nil
@@ -664,17 +660,13 @@ public enum ShapePathExtractor {
             return extractPolystarAnimPath(from: polystar)
 
         case .group(let shapeGroup):
-            // Group - recurse into items and apply group transform
+            // Group - recurse into items
+            // NOTE (PR-11): Transform is NOT baked into path anymore!
+            // Group transform is extracted separately and applied at render time.
             guard let items = shapeGroup.items else { return nil }
 
-            // 1) Extract group transform matrix from tr element (identity if absent)
-            let groupMatrix = extractGroupTransformMatrix(from: items)
-
-            // 2) Extract AnimPath from items (recursive)
-            guard let animPath = extractAnimPath(from: items) else { return nil }
-
-            // 3) Apply group matrix to all paths in AnimPath
-            return animPath.applying(groupMatrix)
+            // Extract AnimPath from items (recursive) - NO transform baking
+            return extractAnimPath(from: items)
 
         default:
             return nil
@@ -1818,35 +1810,362 @@ public enum ShapePathExtractor {
         return Vec2D(x: x, y: y)
     }
 
-    /// Extracts transform matrix from group items (ty="tr")
-    /// Formula: T(position) * R(rotation) * S(scale) * T(-anchor)
-    /// Returns identity if no transform found
-    private static func extractGroupTransformMatrix(from items: [ShapeItem]) -> Matrix2D {
-        // Find transform item in group
-        let transformItem = items.compactMap { item -> LottieShapeTransform? in
-            if case .transform(let transform) = item { return transform }
-            return nil
-        }.first
+    // MARK: - Group Transform Extraction (PR-11)
 
-        guard let transform = transformItem else {
-            return .identity
+    /// Extracts list of GroupTransforms from shape layer shapes (transform stack)
+    /// Only collects transforms along the branch where the FIRST path is found.
+    /// Uses DFS with push/pop to ensure only ancestor transforms are included.
+    /// - Parameter shapes: Array of shape items to search
+    /// - Returns: Array of GroupTransform along path's branch, empty if path at root, nil if extraction fails
+    public static func extractGroupTransforms(from shapes: [ShapeItem]?) -> [GroupTransform]? {
+        guard let shapes = shapes else { return [] }
+
+        var transformStack: [GroupTransform] = []
+
+        switch collectTransformsToFirstPath(items: shapes, stack: &transformStack) {
+        case .found:
+            return transformStack
+        case .notFound:
+            return [] // No path found, return empty (valid case)
+        case .failed:
+            return nil // Invalid transform data
+        }
+    }
+
+    /// Result of searching for first path
+    private enum PathSearchResult {
+        case found      // Path found, stack contains ancestor transforms
+        case notFound   // No path in this branch
+        case failed     // Invalid transform data (multiple tr, skew, etc.)
+    }
+
+    /// DFS search for first path, collecting only ancestor transforms
+    /// - Parameters:
+    ///   - items: Shape items to search
+    ///   - stack: Transform stack (push on enter group, pop on backtrack)
+    /// - Returns: PathSearchResult indicating whether path was found or error occurred
+    private static func collectTransformsToFirstPath(
+        items: [ShapeItem],
+        stack: inout [GroupTransform]
+    ) -> PathSearchResult {
+        for item in items {
+            switch item {
+            // Path-producing items - first path found!
+            case .path, .rect, .ellipse, .polystar:
+                return .found
+
+            case .group(let shapeGroup):
+                guard let childItems = shapeGroup.items else { continue }
+
+                // 1) Extract transform from this group (if any)
+                let pushResult = tryPushTransform(from: childItems, stack: &stack)
+                switch pushResult {
+                case .failed:
+                    return .failed // Invalid transform (multiple tr, skew, non-uniform scale, etc.)
+                case .pushed, .noPush:
+                    break
+                }
+                let didPush = (pushResult == .pushed)
+
+                // 2) Recursively search for path in this group
+                let childResult = collectTransformsToFirstPath(items: childItems, stack: &stack)
+
+                switch childResult {
+                case .found:
+                    // Path found in this branch - keep transforms and return
+                    return .found
+                case .failed:
+                    // Propagate failure
+                    return .failed
+                case .notFound:
+                    // No path in this branch - backtrack (pop transform)
+                    if didPush {
+                        stack.removeLast()
+                    }
+                    // Continue searching siblings
+                }
+
+            default:
+                // Fill, stroke, trim, etc. - skip
+                continue
+            }
         }
 
-        // Extract static values (animated values not supported for group transform in Part 1)
-        let position = extractVec2D(from: transform.position) ?? Vec2D(x: 0, y: 0)
-        let anchor = extractVec2D(from: transform.anchor) ?? Vec2D(x: 0, y: 0)
-        let scale = extractVec2D(from: transform.scale) ?? Vec2D(x: 100, y: 100)
-        let rotation = extractDouble(from: transform.rotation) ?? 0
+        // No path found in any item
+        return .notFound
+    }
 
-        // Normalize scale from percentage (100 = 1.0)
-        let scaleX = scale.x / 100.0
-        let scaleY = scale.y / 100.0
+    /// Result of trying to push a transform
+    private enum PushResult {
+        case pushed   // Transform was pushed to stack
+        case noPush   // No transform in this group
+        case failed   // Invalid transform data
+    }
 
-        // Build matrix: T(position) * R(rotation) * S(scale) * T(-anchor)
-        return Matrix2D.translation(x: position.x, y: position.y)
-            .concatenating(.rotationDegrees(rotation))
-            .concatenating(.scale(x: scaleX, y: scaleY))
-            .concatenating(.translation(x: -anchor.x, y: -anchor.y))
+    /// Tries to extract and push transform from group items
+    /// - Parameters:
+    ///   - items: Items in the group
+    ///   - stack: Transform stack to push to
+    /// - Returns: PushResult indicating what happened
+    private static func tryPushTransform(
+        from items: [ShapeItem],
+        stack: inout [GroupTransform]
+    ) -> PushResult {
+        // Find transform items in this group
+        let transformItems = items.compactMap { item -> LottieShapeTransform? in
+            if case .transform(let transform) = item { return transform }
+            return nil
+        }
+
+        // Fail-fast: multiple tr items
+        if transformItems.count > 1 {
+            return .failed
+        }
+
+        // No transform in this group
+        guard let tr = transformItems.first else {
+            return .noPush
+        }
+
+        // Build and validate transform
+        guard let groupTransform = buildGroupTransform(from: tr) else {
+            return .failed // Invalid transform (skew, non-uniform scale, etc.)
+        }
+
+        stack.append(groupTransform)
+        return .pushed
+    }
+
+    /// Builds GroupTransform from LottieShapeTransform with AnimTracks
+    /// Fail-fast validation:
+    /// - Skew present (sk != 0 or sk.a == 1) → nil
+    /// - Non-uniform scale (sx != sy for static, or any keyframe with sx != sy) → nil
+    /// - If field present but cannot be parsed → nil (no fallback defaults)
+    /// - Parameter transform: Lottie shape transform
+    /// - Returns: GroupTransform with tracks (static or animated), or nil if invalid
+    private static func buildGroupTransform(from transform: LottieShapeTransform) -> GroupTransform? {
+        // Fail-fast: skew must be absent or zero
+        if let skew = transform.skew {
+            if skew.isAnimated {
+                return nil // Animated skew not supported
+            }
+            if let skewValue = extractDouble(from: skew), abs(skewValue) > 0.001 {
+                return nil // Non-zero skew not supported
+            }
+        }
+
+        // Extract position track
+        let positionTrack: AnimTrack<Vec2D>
+        if let pos = transform.position {
+            if pos.isAnimated {
+                guard let track = extractAnimatedVec2D(from: pos) else {
+                    return nil // Fail-fast: invalid animated position
+                }
+                positionTrack = track
+            } else {
+                // Field present but not animated - must parse successfully
+                guard let vec = extractVec2D(from: pos) else {
+                    return nil // Fail-fast: field present but unparseable
+                }
+                positionTrack = .static(vec)
+            }
+        } else {
+            // Field absent - use default
+            positionTrack = .static(Vec2D(x: 0, y: 0))
+        }
+
+        // Extract anchor track
+        let anchorTrack: AnimTrack<Vec2D>
+        if let anc = transform.anchor {
+            if anc.isAnimated {
+                guard let track = extractAnimatedVec2D(from: anc) else {
+                    return nil // Fail-fast: invalid animated anchor
+                }
+                anchorTrack = track
+            } else {
+                guard let vec = extractVec2D(from: anc) else {
+                    return nil // Fail-fast: field present but unparseable
+                }
+                anchorTrack = .static(vec)
+            }
+        } else {
+            anchorTrack = .static(Vec2D(x: 0, y: 0))
+        }
+
+        // Extract scale track with uniform scale validation
+        let scaleTrack: AnimTrack<Vec2D>
+        if let scl = transform.scale {
+            if scl.isAnimated {
+                guard let track = extractAnimatedVec2DUniformScale(from: scl) else {
+                    return nil // Fail-fast: invalid or non-uniform animated scale
+                }
+                scaleTrack = track
+            } else {
+                guard let vec = extractVec2D(from: scl) else {
+                    return nil // Fail-fast: field present but unparseable
+                }
+                // Validate uniform scale (sx == sy)
+                guard abs(vec.x - vec.y) < 0.001 else {
+                    return nil // Fail-fast: non-uniform scale
+                }
+                scaleTrack = .static(vec)
+            }
+        } else {
+            scaleTrack = .static(Vec2D(x: 100, y: 100))
+        }
+
+        // Extract rotation track
+        let rotationTrack: AnimTrack<Double>
+        if let rot = transform.rotation {
+            if rot.isAnimated {
+                guard let track = extractAnimatedDouble(from: rot) else {
+                    return nil // Fail-fast: invalid animated rotation
+                }
+                rotationTrack = track
+            } else {
+                guard let val = extractDouble(from: rot) else {
+                    return nil // Fail-fast: field present but unparseable
+                }
+                rotationTrack = .static(val)
+            }
+        } else {
+            rotationTrack = .static(0)
+        }
+
+        // Extract opacity track (normalize from 0-100 to 0-1)
+        let opacityTrack: AnimTrack<Double>
+        if let opa = transform.opacity {
+            if opa.isAnimated {
+                guard let track = extractAnimatedDouble(from: opa) else {
+                    return nil // Fail-fast: invalid animated opacity
+                }
+                // Normalize keyframes from 0-100 to 0-1
+                switch track {
+                case .keyframed(let kfs):
+                    let normalizedKeyframes = kfs.map { kf in
+                        Keyframe(time: kf.time, value: kf.value / 100.0)
+                    }
+                    opacityTrack = .keyframed(normalizedKeyframes)
+                case .static(let val):
+                    opacityTrack = .static(val / 100.0)
+                }
+            } else {
+                guard let rawOpacity = extractDouble(from: opa) else {
+                    return nil // Fail-fast: field present but unparseable
+                }
+                opacityTrack = .static(rawOpacity / 100.0)
+            }
+        } else {
+            opacityTrack = .static(1.0)
+        }
+
+        return GroupTransform(
+            position: positionTrack,
+            anchor: anchorTrack,
+            scale: scaleTrack,
+            rotation: rotationTrack,
+            opacity: opacityTrack
+        )
+    }
+
+    /// Extracts animated Vec2D track with uniform scale validation
+    /// Returns nil if any keyframe has non-uniform scale (x != y)
+    private static func extractAnimatedVec2DUniformScale(from value: LottieAnimatedValue) -> AnimTrack<Vec2D>? {
+        guard let data = value.value,
+              case .keyframes(let lottieKeyframes) = data else {
+            return nil
+        }
+        guard !lottieKeyframes.isEmpty else { return nil }
+
+        var keyframes: [Keyframe<Vec2D>] = []
+
+        for kf in lottieKeyframes {
+            guard let time = kf.time else { return nil }
+            guard let startValue = kf.startValue else { return nil }
+
+            let vec: Vec2D
+            switch startValue {
+            case .numbers(let arr) where arr.count >= 2:
+                vec = Vec2D(x: arr[0], y: arr[1])
+            default:
+                return nil
+            }
+
+            // Validate uniform scale
+            guard abs(vec.x - vec.y) < 0.001 else {
+                return nil // Non-uniform scale in keyframe
+            }
+
+            keyframes.append(Keyframe(time: time, value: vec))
+        }
+
+        return .keyframed(keyframes)
+    }
+
+    /// Extracts animated Vec2D track from LottieAnimatedValue
+    /// Fail-fast: returns nil if any keyframe is invalid
+    private static func extractAnimatedVec2D(from value: LottieAnimatedValue) -> AnimTrack<Vec2D>? {
+        guard let data = value.value,
+              case .keyframes(let lottieKeyframes) = data else {
+            return nil
+        }
+        guard !lottieKeyframes.isEmpty else { return nil }
+
+        var keyframes: [Keyframe<Vec2D>] = []
+
+        for kf in lottieKeyframes {
+            // Fail-fast: missing time
+            guard let time = kf.time else { return nil }
+
+            // Fail-fast: missing startValue
+            guard let startValue = kf.startValue else { return nil }
+
+            // Extract Vec2D from startValue
+            let vec: Vec2D
+            switch startValue {
+            case .numbers(let arr) where arr.count >= 2:
+                vec = Vec2D(x: arr[0], y: arr[1])
+            default:
+                return nil // Fail-fast: invalid format
+            }
+
+            keyframes.append(Keyframe(time: time, value: vec))
+        }
+
+        return .keyframed(keyframes)
+    }
+
+    /// Extracts animated Double track from LottieAnimatedValue
+    /// Fail-fast: returns nil if any keyframe is invalid
+    private static func extractAnimatedDouble(from value: LottieAnimatedValue) -> AnimTrack<Double>? {
+        guard let data = value.value,
+              case .keyframes(let lottieKeyframes) = data else {
+            return nil
+        }
+        guard !lottieKeyframes.isEmpty else { return nil }
+
+        var keyframes: [Keyframe<Double>] = []
+
+        for kf in lottieKeyframes {
+            // Fail-fast: missing time
+            guard let time = kf.time else { return nil }
+
+            // Fail-fast: missing startValue
+            guard let startValue = kf.startValue else { return nil }
+
+            // Extract Double from startValue
+            let doubleValue: Double
+            switch startValue {
+            case .numbers(let arr) where !arr.isEmpty:
+                doubleValue = arr[0]
+            default:
+                return nil // Fail-fast: invalid format
+            }
+
+            keyframes.append(Keyframe(time: time, value: doubleValue))
+        }
+
+        return .keyframed(keyframes)
     }
 
     /// Extracts Vec2D from LottieAnimatedValue (static only)

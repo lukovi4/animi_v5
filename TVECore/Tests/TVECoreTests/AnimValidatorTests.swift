@@ -2134,6 +2134,236 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertNotNil(error, "Stroke with keyframe missing startValue should produce UNSUPPORTED_STROKE_WIDTH_KEYFRAME_FORMAT error")
     }
 
+    // MARK: - Group Transform Validation Tests (PR-11)
+
+    func testValidate_groupTransformStatic_noError() throws {
+        // Group with static transform should pass
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "fl", "c": {"a": 0, "k": [1, 0, 0]} },
+              { "ty": "tr", "p": {"a": 0, "k": [100, 100]}, "a": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [100, 100]}, "r": {"a": 0, "k": 45}, "o": {"a": 0, "k": 100} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let groupTransformError = report.errors.first { $0.code.hasPrefix("UNSUPPORTED_GROUP_TRANSFORM") }
+        XCTAssertNil(groupTransformError, "Valid static group transform should NOT produce error")
+    }
+
+    func testValidate_groupTransformAnimated_noError() throws {
+        // Group with animated transform (uniform scale) should pass
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "fl", "c": {"a": 0, "k": [1, 0, 0]} },
+              { "ty": "tr", "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 30, "s": [100, 100]}]}, "s": {"a": 1, "k": [{"t": 0, "s": [100, 100]}, {"t": 30, "s": [200, 200]}]}, "r": {"a": 1, "k": [{"t": 0, "s": [0]}, {"t": 30, "s": [90]}]} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let groupTransformError = report.errors.first { $0.code.hasPrefix("UNSUPPORTED_GROUP_TRANSFORM") }
+        XCTAssertNil(groupTransformError, "Valid animated group transform should NOT produce error")
+    }
+
+    func testValidate_groupTransformMultiple_returnsError() throws {
+        // Group with multiple tr items should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "tr", "p": {"a": 0, "k": [0, 0]} },
+              { "ty": "tr", "p": {"a": 0, "k": [50, 50]} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedGroupTransformMultiple }
+        XCTAssertNotNil(error, "Group with multiple transforms should produce UNSUPPORTED_GROUP_TRANSFORM_MULTIPLE error")
+    }
+
+    func testValidate_groupTransformSkew_returnsError() throws {
+        // Group with skew should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "tr", "p": {"a": 0, "k": [0, 0]}, "sk": {"a": 0, "k": 15} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedGroupTransformSkew }
+        XCTAssertNotNil(error, "Group with skew should produce UNSUPPORTED_GROUP_TRANSFORM_SKEW error")
+    }
+
+    func testValidate_groupTransformNonUniformScale_returnsError() throws {
+        // Group with non-uniform scale (sx != sy) should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "tr", "p": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [150, 100]} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedGroupTransformScaleNonuniform }
+        XCTAssertNotNil(error, "Group with non-uniform scale should produce UNSUPPORTED_GROUP_TRANSFORM_SCALE_NONUNIFORM error")
+    }
+
+    func testValidate_groupTransformNonUniformScaleAnimated_returnsError() throws {
+        // Group with animated non-uniform scale should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "tr", "s": {"a": 1, "k": [{"t": 0, "s": [100, 100]}, {"t": 30, "s": [200, 150]}]} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedGroupTransformScaleNonuniform }
+        XCTAssertNotNil(error, "Group with animated non-uniform scale should produce UNSUPPORTED_GROUP_TRANSFORM_SCALE_NONUNIFORM error")
+    }
+
+    func testValidate_groupTransformKeyframesMismatch_returnsError() throws {
+        // Group with mismatched keyframe counts should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "tr", "p": {"a": 1, "k": [{"t": 0, "s": [0, 0]}, {"t": 30, "s": [100, 100]}]}, "r": {"a": 1, "k": [{"t": 0, "s": [0]}, {"t": 15, "s": [45]}, {"t": 30, "s": [90]}]} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedGroupTransformKeyframesMismatch }
+        XCTAssertNotNil(error, "Group with mismatched keyframe counts should produce UNSUPPORTED_GROUP_TRANSFORM_KEYFRAMES_MISMATCH error")
+    }
+
+    func testValidate_groupTransformKeyframeMissingTime_returnsError() throws {
+        // Group with keyframe missing time should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "tr", "p": {"a": 1, "k": [{"s": [0, 0]}, {"t": 30, "s": [100, 100]}]} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedGroupTransformKeyframeFormat }
+        XCTAssertNotNil(error, "Group with keyframe missing time should produce UNSUPPORTED_GROUP_TRANSFORM_KEYFRAME_FORMAT error")
+    }
+
+    func testValidate_groupTransformKeyframeMissingStartValue_returnsError() throws {
+        // Group with keyframe missing startValue should fail
+        let scene = sceneJSON()
+        let anim = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "u": "images/", "p": "img_1.png" },
+            { "id": "comp_0", "layers": [{ "ty": 2, "nm": "media", "refId": "image_0" }] }
+          ],
+          "layers": [
+            { "ty": 0, "refId": "comp_0" },
+            { "ty": 4, "shapes": [{ "ty": "gr", "it": [
+              { "ty": "sh" },
+              { "ty": "tr", "r": {"a": 1, "k": [{"t": 0}, {"t": 30, "s": [90]}]} }
+            ] }] }
+          ]
+        }
+        """
+        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
+
+        let error = report.errors.first { $0.code == AnimValidationCode.unsupportedGroupTransformKeyframeFormat }
+        XCTAssertNotNil(error, "Group with keyframe missing startValue should produce UNSUPPORTED_GROUP_TRANSFORM_KEYFRAME_FORMAT error")
+    }
+
     // MARK: - Integration Tests
 
     func testValidate_validMask_noError() throws {
