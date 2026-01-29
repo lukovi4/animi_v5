@@ -391,6 +391,12 @@ public final class AnimIRCompiler {
             return .none
 
         case .shapeMatte:
+            // PR-13: Validate no Trim Paths before extraction (defensive check)
+            try ShapePathExtractor.validateNoTrimPaths(
+                shapes: lottie.shapes,
+                basePath: "anim(\(animRef)).layer(\(layerName))"
+            )
+
             // Extract animated shape data for matte source
             let animPath = ShapePathExtractor.extractAnimPath(from: lottie.shapes)
             let fillColor = ShapePathExtractor.extractFillColor(from: lottie.shapes)

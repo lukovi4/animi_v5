@@ -104,13 +104,23 @@ extension AnimValidator {
             validateStroke(stroke: stroke, basePath: basePath, issues: &issues)
 
         case .unknown(let type):
-            // Unknown shape type - report as unsupported
-            issues.append(ValidationIssue(
-                code: AnimValidationCode.unsupportedShapeItem,
-                severity: .error,
-                path: "\(basePath).ty",
-                message: "Shape type '\(type)' not supported. Supported: gr, sh, fl, tr, rc, el, sr, st"
-            ))
+            // PR-13: Trim Paths (tm) - explicit unsupported error with specific code
+            if type == "tm" {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedTrimPaths,
+                    severity: .error,
+                    path: "\(basePath).ty",
+                    message: "Trim Paths (ty:'tm') not supported. Remove it or bake the effect in After Effects."
+                ))
+            } else {
+                // Other unknown shape types - generic unsupported error
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedShapeItem,
+                    severity: .error,
+                    path: "\(basePath).ty",
+                    message: "Shape type '\(type)' not supported. Supported: gr, sh, fl, tr, rc, el, sr, st"
+                ))
+            }
         }
     }
 

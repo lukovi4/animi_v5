@@ -598,6 +598,52 @@ public enum ShapePathExtractor {
         return nil
     }
 
+    // MARK: - Trim Paths Validation (PR-13)
+
+    /// Validates that shapes do not contain Trim Paths (ty:"tm").
+    /// Throws UnsupportedFeature if tm is found anywhere in the shape tree.
+    /// This is a defensive check to prevent silent ignore even without validator.
+    /// - Parameters:
+    ///   - shapes: Array of shape items to validate
+    ///   - basePath: Base path for error reporting (e.g., "anim(ref).layers[0]")
+    /// - Throws: UnsupportedFeature if Trim Paths is found
+    public static func validateNoTrimPaths(shapes: [ShapeItem]?, basePath: String) throws {
+        guard let shapes = shapes else { return }
+
+        for (index, shape) in shapes.enumerated() {
+            let shapePath = "\(basePath).shapes[\(index)]"
+            try validateShapeNoTrimPaths(shape: shape, basePath: shapePath)
+        }
+    }
+
+    /// Recursively validates a single shape item for Trim Paths.
+    /// - Parameters:
+    ///   - shape: Shape item to validate
+    ///   - basePath: Full path to this shape item
+    /// - Throws: UnsupportedFeature if Trim Paths is found
+    private static func validateShapeNoTrimPaths(shape: ShapeItem, basePath: String) throws {
+        switch shape {
+        case .group(let shapeGroup):
+            // Recurse into group items
+            guard let items = shapeGroup.items else { return }
+            for (itemIndex, item) in items.enumerated() {
+                try validateShapeNoTrimPaths(shape: item, basePath: "\(basePath).it[\(itemIndex)]")
+            }
+
+        case .unknown(let type) where type == "tm":
+            // PR-13: Trim Paths found - throw error
+            throw UnsupportedFeature(
+                code: AnimValidationCode.unsupportedTrimPaths,
+                message: "Trim Paths (ty:'tm') not supported. Remove it or bake the effect in After Effects.",
+                path: "\(basePath).ty"
+            )
+
+        default:
+            // Other shapes are OK - no validation needed
+            break
+        }
+    }
+
     private static func extractPathFromShape(_ shape: ShapeItem) -> BezierPath? {
         switch shape {
         case .path(let pathShape):

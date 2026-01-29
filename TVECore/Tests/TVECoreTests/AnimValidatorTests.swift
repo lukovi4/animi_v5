@@ -1095,6 +1095,7 @@ final class AnimValidatorTests: XCTestCase {
 
     func testValidate_shapeLayerWithTrimPaths_returnsError() throws {
         // Shape layer WITHOUT td=1 (not a matte source) should still be validated
+        // PR-13: Uses specific UNSUPPORTED_TRIM_PATHS code instead of generic UNSUPPORTED_SHAPE_ITEM
         let scene = sceneJSON()
         let anim = """
         {
@@ -1112,10 +1113,10 @@ final class AnimValidatorTests: XCTestCase {
         let report = try validatePackage(sceneJSON: scene, animJSON: anim)
 
         let error = report.errors.first {
-            $0.code == AnimValidationCode.unsupportedShapeItem
+            $0.code == AnimValidationCode.unsupportedTrimPaths
         }
-        XCTAssertNotNil(error, "Shape layer without td=1 should still validate shapes")
-        XCTAssertTrue(error?.message.contains("'tm'") ?? false)
+        XCTAssertNotNil(error, "Shape layer with tm should produce UNSUPPORTED_TRIM_PATHS error")
+        XCTAssertTrue(error?.message.contains("Trim Paths") ?? false)
     }
 
     func testValidate_shapeLayerWithRect_noError() throws {
@@ -2453,14 +2454,43 @@ final class AnimValidatorTests: XCTestCase {
         return validator.validate(scene: package.scene, package: package, loaded: loaded)
     }
 
-    func testNegativeAsset_trimPaths_returnsUnsupportedShapeItem() throws {
+    // MARK: - PR-13: Trim Paths Tests
+
+    func testNegativeAsset_trimPathsInGroup_returnsErrorWithCorrectPath() throws {
+        // tm inside group should produce UNSUPPORTED_TRIM_PATHS error with correct nested path
         let report = try validateNegativeCase("neg_trim_paths_tm")
 
-        // Filter to find specifically the tm (trim paths) error
-        let tmError = report.errors.first {
-            $0.code == AnimValidationCode.unsupportedShapeItem && $0.message.contains("'tm'")
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedTrimPaths
         }
-        XCTAssertNotNil(tmError, "neg_trim_paths_tm should produce UNSUPPORTED_SHAPE_ITEM error for 'tm'")
+        XCTAssertNotNil(error, "neg_trim_paths_tm should produce UNSUPPORTED_TRIM_PATHS error")
+
+        // Verify path points to the exact location: layers[0].shapes[0].it[2].ty
+        // (tm is at index 2 inside the group's items array)
+        XCTAssertTrue(error?.path.contains(".shapes[0].it[2].ty") == true,
+                      "Path should point to .shapes[0].it[2].ty, got: \(error?.path ?? "nil")")
+
+        // Verify message mentions Trim Paths
+        XCTAssertTrue(error?.message.contains("Trim Paths") == true,
+                      "Message should mention Trim Paths")
+    }
+
+    func testNegativeAsset_trimPathsTopLevel_returnsErrorWithCorrectPath() throws {
+        // tm at top level of shapes array should produce UNSUPPORTED_TRIM_PATHS error
+        let report = try validateNegativeCase("neg_trim_paths_top_level")
+
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedTrimPaths
+        }
+        XCTAssertNotNil(error, "neg_trim_paths_top_level should produce UNSUPPORTED_TRIM_PATHS error")
+
+        // Verify path points to the exact location: layers[0].shapes[0].ty
+        XCTAssertTrue(error?.path.contains(".shapes[0].ty") == true,
+                      "Path should point to .shapes[0].ty, got: \(error?.path ?? "nil")")
+
+        // Verify it does NOT contain .it (not nested in group)
+        XCTAssertFalse(error?.path.contains(".it[") == true,
+                       "Path should NOT contain .it[] for top-level tm")
     }
 
     func testNegativeAsset_maskExpansion_returnsUnsupportedMaskExpansionNonZero() throws {

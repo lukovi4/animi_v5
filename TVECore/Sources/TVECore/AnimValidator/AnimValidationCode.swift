@@ -64,6 +64,9 @@ public enum AnimValidationCode {
     /// Shape item type not supported in matte source
     public static let unsupportedShapeItem = "UNSUPPORTED_SHAPE_ITEM"
 
+    /// Trim Paths (ty:"tm") not supported - must be removed or baked in AE
+    public static let unsupportedTrimPaths = "UNSUPPORTED_TRIM_PATHS"
+
     /// Animated rectangle roundness not supported (topology changes between keyframes)
     public static let unsupportedRectRoundnessAnimated = "UNSUPPORTED_RECT_ROUNDNESS_ANIMATED"
 
