@@ -52,6 +52,15 @@ public enum AnimValidationCode {
     /// Track matte type not supported (tt not in {1, 2, 3, 4})
     public static let unsupportedMatteType = "UNSUPPORTED_MATTE_TYPE"
 
+    /// Matte consumer (tt != nil) has no matte source layer (i == 0 or missing td=1)
+    public static let unsupportedMatteLayerMissing = "UNSUPPORTED_MATTE_LAYER_MISSING"
+
+    /// Matte source layer is not immediately before consumer (layers[i-1].td != 1)
+    public static let unsupportedMatteLayerOrder = "UNSUPPORTED_MATTE_LAYER_ORDER"
+
+    /// Matte source (td=1) should not itself be a matte consumer (has tt)
+    public static let unsupportedMatteSourceHasConsumer = "UNSUPPORTED_MATTE_SOURCE_HAS_CONSUMER"
+
     /// Shape item type not supported in matte source
     public static let unsupportedShapeItem = "UNSUPPORTED_SHAPE_ITEM"
 

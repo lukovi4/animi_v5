@@ -318,29 +318,96 @@ extension AnimValidator {
 
 extension AnimValidator {
     func validateLayersSubset(animRef: String, lottie: LottieJSON, issues: inout [ValidationIssue]) {
-        // Validate root layers
+        // PR-12: Collect precomp IDs that are used as matte sources
+        // These precomps get "matte-source context" where ct=1 is warning, not error
+        let matteSourcePrecompIds = collectMatteSourcePrecompIds(
+            layers: lottie.layers,
+            assets: lottie.assets
+        )
+
+        // Validate root layers (not in matte-source context)
         for (index, layer) in lottie.layers.enumerated() {
             validateLayer(
                 layer: layer,
                 index: index,
                 context: "layers",
                 animRef: animRef,
+                inMatteSourceContext: false,
                 issues: &issues
             )
         }
 
-        // Validate precomp asset layers
+        // Validate matte pairs in root layers (PR-12)
+        validateMattePairs(
+            layers: lottie.layers,
+            context: "layers",
+            animRef: animRef,
+            issues: &issues
+        )
+
+        // Validate precomp asset layers with matte-source context propagation
         for asset in lottie.assets where asset.isPrecomp {
-            for (index, layer) in (asset.layers ?? []).enumerated() {
+            let assetLayers = asset.layers ?? []
+            let inMatteSourceContext = matteSourcePrecompIds.contains(asset.id)
+
+            for (index, layer) in assetLayers.enumerated() {
                 validateLayer(
                     layer: layer,
                     index: index,
                     context: "assets[id=\(asset.id)].layers",
                     animRef: animRef,
+                    inMatteSourceContext: inMatteSourceContext,
                     issues: &issues
                 )
             }
+
+            // Validate matte pairs in precomp layers (PR-12)
+            validateMattePairs(
+                layers: assetLayers,
+                context: "assets[id=\(asset.id)].layers",
+                animRef: animRef,
+                issues: &issues
+            )
         }
+    }
+
+    /// Collects precomp IDs that are used as matte sources (td=1 precomp layers).
+    /// Also recursively includes nested precomps within matte-source precomps.
+    private func collectMatteSourcePrecompIds(
+        layers: [LottieLayer],
+        assets: [LottieAsset]
+    ) -> Set<String> {
+        var result = Set<String>()
+        var queue = [String]()
+
+        // Find direct matte source precomps in root layers
+        for layer in layers {
+            let isMatteSource = (layer.isMatteSource ?? 0) == 1
+            let isPrecomp = layer.type == 0
+            if isMatteSource, isPrecomp, let refId = layer.refId {
+                queue.append(refId)
+            }
+        }
+
+        // BFS to find nested precomps within matte-source precomps
+        while !queue.isEmpty {
+            let compId = queue.removeFirst()
+            guard !result.contains(compId) else { continue }
+            result.insert(compId)
+
+            // Find nested precomps in this comp
+            guard let asset = assets.first(where: { $0.id == compId }),
+                  let assetLayers = asset.layers else { continue }
+
+            for layer in assetLayers {
+                let isPrecomp = layer.type == 0
+                if isPrecomp, let refId = layer.refId {
+                    queue.append(refId)
+                }
+            }
+        }
+
+        return result
     }
 
     func validateLayer(
@@ -348,6 +415,7 @@ extension AnimValidator {
         index: Int,
         context: String,
         animRef: String,
+        inMatteSourceContext: Bool,
         issues: inout [ValidationIssue]
     ) {
         let basePath = "anim(\(animRef)).\(context)[\(index)]"
@@ -363,9 +431,13 @@ extension AnimValidator {
         }
 
         // Validate forbidden layer flags
+        // PR-12: ct=1 is warning if layer is matte source (td=1) OR inside matte-source precomp
+        let isMatteSource = (layer.isMatteSource ?? 0) == 1
         validateForbiddenLayerFlags(
             layer: layer,
             basePath: basePath,
+            isMatteSource: isMatteSource,
+            inMatteSourceContext: inMatteSourceContext,
             issues: &issues
         )
 
@@ -417,9 +489,13 @@ extension AnimValidator {
     }
 
     /// Validates forbidden layer flags that are not supported
+    /// - Parameter isMatteSource: true if layer has td=1 (used for ct context-aware severity)
+    /// - Parameter inMatteSourceContext: true if layer is inside a precomp used as matte source
     private func validateForbiddenLayerFlags(
         layer: LottieLayer,
         basePath: String,
+        isMatteSource: Bool,
+        inMatteSourceContext: Bool,
         issues: inout [ValidationIssue]
     ) {
         // 3D layer (ddd == 1)
@@ -452,14 +528,27 @@ extension AnimValidator {
             ))
         }
 
-        // Collapse transform (ct != 0) - warning only, best-effort rendering
+        // Collapse transform (ct != 0) - context-aware severity (PR-12)
+        // WARNING for:
+        //   - matte source layers (td=1)
+        //   - layers inside matte-source precomps (inMatteSourceContext)
+        // ERROR for all other layers where ct could cause incorrect compositing
         if let ct = layer.collapseTransform, ct != 0 {
-            issues.append(ValidationIssue(
-                code: AnimValidationCode.unsupportedLayerCollapseTransform,
-                severity: .warning,
-                path: "\(basePath).ct",
-                message: "Collapse transform (ct=\(ct)) currently ignored (best-effort)"
-            ))
+            if isMatteSource || inMatteSourceContext {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedLayerCollapseTransform,
+                    severity: .warning,
+                    path: "\(basePath).ct",
+                    message: "Collapse transform (ct=\(ct)) ignored in matte-source context (best-effort)"
+                ))
+            } else {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedLayerCollapseTransform,
+                    severity: .error,
+                    path: "\(basePath).ct",
+                    message: "Collapse transform (ct=\(ct)) not supported outside matte-source context"
+                ))
+            }
         }
 
         // Blend mode (bm != 0)
@@ -713,6 +802,68 @@ extension AnimValidator {
                     severity: .error,
                     path: "\(basePath).k[\(index)].c",
                     message: "Keyframe \(index) closed=\(closed), expected \(expectedClosed)"
+                ))
+            }
+        }
+    }
+
+    // MARK: - Matte Pair Validation (PR-12)
+
+    /// Validates matte source/consumer pairs in a layer list.
+    ///
+    /// For each consumer layer (tt != nil):
+    /// - Must not be the first layer (i != 0)
+    /// - Previous layer must be a matte source (td == 1)
+    ///
+    /// For each matte source layer (td == 1):
+    /// - Should not itself be a matte consumer (tt should be nil)
+    func validateMattePairs(
+        layers: [LottieLayer],
+        context: String,
+        animRef: String,
+        issues: inout [ValidationIssue]
+    ) {
+        for (index, layer) in layers.enumerated() {
+            let basePath = "anim(\(animRef)).\(context)[\(index)]"
+
+            // Check if this layer is a matte consumer (has tt)
+            if let trackMatteType = layer.trackMatteType,
+               Self.supportedMatteTypes.contains(trackMatteType) {
+
+                // Consumer cannot be first layer (no source above it)
+                if index == 0 {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedMatteLayerMissing,
+                        severity: .error,
+                        path: "\(basePath).tt",
+                        message: "Matte consumer (tt=\(trackMatteType)) at index 0 has no matte source layer above it"
+                    ))
+                    continue
+                }
+
+                // Previous layer must be a matte source (td == 1)
+                let previousLayer = layers[index - 1]
+                let previousIsMatteSource = (previousLayer.isMatteSource ?? 0) == 1
+
+                if !previousIsMatteSource {
+                    let prevPath = "anim(\(animRef)).\(context)[\(index - 1)]"
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.unsupportedMatteLayerOrder,
+                        severity: .error,
+                        path: "\(prevPath).td",
+                        message: "Layer before matte consumer (tt=\(trackMatteType)) must be matte source (td=1), but td=\(previousLayer.isMatteSource ?? 0)"
+                    ))
+                }
+            }
+
+            // Check if matte source (td=1) is also a consumer (has tt) - this is invalid
+            let isMatteSource = (layer.isMatteSource ?? 0) == 1
+            if isMatteSource, let trackMatteType = layer.trackMatteType {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.unsupportedMatteSourceHasConsumer,
+                    severity: .error,
+                    path: "\(basePath).td",
+                    message: "Matte source (td=1) should not be a matte consumer (tt=\(trackMatteType))"
                 ))
             }
         }
