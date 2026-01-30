@@ -179,16 +179,46 @@ extension PathResource {
     }
 }
 
+// MARK: - Path Registry Generation Counter (PR-14B)
+
+/// Thread-safe counter for PathRegistry generation IDs.
+/// Ensures each PathRegistry gets a unique ID for path sampling cache key differentiation.
+private final class RegistryGenerationCounter: @unchecked Sendable {
+    static let shared = RegistryGenerationCounter()
+    private var counter: Int = 0
+    private let lock = NSLock()
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = counter
+        counter += 1
+        return id
+    }
+}
+
 // MARK: - Path Registry
 
 /// Registry of path resources for an AnimIR.
 /// Paths are registered during compilation and referenced by pathId in RenderCommands.
 public struct PathRegistry: Sendable, Equatable {
+    /// Unique generation ID for this registry instance (PR-14B).
+    /// Monotonically increasing; prevents path sampling cache collisions
+    /// when a MetalRenderer is reused across scene recompilations.
+    public let generationId: Int
+
     /// All registered path resources
     public private(set) var paths: [PathResource] = []
 
-    /// Creates an empty registry
-    public init() {}
+    /// Creates an empty registry with a unique generationId.
+    public init() {
+        self.generationId = RegistryGenerationCounter.shared.next()
+    }
+
+    /// Equatable compares paths only (generationId is an identity marker, not content).
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.paths == rhs.paths
+    }
 
     /// Registers a new path resource and returns its ID.
     /// - Parameter resource: Path resource to register

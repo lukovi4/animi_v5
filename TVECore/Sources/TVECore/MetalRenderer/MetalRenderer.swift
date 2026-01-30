@@ -150,6 +150,9 @@ public final class MetalRenderer {
     let vertexUploadPool: VertexUploadPool
     let pathIndexBufferCache: PathIndexBufferCache
 
+    // PR-14B: Two-level path sampling cache (frame memo + LRU)
+    let pathSamplingCache: PathSamplingCache
+
     // MARK: - Initialization
 
     /// Creates a Metal renderer.
@@ -174,6 +177,7 @@ public final class MetalRenderer {
         self.shapeCache = ShapeCache(device: device)
         self.vertexUploadPool = VertexUploadPool(device: device, buffersInFlight: options.maxFramesInFlight)
         self.pathIndexBufferCache = PathIndexBufferCache(device: device)
+        self.pathSamplingCache = PathSamplingCache()
     }
 
     /// Diagnostic logging (only when enabled via options)
@@ -195,6 +199,7 @@ public final class MetalRenderer {
         maskCache.clear()
         shapeCache.clear()
         pathIndexBufferCache.clear()
+        pathSamplingCache.clear()
     }
 
     // MARK: - Public API
@@ -218,6 +223,8 @@ public final class MetalRenderer {
     ) throws {
         // PR-C3: Rotate to next buffer in ring for in-flight frame safety
         vertexUploadPool.beginFrame()
+        // PR-14B: Clear per-frame path sampling memo (LRU preserved across frames)
+        pathSamplingCache.beginFrame()
 
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = target.texture
@@ -263,6 +270,8 @@ public final class MetalRenderer {
     ) throws -> MTLTexture {
         // PR-C3: Rotate to next buffer in ring for in-flight frame safety
         vertexUploadPool.beginFrame()
+        // PR-14B: Clear per-frame path sampling memo
+        pathSamplingCache.beginFrame()
 
         // Create offscreen texture
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(

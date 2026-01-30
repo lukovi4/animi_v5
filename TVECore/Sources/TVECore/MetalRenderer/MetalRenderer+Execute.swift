@@ -353,8 +353,8 @@ extension MetalRenderer {
             throw MetalRendererError.missingPathResource(pathId: scope.pathId)
         }
 
-        // Sample path at current frame (CPU fallback for now)
-        guard let path = samplePath(resource: pathResource, frame: scope.frame) else {
+        // Sample path at current frame (PR-14B: cached)
+        guard let path = samplePathCached(resource: pathResource, frame: scope.frame, generationId: ctx.pathRegistry.generationId) else {
             try renderInnerCommandsToTarget(
                 scope.innerCommands,
                 target: ctx.target,
@@ -487,6 +487,29 @@ extension MetalRenderer {
         }
 
         return nil
+    }
+
+    /// Cached wrapper around `samplePath(resource:frame:)`.
+    ///
+    /// Uses `PathSamplingCache` (two-level: FrameMemo + LRU) to eliminate redundant
+    /// sampling when fill + stroke reference the same pathId at the same frame.
+    ///
+    /// - Parameters:
+    ///   - resource: Path resource to sample
+    ///   - frame: Animation frame
+    ///   - generationId: PathRegistry generation for cache key isolation
+    /// - Returns: Sampled `BezierPath`, or `nil` if path is empty/degenerate
+    private func samplePathCached(
+        resource: PathResource,
+        frame: Double,
+        generationId: Int
+    ) -> BezierPath? {
+        pathSamplingCache.sample(
+            generationId: generationId,
+            pathId: resource.pathId,
+            frame: frame,
+            producer: { samplePath(resource: resource, frame: frame) }
+        )
     }
 
     /// Converts flattened positions from PathResource to BezierPath (for CPU fallback).
@@ -1424,12 +1447,12 @@ extension MetalRenderer {
         let effectiveOpacity = (fillOpacity / 100.0) * layerOpacity
         guard effectiveOpacity > 0 else { return }
 
-        // Look up path in registry and sample at current frame
+        // Look up path in registry and sample at current frame (PR-14B: cached)
         guard let pathResource = ctx.pathRegistry.path(for: pathId) else {
             assertionFailure("Missing path resource for pathId: \(pathId)")
             throw MetalRendererError.missingPathResource(pathId: pathId)
         }
-        guard let path = samplePath(resource: pathResource, frame: frame) else { return }
+        guard let path = samplePathCached(resource: pathResource, frame: frame, generationId: ctx.pathRegistry.generationId) else { return }
         guard path.vertexCount > 2 else { return }
 
         let targetSize = ctx.target.sizePx
@@ -1486,12 +1509,12 @@ extension MetalRenderer {
         guard effectiveOpacity > 0 else { return }
         guard strokeWidth > 0 else { return }
 
-        // Look up path in registry and sample at current frame
+        // Look up path in registry and sample at current frame (PR-14B: cached)
         guard let pathResource = ctx.pathRegistry.path(for: pathId) else {
             assertionFailure("Missing path resource for pathId: \(pathId)")
             throw MetalRendererError.missingPathResource(pathId: pathId)
         }
-        guard let path = samplePath(resource: pathResource, frame: frame) else { return }
+        guard let path = samplePathCached(resource: pathResource, frame: frame, generationId: ctx.pathRegistry.generationId) else { return }
         guard path.vertexCount >= 2 else { return } // Stroke needs at least 2 vertices
 
         let targetSize = ctx.target.sizePx
