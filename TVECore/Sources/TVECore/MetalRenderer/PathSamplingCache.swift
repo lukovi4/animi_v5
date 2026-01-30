@@ -18,6 +18,17 @@ struct PathSampleKey: Hashable {
     let quantizedFrame: Int
 }
 
+// MARK: - Path Sampling Cache Result (PR-14C)
+
+/// Outcome of a PathSamplingCache lookup.
+/// Used by PerfMetrics to record hit/miss without the cache storing counters.
+enum PathSampleResult {
+    case hitFrameMemo(BezierPath)
+    case hitLRU(BezierPath)
+    case miss(BezierPath)
+    case missNil
+}
+
 // MARK: - Path Sampling Cache (PR-14B)
 
 /// Two-level cache for `samplePath(resource:, frame:)` results.
@@ -31,6 +42,9 @@ struct PathSampleKey: Hashable {
 /// Lookup order: FrameMemo → LRU → producer closure (actual sampling).
 /// On miss, the result is stored in both levels.
 ///
+/// PR-14C: No internal counters. Returns `PathSampleResult` so the caller
+/// (MetalRenderer + PerfMetrics) can record outcomes externally.
+///
 /// Owned by `MetalRenderer`, lives alongside `ShapeCache`.
 /// Not a global singleton — freed when renderer is deallocated.
 final class PathSamplingCache {
@@ -43,17 +57,6 @@ final class PathSamplingCache {
     private var lruCache: [PathSampleKey: BezierPath] = [:]
     private var lruAccessOrder: [PathSampleKey] = []
     private let maxLRUEntries: Int
-
-    // MARK: - Debug Counters
-
-    #if DEBUG
-    /// Number of frame memo hits since last `resetDebugCounters()`.
-    private(set) var debugFrameMemoHits: Int = 0
-    /// Number of LRU hits since last `resetDebugCounters()`.
-    private(set) var debugLRUHits: Int = 0
-    /// Number of cache misses (producer calls) since last `resetDebugCounters()`.
-    private(set) var debugMisses: Int = 0
-    #endif
 
     // MARK: - Init
 
@@ -75,6 +78,7 @@ final class PathSamplingCache {
     // MARK: - Sampling
 
     /// Retrieves a cached BezierPath or computes it via the producer closure.
+    /// Returns a `PathSampleResult` indicating the cache outcome.
     ///
     /// - Parameters:
     ///   - generationId: `PathRegistry.generationId` (prevents cross-compilation collisions)
@@ -82,13 +86,13 @@ final class PathSamplingCache {
     ///   - frame: Animation frame (quantized internally via `AnimConstants.frameQuantStep`)
     ///   - producer: Closure that performs the actual `samplePath(resource:, frame:)`.
     ///              Called only on cache miss.
-    /// - Returns: Sampled `BezierPath`, or `nil` if producer returns `nil`.
+    /// - Returns: `PathSampleResult` with the sampled path (or nil) and outcome type.
     func sample(
         generationId: Int,
         pathId: PathID,
         frame: Double,
         producer: () -> BezierPath?
-    ) -> BezierPath? {
+    ) -> PathSampleResult {
         let key = PathSampleKey(
             generationId: generationId,
             pathId: pathId,
@@ -97,36 +101,26 @@ final class PathSamplingCache {
 
         // Level 1: Frame memo (same-frame dedup — fill + stroke)
         if let cached = frameMemo[key] {
-            #if DEBUG
-            debugFrameMemoHits += 1
-            #endif
-            return cached
+            return .hitFrameMemo(cached)
         }
 
         // Level 2: LRU (cross-frame reuse — loops, scrubbing)
         if let cached = lruCache[key] {
             frameMemo[key] = cached
             updateLRUAccessOrder(key)
-            #if DEBUG
-            debugLRUHits += 1
-            #endif
-            return cached
+            return .hitLRU(cached)
         }
 
         // Miss: compute via producer
-        #if DEBUG
-        debugMisses += 1
-        #endif
-
         guard let result = producer() else {
-            return nil
+            return .missNil
         }
 
         // Store in both levels
         frameMemo[key] = result
         storeLRU(key: key, value: result)
 
-        return result
+        return .miss(result)
     }
 
     // MARK: - Cache Management
@@ -143,15 +137,6 @@ final class PathSamplingCache {
 
     /// Number of entries in the current frame memo.
     var frameMemoCount: Int { frameMemo.count }
-
-    #if DEBUG
-    /// Resets debug hit/miss counters.
-    func resetDebugCounters() {
-        debugFrameMemoHits = 0
-        debugLRUHits = 0
-        debugMisses = 0
-    }
-    #endif
 
     // MARK: - LRU Internals
 

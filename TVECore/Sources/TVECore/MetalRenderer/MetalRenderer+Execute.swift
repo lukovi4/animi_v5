@@ -182,6 +182,10 @@ extension MetalRenderer {
         var index = 0
         var isFirstPass = true
 
+        #if DEBUG
+        perf?.beginPhase(.executeCommandsTotal)
+        #endif
+
         while index < commands.count {
             // Find next mask or matte scope or end of commands
             let segmentStart = index
@@ -224,6 +228,11 @@ extension MetalRenderer {
             // Process scope if found
             switch foundScopeType {
             case .mask:
+                #if DEBUG
+                perf?.beginPhase(.executeMasksTotal)
+                perf?.recordMask()
+                #endif
+
                 // PR-C2: GPU mask path with boolean operations
                 if let scope = extractMaskGroupScope(from: commands, startIndex: index) {
                     let scopeCtx = MaskScopeContext(
@@ -257,9 +266,18 @@ extension MetalRenderer {
                     }
                     index = endIdx
                 }
+
+                #if DEBUG
+                perf?.endPhase(.executeMasksTotal)
+                #endif
                 isFirstPass = false
 
             case .matte:
+                #if DEBUG
+                perf?.beginPhase(.executeMattesTotal)
+                perf?.recordMatte()
+                #endif
+
                 let matteScope = try extractMatteScope(from: commands, startIndex: index)
                 let matteScopeCtx = MatteScopeContext(
                     target: target,
@@ -272,12 +290,20 @@ extension MetalRenderer {
                 )
                 try renderMatteScope(scope: matteScope, ctx: matteScopeCtx, inheritedState: state)
                 index = matteScope.endIndex + 1
+
+                #if DEBUG
+                perf?.endPhase(.executeMattesTotal)
+                #endif
                 isFirstPass = false
 
             case .none:
                 break
             }
         }
+
+        #if DEBUG
+        perf?.endPhase(.executeCommandsTotal)
+        #endif
 
         try validateBalancedStacks(state, baseline: baseline)
     }
@@ -494,6 +520,8 @@ extension MetalRenderer {
     /// Uses `PathSamplingCache` (two-level: FrameMemo + LRU) to eliminate redundant
     /// sampling when fill + stroke reference the same pathId at the same frame.
     ///
+    /// PR-14C: Returns `PathSampleResult` so MetalRenderer can record metrics externally.
+    ///
     /// - Parameters:
     ///   - resource: Path resource to sample
     ///   - frame: Animation frame
@@ -504,12 +532,47 @@ extension MetalRenderer {
         frame: Double,
         generationId: Int
     ) -> BezierPath? {
-        pathSamplingCache.sample(
+        #if DEBUG
+        perf?.beginPhase(.pathSamplingTotal)
+        #endif
+
+        let result = pathSamplingCache.sample(
             generationId: generationId,
             pathId: resource.pathId,
             frame: frame,
             producer: { samplePath(resource: resource, frame: frame) }
         )
+
+        #if DEBUG
+        perf?.endPhase(.pathSamplingTotal)
+
+        // Record outcome for PerfMetrics
+        if let perf = perf {
+            let key = PathSampleKey(
+                generationId: generationId,
+                pathId: resource.pathId,
+                quantizedFrame: Quantization.quantizedInt(frame, step: AnimConstants.frameQuantStep)
+            )
+            switch result {
+            case .hitFrameMemo:
+                perf.recordPathSampling(outcome: .hitFrameMemo, key: key)
+            case .hitLRU:
+                perf.recordPathSampling(outcome: .hitLRU, key: key)
+            case .miss:
+                perf.recordPathSampling(outcome: .miss, key: key)
+            case .missNil:
+                perf.recordPathSampling(outcome: .missNil, key: key)
+            }
+        }
+        #endif
+
+        // Extract the BezierPath (or nil) from the result enum
+        switch result {
+        case .hitFrameMemo(let path): return path
+        case .hitLRU(let path): return path
+        case .miss(let path): return path
+        case .missNil: return nil
+        }
     }
 
     /// Converts flattened positions from PathResource to BezierPath (for CPU fallback).
@@ -1317,6 +1380,10 @@ extension MetalRenderer {
 extension MetalRenderer {
     // swiftlint:disable:next cyclomatic_complexity
     private func executeCommand(_ command: RenderCommand, ctx: RenderContext, state: inout ExecutionState) throws {
+        #if DEBUG
+        perf?.recordCommand(command)
+        #endif
+
         switch command {
         case .beginGroup:
             state.groupDepth += 1
@@ -1346,6 +1413,9 @@ extension MetalRenderer {
                 scissor: state.currentScissor
             )
         case .drawShape(let pathId, let fillColor, let fillOpacity, let layerOpacity, let frame):
+            #if DEBUG
+            perf?.beginPhase(.executeFillTotal)
+            #endif
             try drawShape(
                 pathId: pathId,
                 fillColor: fillColor,
@@ -1355,7 +1425,13 @@ extension MetalRenderer {
                 ctx: ctx,
                 transform: state.currentTransform
             )
+            #if DEBUG
+            perf?.endPhase(.executeFillTotal)
+            #endif
         case .drawStroke(let pathId, let strokeColor, let strokeOpacity, let strokeWidth, let lineCap, let lineJoin, let miterLimit, let layerOpacity, let frame):
+            #if DEBUG
+            perf?.beginPhase(.executeStrokeTotal)
+            #endif
             try drawStroke(
                 pathId: pathId,
                 strokeColor: strokeColor,
@@ -1369,6 +1445,9 @@ extension MetalRenderer {
                 ctx: ctx,
                 transform: state.currentTransform
             )
+            #if DEBUG
+            perf?.endPhase(.executeStrokeTotal)
+            #endif
         case .beginMask, .beginMaskAdd:
             // Both new and deprecated mask commands increment depth.
             // Actual GPU mask rendering will be implemented in PR-C via extraction.
@@ -1460,14 +1539,32 @@ extension MetalRenderer {
         // Compute transform from path to viewport
         let pathToViewport = ctx.animToViewport.concatenating(transform)
 
+        #if DEBUG
+        perf?.beginPhase(.shapeCacheTotal)
+        #endif
+
         // Rasterize shape to BGRA texture using the shape cache (CPU fallback)
-        guard let shapeTex = shapeCache.texture(
+        let fillResult = shapeCache.texture(
             for: path,
             transform: pathToViewport,
             size: targetSize,
             fillColor: fillColor ?? [1, 1, 1],
             opacity: effectiveOpacity
-        ) else { return }
+        )
+
+        #if DEBUG
+        perf?.endPhase(.shapeCacheTotal)
+        // Record fill cache outcome
+        if fillResult.didHit {
+            perf?.recordShapeFill(outcome: .hit)
+        } else if fillResult.didEvict {
+            perf?.recordShapeFill(outcome: .missEvicted)
+        } else {
+            perf?.recordShapeFill(outcome: .miss)
+        }
+        #endif
+
+        guard let shapeTex = fillResult.texture else { return }
 
         // Draw the rasterized shape texture
         guard let vertexBuffer = resources.makeQuadVertexBuffer(
@@ -1522,8 +1619,12 @@ extension MetalRenderer {
         // Compute transform from path to viewport
         let pathToViewport = ctx.animToViewport.concatenating(transform)
 
+        #if DEBUG
+        perf?.beginPhase(.shapeCacheTotal)
+        #endif
+
         // Rasterize stroke to BGRA texture using the shape cache
-        guard let strokeTex = shapeCache.strokeTexture(
+        let strokeResult = shapeCache.strokeTexture(
             for: path,
             transform: pathToViewport,
             size: targetSize,
@@ -1533,7 +1634,21 @@ extension MetalRenderer {
             lineCap: lineCap,
             lineJoin: lineJoin,
             miterLimit: miterLimit
-        ) else { return }
+        )
+
+        #if DEBUG
+        perf?.endPhase(.shapeCacheTotal)
+        // Record stroke cache outcome
+        if strokeResult.didHit {
+            perf?.recordShapeStroke(outcome: .hit)
+        } else if strokeResult.didEvict {
+            perf?.recordShapeStroke(outcome: .missEvicted)
+        } else {
+            perf?.recordShapeStroke(outcome: .miss)
+        }
+        #endif
+
+        guard let strokeTex = strokeResult.texture else { return }
 
         // Draw the rasterized stroke texture
         guard let vertexBuffer = resources.makeQuadVertexBuffer(

@@ -3,6 +3,9 @@ import XCTest
 
 /// Tests for PR-14B: PathSamplingCache
 /// Verifies two-level caching (FrameMemo + LRU) for samplePath results.
+///
+/// PR-14C: Updated to use `PathSampleResult` enum return type.
+/// Debug counters removed from cache — metrics now collected by PerfMetrics externally.
 final class PathSamplingCacheTests: XCTestCase {
     // MARK: - Test Helpers
 
@@ -33,6 +36,40 @@ final class PathSamplingCacheTests: XCTestCase {
             outTangents: [Vec2D.zero, Vec2D.zero, Vec2D.zero, Vec2D.zero],
             closed: true
         )
+    }
+
+    /// Extracts BezierPath from PathSampleResult, or nil for .missNil.
+    private func extractPath(_ result: PathSampleResult) -> BezierPath? {
+        switch result {
+        case .hitFrameMemo(let p): return p
+        case .hitLRU(let p): return p
+        case .miss(let p): return p
+        case .missNil: return nil
+        }
+    }
+
+    /// Asserts that a PathSampleResult is a .hitFrameMemo case.
+    private func assertIsFrameMemoHit(_ result: PathSampleResult, file: StaticString = #filePath, line: UInt = #line) {
+        if case .hitFrameMemo = result { return }
+        XCTFail("Expected .hitFrameMemo, got \(result)", file: file, line: line)
+    }
+
+    /// Asserts that a PathSampleResult is a .hitLRU case.
+    private func assertIsLRUHit(_ result: PathSampleResult, file: StaticString = #filePath, line: UInt = #line) {
+        if case .hitLRU = result { return }
+        XCTFail("Expected .hitLRU, got \(result)", file: file, line: line)
+    }
+
+    /// Asserts that a PathSampleResult is a .miss case.
+    private func assertIsMiss(_ result: PathSampleResult, file: StaticString = #filePath, line: UInt = #line) {
+        if case .miss = result { return }
+        XCTFail("Expected .miss, got \(result)", file: file, line: line)
+    }
+
+    /// Asserts that a PathSampleResult is a .missNil case.
+    private func assertIsMissNil(_ result: PathSampleResult, file: StaticString = #filePath, line: UInt = #line) {
+        if case .missNil = result { return }
+        XCTFail("Expected .missNil, got \(result)", file: file, line: line)
     }
 
     // MARK: - T1: Fill + Stroke same frame → 1 producer call
@@ -67,8 +104,10 @@ final class PathSamplingCacheTests: XCTestCase {
         )
 
         XCTAssertEqual(producerCallCount, 1, "Producer should be called exactly once for fill+stroke")
-        XCTAssertEqual(result1, triangle)
-        XCTAssertEqual(result2, triangle)
+        assertIsMiss(result1)
+        assertIsFrameMemoHit(result2)
+        XCTAssertEqual(extractPath(result1), triangle)
+        XCTAssertEqual(extractPath(result2), triangle)
     }
 
     // MARK: - T2: Frame quantization (close frames → same key)
@@ -175,7 +214,7 @@ final class PathSamplingCacheTests: XCTestCase {
         var producerCalls = 0
 
         // Frame 0 should be evicted → miss
-        _ = cache.sample(
+        let r0 = cache.sample(
             generationId: 0,
             pathId: PathID(0),
             frame: 0.0,
@@ -186,10 +225,11 @@ final class PathSamplingCacheTests: XCTestCase {
         )
 
         XCTAssertEqual(producerCalls, 1, "Frame 0 was evicted → producer should be called")
+        assertIsMiss(r0)
 
         // Frame 3 should still be in LRU → hit
         // (Re-inserting frame 0 above evicts frame 1, but frame 3 remains)
-        _ = cache.sample(
+        let r3 = cache.sample(
             generationId: 0,
             pathId: PathID(0),
             frame: 3.0,
@@ -200,6 +240,7 @@ final class PathSamplingCacheTests: XCTestCase {
         )
 
         XCTAssertEqual(producerCalls, 1, "Frame 3 retained in LRU (hit), frame 0 was miss")
+        assertIsLRUHit(r3)
     }
 
     // MARK: - T4: Generation ID isolation
@@ -227,9 +268,9 @@ final class PathSamplingCacheTests: XCTestCase {
             producer: { rect }
         )
 
-        XCTAssertEqual(result1, triangle)
-        XCTAssertEqual(result2, rect)
-        XCTAssertNotEqual(result1, result2, "Different generationIds must not collide")
+        XCTAssertEqual(extractPath(result1), triangle)
+        XCTAssertEqual(extractPath(result2), rect)
+        XCTAssertNotEqual(extractPath(result1), extractPath(result2), "Different generationIds must not collide")
     }
 
     // MARK: - T5: LRU cross-frame reuse (loop / scrub back)
@@ -267,7 +308,8 @@ final class PathSamplingCacheTests: XCTestCase {
         )
 
         XCTAssertEqual(producerCalls, 1, "Revisiting same frame should be LRU hit, not producer call")
-        XCTAssertEqual(result, triangle)
+        assertIsLRUHit(result)
+        XCTAssertEqual(extractPath(result), triangle)
     }
 
     // MARK: - FrameMemo cleared on beginFrame
@@ -297,7 +339,7 @@ final class PathSamplingCacheTests: XCTestCase {
         XCTAssertEqual(cache.frameMemoCount, 0, "beginFrame must clear frame memo")
 
         // But LRU still has it (so producer won't be called again)
-        _ = cache.sample(
+        let result = cache.sample(
             generationId: 0,
             pathId: PathID(0),
             frame: 10.0,
@@ -308,6 +350,7 @@ final class PathSamplingCacheTests: XCTestCase {
         )
 
         XCTAssertEqual(producerCalls, 1, "LRU hit should prevent producer call after memo clear")
+        assertIsLRUHit(result)
         XCTAssertEqual(cache.frameMemoCount, 1, "LRU hit should promote into frame memo")
     }
 
@@ -329,7 +372,8 @@ final class PathSamplingCacheTests: XCTestCase {
             }
         )
 
-        XCTAssertNil(result1)
+        assertIsMissNil(result1)
+        XCTAssertNil(extractPath(result1))
 
         // Second call: nil was not cached, so producer is called again
         let triangle = makeTriangle()
@@ -344,7 +388,8 @@ final class PathSamplingCacheTests: XCTestCase {
         )
 
         XCTAssertEqual(producerCalls, 2, "nil result should not be cached")
-        XCTAssertEqual(result2, triangle, "Second call with non-nil producer should succeed")
+        assertIsMiss(result2)
+        XCTAssertEqual(extractPath(result2), triangle, "Second call with non-nil producer should succeed")
     }
 
     // MARK: - Clear
@@ -403,8 +448,8 @@ final class PathSamplingCacheTests: XCTestCase {
         )
 
         XCTAssertEqual(producerCalls, 2, "Different pathIds should produce separate entries")
-        XCTAssertEqual(result1, triangle)
-        XCTAssertEqual(result2, rect)
+        XCTAssertEqual(extractPath(result1), triangle)
+        XCTAssertEqual(extractPath(result2), rect)
     }
 
     // MARK: - LRU access order updates on hit
@@ -449,7 +494,7 @@ final class PathSamplingCacheTests: XCTestCase {
         cache.beginFrame()
         var producerCalls = 0
 
-        _ = cache.sample(
+        let r0 = cache.sample(
             generationId: 0,
             pathId: PathID(0),
             frame: 0.0,
@@ -458,9 +503,10 @@ final class PathSamplingCacheTests: XCTestCase {
                 return triangle
             }
         )
+        assertIsLRUHit(r0)
 
         // Frame 1 should be evicted
-        _ = cache.sample(
+        let r1 = cache.sample(
             generationId: 0,
             pathId: PathID(0),
             frame: 1.0,
@@ -469,8 +515,55 @@ final class PathSamplingCacheTests: XCTestCase {
                 return triangle
             }
         )
+        assertIsMiss(r1)
 
         XCTAssertEqual(producerCalls, 1, "Frame 0 retained (LRU hit), frame 1 evicted (miss)")
+    }
+
+    // MARK: - PathSampleResult enum cases
+
+    func testPathSampleResult_enumCases() {
+        let cache = PathSamplingCache()
+        cache.beginFrame()
+
+        let triangle = makeTriangle()
+
+        // First call: miss
+        let r1 = cache.sample(
+            generationId: 0,
+            pathId: PathID(0),
+            frame: 10.0,
+            producer: { triangle }
+        )
+        assertIsMiss(r1)
+
+        // Same key in same frame: frameMemo hit
+        let r2 = cache.sample(
+            generationId: 0,
+            pathId: PathID(0),
+            frame: 10.0,
+            producer: { triangle }
+        )
+        assertIsFrameMemoHit(r2)
+
+        // New frame: LRU hit
+        cache.beginFrame()
+        let r3 = cache.sample(
+            generationId: 0,
+            pathId: PathID(0),
+            frame: 10.0,
+            producer: { triangle }
+        )
+        assertIsLRUHit(r3)
+
+        // Nil producer: missNil
+        let r4 = cache.sample(
+            generationId: 0,
+            pathId: PathID(99),
+            frame: 10.0,
+            producer: { nil }
+        )
+        assertIsMissNil(r4)
     }
 
     // MARK: - PathSampleKey Hashable conformance
@@ -532,39 +625,4 @@ final class PathSamplingCacheTests: XCTestCase {
     func testAnimConstants_frameQuantStep_value() {
         XCTAssertEqual(AnimConstants.frameQuantStep, 1.0 / 1000.0)
     }
-
-    #if DEBUG
-    // MARK: - Debug counters
-
-    func testDebugCounters_trackHitsAndMisses() {
-        let cache = PathSamplingCache()
-        cache.resetDebugCounters()
-        cache.beginFrame()
-
-        let triangle = makeTriangle()
-
-        // Miss
-        _ = cache.sample(generationId: 0, pathId: PathID(0), frame: 10.0, producer: { triangle })
-        XCTAssertEqual(cache.debugMisses, 1)
-        XCTAssertEqual(cache.debugFrameMemoHits, 0)
-        XCTAssertEqual(cache.debugLRUHits, 0)
-
-        // Frame memo hit
-        _ = cache.sample(generationId: 0, pathId: PathID(0), frame: 10.0, producer: { triangle })
-        XCTAssertEqual(cache.debugFrameMemoHits, 1)
-        XCTAssertEqual(cache.debugMisses, 1)
-
-        // New frame: LRU hit
-        cache.beginFrame()
-        _ = cache.sample(generationId: 0, pathId: PathID(0), frame: 10.0, producer: { triangle })
-        XCTAssertEqual(cache.debugLRUHits, 1)
-        XCTAssertEqual(cache.debugMisses, 1)
-
-        // Reset
-        cache.resetDebugCounters()
-        XCTAssertEqual(cache.debugFrameMemoHits, 0)
-        XCTAssertEqual(cache.debugLRUHits, 0)
-        XCTAssertEqual(cache.debugMisses, 0)
-    }
-    #endif
 }

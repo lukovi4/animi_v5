@@ -105,6 +105,12 @@ public struct MetalRendererOptions: Sendable {
     /// Enable diagnostic logging for scissor/transform debugging
     public var enableDiagnostics: Bool
 
+    /// Enable performance metrics collection (PR-14C).
+    /// Only effective in DEBUG builds. When true, `PerfMetrics` is created
+    /// and collects per-frame counters + timings.
+    /// Default: false (zero overhead even in DEBUG).
+    public var enablePerfMetrics: Bool
+
     /// Maximum number of frames that can be in-flight simultaneously.
     /// This controls the size of the vertex upload ring buffer.
     /// Must match the semaphore count in your render loop for correctness.
@@ -116,16 +122,19 @@ public struct MetalRendererOptions: Sendable {
     ///   - clearColor: Clear color (default: transparent black)
     ///   - enableWarningsForUnsupportedCommands: Enable warnings (default: true)
     ///   - enableDiagnostics: Enable diagnostic logging (default: false)
+    ///   - enablePerfMetrics: Enable perf metrics collection in DEBUG (default: false)
     ///   - maxFramesInFlight: Max in-flight frames for ring buffer (default: 3)
     public init(
         clearColor: ClearColor = .transparentBlack,
         enableWarningsForUnsupportedCommands: Bool = true,
         enableDiagnostics: Bool = false,
+        enablePerfMetrics: Bool = false,
         maxFramesInFlight: Int = 3
     ) {
         self.clearColor = clearColor
         self.enableWarningsForUnsupportedCommands = enableWarningsForUnsupportedCommands
         self.enableDiagnostics = enableDiagnostics
+        self.enablePerfMetrics = enablePerfMetrics
         self.maxFramesInFlight = max(1, maxFramesInFlight)
     }
 }
@@ -153,6 +162,12 @@ public final class MetalRenderer {
     // PR-14B: Two-level path sampling cache (frame memo + LRU)
     let pathSamplingCache: PathSamplingCache
 
+    // PR-14C: Performance metrics (DEBUG-only, opt-in via options.enablePerfMetrics)
+    #if DEBUG
+    private(set) var perf: PerfMetrics?
+    private var perfFrameIndex: Int = 0
+    #endif
+
     // MARK: - Initialization
 
     /// Creates a Metal renderer.
@@ -178,6 +193,10 @@ public final class MetalRenderer {
         self.vertexUploadPool = VertexUploadPool(device: device, buffersInFlight: options.maxFramesInFlight)
         self.pathIndexBufferCache = PathIndexBufferCache(device: device)
         self.pathSamplingCache = PathSamplingCache()
+
+        #if DEBUG
+        self.perf = options.enablePerfMetrics ? PerfMetrics() : nil
+        #endif
     }
 
     /// Diagnostic logging (only when enabled via options)
@@ -226,6 +245,12 @@ public final class MetalRenderer {
         // PR-14B: Clear per-frame path sampling memo (LRU preserved across frames)
         pathSamplingCache.beginFrame()
 
+        #if DEBUG
+        perf?.beginFrame(index: perfFrameIndex)
+        perf?.beginPhase(.frameTotal)
+        perfFrameIndex += 1
+        #endif
+
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = target.texture
         renderPassDescriptor.colorAttachments[0].loadAction = .clear
@@ -246,6 +271,11 @@ public final class MetalRenderer {
             assetSizes: assetSizes,
             pathRegistry: pathRegistry
         )
+
+        #if DEBUG
+        perf?.endPhase(.frameTotal)
+        perf?.endFrame()
+        #endif
     }
 
     /// Renders commands to an offscreen texture.
@@ -272,6 +302,12 @@ public final class MetalRenderer {
         vertexUploadPool.beginFrame()
         // PR-14B: Clear per-frame path sampling memo
         pathSamplingCache.beginFrame()
+
+        #if DEBUG
+        perf?.beginFrame(index: perfFrameIndex)
+        perf?.beginPhase(.frameTotal)
+        perfFrameIndex += 1
+        #endif
 
         // Create offscreen texture
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -321,6 +357,11 @@ public final class MetalRenderer {
             assetSizes: assetSizes,
             pathRegistry: pathRegistry
         )
+
+        #if DEBUG
+        perf?.endPhase(.frameTotal)
+        perf?.endFrame()
+        #endif
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()

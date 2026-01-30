@@ -152,6 +152,13 @@ final class ShapeCache {
         self.maxEntries = maxEntries
     }
 
+    /// Result of a shape cache lookup, exposing hit/miss for external metrics.
+    struct TextureResult {
+        let texture: MTLTexture?
+        let didHit: Bool
+        let didEvict: Bool
+    }
+
     /// Gets or creates a shape texture for the given parameters.
     /// - Parameters:
     ///   - path: The Bezier path to rasterize
@@ -159,20 +166,20 @@ final class ShapeCache {
     ///   - size: Target texture size in pixels
     ///   - fillColor: RGB fill color (0.0 to 1.0)
     ///   - opacity: Overall opacity (0.0 to 1.0)
-    /// - Returns: Metal texture with BGRA data, or nil on failure
+    /// - Returns: Result with texture and cache hit/eviction info
     func texture(
         for path: BezierPath,
         transform: Matrix2D,
         size: (width: Int, height: Int),
         fillColor: [Double],
         opacity: Double
-    ) -> MTLTexture? {
+    ) -> TextureResult {
         let key = ShapeCacheKey(path: path, size: size, transform: transform, fillColor: fillColor, opacity: opacity)
 
         // Check cache
         if let cached = cache[key] {
             updateAccessOrder(key)
-            return cached
+            return TextureResult(texture: cached, didHit: true, didEvict: false)
         }
 
         // Rasterize path to alpha bytes
@@ -184,7 +191,7 @@ final class ShapeCache {
             antialias: true
         )
 
-        guard !alphaBytes.isEmpty else { return nil }
+        guard !alphaBytes.isEmpty else { return TextureResult(texture: nil, didHit: false, didEvict: false) }
 
         // Convert to BGRA with fill color and opacity
         let bgraBytes = convertToBGRA(
@@ -197,13 +204,13 @@ final class ShapeCache {
 
         // Create texture
         guard let texture = createTexture(from: bgraBytes, size: size) else {
-            return nil
+            return TextureResult(texture: nil, didHit: false, didEvict: false)
         }
 
         // Store in cache with eviction
-        storeInCache(key: key, texture: texture)
+        let evicted = storeInCache(key: key, texture: texture)
 
-        return texture
+        return TextureResult(texture: texture, didHit: false, didEvict: evicted)
     }
 
     /// Gets or creates a stroke texture for the given parameters (PR-10).
@@ -217,7 +224,7 @@ final class ShapeCache {
     ///   - lineCap: Line cap style (1=butt, 2=round, 3=square)
     ///   - lineJoin: Line join style (1=miter, 2=round, 3=bevel)
     ///   - miterLimit: Miter limit for miter joins
-    /// - Returns: Metal texture with BGRA data, or nil on failure
+    /// - Returns: Result with texture and cache hit/eviction info
     func strokeTexture(
         for path: BezierPath,
         transform: Matrix2D,
@@ -228,7 +235,7 @@ final class ShapeCache {
         lineCap: Int,
         lineJoin: Int,
         miterLimit: Double
-    ) -> MTLTexture? {
+    ) -> TextureResult {
         // Compute uniform scale from transform (length of X-basis vector)
         // This scales stroke width from Lottie coords to viewport pixels
         let uniformScale = Self.computeUniformScale(from: transform)
@@ -252,7 +259,7 @@ final class ShapeCache {
         // Check cache
         if let cached = strokeCache[key] {
             updateStrokeAccessOrder(key)
-            return cached
+            return TextureResult(texture: cached, didHit: true, didEvict: false)
         }
 
         // Rasterize stroke to BGRA bytes using CoreGraphics
@@ -269,17 +276,17 @@ final class ShapeCache {
             miterLimit: miterLimit
         )
 
-        guard !bgraBytes.isEmpty else { return nil }
+        guard !bgraBytes.isEmpty else { return TextureResult(texture: nil, didHit: false, didEvict: false) }
 
         // Create texture
         guard let texture = createTexture(from: bgraBytes, size: size) else {
-            return nil
+            return TextureResult(texture: nil, didHit: false, didEvict: false)
         }
 
         // Store in cache with eviction
-        storeInStrokeCache(key: key, texture: texture)
+        let evicted = storeInStrokeCache(key: key, texture: texture)
 
-        return texture
+        return TextureResult(texture: texture, didHit: false, didEvict: evicted)
     }
 
     /// Clears all cached textures.
@@ -360,15 +367,19 @@ final class ShapeCache {
         return texture
     }
 
-    private func storeInCache(key: ShapeCacheKey, texture: MTLTexture) {
+    @discardableResult
+    private func storeInCache(key: ShapeCacheKey, texture: MTLTexture) -> Bool {
         // Evict oldest if at capacity
+        var evicted = false
         while cache.count >= maxEntries, let oldest = accessOrder.first {
             accessOrder.removeFirst()
             cache.removeValue(forKey: oldest)
+            evicted = true
         }
 
         cache[key] = texture
         accessOrder.append(key)
+        return evicted
     }
 
     private func updateAccessOrder(_ key: ShapeCacheKey) {
@@ -378,15 +389,19 @@ final class ShapeCache {
         }
     }
 
-    private func storeInStrokeCache(key: StrokeCacheKey, texture: MTLTexture) {
+    @discardableResult
+    private func storeInStrokeCache(key: StrokeCacheKey, texture: MTLTexture) -> Bool {
         // Evict oldest if at capacity
+        var evicted = false
         while strokeCache.count >= maxEntries, let oldest = strokeAccessOrder.first {
             strokeAccessOrder.removeFirst()
             strokeCache.removeValue(forKey: oldest)
+            evicted = true
         }
 
         strokeCache[key] = texture
         strokeAccessOrder.append(key)
+        return evicted
     }
 
     private func updateStrokeAccessOrder(_ key: StrokeCacheKey) {
