@@ -6,57 +6,53 @@ import CoreGraphics
 
 /// Key for caching rasterized shape textures.
 /// Combines path identity, target size, transform, fill color, and opacity for uniqueness.
+/// PR-14A: Uses quantized hashes for determinism and better cache hit rate.
 struct ShapeCacheKey: Hashable {
     let pathHash: Int
     let width: Int
     let height: Int
     let transformHash: Int
     let colorHash: Int
-    let opacity: Double
+    let quantizedOpacity: Int
 
     init(path: BezierPath, size: (width: Int, height: Int), transform: Matrix2D, fillColor: [Double], opacity: Double) {
-        self.pathHash = Self.computePathHash(path)
+        self.pathHash = Self.computeQuantizedPathHash(path)
         self.width = size.width
         self.height = size.height
-        self.transformHash = Self.computeTransformHash(transform)
-        self.colorHash = Self.computeColorHash(fillColor)
-        self.opacity = opacity
+        self.transformHash = transform.quantizedHash()
+        self.colorHash = Self.computeQuantizedColorHash(fillColor)
+        // Quantize opacity to 1/256 steps (8-bit precision matches texture output)
+        self.quantizedOpacity = Quantization.quantizedInt(opacity, step: 1.0 / 256.0)
     }
 
-    private static func computePathHash(_ path: BezierPath) -> Int {
+    /// Computes deterministic path hash using quantized coordinates.
+    /// Eliminates cache misses from floating-point noise (e.g., 1e-12 differences).
+    private static func computeQuantizedPathHash(_ path: BezierPath) -> Int {
+        let step = AnimConstants.pathCoordQuantStep
         var hasher = Hasher()
         hasher.combine(path.closed)
         hasher.combine(path.vertices.count)
         for vertex in path.vertices {
-            hasher.combine(vertex.x)
-            hasher.combine(vertex.y)
+            hasher.combine(Quantization.quantizedInt(vertex.x, step: step))
+            hasher.combine(Quantization.quantizedInt(vertex.y, step: step))
         }
         for tangent in path.inTangents {
-            hasher.combine(tangent.x)
-            hasher.combine(tangent.y)
+            hasher.combine(Quantization.quantizedInt(tangent.x, step: step))
+            hasher.combine(Quantization.quantizedInt(tangent.y, step: step))
         }
         for tangent in path.outTangents {
-            hasher.combine(tangent.x)
-            hasher.combine(tangent.y)
+            hasher.combine(Quantization.quantizedInt(tangent.x, step: step))
+            hasher.combine(Quantization.quantizedInt(tangent.y, step: step))
         }
         return hasher.finalize()
     }
 
-    private static func computeTransformHash(_ transform: Matrix2D) -> Int {
+    /// Computes deterministic color hash using quantized components.
+    private static func computeQuantizedColorHash(_ color: [Double]) -> Int {
         var hasher = Hasher()
-        hasher.combine(transform.a)
-        hasher.combine(transform.b)
-        hasher.combine(transform.c)
-        hasher.combine(transform.d)
-        hasher.combine(transform.tx)
-        hasher.combine(transform.ty)
-        return hasher.finalize()
-    }
-
-    private static func computeColorHash(_ color: [Double]) -> Int {
-        var hasher = Hasher()
+        // Quantize to 8-bit precision (1/256) to match texture color depth
         for component in color {
-            hasher.combine(component)
+            hasher.combine(Quantization.quantizedInt(component, step: 1.0 / 256.0))
         }
         return hasher.finalize()
     }
@@ -66,17 +62,18 @@ struct ShapeCacheKey: Hashable {
 
 /// Key for caching rasterized stroke textures (PR-10).
 /// Extends shape key with stroke-specific parameters.
+/// PR-14A: Uses quantized hashes for determinism and better cache hit rate.
 struct StrokeCacheKey: Hashable {
     let pathHash: Int
     let width: Int
     let height: Int
     let transformHash: Int
     let colorHash: Int
-    let opacity: Double
-    let strokeWidth: Double
+    let quantizedOpacity: Int
+    let quantizedStrokeWidth: Int
     let lineCap: Int
     let lineJoin: Int
-    let miterLimit: Double
+    let quantizedMiterLimit: Int
 
     init(
         path: BezierPath,
@@ -89,52 +86,45 @@ struct StrokeCacheKey: Hashable {
         lineJoin: Int,
         miterLimit: Double
     ) {
-        self.pathHash = Self.computePathHash(path)
+        self.pathHash = Self.computeQuantizedPathHash(path)
         self.width = size.width
         self.height = size.height
-        self.transformHash = Self.computeTransformHash(transform)
-        self.colorHash = Self.computeColorHash(strokeColor)
-        self.opacity = opacity
-        self.strokeWidth = strokeWidth
+        self.transformHash = transform.quantizedHash()
+        self.colorHash = Self.computeQuantizedColorHash(strokeColor)
+        self.quantizedOpacity = Quantization.quantizedInt(opacity, step: 1.0 / 256.0)
+        self.quantizedStrokeWidth = Quantization.quantizedInt(strokeWidth, step: AnimConstants.strokeWidthQuantStep)
         self.lineCap = lineCap
         self.lineJoin = lineJoin
-        self.miterLimit = miterLimit
+        // Quantize miter limit to 1/16 precision (adequate for visual consistency)
+        self.quantizedMiterLimit = Quantization.quantizedInt(miterLimit, step: 1.0 / 16.0)
     }
 
-    private static func computePathHash(_ path: BezierPath) -> Int {
+    /// Computes deterministic path hash using quantized coordinates.
+    private static func computeQuantizedPathHash(_ path: BezierPath) -> Int {
+        let step = AnimConstants.pathCoordQuantStep
         var hasher = Hasher()
         hasher.combine(path.closed)
         hasher.combine(path.vertices.count)
         for vertex in path.vertices {
-            hasher.combine(vertex.x)
-            hasher.combine(vertex.y)
+            hasher.combine(Quantization.quantizedInt(vertex.x, step: step))
+            hasher.combine(Quantization.quantizedInt(vertex.y, step: step))
         }
         for tangent in path.inTangents {
-            hasher.combine(tangent.x)
-            hasher.combine(tangent.y)
+            hasher.combine(Quantization.quantizedInt(tangent.x, step: step))
+            hasher.combine(Quantization.quantizedInt(tangent.y, step: step))
         }
         for tangent in path.outTangents {
-            hasher.combine(tangent.x)
-            hasher.combine(tangent.y)
+            hasher.combine(Quantization.quantizedInt(tangent.x, step: step))
+            hasher.combine(Quantization.quantizedInt(tangent.y, step: step))
         }
         return hasher.finalize()
     }
 
-    private static func computeTransformHash(_ transform: Matrix2D) -> Int {
-        var hasher = Hasher()
-        hasher.combine(transform.a)
-        hasher.combine(transform.b)
-        hasher.combine(transform.c)
-        hasher.combine(transform.d)
-        hasher.combine(transform.tx)
-        hasher.combine(transform.ty)
-        return hasher.finalize()
-    }
-
-    private static func computeColorHash(_ color: [Double]) -> Int {
+    /// Computes deterministic color hash using quantized components.
+    private static func computeQuantizedColorHash(_ color: [Double]) -> Int {
         var hasher = Hasher()
         for component in color {
-            hasher.combine(component)
+            hasher.combine(Quantization.quantizedInt(component, step: 1.0 / 256.0))
         }
         return hasher.finalize()
     }
@@ -244,9 +234,8 @@ final class ShapeCache {
         let uniformScale = Self.computeUniformScale(from: transform)
         let scaledStrokeWidth = strokeWidth * uniformScale
 
-        // Quantize stroke width for cache key to reduce cache misses with animated width
-        // Round to nearest 0.125 (1/8 pixel precision)
-        let quantizedWidth = (scaledStrokeWidth * 8).rounded() / 8
+        // Quantize stroke width for cache key using AnimConstants.strokeWidthQuantStep (PR-14A)
+        let quantizedWidth = Quantization.quantize(scaledStrokeWidth, step: AnimConstants.strokeWidthQuantStep)
 
         let key = StrokeCacheKey(
             path: path,
@@ -523,9 +512,12 @@ final class ShapeCache {
             let cp2 = transform.apply(to: Vec2D(x: nextVertex.x + inTangent.x, y: nextVertex.y + inTangent.y))
             let endPoint = transform.apply(to: nextVertex)
 
-            // Check if this is a straight line (both tangents are zero)
-            let isLine = abs(outTangent.x) < 0.001 && abs(outTangent.y) < 0.001 &&
-                         abs(inTangent.x) < 0.001 && abs(inTangent.y) < 0.001
+            // Check if this is a straight line (both tangents are nearly zero)
+            // PR-14A: Use AnimConstants.nearlyEqualEpsilon for consistency
+            let isLine = Quantization.isNearlyZero(outTangent.x) &&
+                         Quantization.isNearlyZero(outTangent.y) &&
+                         Quantization.isNearlyZero(inTangent.x) &&
+                         Quantization.isNearlyZero(inTangent.y)
 
             if isLine {
                 cgPath.addLine(to: CGPoint(x: endPoint.x, y: endPoint.y))

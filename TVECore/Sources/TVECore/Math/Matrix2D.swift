@@ -115,6 +115,37 @@ extension Matrix2D {
     }
 }
 
+// MARK: - Quantized Cache Hashing (PR-14A)
+
+extension Matrix2D {
+    /// Computes a quantized hash from matrix components for in-memory cache keys.
+    ///
+    /// This eliminates cache misses caused by floating-point noise (e.g., 1e-12 differences)
+    /// by snapping each component to a grid before hashing.
+    ///
+    /// - Parameter step: Quantization step (default: AnimConstants.matrixQuantStep = 1/1024)
+    /// - Returns: Hash value suitable for use in cache keys
+    ///
+    /// - Important: **Process-local only.**
+    ///   - Stable within a single process run.
+    ///   - NOT stable across app launches / devices / CI runs (Swift Hasher uses random seed).
+    ///   - Do not persist this value to disk or use for snapshot determinism.
+    ///   - If cross-run stability is needed, introduce a StableHasher (e.g. FNV-1a/xxHash).
+    ///
+    /// - Note: Two matrices that differ by less than `step` in all components
+    ///         will produce the same hash, improving cache hit rate.
+    public func quantizedHash(step: Double = AnimConstants.matrixQuantStep) -> Int {
+        var hasher = Hasher()
+        hasher.combine(Quantization.quantizedInt(a, step: step))
+        hasher.combine(Quantization.quantizedInt(b, step: step))
+        hasher.combine(Quantization.quantizedInt(c, step: step))
+        hasher.combine(Quantization.quantizedInt(d, step: step))
+        hasher.combine(Quantization.quantizedInt(tx, step: step))
+        hasher.combine(Quantization.quantizedInt(ty, step: step))
+        return hasher.finalize()
+    }
+}
+
 // MARK: - Debug Description
 
 extension Matrix2D: CustomDebugStringConvertible {

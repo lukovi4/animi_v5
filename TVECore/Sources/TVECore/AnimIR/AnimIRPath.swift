@@ -976,8 +976,8 @@ public enum ShapePathExtractor {
                     return nil // Missing time - fail-fast
                 }
 
-                // Times must match (using small epsilon for floating point)
-                guard abs(pt - st) < 0.001 else {
+                // Times must match (PR-14A: use AnimConstants.keyframeTimeEpsilon)
+                guard Quantization.keyframeTimesEqual(pt, st) else {
                     return nil // Time mismatch - fail-fast
                 }
             }
@@ -1260,8 +1260,8 @@ public enum ShapePathExtractor {
                     return nil // Missing time - fail-fast
                 }
 
-                // Times must match (using small epsilon for floating point)
-                guard abs(pt - st) < 0.001 else {
+                // Times must match (PR-14A: use AnimConstants.keyframeTimeEpsilon)
+                guard Quantization.keyframeTimesEqual(pt, st) else {
                     return nil // Time mismatch - fail-fast
                 }
             }
@@ -1412,11 +1412,11 @@ public enum ShapePathExtractor {
         // Extract static rotation (default 0)
         let rotationDeg = extractDouble(from: polystar.rotation) ?? 0
 
-        // Validate roundness is zero (or absent)
-        if let innerRoundness = extractDouble(from: polystar.innerRoundness), abs(innerRoundness) > 0.001 {
+        // Validate roundness is zero (or absent) - PR-14A: use AnimConstants.nearlyEqualEpsilon
+        if let innerRoundness = extractDouble(from: polystar.innerRoundness), !Quantization.isNearlyZero(innerRoundness) {
             return nil
         }
-        if let outerRoundness = extractDouble(from: polystar.outerRoundness), abs(outerRoundness) > 0.001 {
+        if let outerRoundness = extractDouble(from: polystar.outerRoundness), !Quantization.isNearlyZero(outerRoundness) {
             return nil
         }
 
@@ -1514,10 +1514,11 @@ public enum ShapePathExtractor {
         if polystar.innerRoundness?.isAnimated == true || polystar.outerRoundness?.isAnimated == true {
             return nil
         }
-        if let innerRoundness = extractDouble(from: polystar.innerRoundness), abs(innerRoundness) > 0.001 {
+        // PR-14A: use AnimConstants.nearlyEqualEpsilon
+        if let innerRoundness = extractDouble(from: polystar.innerRoundness), !Quantization.isNearlyZero(innerRoundness) {
             return nil
         }
-        if let outerRoundness = extractDouble(from: polystar.outerRoundness), abs(outerRoundness) > 0.001 {
+        if let outerRoundness = extractDouble(from: polystar.outerRoundness), !Quantization.isNearlyZero(outerRoundness) {
             return nil
         }
 
@@ -1611,7 +1612,8 @@ public enum ShapePathExtractor {
                 guard let rt = refTime else { return nil }
                 for j in 1..<allKeyframeArrays.count {
                     guard let ot = allKeyframeArrays[j][i].time else { return nil }
-                    guard abs(rt - ot) < 0.001 else { return nil }
+                    // PR-14A: use AnimConstants.keyframeTimeEpsilon
+                    guard Quantization.keyframeTimesEqual(rt, ot) else { return nil }
                 }
             }
         }
@@ -1995,7 +1997,8 @@ public enum ShapePathExtractor {
             if skew.isAnimated {
                 return nil // Animated skew not supported
             }
-            if let skewValue = extractDouble(from: skew), abs(skewValue) > 0.001 {
+            // PR-14A: use AnimConstants.nearlyEqualEpsilon
+            if let skewValue = extractDouble(from: skew), !Quantization.isNearlyZero(skewValue) {
                 return nil // Non-zero skew not supported
             }
         }
@@ -2050,8 +2053,8 @@ public enum ShapePathExtractor {
                 guard let vec = extractVec2D(from: scl) else {
                     return nil // Fail-fast: field present but unparseable
                 }
-                // Validate uniform scale (sx == sy)
-                guard abs(vec.x - vec.y) < 0.001 else {
+                // Validate uniform scale (sx == sy) - PR-14A: use AnimConstants.nearlyEqualEpsilon
+                guard Quantization.isNearlyEqual(vec.x, vec.y) else {
                     return nil // Fail-fast: non-uniform scale
                 }
                 scaleTrack = .static(vec)
@@ -2137,8 +2140,8 @@ public enum ShapePathExtractor {
                 return nil
             }
 
-            // Validate uniform scale
-            guard abs(vec.x - vec.y) < 0.001 else {
+            // Validate uniform scale - PR-14A: use AnimConstants.nearlyEqualEpsilon
+            guard Quantization.isNearlyEqual(vec.x, vec.y) else {
                 return nil // Non-uniform scale in keyframe
             }
 

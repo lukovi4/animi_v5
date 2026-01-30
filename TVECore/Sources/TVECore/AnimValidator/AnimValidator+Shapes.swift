@@ -206,8 +206,8 @@ extension AnimValidator {
                     continue
                 }
 
-                // Times must match
-                if let pt = posTime, let st = sizeTime, abs(pt - st) >= 0.001 {
+                // Times must match (PR-14A: use AnimConstants.keyframeTimeEpsilon)
+                if let pt = posTime, let st = sizeTime, !Quantization.keyframeTimesEqual(pt, st) {
                     issues.append(ValidationIssue(
                         code: AnimValidationCode.unsupportedRectKeyframesMismatch,
                         severity: .error,
@@ -362,7 +362,8 @@ extension AnimValidator {
                 }
 
                 // Times must match
-                if let pt = posTime, let st = sizeTime, abs(pt - st) >= 0.001 {
+                // PR-14A: use AnimConstants.keyframeTimeEpsilon
+                if let pt = posTime, let st = sizeTime, !Quantization.keyframeTimesEqual(pt, st) {
                     issues.append(ValidationIssue(
                         code: AnimValidationCode.unsupportedEllipseKeyframesMismatch,
                         severity: .error,
@@ -607,7 +608,8 @@ extension AnimValidator {
                     roundnessValue = nil
                 }
 
-                if let rv = roundnessValue, abs(rv) > 0.001 {
+                // PR-14A: use AnimConstants.nearlyEqualEpsilon
+                if let rv = roundnessValue, !Quantization.isNearlyZero(rv) {
                     issues.append(ValidationIssue(
                         code: AnimValidationCode.unsupportedPolystarRoundnessNonzero,
                         severity: .error,
@@ -730,7 +732,8 @@ extension AnimValidator {
                         continue
                     }
 
-                    if let rt = refTime, let ot = otherTime, abs(rt - ot) >= 0.001 {
+                    // PR-14A: use AnimConstants.keyframeTimeEpsilon
+                    if let rt = refTime, let ot = otherTime, !Quantization.keyframeTimesEqual(rt, ot) {
                         issues.append(ValidationIssue(
                             code: AnimValidationCode.unsupportedPolystarKeyframesMismatch,
                             severity: .error,
@@ -1042,7 +1045,8 @@ extension AnimValidator {
                     path: "\(trPath).sk.a",
                     message: "Animated group transform skew not supported."
                 ))
-            } else if let skewValue = extractStaticDouble(from: skew), abs(skewValue) > 0.001 {
+            // PR-14A: use AnimConstants.nearlyEqualEpsilon
+            } else if let skewValue = extractStaticDouble(from: skew), !Quantization.isNearlyZero(skewValue) {
                 issues.append(ValidationIssue(
                     code: AnimValidationCode.unsupportedGroupTransformSkew,
                     severity: .error,
@@ -1069,9 +1073,9 @@ extension AnimValidator {
                 // Check each keyframe for uniform scale
                 validateGroupTransformScaleKeyframes(scale: scale, basePath: trPath, issues: &issues)
             } else {
-                // Static scale - check uniformity
+                // Static scale - check uniformity (PR-14A: use AnimConstants.nearlyEqualEpsilon)
                 if let scaleVec = extractStaticVec2D(from: scale) {
-                    if abs(scaleVec.x - scaleVec.y) > 0.001 {
+                    if !Quantization.isNearlyEqual(scaleVec.x, scaleVec.y) {
                         issues.append(ValidationIssue(
                             code: AnimValidationCode.unsupportedGroupTransformScaleNonuniform,
                             severity: .error,
@@ -1119,7 +1123,8 @@ extension AnimValidator {
             case .numbers(let arr) where arr.count >= 2:
                 let sx = arr[0]
                 let sy = arr[1]
-                if abs(sx - sy) > 0.001 {
+                // PR-14A: use AnimConstants.nearlyEqualEpsilon
+                if !Quantization.isNearlyEqual(sx, sy) {
                     issues.append(ValidationIssue(
                         code: AnimValidationCode.unsupportedGroupTransformScaleNonuniform,
                         severity: .error,
@@ -1257,7 +1262,8 @@ extension AnimValidator {
                         continue
                     }
 
-                    if let rt = refTime, let ot = otherTime, abs(rt - ot) >= 0.001 {
+                    // PR-14A: use AnimConstants.keyframeTimeEpsilon
+                    if let rt = refTime, let ot = otherTime, !Quantization.keyframeTimesEqual(rt, ot) {
                         issues.append(ValidationIssue(
                             code: AnimValidationCode.unsupportedGroupTransformKeyframesMismatch,
                             severity: .error,
