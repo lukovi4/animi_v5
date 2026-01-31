@@ -5,15 +5,18 @@ import Foundation
 /// Generates render commands for a scene at a given frame
 public enum SceneRenderPlan {
 
-    /// Generates render commands for all visible blocks at the given scene frame
+    /// Generates render commands for all visible blocks at the given scene frame.
     ///
     /// - Parameters:
     ///   - runtime: Compiled scene runtime
     ///   - sceneFrameIndex: Current frame index in scene timeline
+    ///   - userTransforms: Per-block user transforms keyed by blockId.
+    ///     Blocks not present in the dictionary receive `.identity`.
     /// - Returns: Array of render commands for all visible blocks
     public static func renderCommands(
         for runtime: SceneRuntime,
-        sceneFrameIndex: Int
+        sceneFrameIndex: Int,
+        userTransforms: [String: Matrix2D] = [:]
     ) -> [RenderCommand] {
         var commands: [RenderCommand] = []
 
@@ -38,12 +41,16 @@ public enum SceneRenderPlan {
                 continue
             }
 
+            // Resolve user transform for this block (default: identity)
+            let userTransform = userTransforms[block.blockId] ?? .identity
+
             // Generate commands for this block
             let blockCommands = renderBlockCommands(
                 block: block,
                 variant: &variant,
                 sceneFrameIndex: sceneFrameIndex,
-                canvasSize: canvasSize
+                canvasSize: canvasSize,
+                userTransform: userTransform
             )
             commands.append(contentsOf: blockCommands)
         }
@@ -59,7 +66,8 @@ public enum SceneRenderPlan {
         block: BlockRuntime,
         variant: inout VariantRuntime,
         sceneFrameIndex: Int,
-        canvasSize: SizeD
+        canvasSize: SizeD,
+        userTransform: Matrix2D
     ) -> [RenderCommand] {
         var commands: [RenderCommand] = []
 
@@ -87,8 +95,11 @@ public enum SceneRenderPlan {
             animIR: variant.animIR
         )
 
-        // Get animation render commands
-        let animCommands = variant.animIR.renderCommands(frameIndex: localFrameIndex)
+        // Get animation render commands with user transform (PR-16)
+        let animCommands = variant.animIR.renderCommands(
+            frameIndex: localFrameIndex,
+            userTransform: userTransform
+        )
         commands.append(contentsOf: animCommands)
 
         // Pop transform
@@ -108,7 +119,7 @@ public enum SceneRenderPlan {
     /// Computes the transformation matrix to place animation content within a block
     ///
     /// Block Placement Policy:
-    /// - If anim is full-canvas (animSize ≈ canvasSize), use identity transform (clip does the work)
+    /// - If anim is full-canvas (animSize ~= canvasSize), use identity transform (clip does the work)
     /// - Otherwise, scale animation to fit within block (contain policy)
     private static func computeBlockTransform(
         animSize: SizeD,
@@ -154,8 +165,8 @@ public enum SceneRenderPlan {
 // MARK: - Scene Runtime Extensions
 
 extension SceneRuntime {
-    /// Generates render commands for the given scene frame
-    /// Convenience method that delegates to SceneRenderPlan
+    /// Generates render commands for the given scene frame.
+    /// Convenience method that delegates to SceneRenderPlan with no user transforms.
     public func renderCommands(sceneFrameIndex: Int) -> [RenderCommand] {
         SceneRenderPlan.renderCommands(for: self, sceneFrameIndex: sceneFrameIndex)
     }

@@ -16,6 +16,11 @@ public final class ScenePlayer {
     /// Animation compiler
     private let compiler = AnimIRCompiler()
 
+    /// Per-block user transforms (pan/zoom/rotate from editor UI).
+    /// Key: blockId (MediaBlock.id). Value: user-specified Matrix2D.
+    /// Blocks without an entry default to `.identity`.
+    private var userTransforms: [String: Matrix2D] = [:]
+
     // MARK: - Initialization
 
     public init() {}
@@ -204,9 +209,40 @@ public final class ScenePlayer {
         )
     }
 
+    // MARK: - User Transform (PR-16)
+
+    /// Sets the user transform for a media block.
+    ///
+    /// The transform represents the cumulative pan/zoom/rotate applied by the user
+    /// in the editor. It is applied **only** to the binding layer (`media`);
+    /// the `mediaInput` window remains fixed.
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block (`MediaBlock.id`)
+    ///   - transform: Combined user pan/zoom/rotate as a `Matrix2D`
+    public func setUserTransform(blockId: String, transform: Matrix2D) {
+        userTransforms[blockId] = transform
+    }
+
+    /// Returns the current user transform for a media block.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: The stored `Matrix2D`, or `.identity` if none was set
+    public func userTransform(blockId: String) -> Matrix2D {
+        userTransforms[blockId] ?? .identity
+    }
+
+    /// Resets user transforms for all blocks to identity.
+    public func resetAllUserTransforms() {
+        userTransforms.removeAll()
+    }
+
     // MARK: - Render Commands
 
-    /// Generates render commands for the given scene frame
+    /// Generates render commands for the given scene frame.
+    ///
+    /// User transforms stored via `setUserTransform(blockId:transform:)` are
+    /// automatically forwarded to each block's AnimIR render pass.
     ///
     /// - Parameter sceneFrameIndex: Frame index in scene timeline
     /// - Returns: Render commands for all visible blocks, or empty array if not compiled
@@ -214,6 +250,10 @@ public final class ScenePlayer {
         guard let compiledScene = compiledScene else {
             return []
         }
-        return compiledScene.runtime.renderCommands(sceneFrameIndex: sceneFrameIndex)
+        return SceneRenderPlan.renderCommands(
+            for: compiledScene.runtime,
+            sceneFrameIndex: sceneFrameIndex,
+            userTransforms: userTransforms
+        )
     }
 }
