@@ -8,11 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		0D7C19312488787BBA9F8379 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 7AEA66CBE6EB5B30975CB68C /* LaunchScreen.storyboard */; };
+		2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88357A08E23A0E79039FC032 /* TemplateEditorController.swift */; };
 		404981E927E535F603698579 /* PlayerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 309F76627D024207657CC40A /* PlayerViewController.swift */; };
 		5730DA4CA9AA56F5D0794FD6 /* TVECore in Frameworks */ = {isa = PBXBuildFile; productRef = C660994DFEAC165D15AE3107 /* TVECore */; };
 		6D8ECBA9A63E3BBE961807B1 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D531F2B70470609DAAEC0E92 /* SceneDelegate.swift */; };
 		70F7C5CF6D0F9A28D9BF27D3 /* TestAssets in Resources */ = {isa = PBXBuildFile; fileRef = 2BF0652B3DD5E20359F327E7 /* TestAssets */; };
 		8417606871FCEA18666AF617 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2CFCF74F9E5906B8855CBA71 /* Assets.xcassets */; };
+		912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945142E5769BD54EFED06588 /* EditorOverlayView.swift */; };
 		CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9681217003171DED246CF7A /* AppDelegate.swift */; };
 /* End PBXBuildFile section */
 
@@ -22,6 +24,8 @@
 		309F76627D024207657CC40A /* PlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViewController.swift; sourceTree = "<group>"; };
 		6A04D252BCD74F091A0FA0C8 /* TVECore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TVECore; path = ../TVECore; sourceTree = SOURCE_ROOT; };
 		7AEA66CBE6EB5B30975CB68C /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		88357A08E23A0E79039FC032 /* TemplateEditorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateEditorController.swift; sourceTree = "<group>"; };
+		945142E5769BD54EFED06588 /* EditorOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorOverlayView.swift; sourceTree = "<group>"; };
 		A9681217003171DED246CF7A /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C463B57720E8B12E559B2CA6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -62,6 +66,7 @@
 			isa = PBXGroup;
 			children = (
 				E5ECE540AAD3F6F6FE110D7F /* App */,
+				AB885C05AC47A6617B0FB4FE /* Editor */,
 				0C30BD67F1694F5E87D23958 /* Player */,
 			);
 			path = Sources;
@@ -81,6 +86,15 @@
 				6A04D252BCD74F091A0FA0C8 /* TVECore */,
 			);
 			name = Packages;
+			sourceTree = "<group>";
+		};
+		AB885C05AC47A6617B0FB4FE /* Editor */ = {
+			isa = PBXGroup;
+			children = (
+				945142E5769BD54EFED06588 /* EditorOverlayView.swift */,
+				88357A08E23A0E79039FC032 /* TemplateEditorController.swift */,
+			);
+			path = Editor;
 			sourceTree = "<group>";
 		};
 		CB301D244C5CC9EE6C9D6BA2 = {
@@ -182,8 +196,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */,
+				912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */,
 				404981E927E535F603698579 /* PlayerViewController.swift in Sources */,
 				6D8ECBA9A63E3BBE961807B1 /* SceneDelegate.swift in Sources */,
+				2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

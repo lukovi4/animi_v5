@@ -115,6 +115,19 @@ final class PlayerViewController: UIViewController {
     private var renderErrorLogged = false
     private var deviceHeaderLogged = false
 
+    // MARK: - Editor (PR-19)
+    private var scenePlayer: ScenePlayer?
+    private let editorController = TemplateEditorController()
+    private lazy var overlayView = EditorOverlayView()
+    private lazy var modeToggle: UISegmentedControl = {
+        let control = UISegmentedControl(items: ["Preview", "Edit"])
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.selectedSegmentIndex = 0  // Preview by default
+        control.addTarget(self, action: #selector(modeToggleChanged), for: .valueChanged)
+        control.isEnabled = false
+        return control
+    }()
+
     // In-flight frame limiting (must match MetalRendererOptions.maxFramesInFlight)
     private static let maxFramesInFlight = 3
     private let inFlightSemaphore = DispatchSemaphore(value: maxFramesInFlight)
@@ -134,16 +147,27 @@ final class PlayerViewController: UIViewController {
         super.viewDidLoad()
         setupUI()
         setupRenderer()
+        wireEditorController()
         let deviceName = metalView.device?.name ?? "N/A"
         log("AnimiApp initialized, TVECore: \(TVECore.version), Metal: \(deviceName)")
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        editorController.viewSize = metalView.bounds.size
+        overlayView.canvasToView = editorController.canvasToViewTransform()
+        // Lead fix #5: refresh overlay after layout change to prevent "jump"
+        editorController.refreshOverlayIfNeeded()
+    }
+
     private func setupUI() {
         view.backgroundColor = .systemBackground
-        [sceneSelector, loadButton, metalView, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
+        [sceneSelector, loadButton, modeToggle, metalView, overlayView, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
+        overlayView.translatesAutoresizingMaskIntoConstraints = false
 
         // MetalView constraints for normal mode
-        metalViewTopToLoadButtonConstraint = metalView.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 12)
+        // PR-19: metalView top anchors to modeToggle (not loadButton)
+        metalViewTopToLoadButtonConstraint = metalView.topAnchor.constraint(equalTo: modeToggle.bottomAnchor, constant: 8)
         metalViewTopToSafeAreaConstraint = metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12)
         metalViewTopToSafeAreaConstraint?.isActive = false
 
@@ -167,10 +191,19 @@ final class PlayerViewController: UIViewController {
             loadButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             loadButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             loadButton.heightAnchor.constraint(equalToConstant: 44),
+            // PR-19: modeToggle between loadButton and metalView
+            modeToggle.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 8),
+            modeToggle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            modeToggle.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             metalViewTopToLoadButtonConstraint!,
             metalViewLeadingConstraint!,
             metalViewTrailingConstraint!,
             metalViewHeightConstraint!,
+            // PR-19: overlayView pins to metalView (non-interactive, CAShapeLayer overlay)
+            overlayView.topAnchor.constraint(equalTo: metalView.topAnchor),
+            overlayView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
+            overlayView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
+            overlayView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
             controlsStack.topAnchor.constraint(equalTo: metalView.bottomAnchor, constant: 12),
             controlsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             controlsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
@@ -184,9 +217,31 @@ final class PlayerViewController: UIViewController {
             logTextView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16)
         ])
 
-        // Tap gesture for fullscreen toggle
+        // PR-19: All gestures on metalView (lead fix #1 — overlay is non-interactive)
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(metalViewTapped))
         metalView.addGestureRecognizer(tapGesture)
+
+        let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan))
+        let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
+        let rotationGesture = UIRotationGestureRecognizer(target: self, action: #selector(handleRotation))
+        pinchGesture.delegate = self
+        rotationGesture.delegate = self
+        metalView.addGestureRecognizer(panGesture)
+        metalView.addGestureRecognizer(pinchGesture)
+        metalView.addGestureRecognizer(rotationGesture)
+    }
+
+    /// Wires editor controller callbacks. Called once from viewDidLoad.
+    private func wireEditorController() {
+        editorController.setOverlayView(overlayView)
+
+        editorController.onNeedsDisplay = { [weak self] in
+            self?.metalView.setNeedsDisplay()
+        }
+
+        editorController.onStateChanged = { [weak self] state in
+            self?.syncUIWithState(state)
+        }
     }
 
     private func setupRenderer() {
@@ -229,7 +284,9 @@ final class PlayerViewController: UIViewController {
     @objc private func playPauseTapped() {
         if isPlaying {
             stopPlayback()
+            editorController.setPlaying(false)
         } else {
+            editorController.setPlaying(true)
             startPlayback()
         }
     }
@@ -237,19 +294,53 @@ final class PlayerViewController: UIViewController {
     @objc private func frameSliderChanged() {
         currentFrameIndex = Int(frameSlider.value)
         updateFrameLabel()
-        metalView.setNeedsDisplay()
+        editorController.scrub(to: currentFrameIndex)
     }
 
-    @objc private func metalViewTapped() {
+    @objc private func metalViewTapped(_ recognizer: UITapGestureRecognizer) {
+        // PR-19: In edit mode, tap does hit-test for block selection
+        if editorController.state.mode == .edit {
+            let point = recognizer.location(in: metalView)
+            editorController.handleTap(viewPoint: point)
+            return
+        }
+        // Preview mode: toggle fullscreen
+        toggleFullscreen()
+    }
+
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        editorController.handlePan(recognizer)
+    }
+
+    @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+        editorController.handlePinch(recognizer)
+    }
+
+    @objc private func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
+        editorController.handleRotation(recognizer)
+    }
+
+    @objc private func modeToggleChanged() {
+        stopPlayback()
+        if modeToggle.selectedSegmentIndex == 0 {
+            editorController.enterPreview()
+        } else {
+            editorController.enterEdit()
+        }
+    }
+
+    private func toggleFullscreen() {
         isFullscreen.toggle()
 
         UIView.animate(withDuration: 0.3) { [self] in
             // Hide/show UI elements
-            sceneSelector.alpha = isFullscreen ? 0 : 1
-            loadButton.alpha = isFullscreen ? 0 : 1
-            controlsStack.alpha = isFullscreen ? 0 : 1
-            frameLabel.alpha = isFullscreen ? 0 : 1
-            logTextView.alpha = isFullscreen ? 0 : 1
+            let hidden = isFullscreen
+            sceneSelector.alpha = hidden ? 0 : 1
+            loadButton.alpha = hidden ? 0 : 1
+            modeToggle.alpha = hidden ? 0 : 1
+            controlsStack.alpha = hidden ? 0 : 1
+            frameLabel.alpha = hidden ? 0 : 1
+            logTextView.alpha = hidden ? 0 : 1
 
             // Toggle top constraint
             metalViewTopToLoadButtonConstraint?.isActive = !isFullscreen
@@ -270,6 +361,19 @@ final class PlayerViewController: UIViewController {
 
         // Update status bar
         setNeedsStatusBarAppearanceUpdate()
+    }
+
+    /// Syncs UI controls with editor state (called from controller's onStateChanged callback).
+    private func syncUIWithState(_ state: TemplateEditorState) {
+        let isPreview = state.mode == .preview
+        playPauseButton.isHidden = !isPreview
+        frameSlider.isHidden = !isPreview
+        frameLabel.isHidden = !isPreview
+
+        frameLabel.text = "Frame: \(state.currentPreviewFrame) / \(totalFrames)"
+        frameSlider.value = Float(state.currentPreviewFrame)
+
+        overlayView.isHidden = isPreview
     }
 
     override var prefersStatusBarHidden: Bool {
@@ -328,8 +432,13 @@ final class PlayerViewController: UIViewController {
         let compiled = try player.compile(package: package, loadedAnimations: loaded)
         compiledScene = compiled
 
+        // PR-19: Store player as property and wire to editor controller
+        scenePlayer = player
+        editorController.setPlayer(player)
+
         // Store canvas size for render target
         canvasSize = compiled.runtime.canvasSize
+        editorController.canvasSize = canvasSize
 
         // Update metalView aspect ratio to match canvas
         updateMetalViewAspectRatio(width: canvasSize.width, height: canvasSize.height)
@@ -379,6 +488,12 @@ final class PlayerViewController: UIViewController {
         frameSlider.isEnabled = true
         playPauseButton.isEnabled = true
         updateFrameLabel()
+
+        // PR-19: Enable mode toggle and start in preview
+        modeToggle.isEnabled = true
+        modeToggle.selectedSegmentIndex = 0
+        editorController.enterPreview()
+
         log("Ready for playback!")
     }
 
@@ -399,6 +514,7 @@ final class PlayerViewController: UIViewController {
         updatePlayPauseButton()
         displayLink?.invalidate()
         displayLink = nil
+        editorController.setPlaying(false)
     }
 
     private func updatePlayPauseButton() {
@@ -409,10 +525,9 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func displayLinkFired() {
-        currentFrameIndex = (currentFrameIndex + 1) % totalFrames
-        frameSlider.value = Float(currentFrameIndex)
-        updateFrameLabel()
-        metalView.setNeedsDisplay()
+        editorController.advanceFrame(totalFrames: totalFrames)
+        // Also update VC's local frame tracking for legacy compatibility
+        currentFrameIndex = editorController.state.currentPreviewFrame
     }
 
     private func updateFrameLabel() { frameLabel.text = "Frame: \(currentFrameIndex) / \(totalFrames)" }
@@ -497,8 +612,13 @@ extension PlayerViewController: MTKViewDelegate {
                 }
             }
 
-            // Get render commands for current scene frame
-            let commands = compiled.runtime.renderCommands(sceneFrameIndex: currentFrameIndex)
+            // PR-19: Get render commands from editor controller (mode-aware)
+            let commands: [RenderCommand]
+            if let editorCommands = editorController.currentRenderCommands() {
+                commands = editorCommands
+            } else {
+                commands = compiled.runtime.renderCommands(sceneFrameIndex: currentFrameIndex)
+            }
 
             // DIAGNOSTIC: Log matte/shape commands every 30 frames (per review.md)
             if currentFrameIndex % 30 == 0 {
@@ -561,6 +681,22 @@ extension PlayerViewController: MTKViewDelegate {
         }
         cmdBuf.present(drawable)
         cmdBuf.commit()
+    }
+}
+
+// MARK: - UIGestureRecognizerDelegate (PR-19)
+
+extension PlayerViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        // Allow pinch + rotation simultaneously
+        let isPinchOrRotation = gestureRecognizer is UIPinchGestureRecognizer ||
+                                gestureRecognizer is UIRotationGestureRecognizer
+        let otherIsPinchOrRotation = otherGestureRecognizer is UIPinchGestureRecognizer ||
+                                     otherGestureRecognizer is UIRotationGestureRecognizer
+        return isPinchOrRotation && otherIsPinchOrRotation
     }
 }
 
