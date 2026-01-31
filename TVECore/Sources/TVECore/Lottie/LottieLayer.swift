@@ -72,6 +72,9 @@ public struct LottieLayer: Decodable, Equatable, Sendable {
     /// Collapse transform
     public let collapseTransform: Int?
 
+    /// Hidden flag (hd: true means layer is invisible but can be used as geometry source)
+    public let hidden: Bool?
+
     public init(
         type: Int,
         name: String? = nil,
@@ -95,7 +98,8 @@ public struct LottieLayer: Decodable, Equatable, Sendable {
         autoOrient: Int? = nil,
         stretch: Double? = nil,
         className: String? = nil,
-        collapseTransform: Int? = nil
+        collapseTransform: Int? = nil,
+        hidden: Bool? = nil
     ) {
         self.type = type
         self.name = name
@@ -120,6 +124,7 @@ public struct LottieLayer: Decodable, Equatable, Sendable {
         self.stretch = stretch
         self.className = className
         self.collapseTransform = collapseTransform
+        self.hidden = hidden
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -146,6 +151,7 @@ public struct LottieLayer: Decodable, Equatable, Sendable {
         case stretch = "sr"
         case className = "cl"
         case collapseTransform = "ct"
+        case hidden = "hd"
     }
 
     public init(from decoder: Decoder) throws {
@@ -174,5 +180,6 @@ public struct LottieLayer: Decodable, Equatable, Sendable {
         stretch = try container.decodeIfPresent(Double.self, forKey: .stretch)
         className = try container.decodeIfPresent(String.self, forKey: .className)
         collapseTransform = try container.decodeIfPresent(Int.self, forKey: .collapseTransform)
+        hidden = try container.decodeIfPresent(Bool.self, forKey: .hidden)
     }
 }

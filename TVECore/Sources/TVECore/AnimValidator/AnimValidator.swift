@@ -94,6 +94,14 @@ extension AnimValidator {
                 bindingKey: block.input.bindingKey,
                 issues: &issues
             )
+
+            // PR-15: Validate mediaInput layer
+            validateMediaInput(
+                animRef: ctx.animRef,
+                lottie: ctx.lottie,
+                bindingKey: block.input.bindingKey,
+                issues: &issues
+            )
         }
 
         validatePrecompRefs(animRef: ctx.animRef, lottie: ctx.lottie, issues: &issues)
@@ -803,6 +811,186 @@ extension AnimValidator {
                     path: "\(basePath).k[\(index)].c",
                     message: "Keyframe \(index) closed=\(closed), expected \(expectedClosed)"
                 ))
+            }
+        }
+    }
+
+    // MARK: - MediaInput Validation (PR-15)
+
+    /// Canonical layer name for the interactive input area
+    private static let mediaInputLayerName = "mediaInput"
+
+    /// Shape types forbidden in mediaInput (modifiers that alter path geometry)
+    private static let forbiddenMediaInputShapeTypes: Set<String> = [
+        "tm",  // Trim Paths
+        "mm",  // Merge Paths
+        "rp",  // Repeater
+        "gf",  // Gradient Fill
+        "gs",  // Gradient Stroke
+        "rd",  // Rounded Corners
+    ]
+
+    /// Validates the mediaInput layer for a given binding key.
+    ///
+    /// Rules:
+    /// - mediaInput must exist (nm == "mediaInput", ty == 4)
+    /// - mediaInput must contain exactly one path (sh)
+    /// - mediaInput and binding layer (media) must be in the same composition
+    /// - mediaInput must not contain forbidden modifiers (tm, mm, rp, gf, gs, rd)
+    func validateMediaInput(
+        animRef: String,
+        lottie: LottieJSON,
+        bindingKey: String,
+        issues: inout [ValidationIssue]
+    ) {
+        // Collect all layers in all compositions with their comp context
+        struct LayerInComp {
+            let layer: LottieLayer
+            let index: Int
+            let compContext: String  // "layers" for root, "assets[id=X].layers" for precomp
+        }
+
+        var allLayers: [LayerInComp] = []
+
+        // Root layers
+        for (index, layer) in lottie.layers.enumerated() {
+            allLayers.append(LayerInComp(layer: layer, index: index, compContext: "layers"))
+        }
+
+        // Precomp layers
+        for asset in lottie.assets where asset.isPrecomp {
+            for (index, layer) in (asset.layers ?? []).enumerated() {
+                allLayers.append(LayerInComp(
+                    layer: layer,
+                    index: index,
+                    compContext: "assets[id=\(asset.id)].layers"
+                ))
+            }
+        }
+
+        // Find mediaInput layer
+        let mediaInputCandidates = allLayers.filter { $0.layer.name == Self.mediaInputLayerName }
+
+        guard let mediaInput = mediaInputCandidates.first else {
+            // mediaInput is required
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.mediaInputMissing,
+                severity: .error,
+                path: "anim(\(animRef)).layers[*].nm",
+                message: "No layer with nm='\(Self.mediaInputLayerName)' found — required for interactive media input"
+            ))
+            return
+        }
+
+        let basePath = "anim(\(animRef)).\(mediaInput.compContext)[\(mediaInput.index)]"
+
+        // Must be shape layer (ty=4)
+        if mediaInput.layer.type != 4 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.mediaInputNotShape,
+                severity: .error,
+                path: "\(basePath).ty",
+                message: "mediaInput must be a shape layer (ty=4), got ty=\(mediaInput.layer.type)"
+            ))
+            return
+        }
+
+        // Same-comp check: mediaInput and binding layer must be in the same composition
+        let bindingCandidates = allLayers.filter { $0.layer.name == bindingKey }
+        if let bindingLayer = bindingCandidates.first {
+            if mediaInput.compContext != bindingLayer.compContext {
+                issues.append(ValidationIssue(
+                    code: AnimValidationCode.mediaInputNotInSameComp,
+                    severity: .error,
+                    path: "\(basePath).nm",
+                    message: "mediaInput (\(mediaInput.compContext)) must be in the same composition as '\(bindingKey)' (\(bindingLayer.compContext))"
+                ))
+            }
+        }
+
+        // Validate shapes
+        guard let shapes = mediaInput.layer.shapes, !shapes.isEmpty else {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.mediaInputNoPath,
+                severity: .error,
+                path: "\(basePath).shapes",
+                message: "mediaInput must contain shapes with at least one path (sh)"
+            ))
+            return
+        }
+
+        // Check forbidden modifiers and count paths
+        var pathCount = 0
+        validateMediaInputShapes(
+            shapes: shapes,
+            basePath: "\(basePath).shapes",
+            pathCount: &pathCount,
+            issues: &issues
+        )
+
+        if pathCount == 0 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.mediaInputNoPath,
+                severity: .error,
+                path: "\(basePath).shapes",
+                message: "mediaInput must contain exactly one shape path (sh), found 0"
+            ))
+        } else if pathCount > 1 {
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.mediaInputMultiplePaths,
+                severity: .error,
+                path: "\(basePath).shapes",
+                message: "mediaInput must contain exactly one shape path, found \(pathCount)"
+            ))
+        }
+    }
+
+    /// Recursively validates mediaInput shapes for forbidden modifiers and counts paths
+    private func validateMediaInputShapes(
+        shapes: [ShapeItem],
+        basePath: String,
+        pathCount: inout Int,
+        issues: inout [ValidationIssue]
+    ) {
+        for (index, shape) in shapes.enumerated() {
+            switch shape {
+            case .group(let group):
+                // Recurse into group items
+                if let items = group.items {
+                    validateMediaInputShapes(
+                        shapes: items,
+                        basePath: "\(basePath)[\(index)].it",
+                        pathCount: &pathCount,
+                        issues: &issues
+                    )
+                }
+
+            case .path:
+                pathCount += 1
+
+            case .rect:
+                pathCount += 1
+
+            case .ellipse:
+                pathCount += 1
+
+            case .polystar:
+                pathCount += 1
+
+            case .fill, .transform, .stroke:
+                // Allowed in mediaInput — no action needed
+                break
+
+            case .unknown(let type):
+                // Check forbidden modifiers by type string
+                if Self.forbiddenMediaInputShapeTypes.contains(type) {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.mediaInputForbiddenModifier,
+                        severity: .error,
+                        path: "\(basePath)[\(index)].ty",
+                        message: "mediaInput contains forbidden shape modifier: '\(type)'"
+                    ))
+                }
             }
         }
     }

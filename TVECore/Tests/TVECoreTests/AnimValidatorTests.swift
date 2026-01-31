@@ -124,12 +124,30 @@ final class AnimValidatorTests: XCTestCase {
           "assets": [
             \(imageAsset)
             { "id": "comp_0", "nm": "precomp", "fr": 30,
-              "layers": [{
-                "ty": \(bindingLayerType),
-                "nm": "\(bindingLayerName)",
-                \(refIdPart)
-                "ind": 1
-              }]
+              "layers": [
+                {
+                  "ty": 4, "ind": 99, "nm": "mediaInput", "hd": true,
+                  "shapes": [{ "ty": "gr", "it": [
+                    { "ty": "sh", "ks": { "a": 0, "k": {
+                      "v": [[0,0],[100,0],[100,100],[0,100]],
+                      "i": [[0,0],[0,0],[0,0],[0,0]],
+                      "o": [[0,0],[0,0],[0,0],[0,0]],
+                      "c": true
+                    }}},
+                    { "ty": "fl", "c": { "a": 0, "k": [0,0,0,1] }, "o": { "a": 0, "k": 100 } }
+                  ]}],
+                  "ks": { "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                          "p": { "a": 0, "k": [0,0,0] }, "a": { "a": 0, "k": [0,0,0] },
+                          "s": { "a": 0, "k": [100,100,100] } },
+                  "ip": 0, "op": 300, "st": 0
+                },
+                {
+                  "ty": \(bindingLayerType),
+                  "nm": "\(bindingLayerName)",
+                  \(refIdPart)
+                  "ind": 1
+                }
+              ]
             }
             \(extraAssets)
           ],

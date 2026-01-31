@@ -200,6 +200,26 @@ public enum AnimValidationCode {
     /// Skew transform not supported (sk != 0 or sk animated)
     public static let unsupportedSkew = "UNSUPPORTED_SKEW"
 
+    // MARK: - MediaInput Errors (PR-15)
+
+    /// mediaInput layer not found (nm == "mediaInput", ty == 4)
+    public static let mediaInputMissing = "MEDIA_INPUT_MISSING"
+
+    /// mediaInput layer is not a shape layer (ty != 4)
+    public static let mediaInputNotShape = "MEDIA_INPUT_NOT_SHAPE"
+
+    /// mediaInput must contain exactly one shape path (sh)
+    public static let mediaInputNoPath = "MEDIA_INPUT_NO_PATH"
+
+    /// mediaInput contains multiple shape paths (only one allowed)
+    public static let mediaInputMultiplePaths = "MEDIA_INPUT_MULTIPLE_PATHS"
+
+    /// mediaInput must be in the same composition as the binding layer (media)
+    public static let mediaInputNotInSameComp = "MEDIA_INPUT_NOT_IN_SAME_COMP"
+
+    /// mediaInput contains forbidden shape modifier (Trim Paths, Merge Paths, Repeater, etc.)
+    public static let mediaInputForbiddenModifier = "MEDIA_INPUT_FORBIDDEN_MODIFIER"
+
     // MARK: - Warnings
 
     /// Animation size does not match input rect size

@@ -22,6 +22,10 @@ public struct AnimIR: Sendable, Equatable {
     /// Path registry for GPU path rendering (masks and shapes)
     public var pathRegistry: PathRegistry
 
+    /// Input geometry for mediaInput layer (PR-15)
+    /// nil if no mediaInput layer exists in the animation
+    public var inputGeometry: InputGeometryInfo?
+
     /// Issues from the last renderCommands call (reset on each call)
     public private(set) var lastRenderIssues: [RenderIssue] = []
 
@@ -31,7 +35,8 @@ public struct AnimIR: Sendable, Equatable {
         comps: [CompID: Composition],
         assets: AssetIndexIR,
         binding: BindingInfo,
-        pathRegistry: PathRegistry = PathRegistry()
+        pathRegistry: PathRegistry = PathRegistry(),
+        inputGeometry: InputGeometryInfo? = nil
     ) {
         self.meta = meta
         self.rootComp = rootComp
@@ -39,6 +44,7 @@ public struct AnimIR: Sendable, Equatable {
         self.assets = assets
         self.binding = binding
         self.pathRegistry = pathRegistry
+        self.inputGeometry = inputGeometry
     }
 
     /// Root composition ID constant
@@ -52,7 +58,8 @@ public struct AnimIR: Sendable, Equatable {
         lhs.comps == rhs.comps &&
         lhs.assets == rhs.assets &&
         lhs.binding == rhs.binding &&
-        lhs.pathRegistry == rhs.pathRegistry
+        lhs.pathRegistry == rhs.pathRegistry &&
+        lhs.inputGeometry == rhs.inputGeometry
     }
 }
 
@@ -142,7 +149,8 @@ extension AnimIR {
                     masks: updatedMasks,
                     matte: layer.matte,
                     content: updatedContent,
-                    isMatteSource: layer.isMatteSource
+                    isMatteSource: layer.isMatteSource,
+                    isHidden: layer.isHidden
                 )
                 updatedLayers.append(layer)
             }
@@ -211,6 +219,16 @@ extension AnimIR {
         let layerById: [LayerID: Layer]
         /// Stack of composition IDs currently being rendered (for cycle detection)
         let visitedComps: Set<CompID>
+        /// Binding layer ID (for inputClip detection)
+        let bindingLayerId: LayerID
+        /// Composition where binding layer resides
+        let bindingCompId: CompID
+        /// User transform applied to binding layer (PR-15: M(t) = A(t) ∘ U)
+        let userTransform: Matrix2D
+        /// Input geometry for mediaInput (nil if not present)
+        let inputGeometry: InputGeometryInfo?
+        /// Current composition ID (for same-comp check)
+        let currentCompId: CompID
     }
 
     /// Resolved world transform for a layer
@@ -226,10 +244,17 @@ extension AnimIR {
     /// Generates render commands for the given frame index
     /// Commands are in animation local space (0..w, 0..h)
     ///
-    /// - Parameter frameIndex: Scene frame number to render
+    /// - Parameters:
+    ///   - frameIndex: Scene frame number to render
+    ///   - userTransform: User pan/zoom/rotate transform applied to binding layer (PR-15).
+    ///     Default is `.identity` (no user transform). The binding layer's world matrix becomes
+    ///     `lottieWorld * userTransform`, i.e. animation is applied *after* user edits.
     /// - Returns: Array of render commands in execution order
     /// - Note: Check `lastRenderIssues` after calling for any errors encountered
-    public mutating func renderCommands(frameIndex: Int) -> [RenderCommand] {
+    public mutating func renderCommands(
+        frameIndex: Int,
+        userTransform: Matrix2D = .identity
+    ) -> [RenderCommand] {
         // Reset issues from previous call
         lastRenderIssues.removeAll(keepingCapacity: true)
 
@@ -250,7 +275,12 @@ extension AnimIR {
                 parentWorld: .identity,
                 parentOpacity: 1.0,
                 layerById: layerById,
-                visitedComps: [rootComp]
+                visitedComps: [rootComp],
+                bindingLayerId: binding.boundLayerId,
+                bindingCompId: binding.boundCompId,
+                userTransform: userTransform,
+                inputGeometry: inputGeometry,
+                currentCompId: rootComp
             )
             renderComposition(rootComposition, context: context, commands: &commands)
         }
@@ -263,10 +293,11 @@ extension AnimIR {
 
     /// Convenience method that returns commands and issues without requiring var
     public func renderCommandsWithIssues(
-        frameIndex: Int
+        frameIndex: Int,
+        userTransform: Matrix2D = .identity
     ) -> (commands: [RenderCommand], issues: [RenderIssue]) {
         var copy = self
-        let commands = copy.renderCommands(frameIndex: frameIndex)
+        let commands = copy.renderCommands(frameIndex: frameIndex, userTransform: userTransform)
         return (commands, copy.lastRenderIssues)
     }
 
@@ -290,6 +321,9 @@ extension AnimIR {
     ) {
         // Skip matte source layers - they don't render directly
         guard !layer.isMatteSource else { return }
+
+        // Skip hidden layers (hd=true) - they are geometry sources only (e.g. mediaInput)
+        guard !layer.isHidden else { return }
 
         // Skip if layer is not visible at this frame
         guard Self.isVisible(layer, at: context.frame) else { return }
@@ -317,6 +351,11 @@ extension AnimIR {
             return nil
         }
         return ResolvedTransform(worldMatrix: matrix, worldOpacity: opacity)
+    }
+
+    /// Checks if this layer is the binding layer in the correct composition
+    private func isBindingLayer(_ layer: Layer, context: RenderContext) -> Bool {
+        layer.id == context.bindingLayerId && context.currentCompId == context.bindingCompId
     }
 
     /// Emits render commands for a layer (group, transform, matte, masks, content)
@@ -405,42 +444,149 @@ extension AnimIR {
     }
 
     /// Emits render commands for a regular layer (without matte wrapping)
+    // swiftlint:disable:next function_body_length
     private mutating func emitRegularLayerCommands(
         _ layer: Layer,
         resolved: ResolvedTransform,
         context: RenderContext,
         commands: inout [RenderCommand]
     ) {
-        commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))"))
-        commands.append(.pushTransform(resolved.worldMatrix))
+        // PR-15: Check if this is the binding layer with inputClip
+        let needsInputClip = isBindingLayer(layer, context: context) && context.inputGeometry != nil
 
-        // Masks begin - emit in REVERSE order for correct AE application order.
-        // AE applies masks top-to-bottom (index 0 first). With LIFO-nested structure,
-        // reversed emission ensures masks are applied in AE order after unwrapping.
-        var emittedMaskCount = 0
-        for mask in layer.masks.reversed() {
-            if let pathId = mask.pathId {
-                // Normalize opacity from 0..100 to 0..1, clamped
-                let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
-                commands.append(.beginMask(
-                    mode: mask.mode,
-                    inverted: mask.inverted,
-                    pathId: pathId,
-                    opacity: normalizedOpacity,
-                    frame: context.frame
-                ))
-                emittedMaskCount += 1
+        if needsInputClip, let inputGeo = context.inputGeometry {
+            // === InputClip path for binding layer ===
+            //
+            // Structure (per ТЗ section 2.3):
+            //   beginGroup(layer: media (inputClip))
+            //     pushTransform(world(mediaInput, t))    ← mediaInput transform (fixed window)
+            //     beginMask(mode: .intersect, pathId: mediaInputPathId)
+            //     popTransform
+            //     pushTransform(world(media, t) * userTransform)   ← media + user edits
+            //       [masks + content]
+            //     popTransform
+            //     endMask
+            //   endGroup
+
+            commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))(inputClip)"))
+
+            // 1) Compute mediaInput world transform (fixed window, no userTransform)
+            let inputLayerWorld = computeMediaInputWorld(inputGeo: inputGeo, context: context)
+
+            // 2) Push mediaInput transform for the mask path
+            commands.append(.pushTransform(inputLayerWorld))
+
+            // 3) Begin inputClip mask (reuse beginMask with intersect mode)
+            // TODO(PR-future): if animated mediaInput is allowed, change frame: 0 to context.frame
+            //                   and update validator to permit animated mediaInput path.
+            commands.append(.beginMask(
+                mode: .intersect,
+                inverted: false,
+                pathId: inputGeo.pathId,
+                opacity: 1.0,
+                frame: 0  // mediaInput path is static (frame 0) per ТЗ
+            ))
+
+            // 4) Pop mediaInput transform
+            commands.append(.popTransform)
+
+            // 5) Push media world transform with userTransform: M(t) = A(t) ∘ U
+            let mediaWorldWithUser = resolved.worldMatrix.concatenating(context.userTransform)
+            commands.append(.pushTransform(mediaWorldWithUser))
+
+            // 6) Layer masks (masksProperties) - applied inside inputClip scope
+            var emittedMaskCount = 0
+            for mask in layer.masks.reversed() {
+                if let pathId = mask.pathId {
+                    let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
+                    commands.append(.beginMask(
+                        mode: mask.mode,
+                        inverted: mask.inverted,
+                        pathId: pathId,
+                        opacity: normalizedOpacity,
+                        frame: context.frame
+                    ))
+                    emittedMaskCount += 1
+                }
             }
+
+            // 7) Content (drawImage)
+            renderLayerContent(layer, resolved: resolved, context: context, commands: &commands)
+
+            // 8) End layer masks (LIFO)
+            for _ in 0..<emittedMaskCount { commands.append(.endMask) }
+
+            // 9) Pop media transform
+            commands.append(.popTransform)
+
+            // 10) End inputClip mask
+            commands.append(.endMask)
+
+            // 11) End group
+            commands.append(.endGroup)
+        } else {
+            // === Standard path (non-binding layer or no inputGeometry) ===
+            commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))"))
+            commands.append(.pushTransform(resolved.worldMatrix))
+
+            // Masks begin - emit in REVERSE order for correct AE application order.
+            // AE applies masks top-to-bottom (index 0 first). With LIFO-nested structure,
+            // reversed emission ensures masks are applied in AE order after unwrapping.
+            var emittedMaskCount = 0
+            for mask in layer.masks.reversed() {
+                if let pathId = mask.pathId {
+                    // Normalize opacity from 0..100 to 0..1, clamped
+                    let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
+                    commands.append(.beginMask(
+                        mode: mask.mode,
+                        inverted: mask.inverted,
+                        pathId: pathId,
+                        opacity: normalizedOpacity,
+                        frame: context.frame
+                    ))
+                    emittedMaskCount += 1
+                }
+            }
+
+            // Content
+            renderLayerContent(layer, resolved: resolved, context: context, commands: &commands)
+
+            // Masks end (LIFO) - match emitted masks only
+            for _ in 0..<emittedMaskCount { commands.append(.endMask) }
+
+            commands.append(.popTransform)
+            commands.append(.endGroup)
+        }
+    }
+
+    /// Computes the world matrix for the mediaInput layer at the current frame.
+    /// mediaInput world is fixed (no userTransform) — it defines the clip window.
+    private mutating func computeMediaInputWorld(
+        inputGeo: InputGeometryInfo,
+        context: RenderContext
+    ) -> Matrix2D {
+        // Find the mediaInput layer in its composition
+        guard let comp = comps[inputGeo.compId],
+              let inputLayer = comp.layers.first(where: { $0.id == inputGeo.layerId }) else {
+            return .identity
         }
 
-        // Content
-        renderLayerContent(layer, resolved: resolved, context: context, commands: &commands)
+        // Build a temporary layerById for the composition
+        let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
 
-        // Masks end (LIFO) - match emitted masks only
-        for _ in 0..<emittedMaskCount { commands.append(.endMask) }
+        // Compute world transform without userTransform
+        guard let (matrix, _) = computeWorldTransform(
+            for: inputLayer,
+            at: context.frame,
+            baseWorldMatrix: .identity,
+            baseWorldOpacity: 1.0,
+            layerById: layerById,
+            sceneFrameIndex: context.frameIndex
+        ) else {
+            return .identity
+        }
 
-        commands.append(.popTransform)
-        commands.append(.endGroup)
+        return matrix
     }
 
     // Computes world transform for a layer considering parent chain.
@@ -595,7 +741,12 @@ extension AnimIR {
                 parentWorld: .identity,
                 parentOpacity: resolved.worldOpacity,
                 layerById: childLayerById,
-                visitedComps: childVisited
+                visitedComps: childVisited,
+                bindingLayerId: context.bindingLayerId,
+                bindingCompId: context.bindingCompId,
+                userTransform: context.userTransform,
+                inputGeometry: context.inputGeometry,
+                currentCompId: compId
             )
             renderComposition(precomp, context: childContext, commands: &commands)
 
@@ -657,6 +808,89 @@ extension AnimIR {
         case .none:
             break
         }
+    }
+}
+
+// MARK: - Hit-Test API (PR-15)
+
+extension AnimIR {
+    /// Returns the mediaInput path in composition space for hit-testing.
+    ///
+    /// The path is sampled at the given frame (default: frame 0) and transformed
+    /// by the mediaInput layer's world matrix, so it's in composition coordinates.
+    ///
+    /// - Parameter frame: Frame to sample the path at (default: 0 for static mediaInput)
+    /// - Returns: Array of BezierPath vertices in composition space, or nil if no mediaInput
+    public mutating func mediaInputPath(frame: Int = 0) -> BezierPath? {
+        guard let inputGeo = inputGeometry else { return nil }
+
+        // Get the static path from animPath
+        guard let basePath = inputGeo.animPath.staticPath else { return nil }
+
+        // Find the mediaInput layer and compute its world transform
+        guard let comp = comps[inputGeo.compId],
+              let inputLayer = comp.layers.first(where: { $0.id == inputGeo.layerId }) else {
+            return basePath
+        }
+
+        let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
+
+        guard let (worldMatrix, _) = computeWorldTransform(
+            for: inputLayer,
+            at: Double(frame),
+            baseWorldMatrix: .identity,
+            baseWorldOpacity: 1.0,
+            layerById: layerById,
+            sceneFrameIndex: frame
+        ) else {
+            return basePath
+        }
+
+        // If world matrix is identity, return base path as-is
+        if worldMatrix == .identity {
+            return basePath
+        }
+
+        // Transform all path components by the world matrix
+        let transformedVertices = basePath.vertices.map { worldMatrix.apply(to: $0) }
+        let transformedIn = basePath.inTangents.map { worldMatrix.apply(to: $0) }
+        let transformedOut = basePath.outTangents.map { worldMatrix.apply(to: $0) }
+
+        return BezierPath(
+            vertices: transformedVertices,
+            inTangents: transformedIn,
+            outTangents: transformedOut,
+            closed: basePath.closed
+        )
+    }
+
+    /// Returns the world matrix of the mediaInput layer at the given frame.
+    /// Useful when the caller wants to transform the path themselves.
+    ///
+    /// - Parameter frame: Frame to compute transform at (default: 0)
+    /// - Returns: World matrix of mediaInput layer, or nil if no mediaInput
+    public mutating func mediaInputWorldMatrix(frame: Int = 0) -> Matrix2D? {
+        guard let inputGeo = inputGeometry else { return nil }
+
+        guard let comp = comps[inputGeo.compId],
+              let inputLayer = comp.layers.first(where: { $0.id == inputGeo.layerId }) else {
+            return nil
+        }
+
+        let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
+
+        guard let (worldMatrix, _) = computeWorldTransform(
+            for: inputLayer,
+            at: Double(frame),
+            baseWorldMatrix: .identity,
+            baseWorldOpacity: 1.0,
+            layerById: layerById,
+            sceneFrameIndex: frame
+        ) else {
+            return nil
+        }
+
+        return worldMatrix
     }
 }
 

@@ -236,6 +236,32 @@ public struct ShapeGroup: Sendable, Equatable {
     }
 }
 
+// MARK: - Input Geometry Info (PR-15)
+
+/// Geometry information for the mediaInput layer
+/// Used for inputClip (clipping binding layer to mediaInput shape)
+/// and for hit-test in the editor
+public struct InputGeometryInfo: Sendable, Equatable {
+    /// Layer ID of the mediaInput layer
+    public let layerId: LayerID
+
+    /// Path ID in PathRegistry for the mediaInput shape
+    public let pathId: PathID
+
+    /// AnimPath source data for hit-test (BezierPath at frame 0)
+    public let animPath: AnimPath
+
+    /// Composition ID where mediaInput resides
+    public let compId: CompID
+
+    public init(layerId: LayerID, pathId: PathID, animPath: AnimPath, compId: CompID) {
+        self.layerId = layerId
+        self.pathId = pathId
+        self.animPath = animPath
+        self.compId = compId
+    }
+}
+
 // MARK: - Matte Mode
 
 /// Track matte types - maps directly to Lottie tt values
@@ -315,6 +341,10 @@ public struct Layer: Sendable, Equatable {
     /// Flag indicating this layer is a matte source (td=1)
     public let isMatteSource: Bool
 
+    /// Hidden flag (hd=true): layer is not rendered as graphics
+    /// but can still be used as geometry source (e.g. mediaInput)
+    public let isHidden: Bool
+
     public init(
         id: LayerID,
         name: String,
@@ -325,7 +355,8 @@ public struct Layer: Sendable, Equatable {
         masks: [Mask],
         matte: MatteInfo?,
         content: LayerContent,
-        isMatteSource: Bool
+        isMatteSource: Bool,
+        isHidden: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -337,6 +368,7 @@ public struct Layer: Sendable, Equatable {
         self.matte = matte
         self.content = content
         self.isMatteSource = isMatteSource
+        self.isHidden = isHidden
     }
 }
 

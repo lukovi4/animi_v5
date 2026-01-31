@@ -34,6 +34,7 @@ public enum AnimIRCompilerError: Error, Sendable {
     case bindingLayerNotImage(bindingKey: String, layerType: Int, animRef: String)
     case bindingLayerNoAsset(bindingKey: String, animRef: String)
     case unsupportedLayerType(layerType: Int, layerName: String, animRef: String)
+    case mediaInputNotInSameComp(animRef: String, mediaInputCompId: String, bindingCompId: String)
 }
 
 extension AnimIRCompilerError: LocalizedError {
@@ -47,6 +48,8 @@ extension AnimIRCompilerError: LocalizedError {
             return "Binding layer '\(key)' has no asset reference in \(animRef)"
         case .unsupportedLayerType(let layerType, let layerName, let animRef):
             return "Unsupported layer type \(layerType) for layer '\(layerName)' in \(animRef)"
+        case .mediaInputNotInSameComp(let animRef, let mediaInputCompId, let bindingCompId):
+            return "mediaInput (comp=\(mediaInputCompId)) must be in same composition as binding layer (comp=\(bindingCompId)) in \(animRef)"
         }
     }
 }
@@ -159,6 +162,14 @@ public final class AnimIRCompiler {
 
         let assetsIR = AssetIndexIR(byId: namespacedById, sizeById: namespacedSizeById)
 
+        // PR-15: Find mediaInput layer and build InputGeometryInfo
+        let inputGeometry = try findMediaInput(
+            comps: comps,
+            binding: binding,
+            animRef: animRef,
+            pathRegistry: &pathRegistry
+        )
+
         // Return AnimIR with empty local pathRegistry
         // Scene pipeline uses scene-level registry, not AnimIR.pathRegistry
         return AnimIR(
@@ -167,7 +178,8 @@ public final class AnimIRCompiler {
             comps: comps,
             assets: assetsIR,
             binding: binding,
-            pathRegistry: PathRegistry() // Empty - scene uses merged registry
+            pathRegistry: PathRegistry(), // Empty - scene uses merged registry
+            inputGeometry: inputGeometry
         )
     }
 
@@ -310,6 +322,9 @@ public final class AnimIRCompiler {
         // Check if this is a matte source
         let isMatteSource = (lottie.isMatteSource ?? 0) == 1
 
+        // PR-15: Hidden flag (hd=true)
+        let isHidden = lottie.hidden ?? false
+
         return Layer(
             id: layerId,
             name: layerName,
@@ -320,7 +335,8 @@ public final class AnimIRCompiler {
             masks: masks,
             matte: matteInfo,
             content: content,
-            isMatteSource: isMatteSource
+            isMatteSource: isMatteSource,
+            isHidden: isHidden
         )
     }
 
@@ -495,5 +511,72 @@ public final class AnimIRCompiler {
             bindingKey: bindingKey,
             animRef: animRef
         )
+    }
+
+    // MARK: - MediaInput (PR-15)
+
+    /// Canonical layer name for the interactive input area
+    private static let mediaInputLayerName = "mediaInput"
+
+    /// Finds the mediaInput layer and builds InputGeometryInfo.
+    /// Returns nil if no mediaInput layer exists (optional feature).
+    /// Throws if mediaInput exists but violates constraints (e.g. not in same comp as binding).
+    private func findMediaInput(
+        comps: [CompID: Composition],
+        binding: BindingInfo,
+        animRef: String,
+        pathRegistry: inout PathRegistry
+    ) throws -> InputGeometryInfo? {
+        // Search all compositions for a shape layer named "mediaInput"
+        let sortedCompIds = comps.keys.sorted { lhs, rhs in
+            if lhs == AnimIR.rootCompId { return true }
+            if rhs == AnimIR.rootCompId { return false }
+            return lhs < rhs
+        }
+
+        for compId in sortedCompIds {
+            guard let comp = comps[compId] else { continue }
+
+            for layer in comp.layers where layer.name == Self.mediaInputLayerName {
+                // Must be a shape layer (ty=4 → .shapeMatte in IR)
+                guard layer.type == .shapeMatte else {
+                    continue
+                }
+
+                // Same-comp constraint: mediaInput must be in same composition as binding layer
+                guard compId == binding.boundCompId else {
+                    throw AnimIRCompilerError.mediaInputNotInSameComp(
+                        animRef: animRef,
+                        mediaInputCompId: compId,
+                        bindingCompId: binding.boundCompId
+                    )
+                }
+
+                // Extract the shape path from the layer's content
+                guard case .shapes(let shapeGroup) = layer.content,
+                      let animPath = shapeGroup.animPath else {
+                    // No extractable path — skip silently (validator will catch this)
+                    return nil
+                }
+
+                // Register the path in the shared registry for GPU rendering
+                guard let resource = PathResourceBuilder.build(from: animPath, pathId: PathID(0)) else {
+                    // Path build failed — skip (validator will report detailed error)
+                    return nil
+                }
+
+                let assignedId = pathRegistry.register(resource)
+
+                return InputGeometryInfo(
+                    layerId: layer.id,
+                    pathId: assignedId,
+                    animPath: animPath,
+                    compId: compId
+                )
+            }
+        }
+
+        // No mediaInput found — that's OK, it's optional
+        return nil
     }
 }
