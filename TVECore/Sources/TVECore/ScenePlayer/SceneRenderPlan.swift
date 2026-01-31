@@ -81,7 +81,7 @@ public enum SceneRenderPlan {
         }
 
         // Compute block transform: identity when anim is full-canvas, otherwise scale to fit
-        let blockTransform = computeBlockTransform(
+        let blockTransform = SceneTransforms.blockTransform(
             animSize: variant.animIR.meta.size,
             blockRect: block.rectCanvas,
             canvasSize: canvasSize
@@ -89,7 +89,7 @@ public enum SceneRenderPlan {
         commands.append(.pushTransform(blockTransform))
 
         // Compute local frame index for this animation
-        let localFrameIndex = computeLocalFrameIndex(
+        let localFrameIndex = localFrameIndex(
             sceneFrameIndex: sceneFrameIndex,
             blockTiming: block.timing,
             animIR: variant.animIR
@@ -116,40 +116,12 @@ public enum SceneRenderPlan {
         return commands
     }
 
-    /// Computes the transformation matrix to place animation content within a block
+    /// Computes the local frame index for an animation given the scene frame.
     ///
-    /// Block Placement Policy:
-    /// - If anim is full-canvas (animSize ~= canvasSize), use identity transform (clip does the work)
-    /// - Otherwise, scale animation to fit within block (contain policy)
-    private static func computeBlockTransform(
-        animSize: SizeD,
-        blockRect: RectD,
-        canvasSize: SizeD
-    ) -> Matrix2D {
-        // Policy: if anim is full-canvas, use identity (clip does the work)
-        // Scale only when anim is not full-canvas
-        if nearlyEqual(animSize.width, canvasSize.width) &&
-           nearlyEqual(animSize.height, canvasSize.height) {
-            return .identity
-        }
-        // Otherwise scale to fit block using GeometryMapping.animToInputContain which does:
-        // - Uniform scale to fit (contain)
-        // - Center within target rect
-        // - Translate to target position
-        return GeometryMapping.animToInputContain(animSize: animSize, inputRect: blockRect)
-    }
-
-    /// Compares two Double values with tolerance for floating-point comparison
-    private static func nearlyEqual(_ lhs: Double, _ rhs: Double, eps: Double = 0.0001) -> Bool {
-        abs(lhs - rhs) < eps
-    }
-
-    /// Computes the local frame index for an animation given the scene frame
-    ///
-    /// Current policy (PR10): Simple 1:1 mapping with clamping
-    /// - Scene frame maps directly to animation frame
-    /// - Result is clamped to animation bounds [0, op-1]
-    private static func computeLocalFrameIndex(
+    /// Current policy (PR10): Simple 1:1 mapping with clamping.
+    /// - Scene frame maps directly to animation frame.
+    /// - Result is clamped to animation bounds [0, op-1].
+    public static func localFrameIndex(
         sceneFrameIndex: Int,
         blockTiming: BlockTiming,
         animIR: AnimIR

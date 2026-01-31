@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // MARK: - Cubic Bezier Easing
@@ -2441,7 +2442,7 @@ public enum ShapePathExtractor {
         )
     }
 
-    /// Extracts animated width track from LottieAnimatedValue
+    /// Extracts animated width track from LottieAnimatedValue.
     /// Fail-fast: returns nil if any keyframe is invalid (missing time, startValue, or invalid format)
     private static func extractAnimatedWidth(from value: LottieAnimatedValue) -> AnimTrack<Double>? {
         // If marked as animated but data is not keyframes → fail-fast
@@ -2499,5 +2500,77 @@ public enum ShapePathExtractor {
         }
 
         return .keyframed(keyframes)
+    }
+}
+
+// MARK: - BezierPath → CGPath (PR-17)
+
+extension BezierPath {
+
+    /// Converts this `BezierPath` to a `CGPath`.
+    ///
+    /// The conversion is deterministic: same `BezierPath` always produces the same `CGPath`.
+    /// Handles line segments (zero tangents) and cubic curves identically to `ShapeCache.buildCGPath`,
+    /// ensuring overlay and hit-test geometry matches the rasterised render output.
+    public var cgPath: CGPath {
+        let path = CGMutablePath()
+        guard !vertices.isEmpty else { return path }
+
+        let count = vertices.count
+
+        // Move to first vertex
+        let start = vertices[0]
+        path.move(to: CGPoint(x: start.x, y: start.y))
+
+        // Draw segments
+        for i in 0..<count {
+            let nextIdx = (i + 1) % count
+            if !closed && nextIdx == 0 {
+                break // Don't close open path
+            }
+
+            let currentVertex = vertices[i]
+            let nextVertex = vertices[nextIdx]
+            let outTan = outTangents[i]
+            let inTan = inTangents[nextIdx]
+
+            // Check if this is a straight line (both tangents are nearly zero)
+            let isLine = Quantization.isNearlyZero(outTan.x) &&
+                         Quantization.isNearlyZero(outTan.y) &&
+                         Quantization.isNearlyZero(inTan.x) &&
+                         Quantization.isNearlyZero(inTan.y)
+
+            if isLine {
+                path.addLine(to: CGPoint(x: nextVertex.x, y: nextVertex.y))
+            } else {
+                let cp1x = currentVertex.x + outTan.x
+                let cp1y = currentVertex.y + outTan.y
+                let cp2x = nextVertex.x + inTan.x
+                let cp2y = nextVertex.y + inTan.y
+                path.addCurve(
+                    to: CGPoint(x: nextVertex.x, y: nextVertex.y),
+                    control1: CGPoint(x: cp1x, y: cp1y),
+                    control2: CGPoint(x: cp2x, y: cp2y)
+                )
+            }
+        }
+
+        if closed {
+            path.closeSubpath()
+        }
+
+        return path
+    }
+
+    /// Tests whether a point lies inside this closed path using the even-odd fill rule.
+    ///
+    /// Returns `false` for open paths or paths with fewer than 3 vertices.
+    /// The path must already be in the target coordinate space before calling.
+    ///
+    /// - Parameter point: Point to test (same coordinate space as path vertices)
+    /// - Returns: `true` if the point is inside the closed path
+    public func contains(point: Vec2D) -> Bool {
+        guard closed, vertices.count >= 3 else { return false }
+        return cgPath.contains(CGPoint(x: point.x, y: point.y), using: .evenOdd)
     }
 }

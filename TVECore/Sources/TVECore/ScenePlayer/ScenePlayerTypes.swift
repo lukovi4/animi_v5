@@ -81,6 +81,10 @@ public struct BlockRuntime: Sendable {
     /// Container clip mode
     public let containerClip: ContainerClip
 
+    /// Hit-test mode from the block's MediaInput configuration.
+    /// `.mask` → hit-test by mediaInput shape path; `.rect` or `nil` → hit-test by block rect.
+    public let hitTestMode: HitTestMode?
+
     /// Currently selected variant ID
     public let selectedVariantId: String
 
@@ -100,6 +104,7 @@ public struct BlockRuntime: Sendable {
         inputRect: RectD,
         timing: BlockTiming,
         containerClip: ContainerClip,
+        hitTestMode: HitTestMode? = nil,
         selectedVariantId: String,
         variants: [VariantRuntime]
     ) {
@@ -110,6 +115,7 @@ public struct BlockRuntime: Sendable {
         self.inputRect = inputRect
         self.timing = timing
         self.containerClip = containerClip
+        self.hitTestMode = hitTestMode
         self.selectedVariantId = selectedVariantId
         self.variants = variants
     }
@@ -150,6 +156,50 @@ public struct BlockTiming: Sendable, Equatable {
             self.startFrame = 0
             self.endFrame = sceneDurationFrames
         }
+    }
+}
+
+// MARK: - Overlay State (PR-17)
+
+/// Visual state of a media-input overlay in the editor.
+/// The editor uses this to decide which UI decoration to draw.
+public enum OverlayState: String, Sendable, Equatable {
+    /// Block is visible but not selected or hovered — no outline
+    case inactive
+
+    /// Pointer is hovering over the block — light outline
+    case hover
+
+    /// Block is selected — full outline with handles
+    case selected
+}
+
+// MARK: - Media Input Overlay (PR-17)
+
+/// Describes one media-input overlay for the editor's overlay layer.
+///
+/// Contains all geometry the editor needs to draw an interactive overlay:
+/// the canvas-space hit path, the block rect, and the current visual state.
+public struct MediaInputOverlay: Sendable {
+    /// Block identifier (matches `BlockRuntime.blockId`)
+    public let blockId: String
+
+    /// Hit-test path in canvas coordinates.
+    /// For `hitTestMode == .mask` this is the mediaInput shape path;
+    /// for `.rect` or `nil` it is the block rect converted to a path.
+    public let hitPath: BezierPath
+
+    /// Block rectangle in canvas coordinates (always available as a fallback)
+    public let rectCanvas: RectD
+
+    /// Current visual state (set by the editor, default `.inactive`)
+    public let state: OverlayState
+
+    public init(blockId: String, hitPath: BezierPath, rectCanvas: RectD, state: OverlayState = .inactive) {
+        self.blockId = blockId
+        self.hitPath = hitPath
+        self.rectCanvas = rectCanvas
+        self.state = state
     }
 }
 

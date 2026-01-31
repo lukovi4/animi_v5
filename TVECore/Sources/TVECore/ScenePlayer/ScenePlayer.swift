@@ -156,6 +156,7 @@ public final class ScenePlayer {
             inputRect: RectD(from: mediaBlock.input.rect),
             timing: timing,
             containerClip: mediaBlock.containerClip,
+            hitTestMode: mediaBlock.input.hitTest,
             selectedVariantId: selectedVariantId,
             variants: variantRuntimes
         )
@@ -235,6 +236,144 @@ public final class ScenePlayer {
     /// Resets user transforms for all blocks to identity.
     public func resetAllUserTransforms() {
         userTransforms.removeAll()
+    }
+
+    // MARK: - Hit-Test & Overlay (PR-17)
+
+    /// Returns the mediaInput hit path for a block in **canvas coordinates**.
+    ///
+    /// Canonical formula: `hitPath = mediaInputPath(frame).applying(blockTransform)`
+    ///
+    /// `mediaInputPath` already returns the path in composition space (world matrix applied).
+    /// `blockTransform` then maps from anim-local space to canvas space.
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block
+    ///   - frame: Scene frame index (default: 0)
+    /// - Returns: BezierPath in canvas coordinates, or `nil` if block/mediaInput not found
+    public func mediaInputHitPath(blockId: String, frame: Int = 0) -> BezierPath? {
+        guard let compiled = compiledScene else { return nil }
+        let runtime = compiled.runtime
+
+        guard let block = runtime.blocks.first(where: { $0.blockId == blockId }),
+              var variant = block.selectedVariant else {
+            return nil
+        }
+
+        // Get mediaInput path in comp space (world matrix already applied inside)
+        let localFrame = SceneRenderPlan.localFrameIndex(
+            sceneFrameIndex: frame,
+            blockTiming: block.timing,
+            animIR: variant.animIR
+        )
+
+        guard let compSpacePath = variant.animIR.mediaInputPath(frame: localFrame) else {
+            return nil
+        }
+
+        // Transform to canvas space
+        let blockTransform = SceneTransforms.blockTransform(
+            animSize: variant.animIR.meta.size,
+            blockRect: block.rectCanvas,
+            canvasSize: runtime.canvasSize
+        )
+
+        return compSpacePath.applying(blockTransform)
+    }
+
+    /// Hit-tests a point in canvas coordinates, returning the topmost block that contains it.
+    ///
+    /// Walks visible blocks in **top-to-bottom** order (highest zIndex first).
+    /// For each block:
+    /// - `hitTestMode == .mask` and mediaInput path available → test by shape (`BezierPath.contains`)
+    /// - Otherwise → test by block rect
+    ///
+    /// - Parameters:
+    ///   - point: Point in canvas coordinates
+    ///   - frame: Scene frame index
+    /// - Returns: `blockId` of the topmost hit block, or `nil` if no hit
+    public func hitTest(point: Vec2D, frame: Int) -> String? {
+        guard let compiled = compiledScene else { return nil }
+        let runtime = compiled.runtime
+
+        // Walk top-to-bottom (reversed: blocks are sorted ascending by zIndex)
+        for block in runtime.blocks.reversed() {
+            guard block.timing.isVisible(at: frame) else { continue }
+
+            if block.hitTestMode == .mask {
+                // Try shape hit-test via mediaInput path
+                if let hitPath = mediaInputHitPath(blockId: block.blockId, frame: frame) {
+                    if hitPath.contains(point: point) {
+                        return block.blockId
+                    }
+                    continue // .mask mode: shape miss means miss (no rect fallback)
+                }
+                // No mediaInput path available — fall through to rect
+            }
+
+            // Rect hit-test (for .rect mode, nil mode, or .mask without mediaInput)
+            let rect = block.rectCanvas
+            if point.x >= rect.x && point.x <= rect.x + rect.width &&
+               point.y >= rect.y && point.y <= rect.y + rect.height {
+                return block.blockId
+            }
+        }
+
+        return nil
+    }
+
+    /// Returns overlay descriptors for all visible blocks at the given frame.
+    ///
+    /// Each overlay contains the hit path in canvas coordinates and the block rect.
+    /// The editor uses these to draw interactive overlays.
+    /// Blocks are returned in **top-to-bottom** order (highest zIndex first)
+    /// so the editor can draw front blocks on top.
+    ///
+    /// - Parameter frame: Scene frame index
+    /// - Returns: Array of `MediaInputOverlay` for all visible blocks
+    public func overlays(frame: Int) -> [MediaInputOverlay] {
+        guard let compiled = compiledScene else { return [] }
+        let runtime = compiled.runtime
+
+        var result: [MediaInputOverlay] = []
+
+        // Top-to-bottom order (reversed: blocks are sorted ascending by zIndex)
+        for block in runtime.blocks.reversed() {
+            guard block.timing.isVisible(at: frame) else { continue }
+
+            let hitPath: BezierPath
+
+            if block.hitTestMode == .mask,
+               let shapePath = mediaInputHitPath(blockId: block.blockId, frame: frame) {
+                hitPath = shapePath
+            } else {
+                // Fallback: build path from block rect
+                hitPath = rectToBezierPath(block.rectCanvas)
+            }
+
+            result.append(MediaInputOverlay(
+                blockId: block.blockId,
+                hitPath: hitPath,
+                rectCanvas: block.rectCanvas
+            ))
+        }
+
+        return result
+    }
+
+    /// Converts a RectD to a closed BezierPath (4 vertices, zero tangents).
+    private func rectToBezierPath(_ rect: RectD) -> BezierPath {
+        let topLeft = Vec2D(x: rect.x, y: rect.y)
+        let topRight = Vec2D(x: rect.x + rect.width, y: rect.y)
+        let bottomRight = Vec2D(x: rect.x + rect.width, y: rect.y + rect.height)
+        let bottomLeft = Vec2D(x: rect.x, y: rect.y + rect.height)
+        let zero = [Vec2D.zero, Vec2D.zero, Vec2D.zero, Vec2D.zero]
+        return BezierPath(
+            vertices: [topLeft, topRight, bottomRight, bottomLeft],
+            inTangents: zero,
+            outTangents: zero,
+            closed: true
+        )
     }
 
     // MARK: - Render Commands
