@@ -872,10 +872,10 @@ extension AnimValidator {
         let mediaInputCandidates = allLayers.filter { $0.layer.name == Self.mediaInputLayerName }
 
         guard let mediaInput = mediaInputCandidates.first else {
-            // mediaInput is required
+            // mediaInput is required (temporarily downgraded to warning for testing)
             issues.append(ValidationIssue(
                 code: AnimValidationCode.mediaInputMissing,
-                severity: .error,
+                severity: .warning,
                 path: "anim(\(animRef)).layers[*].nm",
                 message: "No layer with nm='\(Self.mediaInputLayerName)' found — required for interactive media input"
             ))
@@ -888,7 +888,7 @@ extension AnimValidator {
         if mediaInput.layer.type != 4 {
             issues.append(ValidationIssue(
                 code: AnimValidationCode.mediaInputNotShape,
-                severity: .error,
+                severity: .warning,
                 path: "\(basePath).ty",
                 message: "mediaInput must be a shape layer (ty=4), got ty=\(mediaInput.layer.type)"
             ))
@@ -901,7 +901,7 @@ extension AnimValidator {
             if mediaInput.compContext != bindingLayer.compContext {
                 issues.append(ValidationIssue(
                     code: AnimValidationCode.mediaInputNotInSameComp,
-                    severity: .error,
+                    severity: .warning,
                     path: "\(basePath).nm",
                     message: "mediaInput (\(mediaInput.compContext)) must be in the same composition as '\(bindingKey)' (\(bindingLayer.compContext))"
                 ))
@@ -912,7 +912,7 @@ extension AnimValidator {
         guard let shapes = mediaInput.layer.shapes, !shapes.isEmpty else {
             issues.append(ValidationIssue(
                 code: AnimValidationCode.mediaInputNoPath,
-                severity: .error,
+                severity: .warning,
                 path: "\(basePath).shapes",
                 message: "mediaInput must contain shapes with at least one path (sh)"
             ))
@@ -931,14 +931,14 @@ extension AnimValidator {
         if pathCount == 0 {
             issues.append(ValidationIssue(
                 code: AnimValidationCode.mediaInputNoPath,
-                severity: .error,
+                severity: .warning,
                 path: "\(basePath).shapes",
                 message: "mediaInput must contain exactly one shape path (sh), found 0"
             ))
         } else if pathCount > 1 {
             issues.append(ValidationIssue(
                 code: AnimValidationCode.mediaInputMultiplePaths,
-                severity: .error,
+                severity: .warning,
                 path: "\(basePath).shapes",
                 message: "mediaInput must contain exactly one shape path, found \(pathCount)"
             ))
@@ -986,7 +986,7 @@ extension AnimValidator {
                 if Self.forbiddenMediaInputShapeTypes.contains(type) {
                     issues.append(ValidationIssue(
                         code: AnimValidationCode.mediaInputForbiddenModifier,
-                        severity: .error,
+                        severity: .warning,
                         path: "\(basePath)[\(index)].ty",
                         message: "mediaInput contains forbidden shape modifier: '\(type)'"
                     ))

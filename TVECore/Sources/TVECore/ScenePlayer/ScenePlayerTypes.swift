@@ -159,6 +159,26 @@ public struct BlockTiming: Sendable, Equatable {
     }
 }
 
+// MARK: - Template Mode (PR-18)
+
+/// Template display mode — determines how the scene is rendered.
+///
+/// - `preview`: Full playback with all animations and time-dependent effects.
+/// - `edit`: Static editing mode — time frozen at `editFrameIndex`, only binding layers visible.
+public enum TemplateMode: String, Sendable, Equatable {
+    case preview
+    case edit
+}
+
+/// Render policy derived from `TemplateMode`.
+///
+/// - `fullPreview`: Render entire scene (all blocks, all layers, all animations).
+/// - `editInputsOnly`: Render only editable input blocks (binding layer + mask/matte dependencies).
+public enum RenderPolicy: Sendable, Equatable {
+    case fullPreview
+    case editInputsOnly
+}
+
 // MARK: - Overlay State (PR-17)
 
 /// Visual state of a media-input overlay in the editor.

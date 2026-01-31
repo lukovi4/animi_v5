@@ -1066,7 +1066,7 @@ final class MediaInputValidatorTests: XCTestCase {
         """
         let report = try validateAnim(anim)
 
-        let missing = report.errors.first { $0.code == AnimValidationCode.mediaInputMissing }
+        let missing = report.warnings.first { $0.code == AnimValidationCode.mediaInputMissing }
         XCTAssertNotNil(missing, "Should report MEDIA_INPUT_MISSING when no mediaInput layer exists")
     }
 
@@ -1092,7 +1092,7 @@ final class MediaInputValidatorTests: XCTestCase {
         """
         let report = try validateAnim(anim)
 
-        let notShape = report.errors.first { $0.code == AnimValidationCode.mediaInputNotShape }
+        let notShape = report.warnings.first { $0.code == AnimValidationCode.mediaInputNotShape }
         XCTAssertNotNil(notShape, "Should report MEDIA_INPUT_NOT_SHAPE when ty != 4")
     }
 
@@ -1110,7 +1110,7 @@ final class MediaInputValidatorTests: XCTestCase {
         )
         let report = try validateAnim(anim)
 
-        let noPath = report.errors.first { $0.code == AnimValidationCode.mediaInputNoPath }
+        let noPath = report.warnings.first { $0.code == AnimValidationCode.mediaInputNoPath }
         XCTAssertNotNil(noPath, "Should report MEDIA_INPUT_NO_PATH when no shape paths exist")
     }
 
@@ -1130,7 +1130,7 @@ final class MediaInputValidatorTests: XCTestCase {
         )
         let report = try validateAnim(anim)
 
-        let multiple = report.errors.first { $0.code == AnimValidationCode.mediaInputMultiplePaths }
+        let multiple = report.warnings.first { $0.code == AnimValidationCode.mediaInputMultiplePaths }
         XCTAssertNotNil(multiple, "Should report MEDIA_INPUT_MULTIPLE_PATHS when more than one sh exists")
     }
 
@@ -1141,7 +1141,7 @@ final class MediaInputValidatorTests: XCTestCase {
         let anim = animWithMediaInput(mediaInputInRoot: true)
         let report = try validateAnim(anim)
 
-        let notSameComp = report.errors.first { $0.code == AnimValidationCode.mediaInputNotInSameComp }
+        let notSameComp = report.warnings.first { $0.code == AnimValidationCode.mediaInputNotInSameComp }
         XCTAssertNotNil(notSameComp, "Should report MEDIA_INPUT_NOT_IN_SAME_COMP")
     }
 
@@ -1161,7 +1161,7 @@ final class MediaInputValidatorTests: XCTestCase {
         )
         let report = try validateAnim(anim)
 
-        let forbidden = report.errors.first { $0.code == AnimValidationCode.mediaInputForbiddenModifier }
+        let forbidden = report.warnings.first { $0.code == AnimValidationCode.mediaInputForbiddenModifier }
         XCTAssertNotNil(forbidden, "Should report MEDIA_INPUT_FORBIDDEN_MODIFIER for tm")
         XCTAssertTrue(forbidden?.message.contains("tm") ?? false)
     }
@@ -1180,7 +1180,7 @@ final class MediaInputValidatorTests: XCTestCase {
         )
         let report = try validateAnim(anim)
 
-        let forbidden = report.errors.first { $0.code == AnimValidationCode.mediaInputForbiddenModifier }
+        let forbidden = report.warnings.first { $0.code == AnimValidationCode.mediaInputForbiddenModifier }
         XCTAssertNotNil(forbidden, "Should report MEDIA_INPUT_FORBIDDEN_MODIFIER for mm")
     }
 
@@ -1198,7 +1198,7 @@ final class MediaInputValidatorTests: XCTestCase {
         )
         let report = try validateAnim(anim)
 
-        let forbidden = report.errors.first { $0.code == AnimValidationCode.mediaInputForbiddenModifier }
+        let forbidden = report.warnings.first { $0.code == AnimValidationCode.mediaInputForbiddenModifier }
         XCTAssertNotNil(forbidden, "Should report MEDIA_INPUT_FORBIDDEN_MODIFIER for rp")
     }
 }

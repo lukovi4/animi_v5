@@ -378,6 +378,9 @@ public final class ScenePlayer {
 
     // MARK: - Render Commands
 
+    /// Canonical edit frame index — delegates to `SceneRenderPlan.editFrameIndex`.
+    public static var editFrameIndex: Int { SceneRenderPlan.editFrameIndex }
+
     /// Generates render commands for the given scene frame.
     ///
     /// User transforms stored via `setUserTransform(blockId:transform:)` are
@@ -393,6 +396,49 @@ public final class ScenePlayer {
             for: compiledScene.runtime,
             sceneFrameIndex: sceneFrameIndex,
             userTransforms: userTransforms
+        )
+    }
+
+    /// Generates render commands using the specified template mode (PR-18).
+    ///
+    /// - **Preview mode**: Full playback — all blocks, all layers, all animations.
+    ///   Uses `sceneFrameIndex` for time-based rendering (scrubber / playback).
+    /// - **Edit mode**: Static editing — time frozen at `editFrameIndex` (0),
+    ///   only binding layers + mask/matte dependencies rendered.
+    ///   `sceneFrameIndex` is ignored; edit always renders at frame 0.
+    ///
+    /// User transforms stored via `setUserTransform(blockId:transform:)` are
+    /// automatically forwarded to each block's render pass.
+    ///
+    /// - Parameters:
+    ///   - mode: Template mode (`.preview` or `.edit`)
+    ///   - sceneFrameIndex: Frame index in scene timeline (used by preview; ignored by edit)
+    /// - Returns: Render commands, or empty array if not compiled
+    public func renderCommands(
+        mode: TemplateMode,
+        sceneFrameIndex: Int = 0
+    ) -> [RenderCommand] {
+        guard let compiledScene = compiledScene else {
+            return []
+        }
+
+        let policy: RenderPolicy
+        let frameIndex: Int
+
+        switch mode {
+        case .preview:
+            policy = .fullPreview
+            frameIndex = sceneFrameIndex
+        case .edit:
+            policy = .editInputsOnly
+            frameIndex = Self.editFrameIndex
+        }
+
+        return SceneRenderPlan.renderCommands(
+            for: compiledScene.runtime,
+            sceneFrameIndex: frameIndex,
+            userTransforms: userTransforms,
+            renderPolicy: policy
         )
     }
 }
