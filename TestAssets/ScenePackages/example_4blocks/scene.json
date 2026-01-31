@@ -17,7 +17,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],
@@ -45,7 +45,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],
@@ -73,7 +73,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],
@@ -101,7 +101,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],

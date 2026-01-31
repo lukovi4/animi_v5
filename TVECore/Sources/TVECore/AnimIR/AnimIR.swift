@@ -1138,8 +1138,8 @@ extension AnimIR {
 
         // Transform all path components by the world matrix
         let transformedVertices = basePath.vertices.map { worldMatrix.apply(to: $0) }
-        let transformedIn = basePath.inTangents.map { worldMatrix.apply(to: $0) }
-        let transformedOut = basePath.outTangents.map { worldMatrix.apply(to: $0) }
+        let transformedIn = basePath.inTangents.map { worldMatrix.applyToVector($0) }
+        let transformedOut = basePath.outTangents.map { worldMatrix.applyToVector($0) }
 
         return BezierPath(
             vertices: transformedVertices,
