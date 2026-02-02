@@ -91,9 +91,18 @@ public struct BlockRuntime: Sendable {
     /// All compiled variants for this block
     public var variants: [VariantRuntime]
 
-    /// Returns the selected variant runtime
+    /// Returns the selected variant runtime (compilation default, no overrides).
     public var selectedVariant: VariantRuntime? {
         variants.first { $0.variantId == selectedVariantId }
+    }
+
+    /// Resolves the active variant respecting an override map (PR-20).
+    ///
+    /// Resolution: `overrides[blockId]` → `selectedVariantId` → first variant.
+    /// Single source of truth — used by both ScenePlayer and SceneRenderPlan.
+    public func resolvedVariant(overrides: [String: String]) -> VariantRuntime? {
+        let activeId = overrides[blockId] ?? selectedVariantId
+        return variants.first(where: { $0.variantId == activeId }) ?? variants.first
     }
 
     public init(
@@ -220,6 +229,22 @@ public struct MediaInputOverlay: Sendable {
         self.hitPath = hitPath
         self.rectCanvas = rectCanvas
         self.state = state
+    }
+}
+
+// MARK: - Variant Info (PR-20)
+
+/// Lightweight variant descriptor for UI — does not expose AnimIR internals.
+public struct VariantInfo: Sendable, Equatable {
+    /// Variant identifier
+    public let id: String
+
+    /// Animation reference (filename)
+    public let animRef: String
+
+    public init(id: String, animRef: String) {
+        self.id = id
+        self.animRef = animRef
     }
 }
 

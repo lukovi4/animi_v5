@@ -18,12 +18,15 @@ public enum SceneRenderPlan {
     ///     Blocks not present in the dictionary receive `.identity`.
     ///   - renderPolicy: Render policy (PR-18). `.fullPreview` renders all layers;
     ///     `.editInputsOnly` renders only binding layers + dependencies.
+    ///   - variantOverrides: Per-block variant overrides keyed by blockId (PR-20).
+    ///     Blocks not present use `block.selectedVariantId` (compilation default).
     /// - Returns: Array of render commands for all visible blocks
     public static func renderCommands(
         for runtime: SceneRuntime,
         sceneFrameIndex: Int,
         userTransforms: [String: Matrix2D] = [:],
-        renderPolicy: RenderPolicy = .fullPreview
+        renderPolicy: RenderPolicy = .fullPreview,
+        variantOverrides: [String: String] = [:]
     ) -> [RenderCommand] {
         var commands: [RenderCommand] = []
 
@@ -46,8 +49,8 @@ public enum SceneRenderPlan {
                 continue
             }
 
-            // Get selected variant
-            guard var variant = block.selectedVariant else {
+            // Resolve active variant: override → compilation default → first (PR-20)
+            guard var variant = block.resolvedVariant(overrides: variantOverrides) else {
                 continue
             }
 

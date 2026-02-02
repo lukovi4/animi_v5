@@ -21,6 +21,12 @@ public final class ScenePlayer {
     /// Blocks without an entry default to `.identity`.
     private var userTransforms: [String: Matrix2D] = [:]
 
+    /// Per-block variant overrides (PR-20).
+    /// Key: blockId. Value: variantId chosen by user.
+    /// Blocks without an entry use `BlockRuntime.selectedVariantId` (compilation default = first).
+    /// Compiled data remains immutable — overrides live here.
+    private var variantOverrides: [String: String] = [:]
+
     // MARK: - Initialization
 
     public init() {}
@@ -45,6 +51,9 @@ public final class ScenePlayer {
         package: ScenePackage,
         loadedAnimations: LoadedAnimations
     ) throws -> CompiledScene {
+        // Clear stale overrides from a previous scene (PR-20 review fix)
+        variantOverrides.removeAll()
+
         let scene = package.scene
 
         guard !scene.mediaBlocks.isEmpty else {
@@ -238,6 +247,78 @@ public final class ScenePlayer {
         userTransforms.removeAll()
     }
 
+    // MARK: - Variant Selection (PR-20)
+
+    /// Returns available variants for a block.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: Array of `VariantInfo` (id + animRef), or empty if block not found
+    public func availableVariants(blockId: String) -> [VariantInfo] {
+        guard let compiled = compiledScene else { return [] }
+        guard let block = compiled.runtime.blocks.first(where: { $0.blockId == blockId }) else {
+            return []
+        }
+        return block.variants.map { VariantInfo(id: $0.variantId, animRef: $0.animRef) }
+    }
+
+    /// Returns the active variant ID for a block (override or compilation default).
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: Active variant ID, or `nil` if block not found
+    public func selectedVariantId(blockId: String) -> String? {
+        guard let compiled = compiledScene else { return nil }
+        guard let block = compiled.runtime.blocks.first(where: { $0.blockId == blockId }) else {
+            return nil
+        }
+        return variantOverrides[blockId] ?? block.selectedVariantId
+    }
+
+    /// Sets the selected variant for a block.
+    ///
+    /// If `variantId` does not match any compiled variant, the override is removed
+    /// and the block falls back to its compilation default.
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block
+    ///   - variantId: Variant to select
+    public func setSelectedVariant(blockId: String, variantId: String) {
+        guard let compiled = compiledScene else { return }
+        guard let block = compiled.runtime.blocks.first(where: { $0.blockId == blockId }) else {
+            return
+        }
+        // Validate variantId exists in this block
+        if block.variants.contains(where: { $0.variantId == variantId }) {
+            variantOverrides[blockId] = variantId
+        } else {
+            // Invalid variantId — remove override, fall back to default
+            variantOverrides.removeValue(forKey: blockId)
+        }
+    }
+
+    /// Applies a variant selection mapping to multiple blocks at once (scene preset).
+    ///
+    /// Each entry maps `blockId → variantId`. Invalid entries are silently skipped.
+    ///
+    /// - Parameter mapping: Dictionary of blockId to variantId
+    public func applyVariantSelection(_ mapping: [String: String]) {
+        for (blockId, variantId) in mapping {
+            setSelectedVariant(blockId: blockId, variantId: variantId)
+        }
+    }
+
+    /// Removes the variant override for a block, reverting to the compilation default.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    public func clearSelectedVariantOverride(blockId: String) {
+        variantOverrides.removeValue(forKey: blockId)
+    }
+
+    /// Resolves the active `VariantRuntime` for a block, respecting overrides.
+    /// Delegates to `BlockRuntime.resolvedVariant(overrides:)` — single source of truth.
+    private func resolveVariant(for block: BlockRuntime) -> VariantRuntime? {
+        block.resolvedVariant(overrides: variantOverrides)
+    }
+
     // MARK: - Hit-Test & Overlay (PR-17)
 
     /// Returns the mediaInput hit path for a block in **canvas coordinates**.
@@ -256,7 +337,7 @@ public final class ScenePlayer {
         let runtime = compiled.runtime
 
         guard let block = runtime.blocks.first(where: { $0.blockId == blockId }),
-              var variant = block.selectedVariant else {
+              var variant = resolveVariant(for: block) else {
             return nil
         }
 
@@ -395,7 +476,8 @@ public final class ScenePlayer {
         return SceneRenderPlan.renderCommands(
             for: compiledScene.runtime,
             sceneFrameIndex: sceneFrameIndex,
-            userTransforms: userTransforms
+            userTransforms: userTransforms,
+            variantOverrides: variantOverrides
         )
     }
 
@@ -438,7 +520,8 @@ public final class ScenePlayer {
             for: compiledScene.runtime,
             sceneFrameIndex: frameIndex,
             userTransforms: userTransforms,
-            renderPolicy: policy
+            renderPolicy: policy,
+            variantOverrides: variantOverrides
         )
     }
 }
