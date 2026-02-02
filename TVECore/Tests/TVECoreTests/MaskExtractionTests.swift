@@ -177,7 +177,7 @@ final class MaskExtractionTests: XCTestCase {
     }
 
     func testExtract_innerCommandsCorrectRange() throws {
-        // Verify that innerCommands doesn't include any beginMask or endMask
+        // For a single flat mask scope (no nesting), inner commands contain no mask commands
         let commands: [RenderCommand] = [
             .beginMask(mode: .add, inverted: false, pathId: PathID(0), opacity: 1.0, frame: 0),
             .pushTransform(.identity),
@@ -206,21 +206,186 @@ final class MaskExtractionTests: XCTestCase {
         }
     }
 
-    func testExtract_nestedBeginMaskInsideInner_returnsNil() throws {
-        // Nested beginMask inside inner content is unsupported and should return nil
+    func testExtract_nestedBeginMaskInsideInner_succeeds() throws {
+        // Nested beginMask inside inner content is supported via depth tracking.
+        // Inner commands include the complete nested scope (beginMask…endMask).
         let commands: [RenderCommand] = [
             .beginMask(mode: .add, inverted: false, pathId: PathID(1), opacity: 1.0, frame: 0),
             .pushTransform(.identity),
-            .beginMask(mode: .subtract, inverted: false, pathId: PathID(2), opacity: 1.0, frame: 0), // Nested!
+            .beginMask(mode: .subtract, inverted: false, pathId: PathID(2), opacity: 1.0, frame: 0), // Nested
             .drawImage(assetId: "test", opacity: 1.0),
-            .endMask,
+            .endMask, // closes nested
             .popTransform,
-            .endMask
+            .endMask  // closes outer
+        ]
+
+        let renderer = try makeTestRenderer()
+        guard let scope = renderer.extractMaskGroupScope(from: commands, startIndex: 0) else {
+            XCTFail("Should extract scope with nested mask")
+            return
+        }
+
+        // Outer chain: 1 op (PathID 1)
+        XCTAssertEqual(scope.opsInAeOrder.count, 1)
+        XCTAssertEqual(scope.opsInAeOrder[0].pathId, PathID(1))
+        XCTAssertEqual(scope.opsInAeOrder[0].mode, .add)
+
+        // Inner commands: pushTransform, beginMask(nested), drawImage, endMask, popTransform
+        XCTAssertEqual(scope.innerCommands.count, 5)
+
+        // Verify nested beginMask is in inner commands
+        if case .beginMask(let mode, _, let pathId, _, _) = scope.innerCommands[1] {
+            XCTAssertEqual(mode, .subtract)
+            XCTAssertEqual(pathId, PathID(2))
+        } else {
+            XCTFail("Expected beginMask at index 1 of inner commands")
+        }
+
+        // Verify nested endMask is in inner commands
+        if case .endMask = scope.innerCommands[3] {
+            // OK
+        } else {
+            XCTFail("Expected endMask at index 3 of inner commands")
+        }
+
+        // endIndex: past the outer endMask
+        XCTAssertEqual(scope.endIndex, 7)
+    }
+
+    // MARK: - Nested Mask Depth Tests
+
+    func testExtract_twoLevelNested_succeeds() throws {
+        // A contains B contains C — depth 3
+        let commands: [RenderCommand] = [
+            .beginMask(mode: .add, inverted: false, pathId: PathID(1), opacity: 1.0, frame: 0),       // A (outer)
+            .beginGroup(name: "layer"),
+            .beginMask(mode: .intersect, inverted: false, pathId: PathID(2), opacity: 0.8, frame: 0), // B (nested)
+            .pushTransform(.identity),
+            .beginMask(mode: .subtract, inverted: true, pathId: PathID(3), opacity: 0.5, frame: 0),   // C (nested²)
+            .drawImage(assetId: "deep", opacity: 1.0),
+            .endMask, // C
+            .popTransform,
+            .endMask, // B
+            .endGroup,
+            .endMask  // A
+        ]
+
+        let renderer = try makeTestRenderer()
+        guard let scope = renderer.extractMaskGroupScope(from: commands, startIndex: 0) else {
+            XCTFail("Should extract scope with two-level nested masks")
+            return
+        }
+
+        // Outer chain: 1 op (A)
+        XCTAssertEqual(scope.opsInAeOrder.count, 1)
+        XCTAssertEqual(scope.opsInAeOrder[0].pathId, PathID(1))
+
+        // Inner: beginGroup, beginMask(B), pushTransform, beginMask(C), drawImage, endMask(C), popTransform, endMask(B), endGroup
+        XCTAssertEqual(scope.innerCommands.count, 9)
+
+        // Verify B and C are both in inner commands
+        if case .beginMask(_, _, let pid, _, _) = scope.innerCommands[1] {
+            XCTAssertEqual(pid, PathID(2), "B should be at index 1")
+        } else {
+            XCTFail("Expected beginMask(B) at index 1")
+        }
+        if case .beginMask(_, _, let pid, _, _) = scope.innerCommands[3] {
+            XCTAssertEqual(pid, PathID(3), "C should be at index 3")
+        } else {
+            XCTFail("Expected beginMask(C) at index 3")
+        }
+
+        XCTAssertEqual(scope.endIndex, 11)
+    }
+
+    func testExtract_lifoWithNested_succeeds() throws {
+        // Two outer LIFO masks (M2, M1) + nested mask (N) inside inner content
+        let commands: [RenderCommand] = [
+            .beginMask(mode: .subtract, inverted: false, pathId: PathID(2), opacity: 0.9, frame: 0), // M2
+            .beginMask(mode: .add, inverted: false, pathId: PathID(1), opacity: 1.0, frame: 0),      // M1
+            .pushTransform(.identity),
+            .beginMask(mode: .intersect, inverted: false, pathId: PathID(5), opacity: 1.0, frame: 0), // N (nested)
+            .drawImage(assetId: "content", opacity: 1.0),
+            .endMask, // N
+            .popTransform,
+            .endMask, // M1
+            .endMask  // M2
+        ]
+
+        let renderer = try makeTestRenderer()
+        guard let scope = renderer.extractMaskGroupScope(from: commands, startIndex: 0) else {
+            XCTFail("Should extract scope with LIFO + nested")
+            return
+        }
+
+        // Outer chain: 2 ops in AE order (M1, M2)
+        XCTAssertEqual(scope.opsInAeOrder.count, 2)
+        XCTAssertEqual(scope.opsInAeOrder[0].pathId, PathID(1)) // M1 first in AE order
+        XCTAssertEqual(scope.opsInAeOrder[0].mode, .add)
+        XCTAssertEqual(scope.opsInAeOrder[1].pathId, PathID(2)) // M2 second in AE order
+        XCTAssertEqual(scope.opsInAeOrder[1].mode, .subtract)
+
+        // Inner: pushTransform, beginMask(N), drawImage, endMask(N), popTransform
+        XCTAssertEqual(scope.innerCommands.count, 5)
+
+        // Verify nested mask is in inner commands
+        if case .beginMask(let mode, _, let pid, _, _) = scope.innerCommands[1] {
+            XCTAssertEqual(mode, .intersect)
+            XCTAssertEqual(pid, PathID(5))
+        } else {
+            XCTFail("Expected beginMask(N) at index 1")
+        }
+
+        // endIndex past all 3 endMasks
+        XCTAssertEqual(scope.endIndex, 9)
+    }
+
+    func testExtract_nestedWithMoreInnerAfter_succeeds() throws {
+        // Container mask with nested inputClip, then more inner content after nested scope
+        let commands: [RenderCommand] = [
+            .beginMask(mode: .add, inverted: false, pathId: PathID(1), opacity: 1.0, frame: 0),
+            .beginGroup(name: "inputClip"),
+            .beginMask(mode: .intersect, inverted: false, pathId: PathID(2), opacity: 1.0, frame: 0),
+            .drawImage(assetId: "clipped", opacity: 1.0),
+            .endMask, // inputClip end
+            .endGroup,
+            .drawImage(assetId: "extra", opacity: 0.5), // more content after nested scope
+            .endMask  // container end
+        ]
+
+        let renderer = try makeTestRenderer()
+        guard let scope = renderer.extractMaskGroupScope(from: commands, startIndex: 0) else {
+            XCTFail("Should extract scope")
+            return
+        }
+
+        XCTAssertEqual(scope.opsInAeOrder.count, 1)
+
+        // Inner: beginGroup, beginMask, drawImage, endMask, endGroup, drawImage
+        XCTAssertEqual(scope.innerCommands.count, 6)
+
+        // Last inner command is the extra drawImage
+        if case .drawImage(let assetId, _) = scope.innerCommands[5] {
+            XCTAssertEqual(assetId, "extra")
+        } else {
+            XCTFail("Expected drawImage('extra') as last inner command")
+        }
+
+        XCTAssertEqual(scope.endIndex, 8)
+    }
+
+    func testExtract_unbalancedNested_returnsNil() throws {
+        // Nested beginMask without matching endMask — should return nil
+        let commands: [RenderCommand] = [
+            .beginMask(mode: .add, inverted: false, pathId: PathID(1), opacity: 1.0, frame: 0),
+            .beginMask(mode: .subtract, inverted: false, pathId: PathID(2), opacity: 1.0, frame: 0), // Nested, no endMask!
+            .drawImage(assetId: "test", opacity: 1.0),
+            .endMask  // only 1 endMask for 2 beginMask
         ]
 
         let renderer = try makeTestRenderer()
         let scope = renderer.extractMaskGroupScope(from: commands, startIndex: 0)
-        XCTAssertNil(scope, "Should return nil when nested beginMask found inside inner content")
+        XCTAssertNil(scope, "Should return nil for unbalanced nested masks")
     }
 
     // MARK: - initialAccumulatorValue Tests

@@ -124,6 +124,11 @@ final class MetalRendererBaselineTests: XCTestCase {
     }
 
     func testStacksBalanced_invalidPopThrows() throws {
+        // Disable pre-execution validator assertion — this test deliberately
+        // sends invalid commands to verify the renderer's own error handling.
+        RenderCommandValidator.assertOnFailure = false
+        defer { RenderCommandValidator.assertOnFailure = true }
+
         let provider = InMemoryTextureProvider()
         let cmds: [RenderCommand] = [.popTransform]
         XCTAssertThrowsError(
@@ -170,6 +175,11 @@ final class MetalRendererBaselineTests: XCTestCase {
     }
 
     func testUnbalancedMask_throws() throws {
+        // Disable pre-execution validator assertion — this test deliberately
+        // sends invalid commands to verify the renderer's own error handling.
+        RenderCommandValidator.assertOnFailure = false
+        defer { RenderCommandValidator.assertOnFailure = true }
+
         let provider = InMemoryTextureProvider()
         let cmds: [RenderCommand] = [.endMask]
         XCTAssertThrowsError(

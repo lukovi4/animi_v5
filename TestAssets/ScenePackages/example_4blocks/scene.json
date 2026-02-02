@@ -12,7 +12,7 @@
       "blockId": "block_01",
       "zIndex": 0,
       "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
-      "containerClip": "slotRect",
+      "containerClip": "none",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
@@ -64,7 +64,7 @@
       "blockId": "block_02",
       "zIndex": 1,
       "rect": { "x": 540.0, "y": 0.0, "width": 540.0, "height": 960.0 },
-      "containerClip": "slotRect",
+      "containerClip": "none",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
@@ -92,7 +92,7 @@
       "blockId": "block_03",
       "zIndex": 2,
       "rect": { "x": 0.0, "y": 960.0, "width": 540.0, "height": 960.0 },
-      "containerClip": "slotRect",
+      "containerClip": "none",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
@@ -120,7 +120,7 @@
       "blockId": "block_04",
       "zIndex": 3,
       "rect": { "x": 540.0, "y": 960.0, "width": 540.0, "height": 960.0 },
-      "containerClip": "slotRect",
+      "containerClip": "none",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },

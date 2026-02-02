@@ -389,6 +389,11 @@ final class MetalRendererMatteTests: XCTestCase {
     // MARK: - Error Handling Tests
 
     func testUnbalancedMatteThrows() throws {
+        // Disable pre-execution validator assertion — this test deliberately
+        // sends unbalanced commands to verify the renderer's own error handling.
+        RenderCommandValidator.assertOnFailure = false
+        defer { RenderCommandValidator.assertOnFailure = true }
+
         // Arrange: beginMatte without endMatte
         let size = 64
         let commands: [RenderCommand] = [

@@ -31,6 +31,9 @@ struct MaskOp: Sendable, Equatable {
 /// beginMask(M2) → beginMask(M1) → beginMask(M0) → [inner] → endMask → endMask → endMask
 /// ```
 /// After extraction: `opsInAeOrder = [M0, M1, M2]` (reversed for correct application order)
+///
+/// Inner commands may themselves contain nested mask scopes (e.g. inputClip inside
+/// a container mask). These are passed verbatim and handled recursively by `drawInternal`.
 struct MaskGroupScope: Sendable {
     /// Mask operations in AE application order.
     /// First mask in array is applied first (was innermost in LIFO nesting).

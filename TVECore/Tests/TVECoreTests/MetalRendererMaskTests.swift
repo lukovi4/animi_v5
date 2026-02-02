@@ -382,6 +382,11 @@ final class MetalRendererMaskTests: XCTestCase {
     // MARK: - Test 10: Unbalanced mask does not crash (M1-fallback)
 
     func testUnbalancedMaskDoesNotCrash() throws {
+        // Disable pre-execution validator assertion — this test deliberately
+        // sends unbalanced commands to verify the renderer's fallback behavior.
+        RenderCommandValidator.assertOnFailure = false
+        defer { RenderCommandValidator.assertOnFailure = true }
+
         // M1-fallback: malformed scope (missing endMask) should NOT throw.
         // Instead, it should render inner commands without mask.
         let provider = InMemoryTextureProvider()

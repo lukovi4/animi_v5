@@ -739,29 +739,51 @@ extension AnimIR {
         // PR-15: Check if this is the binding layer with inputClip
         let needsInputClip = isBindingLayer(layer, context: context) && context.inputGeometry != nil
 
+        // PR-22: Pre-compute inverse for scope-balanced inputClip emission.
+        // The inverse compensates inputLayerWorld so content inside the mask scope
+        // is not affected by the mask-positioning transform, while keeping all
+        // push/pop transforms balanced within the mask scope boundary.
+        let inputClipTransforms: (world: Matrix2D, inverse: Matrix2D)?
         if needsInputClip, let inputGeo = context.inputGeometry {
-            // === InputClip path for binding layer ===
+            let world = computeMediaInputWorld(inputGeo: inputGeo, context: context)
+            if let inv = world.inverse {
+                inputClipTransforms = (world, inv)
+            } else {
+                inputClipTransforms = nil
+                lastRenderIssues.append(RenderIssue(
+                    severity: .warning,
+                    code: RenderIssue.codeInputClipNonInvertible,
+                    path: "anim(\(meta.sourceAnimRef)).layers[id=\(layer.id)]",
+                    message: "inputLayerWorld not invertible (det\u{2248}0), skipping inputClip for layer \(layer.name)",
+                    frameIndex: context.frameIndex
+                ))
+            }
+        } else {
+            inputClipTransforms = nil
+        }
+
+        if let inputGeo = context.inputGeometry, let clip = inputClipTransforms {
+            // === InputClip path for binding layer (scope-balanced, PR-22) ===
             //
-            // Structure (per ТЗ section 2.3):
+            // Structure (fixes cross-boundary transforms from original emission):
             //   beginGroup(layer: media (inputClip))
-            //     pushTransform(world(mediaInput, t))    ← mediaInput transform (fixed window)
+            //     pushTransform(inputLayerWorld)             ← outside scope
             //     beginMask(mode: .intersect, pathId: mediaInputPathId)
-            //     popTransform
-            //     pushTransform(world(media, t) * userTransform)   ← media + user edits
-            //       [masks + content]
-            //     popTransform
+            //       pushTransform(inverse(inputLayerWorld))  ← compensation (balanced in scope)
+            //       pushTransform(mediaWorld * userTransform)
+            //         [masks + content]
+            //       popTransform(mediaWorld)
+            //       popTransform(inverse)                    ← balanced within scope
             //     endMask
+            //     popTransform(inputLayerWorld)              ← outside scope, balanced
             //   endGroup
 
             commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))(inputClip)"))
 
-            // 1) Compute mediaInput world transform (fixed window, no userTransform)
-            let inputLayerWorld = computeMediaInputWorld(inputGeo: inputGeo, context: context)
+            // 1) Push inputLayerWorld (outside mask scope — positions the mask path)
+            commands.append(.pushTransform(clip.world))
 
-            // 2) Push mediaInput transform for the mask path
-            commands.append(.pushTransform(inputLayerWorld))
-
-            // 3) Begin inputClip mask (reuse beginMask with intersect mode)
+            // 2) Begin inputClip mask
             // TODO(PR-future): if animated mediaInput is allowed, change frame: 0 to context.frame
             //                   and update validator to permit animated mediaInput path.
             commands.append(.beginMask(
@@ -772,14 +794,16 @@ extension AnimIR {
                 frame: 0  // mediaInput path is static (frame 0) per ТЗ
             ))
 
-            // 4) Pop mediaInput transform
-            commands.append(.popTransform)
+            // 3) Compensate: push inverse(inputLayerWorld) so content doesn't inherit
+            //    the mask-positioning transform. This replaces the old cross-boundary
+            //    popTransform that was inside the scope but closed an outer push.
+            commands.append(.pushTransform(clip.inverse))
 
-            // 5) Push media world transform with userTransform: M(t) = A(t) ∘ U
+            // 4) Push media world transform with userTransform: M(t) = A(t) ∘ U
             let mediaWorldWithUser = resolved.worldMatrix.concatenating(context.userTransform)
             commands.append(.pushTransform(mediaWorldWithUser))
 
-            // 6) Layer masks (masksProperties) - applied inside inputClip scope
+            // 5) Layer masks (masksProperties) — applied inside inputClip scope
             var emittedMaskCount = 0
             for mask in layer.masks.reversed() {
                 if let pathId = mask.pathId {
@@ -795,19 +819,25 @@ extension AnimIR {
                 }
             }
 
-            // 7) Content (drawImage)
+            // 6) Content (drawImage)
             renderLayerContent(layer, resolved: resolved, context: context, commands: &commands)
 
-            // 8) End layer masks (LIFO)
+            // 7) End layer masks (LIFO)
             for _ in 0..<emittedMaskCount { commands.append(.endMask) }
 
-            // 9) Pop media transform
+            // 8) Pop media transform
+            commands.append(.popTransform)
+
+            // 9) Pop inverse compensation (balanced within scope)
             commands.append(.popTransform)
 
             // 10) End inputClip mask
             commands.append(.endMask)
 
-            // 11) End group
+            // 11) Pop inputLayerWorld (outside scope — balanced with step 1)
+            commands.append(.popTransform)
+
+            // 12) End group
             commands.append(.endGroup)
         } else {
             // === Standard path (non-binding layer or no inputGeometry) ===
@@ -871,7 +901,19 @@ extension AnimIR {
             return .identity
         }
 
-        return matrix
+        // PR-23: Apply shape groupTransforms for mediaInput geometry (PR-11 contract).
+        // Paths are stored in LOCAL coords; group transforms must be applied at render time.
+        // This matches the pattern in renderLayerContent for regular shape layers.
+        switch inputLayer.content {
+        case .shapes(let shapeGroup):
+            var composed = matrix
+            for gt in shapeGroup.groupTransforms {
+                composed = composed.concatenating(gt.matrix(at: context.frame))
+            }
+            return composed
+        default:
+            return matrix
+        }
     }
 
     // Computes world transform for a layer considering parent chain.

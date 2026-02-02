@@ -55,6 +55,9 @@ extension RenderIssue {
 
     /// Matte source layer referenced by sourceLayerId not found in composition
     public static let codeMatteSourceNotFound = "MATTE_SOURCE_NOT_FOUND"
+
+    /// InputClip transform is not invertible (degenerate, e.g. scale=0)
+    public static let codeInputClipNonInvertible = "INPUT_CLIP_NON_INVERTIBLE"
 }
 
 // MARK: - Debug Description

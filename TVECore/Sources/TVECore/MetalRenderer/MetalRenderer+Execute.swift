@@ -1097,6 +1097,14 @@ extension MetalRenderer {
     /// beginMask(M2) → beginMask(M1) → beginMask(M0) → [inner] → endMask → endMask → endMask
     /// ```
     ///
+    /// Also supports nested mask scopes inside inner content (e.g. container mask
+    /// wrapping a binding layer that has its own inputClip mask):
+    /// ```
+    /// beginMask(container) → [… beginMask(inputClip) … endMask …] → endMask
+    /// ```
+    /// Nested scopes are included verbatim in `innerCommands` and handled
+    /// recursively by `drawInternal`.
+    ///
     /// Returns masks in AE application order (M0, M1, M2) for correct accumulation.
     /// The `endIndex` points to the next command after the last `endMask`.
     ///
@@ -1110,7 +1118,7 @@ extension MetalRenderer {
         var ops: [MaskOp] = []
         var index = startIndex
 
-        // Phase 1: Collect consecutive beginMask commands
+        // Phase 1: Collect consecutive beginMask commands (outer chain)
         while index < commands.count {
             switch commands[index] {
             case .beginMask(let mode, let inverted, let pathId, let opacity, let frame):
@@ -1138,21 +1146,24 @@ extension MetalRenderer {
 
         guard !ops.isEmpty else { return nil }
 
+        let baseDepth = ops.count
         let innerStart = index
-        var depth = ops.count
-        var firstEndMaskIndex: Int?
+        var depth = baseDepth
+        var innerEnd: Int?
 
-        // Phase 2: Walk until all scopes are closed
+        // Phase 2: Walk until all outer scopes are closed.
+        // Nested beginMask/endMask pairs inside inner content are tracked via depth
+        // and included in innerCommands — they will be handled recursively by drawInternal.
         while index < commands.count && depth > 0 {
             switch commands[index] {
             case .beginMask, .beginMaskAdd:
-                // Nested mask inside a mask-group inner content is unsupported.
-                // This would corrupt innerCommands/endIndex calculation.
-                return nil
+                depth += 1
 
             case .endMask:
-                if firstEndMaskIndex == nil {
-                    firstEndMaskIndex = index
+                // Before decrement: if depth == baseDepth, all nested scopes are closed
+                // and this endMask starts closing the outer chain.
+                if innerEnd == nil && depth == baseDepth {
+                    innerEnd = index
                 }
                 depth -= 1
 
@@ -1162,11 +1173,17 @@ extension MetalRenderer {
             index += 1
         }
 
-        // Verify we found all endMasks
-        guard depth == 0, let innerEnd = firstEndMaskIndex else { return nil }
+        // Verify balanced structure
+        guard depth == 0, let innerEndIdx = innerEnd else {
+            #if DEBUG
+            print("[TVECore] ⚠️ Unbalanced mask commands: depth=\(depth) at end of stream")
+            #endif
+            return nil
+        }
 
-        // Inner commands are between last beginMask and first endMask
-        let innerCommands = (innerEnd > innerStart) ? Array(commands[innerStart..<innerEnd]) : []
+        // Inner commands: everything between outer chain and first outer endMask.
+        // For nested scopes, this includes the complete nested beginMask…endMask pair.
+        let innerCommands = (innerEndIdx > innerStart) ? Array(commands[innerStart..<innerEndIdx]) : []
 
         // Reverse ops to get AE application order (emission was reversed)
         let opsInAeOrder = Array(ops.reversed())

@@ -251,6 +251,20 @@ public final class MetalRenderer {
         perfFrameIndex += 1
         #endif
 
+        // PR-22: Validate command structure in DEBUG before execution.
+        // Catches cross-boundary transform/clip issues at the source.
+        #if DEBUG
+        let validationErrors = RenderCommandValidator.validateScopeBalance(commands)
+        if !validationErrors.isEmpty {
+            for err in validationErrors {
+                print("[TVECore] \u{274c} RenderCommandValidator: \(err)")
+            }
+            if RenderCommandValidator.assertOnFailure {
+                assertionFailure("[TVECore] RenderCommand structural validation failed (\(validationErrors.count) error(s))")
+            }
+        }
+        #endif
+
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = target.texture
         renderPassDescriptor.colorAttachments[0].loadAction = .clear
@@ -336,6 +350,19 @@ public final class MetalRenderer {
             drawableScale: 1.0,
             animSize: animSize
         )
+
+        // PR-22: Validate command structure in DEBUG before execution.
+        #if DEBUG
+        let offscreenValidationErrors = RenderCommandValidator.validateScopeBalance(commands)
+        if !offscreenValidationErrors.isEmpty {
+            for err in offscreenValidationErrors {
+                print("[TVECore] \u{274c} RenderCommandValidator: \(err)")
+            }
+            if RenderCommandValidator.assertOnFailure {
+                assertionFailure("[TVECore] RenderCommand structural validation failed (\(offscreenValidationErrors.count) error(s))")
+            }
+        }
+        #endif
 
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = texture
