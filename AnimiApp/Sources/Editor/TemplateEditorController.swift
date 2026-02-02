@@ -233,6 +233,47 @@ final class TemplateEditorController {
         requestDisplay()
     }
 
+    // MARK: - Variant Selection (PR-20)
+
+    /// Returns available variants for the currently selected block, or empty.
+    func selectedBlockVariants() -> [VariantInfo] {
+        guard let player = player,
+              let blockId = state.selectedBlockId else { return [] }
+        return player.availableVariants(blockId: blockId)
+    }
+
+    /// Returns the active variant ID for the currently selected block, or nil.
+    func selectedBlockVariantId() -> String? {
+        guard let player = player,
+              let blockId = state.selectedBlockId else { return nil }
+        return player.selectedVariantId(blockId: blockId)
+    }
+
+    /// Sets the variant for the currently selected block.
+    ///
+    /// Does NOT touch playback — VC is responsible for stopping displayLink first.
+    /// Updates overlay and triggers display + state callbacks.
+    func setSelectedVariantForSelectedBlock(_ variantId: String) {
+        guard let player = player,
+              let blockId = state.selectedBlockId else { return }
+        player.setSelectedVariant(blockId: blockId, variantId: variantId)
+        refreshOverlayIfNeeded()
+        requestDisplay()
+        onStateChanged?(state)
+    }
+
+    /// Applies a scene-level variant preset (mapping of blockId → variantId).
+    ///
+    /// Does NOT touch playback — VC is responsible for stopping displayLink first.
+    /// Updates overlay and triggers display + state callbacks.
+    func applyScenePreset(_ mapping: [String: String]) {
+        guard let player = player else { return }
+        player.applyVariantSelection(mapping)
+        refreshOverlayIfNeeded()
+        requestDisplay()
+        onStateChanged?(state)
+    }
+
     // MARK: - Overlay
 
     /// Refreshes overlay if currently in edit mode. Called by VC after layout changes (fix #5).

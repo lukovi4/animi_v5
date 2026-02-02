@@ -2,6 +2,15 @@ import UIKit
 import MetalKit
 import TVECore
 
+// MARK: - Scene Variant Preset (PR-20)
+
+/// A named mapping of blockId -> variantId for scene-level style switching.
+struct SceneVariantPreset {
+    let id: String
+    let title: String
+    let mapping: [String: String]  // blockId -> variantId
+}
+
 /// Main player view controller with Metal rendering surface and debug log.
 /// Supports full scene playback with multiple media blocks.
 final class PlayerViewController: UIViewController {
@@ -9,7 +18,7 @@ final class PlayerViewController: UIViewController {
     // MARK: - UI Components
 
     private lazy var sceneSelector: UISegmentedControl = {
-        let control = UISegmentedControl(items: ["4 Blocks", "Alpha Matte"])
+        let control = UISegmentedControl(items: ["4 Blocks", "Alpha Matte", "Variant Demo"])
         control.translatesAutoresizingMaskIntoConstraints = false
         control.selectedSegmentIndex = 0
         return control
@@ -87,6 +96,43 @@ final class PlayerViewController: UIViewController {
         return btn
     }
 
+    // MARK: - Variant Switching UI (PR-20)
+
+    /// Per-block variant picker — visible in Edit mode when a block is selected.
+    private lazy var variantPicker: UISegmentedControl = {
+        let control = UISegmentedControl()
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.addTarget(self, action: #selector(variantPickerChanged), for: .valueChanged)
+        control.isHidden = true
+        return control
+    }()
+
+    /// Label shown above variant picker to indicate which block is selected.
+    private lazy var variantLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = .secondaryLabel
+        label.text = ""
+        label.isHidden = true
+        return label
+    }()
+
+    /// Scene preset picker — always visible when scene is loaded.
+    private lazy var presetPicker: UISegmentedControl = {
+        let control = UISegmentedControl()
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.addTarget(self, action: #selector(presetPickerChanged), for: .valueChanged)
+        control.isHidden = true
+        return control
+    }()
+
+    /// Current presets for the loaded scene. Empty for scenes without variant data.
+    private var scenePresets: [SceneVariantPreset] = []
+
+    /// Cached variant IDs for the current picker — avoids reading titles from UIKit (lead fix #2).
+    private var lastVariantIds: [String] = []
+
     // MARK: - Properties
 
     private let loader = ScenePackageLoader()
@@ -162,12 +208,12 @@ final class PlayerViewController: UIViewController {
 
     private func setupUI() {
         view.backgroundColor = .systemBackground
-        [sceneSelector, loadButton, modeToggle, metalView, overlayView, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
+        [sceneSelector, loadButton, modeToggle, presetPicker, metalView, overlayView, variantLabel, variantPicker, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
         overlayView.translatesAutoresizingMaskIntoConstraints = false
 
         // MetalView constraints for normal mode
-        // PR-19: metalView top anchors to modeToggle (not loadButton)
-        metalViewTopToLoadButtonConstraint = metalView.topAnchor.constraint(equalTo: modeToggle.bottomAnchor, constant: 8)
+        // PR-20: metalView top anchors to presetPicker (which follows modeToggle)
+        metalViewTopToLoadButtonConstraint = metalView.topAnchor.constraint(equalTo: presetPicker.bottomAnchor, constant: 8)
         metalViewTopToSafeAreaConstraint = metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12)
         metalViewTopToSafeAreaConstraint?.isActive = false
 
@@ -195,6 +241,10 @@ final class PlayerViewController: UIViewController {
             modeToggle.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 8),
             modeToggle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             modeToggle.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            // PR-20: presetPicker between modeToggle and metalView
+            presetPicker.topAnchor.constraint(equalTo: modeToggle.bottomAnchor, constant: 6),
+            presetPicker.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            presetPicker.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             metalViewTopToLoadButtonConstraint!,
             metalViewLeadingConstraint!,
             metalViewTrailingConstraint!,
@@ -204,7 +254,14 @@ final class PlayerViewController: UIViewController {
             overlayView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             overlayView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             overlayView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-            controlsStack.topAnchor.constraint(equalTo: metalView.bottomAnchor, constant: 12),
+            // PR-20: variant picker below metalView (edit mode only)
+            variantLabel.topAnchor.constraint(equalTo: metalView.bottomAnchor, constant: 8),
+            variantLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            variantLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            variantPicker.topAnchor.constraint(equalTo: variantLabel.bottomAnchor, constant: 4),
+            variantPicker.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            variantPicker.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            controlsStack.topAnchor.constraint(equalTo: variantPicker.bottomAnchor, constant: 8),
             controlsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             controlsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             playPauseButton.widthAnchor.constraint(equalToConstant: 80),
@@ -267,7 +324,9 @@ final class PlayerViewController: UIViewController {
         stopPlayback()
         renderErrorLogged = false
         log("---\nLoading scene package...")
-        let sceneName = sceneSelector.selectedSegmentIndex == 0 ? "example_4blocks" : "alpha_matte_test"
+        let sceneNames = ["example_4blocks", "alpha_matte_test", "variant_switch_demo"]
+        let idx = sceneSelector.selectedSegmentIndex
+        let sceneName = idx < sceneNames.count ? sceneNames[idx] : sceneNames[0]
         let subdir = "TestAssets/ScenePackages/\(sceneName)"
         guard let url = Bundle.main.url(forResource: "scene", withExtension: "json", subdirectory: subdir) else {
             log("ERROR: Test package '\(sceneName)' not found"); return
@@ -329,6 +388,29 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    // MARK: - Variant Switching Actions (PR-20)
+
+    @objc private func variantPickerChanged() {
+        let idx = variantPicker.selectedSegmentIndex
+        let variants = editorController.selectedBlockVariants()
+        guard idx >= 0, idx < variants.count else { return }
+
+        // Policy: stop playback before switching (frame preserved)
+        if isPlaying { stopPlayback() }
+        editorController.setSelectedVariantForSelectedBlock(variants[idx].id)
+        log("[Variant] block=\(editorController.state.selectedBlockId ?? "?") -> \(variants[idx].id)")
+    }
+
+    @objc private func presetPickerChanged() {
+        let idx = presetPicker.selectedSegmentIndex
+        guard idx >= 0, idx < scenePresets.count else { return }
+
+        // Policy: stop playback before switching (frame preserved)
+        if isPlaying { stopPlayback() }
+        editorController.applyScenePreset(scenePresets[idx].mapping)
+        log("[Preset] \(scenePresets[idx].title)")
+    }
+
     private func toggleFullscreen() {
         isFullscreen.toggle()
 
@@ -338,6 +420,9 @@ final class PlayerViewController: UIViewController {
             sceneSelector.alpha = hidden ? 0 : 1
             loadButton.alpha = hidden ? 0 : 1
             modeToggle.alpha = hidden ? 0 : 1
+            presetPicker.alpha = hidden ? 0 : 1
+            variantLabel.alpha = hidden ? 0 : 1
+            variantPicker.alpha = hidden ? 0 : 1
             controlsStack.alpha = hidden ? 0 : 1
             frameLabel.alpha = hidden ? 0 : 1
             logTextView.alpha = hidden ? 0 : 1
@@ -374,6 +459,41 @@ final class PlayerViewController: UIViewController {
         frameSlider.value = Float(state.currentPreviewFrame)
 
         overlayView.isHidden = isPreview
+
+        // PR-20: variant picker — only in edit mode with a selected block that has 2+ variants
+        updateVariantPickerUI(state: state)
+    }
+
+    /// Rebuilds variant picker segments and selection for current state.
+    private func updateVariantPickerUI(state: TemplateEditorState) {
+        let variants = editorController.selectedBlockVariants()
+        let showPicker = state.mode == .edit
+            && state.selectedBlockId != nil
+            && variants.count > 1
+
+        variantLabel.isHidden = !showPicker
+        variantPicker.isHidden = !showPicker
+
+        guard showPicker else { return }
+
+        variantLabel.text = "Block: \(state.selectedBlockId ?? "")"
+
+        // Rebuild segments only if variant IDs changed (lead fix #2: compare cached data, not UIKit titles)
+        let newIds = variants.map(\.id)
+        if lastVariantIds != newIds {
+            variantPicker.removeAllSegments()
+            for (i, v) in variants.enumerated() {
+                variantPicker.insertSegment(withTitle: v.id, at: i, animated: false)
+            }
+            lastVariantIds = newIds
+        }
+
+        // Sync selected segment with active variantId (lead fix #1: reset first to avoid stale selection)
+        variantPicker.selectedSegmentIndex = UISegmentedControl.noSegment
+        if let activeId = editorController.selectedBlockVariantId(),
+           let idx = variants.firstIndex(where: { $0.id == activeId }) {
+            variantPicker.selectedSegmentIndex = idx
+        }
     }
 
     override var prefersStatusBarHidden: Bool {
@@ -494,7 +614,38 @@ final class PlayerViewController: UIViewController {
         modeToggle.selectedSegmentIndex = 0
         editorController.enterPreview()
 
+        // PR-20: Setup scene presets
+        setupScenePresets(for: package)
+
         log("Ready for playback!")
+    }
+
+    // MARK: - Scene Presets (PR-20)
+
+    /// Configures scene presets based on loaded scene. Only variant_switch_demo has real presets.
+    private func setupScenePresets(for package: ScenePackage) {
+        if package.scene.sceneId == "scene_variant_switch_demo" {
+            scenePresets = [
+                SceneVariantPreset(id: "default", title: "Default", mapping: [:]),
+                SceneVariantPreset(id: "style_a", title: "Style A",
+                                   mapping: ["block_01": "v1", "block_02": "v1"]),
+                SceneVariantPreset(id: "style_b", title: "Style B",
+                                   mapping: ["block_01": "v2", "block_02": "v1"])
+            ]
+        } else {
+            scenePresets = [
+                SceneVariantPreset(id: "default", title: "Default", mapping: [:])
+            ]
+        }
+
+        // Rebuild preset picker segments
+        presetPicker.removeAllSegments()
+        for (i, preset) in scenePresets.enumerated() {
+            presetPicker.insertSegment(withTitle: preset.title, at: i, animated: false)
+        }
+        presetPicker.selectedSegmentIndex = 0
+        // Debug-UI optimisation: hide if only "Default" preset — no useful choice to offer (lead fix #3)
+        presetPicker.isHidden = scenePresets.count <= 1
     }
 
     // MARK: - Playback

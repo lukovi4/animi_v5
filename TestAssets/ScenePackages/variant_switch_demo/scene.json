@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "0.1",
+  "sceneId": "scene_variant_switch_demo",
+  "canvas": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "durationFrames": 300
+  },
+  "mediaBlocks": [
+    {
+      "blockId": "block_01",
+      "zIndex": 0,
+      "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+      "containerClip": "slotRect",
+      "timing": { "startFrame": 0, "endFrame": 300 },
+      "input": {
+        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+        "bindingKey": "media",
+        "hitTest": "rect",
+        "allowedMedia": ["photo"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "v1",
+          "animRef": "anim-v1.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "v2",
+          "animRef": "anim-v2.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "blockId": "block_02",
+      "zIndex": 1,
+      "rect": { "x": 540.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+      "containerClip": "slotRect",
+      "timing": { "startFrame": 0, "endFrame": 300 },
+      "input": {
+        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+        "bindingKey": "media",
+        "hitTest": "rect",
+        "allowedMedia": ["photo"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "v1",
+          "animRef": "anim-b2.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ]
+    }
+  ]
+}
