@@ -537,11 +537,12 @@ extension AnimValidator {
         }
 
         // Collapse transform (ct != 0) - context-aware severity (PR-12)
+        // SKIP for hidden layers (hd=true) — not rendered, ct has no effect
         // WARNING for:
         //   - matte source layers (td=1)
         //   - layers inside matte-source precomps (inMatteSourceContext)
         // ERROR for all other layers where ct could cause incorrect compositing
-        if let ct = layer.collapseTransform, ct != 0 {
+        if let ct = layer.collapseTransform, ct != 0, layer.hidden != true {
             if isMatteSource || inMatteSourceContext {
                 issues.append(ValidationIssue(
                     code: AnimValidationCode.unsupportedLayerCollapseTransform,
