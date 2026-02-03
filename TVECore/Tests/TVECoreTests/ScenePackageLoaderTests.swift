@@ -43,7 +43,7 @@ final class ScenePackageLoaderTests: XCTestCase {
         XCTAssertEqual(package.scene.canvas.fps, 30)
         XCTAssertEqual(package.scene.canvas.durationFrames, 300)
         XCTAssertEqual(package.scene.mediaBlocks.count, 4)
-        XCTAssertEqual(package.animFilesByRef.count, 4)
+        XCTAssertEqual(package.animFilesByRef.count, 8)
 
         // Verify each anim file exists
         for (ref, url) in package.animFilesByRef {
@@ -80,7 +80,7 @@ final class ScenePackageLoaderTests: XCTestCase {
         XCTAssertEqual(block1.rect.height, 960)
         XCTAssertEqual(block1.containerClip, .slotRect)
         XCTAssertEqual(block1.input.bindingKey, "media")
-        XCTAssertEqual(block1.variants.count, 1)
+        XCTAssertEqual(block1.variants.count, 2)
         XCTAssertEqual(block1.variants.first?.animRef, "anim-1.json")
     }
 

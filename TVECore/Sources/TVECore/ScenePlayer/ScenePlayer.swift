@@ -157,6 +157,64 @@ public final class ScenePlayer {
         // Select first variant as default
         let selectedVariantId = mediaBlock.variants.first?.id ?? ""
 
+        // Resolve edit variant (must be "no-anim")
+        guard let editVariant = variantRuntimes.first(where: { $0.variantId == "no-anim" }) else {
+            throw ScenePlayerError.missingNoAnimVariant(blockId: mediaBlock.id)
+        }
+
+        // Validate no-anim: must have mediaInput (inputGeometry)
+        guard editVariant.animIR.inputGeometry != nil else {
+            throw ScenePlayerError.noAnimMissingMediaInput(
+                blockId: mediaBlock.id,
+                animRef: editVariant.animRef
+            )
+        }
+
+        // Validate no-anim: binding layer must exist
+        let bindingLayerId = editVariant.animIR.binding.boundLayerId
+        let bindingCompId = editVariant.animIR.binding.boundCompId
+        guard let bindingComp = editVariant.animIR.comps[bindingCompId],
+              let bindingLayer = bindingComp.layers.first(where: { $0.id == bindingLayerId }) else {
+            throw ScenePlayerError.noAnimMissingBindingLayer(
+                blockId: mediaBlock.id,
+                animRef: editVariant.animRef,
+                bindingKey: mediaBlock.input.bindingKey
+            )
+        }
+
+        // Validate no-anim: binding layer must be visible at edit frame 0
+        let editFrame = Double(SceneRenderPlan.editFrameIndex)
+        guard AnimIR.isVisible(bindingLayer, at: editFrame) else {
+            throw ScenePlayerError.noAnimBindingNotVisibleAtEditFrame(
+                blockId: mediaBlock.id,
+                animRef: editVariant.animRef,
+                editFrameIndex: SceneRenderPlan.editFrameIndex
+            )
+        }
+
+        // Validate no-anim: binding layer must actually render at edit frame 0
+        // (reachability check — catches invisible precomp containers)
+        if case .image(let bindingAssetId) = bindingLayer.content {
+            var probeIR = editVariant.animIR
+            let probeCommands = probeIR.renderCommands(
+                frameIndex: SceneRenderPlan.editFrameIndex,
+                userTransform: .identity
+            )
+            let bindingRendered = probeCommands.contains { cmd in
+                if case .drawImage(let assetId, _) = cmd {
+                    return assetId == bindingAssetId
+                }
+                return false
+            }
+            guard bindingRendered else {
+                throw ScenePlayerError.noAnimBindingNotRenderedAtEditFrame(
+                    blockId: mediaBlock.id,
+                    animRef: editVariant.animRef,
+                    editFrameIndex: SceneRenderPlan.editFrameIndex
+                )
+            }
+        }
+
         return BlockRuntime(
             blockId: mediaBlock.id,
             zIndex: mediaBlock.zIndex,
@@ -167,6 +225,7 @@ public final class ScenePlayer {
             containerClip: mediaBlock.containerClip,
             hitTestMode: mediaBlock.input.hitTest,
             selectedVariantId: selectedVariantId,
+            editVariantId: editVariant.variantId,
             variants: variantRuntimes
         )
     }
@@ -313,10 +372,17 @@ public final class ScenePlayer {
         variantOverrides.removeValue(forKey: blockId)
     }
 
-    /// Resolves the active `VariantRuntime` for a block, respecting overrides.
-    /// Delegates to `BlockRuntime.resolvedVariant(overrides:)` — single source of truth.
-    private func resolveVariant(for block: BlockRuntime) -> VariantRuntime? {
-        block.resolvedVariant(overrides: variantOverrides)
+    /// Resolves the active `VariantRuntime` for a block, respecting mode and overrides.
+    ///
+    /// - `.edit` → always uses `editVariantId` (no-anim variant)
+    /// - `.preview` → delegates to `BlockRuntime.resolvedVariant(overrides:)` (user selection)
+    private func resolveVariant(for block: BlockRuntime, mode: TemplateMode = .preview) -> VariantRuntime? {
+        switch mode {
+        case .edit:
+            return block.resolvedVariant(overrides: [block.blockId: block.editVariantId])
+        case .preview:
+            return block.resolvedVariant(overrides: variantOverrides)
+        }
     }
 
     // MARK: - Hit-Test & Overlay (PR-17)
@@ -331,13 +397,14 @@ public final class ScenePlayer {
     /// - Parameters:
     ///   - blockId: Identifier of the media block
     ///   - frame: Scene frame index (default: 0)
+    ///   - mode: Template mode. `.edit` resolves to `editVariantId`; `.preview` uses current selection.
     /// - Returns: BezierPath in canvas coordinates, or `nil` if block/mediaInput not found
-    public func mediaInputHitPath(blockId: String, frame: Int = 0) -> BezierPath? {
+    public func mediaInputHitPath(blockId: String, frame: Int = 0, mode: TemplateMode = .preview) -> BezierPath? {
         guard let compiled = compiledScene else { return nil }
         let runtime = compiled.runtime
 
         guard let block = runtime.blocks.first(where: { $0.blockId == blockId }),
-              var variant = resolveVariant(for: block) else {
+              var variant = resolveVariant(for: block, mode: mode) else {
             return nil
         }
 
@@ -372,8 +439,9 @@ public final class ScenePlayer {
     /// - Parameters:
     ///   - point: Point in canvas coordinates
     ///   - frame: Scene frame index
+    ///   - mode: Template mode. `.edit` resolves to `editVariantId`; `.preview` uses current selection.
     /// - Returns: `blockId` of the topmost hit block, or `nil` if no hit
-    public func hitTest(point: Vec2D, frame: Int) -> String? {
+    public func hitTest(point: Vec2D, frame: Int, mode: TemplateMode = .preview) -> String? {
         guard let compiled = compiledScene else { return nil }
         let runtime = compiled.runtime
 
@@ -383,7 +451,7 @@ public final class ScenePlayer {
 
             if block.hitTestMode == .mask {
                 // Try shape hit-test via mediaInput path
-                if let hitPath = mediaInputHitPath(blockId: block.blockId, frame: frame) {
+                if let hitPath = mediaInputHitPath(blockId: block.blockId, frame: frame, mode: mode) {
                     if hitPath.contains(point: point) {
                         return block.blockId
                     }
@@ -410,9 +478,11 @@ public final class ScenePlayer {
     /// Blocks are returned in **top-to-bottom** order (highest zIndex first)
     /// so the editor can draw front blocks on top.
     ///
-    /// - Parameter frame: Scene frame index
+    /// - Parameters:
+    ///   - frame: Scene frame index
+    ///   - mode: Template mode. `.edit` resolves to `editVariantId`; `.preview` uses current selection.
     /// - Returns: Array of `MediaInputOverlay` for all visible blocks
-    public func overlays(frame: Int) -> [MediaInputOverlay] {
+    public func overlays(frame: Int, mode: TemplateMode = .preview) -> [MediaInputOverlay] {
         guard let compiled = compiledScene else { return [] }
         let runtime = compiled.runtime
 
@@ -425,7 +495,7 @@ public final class ScenePlayer {
             let hitPath: BezierPath
 
             if block.hitTestMode == .mask,
-               let shapePath = mediaInputHitPath(blockId: block.blockId, frame: frame) {
+               let shapePath = mediaInputHitPath(blockId: block.blockId, frame: frame, mode: mode) {
                 hitPath = shapePath
             } else {
                 // Fallback: build path from block rect
@@ -481,12 +551,11 @@ public final class ScenePlayer {
         )
     }
 
-    /// Generates render commands using the specified template mode (PR-18).
+    /// Generates render commands using the specified template mode.
     ///
     /// - **Preview mode**: Full playback — all blocks, all layers, all animations.
     ///   Uses `sceneFrameIndex` for time-based rendering (scrubber / playback).
-    /// - **Edit mode**: Static editing — time frozen at `editFrameIndex` (0),
-    ///   only binding layers + mask/matte dependencies rendered.
+    /// - **Edit mode**: Full render of `no-anim` variant at `editFrameIndex` (0).
     ///   `sceneFrameIndex` is ignored; edit always renders at frame 0.
     ///
     /// User transforms stored via `setUserTransform(blockId:transform:)` are
@@ -504,24 +573,28 @@ public final class ScenePlayer {
             return []
         }
 
-        let policy: RenderPolicy
         let frameIndex: Int
+        let overrides: [String: String]
 
         switch mode {
         case .preview:
-            policy = .fullPreview
             frameIndex = sceneFrameIndex
+            overrides = variantOverrides
         case .edit:
-            policy = .editInputsOnly
             frameIndex = Self.editFrameIndex
+            // Build edit override map: every block → its editVariantId
+            overrides = Dictionary(
+                uniqueKeysWithValues: compiledScene.runtime.blocks.map {
+                    ($0.blockId, $0.editVariantId)
+                }
+            )
         }
 
         return SceneRenderPlan.renderCommands(
             for: compiledScene.runtime,
             sceneFrameIndex: frameIndex,
             userTransforms: userTransforms,
-            renderPolicy: policy,
-            variantOverrides: variantOverrides
+            variantOverrides: overrides
         )
     }
 }

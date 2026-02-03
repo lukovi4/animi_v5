@@ -16,6 +16,22 @@ public enum ScenePlayerError: Error, Sendable, Equatable {
 
     /// Invalid block timing configuration
     case invalidBlockTiming(blockId: String, startFrame: Int, endFrame: Int)
+
+    /// Block is missing the required `no-anim` variant for edit mode
+    case missingNoAnimVariant(blockId: String)
+
+    /// The `no-anim` variant is missing the `mediaInput` shape layer
+    case noAnimMissingMediaInput(blockId: String, animRef: String)
+
+    /// The `no-anim` variant is missing the binding layer for the given key
+    case noAnimMissingBindingLayer(blockId: String, animRef: String, bindingKey: String)
+
+    /// The binding layer in `no-anim` variant is not visible at editFrameIndex
+    case noAnimBindingNotVisibleAtEditFrame(blockId: String, animRef: String, editFrameIndex: Int)
+
+    /// The binding layer in `no-anim` variant does not produce any draw commands at edit frame
+    /// (e.g. binding is reachable by layer visibility but its precomp container is invisible)
+    case noAnimBindingNotRenderedAtEditFrame(blockId: String, animRef: String, editFrameIndex: Int)
 }
 
 extension ScenePlayerError: LocalizedError {
@@ -31,6 +47,16 @@ extension ScenePlayerError: LocalizedError {
             return "Scene has no media blocks"
         case .invalidBlockTiming(let blockId, let startFrame, let endFrame):
             return "Invalid timing for block '\(blockId)': start=\(startFrame), end=\(endFrame)"
+        case .missingNoAnimVariant(let blockId):
+            return "Block '\(blockId)' is missing required 'no-anim' variant for edit mode"
+        case .noAnimMissingMediaInput(let blockId, let animRef):
+            return "no-anim variant '\(animRef)' for block '\(blockId)' is missing 'mediaInput' shape layer"
+        case .noAnimMissingBindingLayer(let blockId, let animRef, let bindingKey):
+            return "no-anim variant '\(animRef)' for block '\(blockId)' is missing binding layer '\(bindingKey)'"
+        case .noAnimBindingNotVisibleAtEditFrame(let blockId, let animRef, let editFrameIndex):
+            return "Binding layer in no-anim variant '\(animRef)' for block '\(blockId)' is not visible at edit frame \(editFrameIndex)"
+        case .noAnimBindingNotRenderedAtEditFrame(let blockId, let animRef, let editFrameIndex):
+            return "Binding layer in no-anim variant '\(animRef)' for block '\(blockId)' is not rendered at edit frame \(editFrameIndex) (unreachable via precomp chain)"
         }
     }
 }

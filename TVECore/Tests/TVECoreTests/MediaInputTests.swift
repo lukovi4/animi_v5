@@ -589,6 +589,240 @@ final class MediaInputTests: XCTestCase {
         XCTAssertNil(path)
     }
 
+    func testMediaInputPath_appliesGroupTransforms() throws {
+        // Given: mediaInput layer with identity layer transform BUT non-identity groupTransform.
+        // The old code had an early return on `worldMatrix == .identity` that would skip
+        // groupTransforms entirely — this test guards against that regression.
+        let groupTransformJSON = """
+        , { "ty": "tr",
+            "p": { "a": 0, "k": [100, 200] },
+            "a": { "a": 0, "k": [0, 0] },
+            "s": { "a": 0, "k": [100, 100] },
+            "r": { "a": 0, "k": 0 },
+            "o": { "a": 0, "k": 100 } }
+        """
+        let json = lottieWithMediaInput(
+            mediaInputLayer: mediaInputLayerJSON(extraShapes: groupTransformJSON),
+            mediaInRoot: true
+        )
+        let lottie = try decodeLottie(json)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        // When
+        var ir = try compiler.compile(
+            lottie: lottie,
+            animRef: "test",
+            bindingKey: "media",
+            assetIndex: assetIndex
+        )
+        let path = ir.mediaInputPath(frame: 0)
+
+        // Then: basePath has vertices [[0,0],[100,0],[100,100],[0,100]].
+        // groupTransform translates by (100, 200), so every vertex shifts by that amount.
+        XCTAssertNotNil(path)
+        let verts = path!.vertices
+        XCTAssertEqual(verts.count, 4)
+        XCTAssertEqual(verts[0].x, 100, accuracy: 0.01)
+        XCTAssertEqual(verts[0].y, 200, accuracy: 0.01)
+        XCTAssertEqual(verts[1].x, 200, accuracy: 0.01)
+        XCTAssertEqual(verts[1].y, 200, accuracy: 0.01)
+        XCTAssertEqual(verts[2].x, 200, accuracy: 0.01)
+        XCTAssertEqual(verts[2].y, 300, accuracy: 0.01)
+        XCTAssertEqual(verts[3].x, 100, accuracy: 0.01)
+        XCTAssertEqual(verts[3].y, 300, accuracy: 0.01)
+
+        // Also verify mediaInputWorldMatrix includes groupTransforms
+        let matrix = ir.mediaInputWorldMatrix(frame: 0)
+        XCTAssertNotNil(matrix)
+        XCTAssertNotEqual(matrix, .identity,
+            "Composed matrix must include groupTransform even when layer transform is identity")
+    }
+
+    func testMediaInputPath_accountsForPrecompContainerTransform() throws {
+        // Given: mediaInput inside a precomp; precomp container translates by (540, 0).
+        // mediaInputPath must include the precomp chain transform so the path
+        // ends up in root composition space, not precomp-local space.
+        let json = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 },
+            {
+              "id": "comp_0", "nm": "precomp", "fr": 30,
+              "layers": [
+                {
+                  "ty": 4, "ind": 1, "nm": "mediaInput", "hd": true,
+                  "shapes": [
+                    { "ty": "gr", "it": [
+                      { "ty": "sh", "ks": { "a": 0, "k": {
+                        "v": [[0,0],[100,0],[100,100],[0,100]],
+                        "i": [[0,0],[0,0],[0,0],[0,0]],
+                        "o": [[0,0],[0,0],[0,0],[0,0]],
+                        "c": true
+                      }}},
+                      { "ty": "fl", "c": { "a": 0, "k": [0,0,0,1] }, "o": { "a": 0, "k": 100 } }
+                    ]}
+                  ],
+                  "ks": {
+                    "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                    "p": { "a": 0, "k": [0,0,0] }, "a": { "a": 0, "k": [0,0,0] },
+                    "s": { "a": 0, "k": [100,100,100] }
+                  },
+                  "ip": 0, "op": 300, "st": 0
+                },
+                {
+                  "ty": 2, "ind": 2, "nm": "media", "refId": "image_0",
+                  "ks": {
+                    "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                    "p": { "a": 0, "k": [270,480,0] }, "a": { "a": 0, "k": [270,480,0] },
+                    "s": { "a": 0, "k": [100,100,100] }
+                  },
+                  "ip": 0, "op": 300, "st": 0
+                }
+              ]
+            }
+          ],
+          "layers": [
+            {
+              "ty": 0, "ind": 1, "nm": "precomp_layer", "refId": "comp_0",
+              "ks": {
+                "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [540, 0, 0] },
+                "a": { "a": 0, "k": [0, 0, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
+              "w": 1080, "h": 1920,
+              "ip": 0, "op": 300, "st": 0
+            }
+          ]
+        }
+        """
+        let lottie = try decodeLottie(json)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        var ir = try compiler.compile(
+            lottie: lottie,
+            animRef: "test",
+            bindingKey: "media",
+            assetIndex: assetIndex
+        )
+
+        // When
+        let path = ir.mediaInputPath(frame: 0)
+
+        // Then: precomp container T(540, 0) + identity layer + identity groupTransform
+        // basePath [[0,0],[100,0],[100,100],[0,100]] → shifted by (540, 0)
+        XCTAssertNotNil(path)
+        let verts = path!.vertices
+        XCTAssertEqual(verts.count, 4)
+        XCTAssertEqual(verts[0].x, 540, accuracy: 0.01)
+        XCTAssertEqual(verts[0].y, 0, accuracy: 0.01)
+        XCTAssertEqual(verts[1].x, 640, accuracy: 0.01)
+        XCTAssertEqual(verts[1].y, 0, accuracy: 0.01)
+        XCTAssertEqual(verts[2].x, 640, accuracy: 0.01)
+        XCTAssertEqual(verts[2].y, 100, accuracy: 0.01)
+        XCTAssertEqual(verts[3].x, 540, accuracy: 0.01)
+        XCTAssertEqual(verts[3].y, 100, accuracy: 0.01)
+
+        // mediaInputWorldMatrix must also include the precomp chain
+        let matrix = ir.mediaInputWorldMatrix(frame: 0)
+        XCTAssertNotNil(matrix)
+        XCTAssertNotEqual(matrix, .identity,
+            "Composed matrix must include precomp container transform")
+    }
+
+    func testMediaInputPath_precompChainPlusGroupTransforms() throws {
+        // Given: precomp container T(540, 0) + groupTransform T(50, 100).
+        // Both must be included: composed = T(540,0) * T(50,100) = T(590, 100).
+        let json = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 },
+            {
+              "id": "comp_0", "nm": "precomp", "fr": 30,
+              "layers": [
+                {
+                  "ty": 4, "ind": 1, "nm": "mediaInput", "hd": true,
+                  "shapes": [
+                    { "ty": "gr", "it": [
+                      { "ty": "sh", "ks": { "a": 0, "k": {
+                        "v": [[0,0],[100,0],[100,100],[0,100]],
+                        "i": [[0,0],[0,0],[0,0],[0,0]],
+                        "o": [[0,0],[0,0],[0,0],[0,0]],
+                        "c": true
+                      }}},
+                      { "ty": "fl", "c": { "a": 0, "k": [0,0,0,1] }, "o": { "a": 0, "k": 100 } },
+                      { "ty": "tr",
+                        "p": { "a": 0, "k": [50, 100] },
+                        "a": { "a": 0, "k": [0, 0] },
+                        "s": { "a": 0, "k": [100, 100] },
+                        "r": { "a": 0, "k": 0 },
+                        "o": { "a": 0, "k": 100 } }
+                    ]}
+                  ],
+                  "ks": {
+                    "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                    "p": { "a": 0, "k": [0,0,0] }, "a": { "a": 0, "k": [0,0,0] },
+                    "s": { "a": 0, "k": [100,100,100] }
+                  },
+                  "ip": 0, "op": 300, "st": 0
+                },
+                {
+                  "ty": 2, "ind": 2, "nm": "media", "refId": "image_0",
+                  "ks": {
+                    "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                    "p": { "a": 0, "k": [270,480,0] }, "a": { "a": 0, "k": [270,480,0] },
+                    "s": { "a": 0, "k": [100,100,100] }
+                  },
+                  "ip": 0, "op": 300, "st": 0
+                }
+              ]
+            }
+          ],
+          "layers": [
+            {
+              "ty": 0, "ind": 1, "nm": "precomp_layer", "refId": "comp_0",
+              "ks": {
+                "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [540, 0, 0] },
+                "a": { "a": 0, "k": [0, 0, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
+              "w": 1080, "h": 1920,
+              "ip": 0, "op": 300, "st": 0
+            }
+          ]
+        }
+        """
+        let lottie = try decodeLottie(json)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        var ir = try compiler.compile(
+            lottie: lottie,
+            animRef: "test",
+            bindingKey: "media",
+            assetIndex: assetIndex
+        )
+
+        // When
+        let path = ir.mediaInputPath(frame: 0)
+
+        // Then: T(540,0) from precomp chain + T(50,100) from groupTransform = T(590,100)
+        // basePath [[0,0],[100,0],[100,100],[0,100]] → shifted by (590, 100)
+        XCTAssertNotNil(path)
+        let verts = path!.vertices
+        XCTAssertEqual(verts.count, 4)
+        XCTAssertEqual(verts[0].x, 590, accuracy: 0.01)
+        XCTAssertEqual(verts[0].y, 100, accuracy: 0.01)
+        XCTAssertEqual(verts[1].x, 690, accuracy: 0.01)
+        XCTAssertEqual(verts[1].y, 100, accuracy: 0.01)
+        XCTAssertEqual(verts[2].x, 690, accuracy: 0.01)
+        XCTAssertEqual(verts[2].y, 200, accuracy: 0.01)
+        XCTAssertEqual(verts[3].x, 590, accuracy: 0.01)
+        XCTAssertEqual(verts[3].y, 200, accuracy: 0.01)
+    }
+
     func testMediaInputWorldMatrix_returnsIdentityForUntransformed() throws {
         // Given: mediaInput at origin with identity transform
         let json = lottieWithMediaInput(mediaInRoot: true)

@@ -33,6 +33,14 @@
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",
           "loop": false
+        },
+        {
+          "variantId": "no-anim",
+          "animRef": "no-anim-1.json",
+          "defaultDurationFrames": 1,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
         }
       ]
     },
@@ -58,6 +66,14 @@
           "variantId": "v1",
           "animRef": "anim-2.json",
           "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "no-anim",
+          "animRef": "no-anim-2.json",
+          "defaultDurationFrames": 1,
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",
           "loop": false
@@ -89,6 +105,14 @@
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",
           "loop": false
+        },
+        {
+          "variantId": "no-anim",
+          "animRef": "no-anim-3.json",
+          "defaultDurationFrames": 1,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
         }
       ]
     },
@@ -114,6 +138,14 @@
           "variantId": "v1",
           "animRef": "anim-4.json",
           "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "no-anim",
+          "animRef": "no-anim-4.json",
+          "defaultDurationFrames": 1,
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",
           "loop": false

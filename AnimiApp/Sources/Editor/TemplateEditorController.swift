@@ -137,7 +137,8 @@ final class TemplateEditorController {
         let canvasPoint = viewToCanvas(viewPoint)
         let hit = player.hitTest(
             point: Vec2D(x: Double(canvasPoint.x), y: Double(canvasPoint.y)),
-            frame: ScenePlayer.editFrameIndex
+            frame: ScenePlayer.editFrameIndex,
+            mode: .edit
         )
         state.selectedBlockId = hit
         updateOverlay()
@@ -290,7 +291,7 @@ final class TemplateEditorController {
             return
         }
 
-        let overlays = player.overlays(frame: ScenePlayer.editFrameIndex)
+        let overlays = player.overlays(frame: ScenePlayer.editFrameIndex, mode: .edit)
         overlayView.update(overlays: overlays, selectedBlockId: state.selectedBlockId)
     }
 

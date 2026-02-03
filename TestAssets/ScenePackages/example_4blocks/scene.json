@@ -17,7 +17,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],
@@ -26,6 +26,14 @@
         "audio": { "enabled": false, "gain": 1.0 }
       },
       "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_01/no-anim.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
         {
           "variantId": "v1",
           "animRef": "block_01/anim-1.1.json",
@@ -69,7 +77,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],
@@ -79,8 +87,16 @@
       },
       "variants": [
         {
+          "variantId": "no-anim",
+          "animRef": "block_02/no-anim.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
           "variantId": "v1",
-          "animRef": "block_02/anim-2.json",
+          "animRef": "block_02/anim-2.1.json",
           "defaultDurationFrames": 300,
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",
@@ -97,7 +113,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],
@@ -107,8 +123,16 @@
       },
       "variants": [
         {
+          "variantId": "no-anim",
+          "animRef": "block_03/no-anim.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
           "variantId": "v1",
-          "animRef": "block_03/anim-3.json",
+          "animRef": "block_03/anim-3.1.json",
           "defaultDurationFrames": 300,
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",
@@ -125,7 +149,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],
@@ -135,8 +159,16 @@
       },
       "variants": [
         {
+          "variantId": "no-anim",
+          "animRef": "block_04/no-anim.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
           "variantId": "v1",
-          "animRef": "block_04/anim-4.json",
+          "animRef": "block_04/anim-4.1.json",
           "defaultDurationFrames": 300,
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",

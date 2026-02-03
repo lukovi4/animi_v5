@@ -41,6 +41,14 @@
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",
           "loop": false
+        },
+        {
+          "variantId": "no-anim",
+          "animRef": "no-anim-b1.json",
+          "defaultDurationFrames": 1,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
         }
       ]
     },
@@ -66,6 +74,14 @@
           "variantId": "v1",
           "animRef": "anim-b2.json",
           "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "no-anim",
+          "animRef": "no-anim-b2.json",
+          "defaultDurationFrames": 1,
           "ifAnimationShorter": "holdLastFrame",
           "ifAnimationLonger": "cut",
           "loop": false

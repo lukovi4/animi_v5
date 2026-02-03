@@ -29,9 +29,6 @@ public struct AnimIR: Sendable, Equatable {
     /// Issues from the last renderCommands call (reset on each call)
     public private(set) var lastRenderIssues: [RenderIssue] = []
 
-    /// Cache for compContainsBinding() to avoid O(N^2) traversal in edit mode (PR-18)
-    private var compContainsBindingCache: [CompID: Bool] = [:]
-
     public init(
         meta: Meta,
         rootComp: CompID,
@@ -55,7 +52,7 @@ public struct AnimIR: Sendable, Equatable {
 
     // MARK: - Equatable (exclude lastRenderIssues from comparison)
 
-    // Exclude lastRenderIssues and compContainsBindingCache from comparison
+    // Exclude lastRenderIssues from comparison
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.meta == rhs.meta &&
         lhs.rootComp == rhs.rootComp &&
@@ -303,285 +300,6 @@ extension AnimIR {
         var copy = self
         let commands = copy.renderCommands(frameIndex: frameIndex, userTransform: userTransform)
         return (commands, copy.lastRenderIssues)
-    }
-
-    // MARK: - Edit Mode Render (PR-18)
-
-    /// Generates render commands for edit mode — only binding layer and its dependencies.
-    ///
-    /// Edit traversal renders the minimal subgraph needed to display the binding layer:
-    /// - Binding layer itself (with inputClip, masks, userTransform)
-    /// - Matte source layer (if binding layer is a matte consumer)
-    /// - Precomp chain to reach binding layer (with their masks/mattes)
-    /// - All other layers are skipped
-    ///
-    /// Invariant: layers are traversed in natural (JSON) order. Matte/mask scopes
-    /// preserve source→consumer ordering within their scope.
-    ///
-    /// - Parameters:
-    ///   - frameIndex: Frame index (typically editFrameIndex = 0)
-    ///   - userTransform: User pan/zoom/rotate transform
-    /// - Returns: Render commands for binding layer only
-    public mutating func renderEditCommands(
-        frameIndex: Int,
-        userTransform: Matrix2D = .identity
-    ) -> [RenderCommand] {
-        lastRenderIssues.removeAll(keepingCapacity: true)
-
-        var commands: [RenderCommand] = []
-        let localFrame = Double(localFrameIndex(sceneFrameIndex: frameIndex))
-
-        commands.append(.beginGroup(name: "AnimIR:\(meta.sourceAnimRef)(edit)"))
-
-        if let rootComposition = comps[rootComp] {
-            let layerById = Dictionary(uniqueKeysWithValues: rootComposition.layers.map { ($0.id, $0) })
-            let context = RenderContext(
-                frame: localFrame,
-                frameIndex: frameIndex,
-                parentWorld: .identity,
-                parentOpacity: 1.0,
-                layerById: layerById,
-                visitedComps: [rootComp],
-                bindingLayerId: binding.boundLayerId,
-                bindingCompId: binding.boundCompId,
-                userTransform: userTransform,
-                inputGeometry: inputGeometry,
-                currentCompId: rootComp
-            )
-            renderEditComposition(rootComposition, context: context, commands: &commands)
-        }
-
-        commands.append(.endGroup)
-        return commands
-    }
-
-    /// Edit traversal: only processes layers that are part of the binding layer subgraph.
-    private mutating func renderEditComposition(
-        _ composition: Composition,
-        context: RenderContext,
-        commands: inout [RenderCommand]
-    ) {
-        for layer in composition.layers {
-            renderEditLayer(layer, context: context, commands: &commands)
-        }
-    }
-
-    /// Edit layer filter: renders only layers needed for the binding layer.
-    ///
-    /// Decision tree:
-    /// 1. Skip matte sources (rendered via emitMatteScope when their consumer is rendered)
-    /// 2. Skip hidden layers (geometry only, e.g. mediaInput)
-    /// 3. If this IS the binding layer (same comp, same id) → emit it (full render path)
-    /// 4. If this is a precomp containing the binding layer → recurse into it
-    /// 5. Otherwise → skip
-    ///
-    /// **Invariant (PR-18):** This method intentionally does NOT check layer visibility
-    /// (`isVisible(at: frame)`). Edit mode renders the binding layer's "editing pose"
-    /// regardless of animation timing — the binding layer must always be reachable
-    /// even if it would be invisible at the current frame in playback mode.
-    /// Do not add an isVisible guard here.
-    private mutating func renderEditLayer(
-        _ layer: Layer,
-        context: RenderContext,
-        commands: inout [RenderCommand]
-    ) {
-        // Skip matte source layers (rendered via matte scope when consumer is emitted)
-        guard !layer.isMatteSource else { return }
-
-        // Skip hidden layers (geometry sources only, e.g. mediaInput)
-        guard !layer.isHidden else { return }
-
-        // Compute world transform (needed for both binding layer and precomp container)
-        guard let resolved = computeLayerWorld(layer, context: context) else { return }
-
-        // Case 1: This IS the binding layer — emit exactly as in full render
-        if isBindingLayer(layer, context: context) {
-            emitLayerCommands(layer, resolved: resolved, context: context, commands: &commands)
-            return
-        }
-
-        // Case 2: This is a precomp that (transitively) contains the binding layer — recurse
-        if case .precomp(let compId) = layer.content,
-           compContainsBinding(compId) {
-
-            // Cycle detection
-            guard !context.visitedComps.contains(compId) else { return }
-            guard let precomp = comps[compId] else { return }
-
-            let childFrame = context.frame - layer.timing.startTime
-            let childLayerById = Dictionary(uniqueKeysWithValues: precomp.layers.map { ($0.id, $0) })
-            var childVisited = context.visitedComps
-            childVisited.insert(compId)
-
-            // If the precomp layer is a matte consumer, wrap in edit matte scope
-            if let matte = layer.matte {
-                emitEditPrecompMatteScope(
-                    precompLayer: layer,
-                    resolved: resolved,
-                    matte: matte,
-                    childFrame: childFrame,
-                    childLayerById: childLayerById,
-                    childVisited: childVisited,
-                    precomp: precomp,
-                    compId: compId,
-                    context: context,
-                    commands: &commands
-                )
-            } else {
-                // Emit precomp container structure (group + transform + masks)
-                commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))(edit)"))
-                commands.append(.pushTransform(resolved.worldMatrix))
-
-                // Emit masks on precomp container (they affect binding layer visibility)
-                var emittedMaskCount = 0
-                for mask in layer.masks.reversed() {
-                    if let pathId = mask.pathId {
-                        let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
-                        commands.append(.beginMask(
-                            mode: mask.mode,
-                            inverted: mask.inverted,
-                            pathId: pathId,
-                            opacity: normalizedOpacity,
-                            frame: context.frame
-                        ))
-                        emittedMaskCount += 1
-                    }
-                }
-
-                let childContext = RenderContext(
-                    frame: childFrame,
-                    frameIndex: context.frameIndex,
-                    parentWorld: .identity,
-                    parentOpacity: resolved.worldOpacity,
-                    layerById: childLayerById,
-                    visitedComps: childVisited,
-                    bindingLayerId: context.bindingLayerId,
-                    bindingCompId: context.bindingCompId,
-                    userTransform: context.userTransform,
-                    inputGeometry: context.inputGeometry,
-                    currentCompId: compId
-                )
-                renderEditComposition(precomp, context: childContext, commands: &commands)
-
-                for _ in 0..<emittedMaskCount { commands.append(.endMask) }
-                commands.append(.popTransform)
-                commands.append(.endGroup)
-            }
-            return
-        }
-
-        // Case 3: Not binding, not containing binding → skip
-    }
-
-    /// Emits matte scope for a precomp container in edit mode.
-    /// The matte source is rendered normally (it's a dependency); the consumer side
-    /// recurses into edit traversal to find the binding layer.
-    private mutating func emitEditPrecompMatteScope(
-        precompLayer: Layer,
-        resolved: ResolvedTransform,
-        matte: MatteInfo,
-        childFrame: Double,
-        childLayerById: [LayerID: Layer],
-        childVisited: Set<CompID>,
-        precomp: Composition,
-        compId: CompID,
-        context: RenderContext,
-        commands: inout [RenderCommand]
-    ) {
-        let renderMatteMode: RenderMatteMode
-        switch matte.mode {
-        case .alpha: renderMatteMode = .alpha
-        case .alphaInverted: renderMatteMode = .alphaInverted
-        case .luma: renderMatteMode = .luma
-        case .lumaInverted: renderMatteMode = .lumaInverted
-        }
-
-        commands.append(.beginMatte(mode: renderMatteMode))
-
-        // Matte source: render normally (it's a visual dependency)
-        commands.append(.beginGroup(name: "matteSource"))
-        if let sourceLayer = context.layerById[matte.sourceLayerId] {
-            if let sourceResolved = computeLayerWorld(sourceLayer, context: context) {
-                emitRegularLayerCommands(
-                    sourceLayer,
-                    resolved: sourceResolved,
-                    context: context,
-                    commands: &commands
-                )
-            }
-        }
-        commands.append(.endGroup)
-
-        // Matte consumer: emit precomp container, recurse into edit traversal
-        commands.append(.beginGroup(name: "matteConsumer"))
-        commands.append(.pushTransform(resolved.worldMatrix))
-
-        // Emit masks on precomp container
-        var emittedMaskCount = 0
-        for mask in precompLayer.masks.reversed() {
-            if let pathId = mask.pathId {
-                let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
-                commands.append(.beginMask(
-                    mode: mask.mode,
-                    inverted: mask.inverted,
-                    pathId: pathId,
-                    opacity: normalizedOpacity,
-                    frame: context.frame
-                ))
-                emittedMaskCount += 1
-            }
-        }
-
-        let childContext = RenderContext(
-            frame: childFrame,
-            frameIndex: context.frameIndex,
-            parentWorld: .identity,
-            parentOpacity: resolved.worldOpacity,
-            layerById: childLayerById,
-            visitedComps: childVisited,
-            bindingLayerId: context.bindingLayerId,
-            bindingCompId: context.bindingCompId,
-            userTransform: context.userTransform,
-            inputGeometry: context.inputGeometry,
-            currentCompId: compId
-        )
-        renderEditComposition(precomp, context: childContext, commands: &commands)
-
-        for _ in 0..<emittedMaskCount { commands.append(.endMask) }
-        commands.append(.popTransform)
-        commands.append(.endGroup)
-
-        commands.append(.endMatte)
-    }
-
-    /// Checks if a composition (directly or transitively) contains the binding layer.
-    /// Results are cached to avoid O(N^2) with deep nested precomps.
-    private mutating func compContainsBinding(_ compId: CompID) -> Bool {
-        if let cached = compContainsBindingCache[compId] { return cached }
-        let result = computeCompContainsBinding(compId)
-        compContainsBindingCache[compId] = result
-        return result
-    }
-
-    private func computeCompContainsBinding(_ compId: CompID) -> Bool {
-        guard let comp = comps[compId] else { return false }
-        for layer in comp.layers {
-            // Direct match: binding layer lives in this comp
-            if layer.id == binding.boundLayerId && compId == binding.boundCompId {
-                return true
-            }
-            // Transitive: a precomp in this comp may contain the binding layer
-            if case .precomp(let childCompId) = layer.content {
-                if childCompId == binding.boundCompId {
-                    return true
-                }
-                // Check deeper nesting (non-mutating to avoid cache issues in recursion)
-                if computeCompContainsBinding(childCompId) {
-                    return true
-                }
-            }
-        }
-        return false
     }
 
     // MARK: - Full Render Pipeline
@@ -874,46 +592,140 @@ extension AnimIR {
         }
     }
 
+    // MARK: - MediaInput Transform Helpers
+
+    /// Resolves the accumulated transform of precomp containers from root to `targetCompId`.
+    ///
+    /// During render traversal the engine pushes container transforms onto the stack
+    /// automatically.  For direct queries (hit-test, overlay, public API) we must
+    /// resolve this chain explicitly.
+    ///
+    /// - Returns: Accumulated matrix (root → target), `.identity` when target is root,
+    ///   or `nil` on parent-chain error.
+    private mutating func resolvePrecompChainTransform(
+        targetCompId: CompID,
+        frame: Double,
+        sceneFrameIndex: Int
+    ) -> Matrix2D? {
+        if targetCompId == AnimIR.rootCompId { return .identity }
+
+        // Find the precomp container layer that references targetCompId
+        for (compId, comp) in comps {
+            for layer in comp.layers {
+                guard case .precomp(let refCompId) = layer.content,
+                      refCompId == targetCompId else { continue }
+
+                // World transform of the container layer within its own comp
+                let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
+                guard let (containerWorld, _) = computeWorldTransform(
+                    for: layer,
+                    at: frame,
+                    baseWorldMatrix: .identity,
+                    baseWorldOpacity: 1.0,
+                    layerById: layerById,
+                    sceneFrameIndex: sceneFrameIndex
+                ) else {
+                    return nil
+                }
+
+                // Recurse: the comp holding this container may itself be a precomp
+                guard let parentChain = resolvePrecompChainTransform(
+                    targetCompId: compId,
+                    frame: frame,
+                    sceneFrameIndex: sceneFrameIndex
+                ) else {
+                    return nil
+                }
+
+                return parentChain.concatenating(containerWorld)
+            }
+        }
+
+        // Not found as a precomp target — treat as root-level
+        return .identity
+    }
+
+    /// Composed matrix for the mediaInput layer **within its composition** (InComp).
+    ///
+    /// worldTransform (incl. parent chain) + groupTransforms.
+    /// `baseWorldMatrix` allows the caller to inject outer context:
+    ///   - `.identity` for render pipeline (precomp chain already on stack)
+    ///   - precomp chain transform for hit-test / overlay / public API
+    private mutating func computeMediaInputComposedMatrix(
+        inputGeo: InputGeometryInfo,
+        frame: Double,
+        sceneFrameIndex: Int,
+        baseWorldMatrix: Matrix2D = .identity
+    ) -> Matrix2D? {
+        guard let comp = comps[inputGeo.compId],
+              let inputLayer = comp.layers.first(where: { $0.id == inputGeo.layerId }) else {
+            return nil
+        }
+
+        let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
+
+        guard let (worldMatrix, _) = computeWorldTransform(
+            for: inputLayer,
+            at: frame,
+            baseWorldMatrix: baseWorldMatrix,
+            baseWorldOpacity: 1.0,
+            layerById: layerById,
+            sceneFrameIndex: sceneFrameIndex
+        ) else {
+            return nil
+        }
+
+        // Apply shape groupTransforms (PR-11 contract).
+        // Paths are stored in LOCAL coords; group transforms are composed at sample time.
+        switch inputLayer.content {
+        case .shapes(let shapeGroup):
+            var composed = worldMatrix
+            for gt in shapeGroup.groupTransforms {
+                composed = composed.concatenating(gt.matrix(at: frame))
+            }
+            return composed
+        default:
+            return worldMatrix
+        }
+    }
+
+    /// Full composed matrix for mediaInput in **root composition space**.
+    ///
+    /// Resolves the precomp container chain, then delegates to the InComp helper.
+    /// Used by `mediaInputPath` and `mediaInputWorldMatrix` (direct queries).
+    private mutating func computeMediaInputComposedMatrixForRootSpace(
+        inputGeo: InputGeometryInfo,
+        frame: Double,
+        sceneFrameIndex: Int
+    ) -> Matrix2D? {
+        guard let baseWorld = resolvePrecompChainTransform(
+            targetCompId: inputGeo.compId,
+            frame: frame,
+            sceneFrameIndex: sceneFrameIndex
+        ) else {
+            return nil
+        }
+
+        return computeMediaInputComposedMatrix(
+            inputGeo: inputGeo,
+            frame: frame,
+            sceneFrameIndex: sceneFrameIndex,
+            baseWorldMatrix: baseWorld
+        )
+    }
+
     /// Computes the world matrix for the mediaInput layer at the current frame.
     /// mediaInput world is fixed (no userTransform) — it defines the clip window.
+    /// Uses InComp helper (precomp chain is already on the render stack).
     private mutating func computeMediaInputWorld(
         inputGeo: InputGeometryInfo,
         context: RenderContext
     ) -> Matrix2D {
-        // Find the mediaInput layer in its composition
-        guard let comp = comps[inputGeo.compId],
-              let inputLayer = comp.layers.first(where: { $0.id == inputGeo.layerId }) else {
-            return .identity
-        }
-
-        // Build a temporary layerById for the composition
-        let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
-
-        // Compute world transform without userTransform
-        guard let (matrix, _) = computeWorldTransform(
-            for: inputLayer,
-            at: context.frame,
-            baseWorldMatrix: .identity,
-            baseWorldOpacity: 1.0,
-            layerById: layerById,
+        computeMediaInputComposedMatrix(
+            inputGeo: inputGeo,
+            frame: context.frame,
             sceneFrameIndex: context.frameIndex
-        ) else {
-            return .identity
-        }
-
-        // PR-23: Apply shape groupTransforms for mediaInput geometry (PR-11 contract).
-        // Paths are stored in LOCAL coords; group transforms must be applied at render time.
-        // This matches the pattern in renderLayerContent for regular shape layers.
-        switch inputLayer.content {
-        case .shapes(let shapeGroup):
-            var composed = matrix
-            for gt in shapeGroup.groupTransforms {
-                composed = composed.concatenating(gt.matrix(at: context.frame))
-            }
-            return composed
-        default:
-            return matrix
-        }
+        ) ?? .identity
     }
 
     // Computes world transform for a layer considering parent chain.
@@ -1141,83 +953,42 @@ extension AnimIR {
 // MARK: - Hit-Test API (PR-15)
 
 extension AnimIR {
-    /// Returns the mediaInput path in composition space for hit-testing.
+    /// Returns the mediaInput path in **root composition space** for hit-testing / overlay.
     ///
-    /// The path is sampled at the given frame (default: frame 0) and transformed
-    /// by the mediaInput layer's world matrix, so it's in composition coordinates.
+    /// The path is transformed by the full chain: precomp containers → layer world →
+    /// groupTransforms.  This matches the geometry the render pipeline produces.
     ///
     /// - Parameter frame: Frame to sample the path at (default: 0 for static mediaInput)
-    /// - Returns: Array of BezierPath vertices in composition space, or nil if no mediaInput
+    /// - Returns: BezierPath in root composition space, or nil if no mediaInput
     public mutating func mediaInputPath(frame: Int = 0) -> BezierPath? {
         guard let inputGeo = inputGeometry else { return nil }
-
-        // Get the static path from animPath
         guard let basePath = inputGeo.animPath.staticPath else { return nil }
 
-        // Find the mediaInput layer and compute its world transform
-        guard let comp = comps[inputGeo.compId],
-              let inputLayer = comp.layers.first(where: { $0.id == inputGeo.layerId }) else {
-            return basePath
-        }
-
-        let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
-
-        guard let (worldMatrix, _) = computeWorldTransform(
-            for: inputLayer,
-            at: Double(frame),
-            baseWorldMatrix: .identity,
-            baseWorldOpacity: 1.0,
-            layerById: layerById,
+        guard let composedMatrix = computeMediaInputComposedMatrixForRootSpace(
+            inputGeo: inputGeo,
+            frame: Double(frame),
             sceneFrameIndex: frame
         ) else {
             return basePath
         }
 
-        // If world matrix is identity, return base path as-is
-        if worldMatrix == .identity {
-            return basePath
-        }
-
-        // Transform all path components by the world matrix
-        let transformedVertices = basePath.vertices.map { worldMatrix.apply(to: $0) }
-        let transformedIn = basePath.inTangents.map { worldMatrix.apply(to: $0) }
-        let transformedOut = basePath.outTangents.map { worldMatrix.apply(to: $0) }
-
-        return BezierPath(
-            vertices: transformedVertices,
-            inTangents: transformedIn,
-            outTangents: transformedOut,
-            closed: basePath.closed
-        )
+        return basePath.applying(composedMatrix)
     }
 
-    /// Returns the world matrix of the mediaInput layer at the given frame.
-    /// Useful when the caller wants to transform the path themselves.
+    /// Returns the composed world matrix of the mediaInput layer in **root composition space**.
+    ///
+    /// Includes precomp container chain + layer world + groupTransforms.
     ///
     /// - Parameter frame: Frame to compute transform at (default: 0)
-    /// - Returns: World matrix of mediaInput layer, or nil if no mediaInput
+    /// - Returns: Composed matrix in root space, or nil if no mediaInput
     public mutating func mediaInputWorldMatrix(frame: Int = 0) -> Matrix2D? {
         guard let inputGeo = inputGeometry else { return nil }
 
-        guard let comp = comps[inputGeo.compId],
-              let inputLayer = comp.layers.first(where: { $0.id == inputGeo.layerId }) else {
-            return nil
-        }
-
-        let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
-
-        guard let (worldMatrix, _) = computeWorldTransform(
-            for: inputLayer,
-            at: Double(frame),
-            baseWorldMatrix: .identity,
-            baseWorldOpacity: 1.0,
-            layerById: layerById,
+        return computeMediaInputComposedMatrixForRootSpace(
+            inputGeo: inputGeo,
+            frame: Double(frame),
             sceneFrameIndex: frame
-        ) else {
-            return nil
-        }
-
-        return worldMatrix
+        )
     }
 }
 

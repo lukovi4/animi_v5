@@ -85,6 +85,9 @@ final class HitTestOverlayTests: XCTestCase {
         """
     }
 
+    /// No-anim animRef used for edit-variant in test scenes.
+    private static let noAnimRef = "no-anim-test"
+
     /// Creates a single-block ScenePackage with configurable hitTestMode.
     private func makeScenePackage(
         lottieJSON json: String,
@@ -114,7 +117,10 @@ final class HitTestOverlayTests: XCTestCase {
                         hitTest: hitTestMode,
                         allowedMedia: ["photo"]
                     ),
-                    variants: [Variant(id: "v1", animRef: animRef)]
+                    variants: [
+                        Variant(id: "v1", animRef: animRef),
+                        Variant(id: "no-anim", animRef: Self.noAnimRef)
+                    ]
                 )
             ]
         )
@@ -127,8 +133,14 @@ final class HitTestOverlayTests: XCTestCase {
         )
 
         let animations = LoadedAnimations(
-            lottieByAnimRef: [animRef: lottie],
-            assetIndexByAnimRef: [animRef: assetIndex]
+            lottieByAnimRef: [
+                animRef: lottie,
+                Self.noAnimRef: lottie
+            ],
+            assetIndexByAnimRef: [
+                animRef: assetIndex,
+                Self.noAnimRef: assetIndex
+            ]
         )
 
         return (package, animations)
@@ -160,7 +172,10 @@ final class HitTestOverlayTests: XCTestCase {
                         hitTest: hitTestA,
                         allowedMedia: ["photo"]
                     ),
-                    variants: [Variant(id: "v1", animRef: "anim-test")]
+                    variants: [
+                        Variant(id: "v1", animRef: "anim-test"),
+                        Variant(id: "no-anim", animRef: Self.noAnimRef)
+                    ]
                 ),
                 MediaBlock(
                     id: "block-B",
@@ -174,7 +189,10 @@ final class HitTestOverlayTests: XCTestCase {
                         hitTest: hitTestB,
                         allowedMedia: ["photo"]
                     ),
-                    variants: [Variant(id: "v1", animRef: "anim-test")]
+                    variants: [
+                        Variant(id: "v1", animRef: "anim-test"),
+                        Variant(id: "no-anim", animRef: Self.noAnimRef)
+                    ]
                 )
             ]
         )
@@ -187,8 +205,14 @@ final class HitTestOverlayTests: XCTestCase {
         )
 
         let animations = LoadedAnimations(
-            lottieByAnimRef: ["anim-test": lottie],
-            assetIndexByAnimRef: ["anim-test": assetIndex]
+            lottieByAnimRef: [
+                "anim-test": lottie,
+                Self.noAnimRef: lottie
+            ],
+            assetIndexByAnimRef: [
+                "anim-test": assetIndex,
+                Self.noAnimRef: assetIndex
+            ]
         )
 
         return (package, animations)
@@ -720,6 +744,7 @@ final class HitTestOverlayTests: XCTestCase {
             timing: BlockTiming(startFrame: 0, endFrame: 100),
             containerClip: .slotRect,
             selectedVariantId: "v1",
+            editVariantId: "no-anim",
             variants: []
         )
 

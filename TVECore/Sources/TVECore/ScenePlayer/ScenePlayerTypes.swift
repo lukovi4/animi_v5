@@ -88,6 +88,10 @@ public struct BlockRuntime: Sendable {
     /// Currently selected variant ID
     public let selectedVariantId: String
 
+    /// Variant ID used for edit mode (always "no-anim").
+    /// Guaranteed to exist after compilation (validated in compileBlock).
+    public let editVariantId: String
+
     /// All compiled variants for this block
     public var variants: [VariantRuntime]
 
@@ -102,7 +106,11 @@ public struct BlockRuntime: Sendable {
     /// Single source of truth — used by both ScenePlayer and SceneRenderPlan.
     public func resolvedVariant(overrides: [String: String]) -> VariantRuntime? {
         let activeId = overrides[blockId] ?? selectedVariantId
-        return variants.first(where: { $0.variantId == activeId }) ?? variants.first
+        let resolved = variants.first(where: { $0.variantId == activeId })
+        if resolved == nil {
+            assertionFailure("Variant '\(activeId)' not found for block '\(blockId)'. Falling back to first variant.")
+        }
+        return resolved ?? variants.first
     }
 
     public init(
@@ -115,6 +123,7 @@ public struct BlockRuntime: Sendable {
         containerClip: ContainerClip,
         hitTestMode: HitTestMode? = nil,
         selectedVariantId: String,
+        editVariantId: String,
         variants: [VariantRuntime]
     ) {
         self.blockId = blockId
@@ -126,6 +135,7 @@ public struct BlockRuntime: Sendable {
         self.containerClip = containerClip
         self.hitTestMode = hitTestMode
         self.selectedVariantId = selectedVariantId
+        self.editVariantId = editVariantId
         self.variants = variants
     }
 }
@@ -173,19 +183,13 @@ public struct BlockTiming: Sendable, Equatable {
 /// Template display mode — determines how the scene is rendered.
 ///
 /// - `preview`: Full playback with all animations and time-dependent effects.
-/// - `edit`: Static editing mode — time frozen at `editFrameIndex`, only binding layers visible.
+///   Uses the user-selected variant for each block.
+/// - `edit`: Static editing mode. Time frozen at `editFrameIndex`.
+///   Renders the full `no-anim` variant for each block.
+///   `mediaInput` from `no-anim` defines hit-test and overlay geometry.
 public enum TemplateMode: String, Sendable, Equatable {
     case preview
     case edit
-}
-
-/// Render policy derived from `TemplateMode`.
-///
-/// - `fullPreview`: Render entire scene (all blocks, all layers, all animations).
-/// - `editInputsOnly`: Render only editable input blocks (binding layer + mask/matte dependencies).
-public enum RenderPolicy: Sendable, Equatable {
-    case fullPreview
-    case editInputsOnly
 }
 
 // MARK: - Overlay State (PR-17)

@@ -1,14 +1,16 @@
 import XCTest
 @testable import TVECore
 
-/// PR-18: Template Modes — Preview vs Edit
+/// Template Modes — Preview vs Edit (no-anim refactor)
 ///
-/// Tests T1-T5 per task specification:
+/// Tests:
 /// - T1: Preview renders full scene (all blocks, all layers)
-/// - T2: Edit renders only binding layers + dependencies
+/// - T2: Edit renders full no-anim variant (not binding-only)
 /// - T3: Edit ignores sceneFrameIndex (time frozen at editFrameIndex = 0)
-/// - T4: Edit produces fewer commands than preview (no decorative layers)
+/// - T4: Edit uses no-anim variant override
 /// - T5: Determinism — two players produce identical output
+/// - T6: Compilation errors for missing no-anim / mediaInput / binding / visibility
+/// - T7: Edit overlays/hitTest use no-anim variant
 final class TemplateModeTests: XCTestCase {
 
     // MARK: - Test Resources
@@ -48,14 +50,11 @@ final class TemplateModeTests: XCTestCase {
 
     /// T1: Preview mode at frame 120 renders all visible blocks with full content.
     func testT1_previewRendersFullScene() throws {
-        // Given
         let player = try compiledPlayer()
         let expectedBlocks = visibleBlockCount(player: player, at: 120)
 
-        // When
         let commands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
 
-        // Then — each visible block should produce at least one drawImage
         let drawImageCount = commands.filter {
             if case .drawImage = $0 { return true }
             return false
@@ -63,11 +62,9 @@ final class TemplateModeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(drawImageCount, expectedBlocks,
             "Preview at frame 120 should have at least \(expectedBlocks) drawImage commands")
 
-        // Commands must be balanced
         XCTAssertTrue(commands.isBalanced(),
             "Preview commands should be balanced (matching begin/end pairs)")
 
-        // Should have block groups for all visible blocks
         let blockGroupCount = commands.filter {
             if case .beginGroup(let name) = $0 { return name.hasPrefix("Block:") }
             return false
@@ -78,111 +75,82 @@ final class TemplateModeTests: XCTestCase {
 
     /// T1b: Preview mode matches existing renderCommands API (backward compatibility).
     func testT1b_previewMatchesLegacyAPI() throws {
-        // Given
         let player = try compiledPlayer()
 
-        // When
         let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
         let legacyCommands = player.renderCommands(sceneFrameIndex: 120)
 
-        // Then — same command count and structure
         XCTAssertEqual(previewCommands.count, legacyCommands.count,
             "Preview mode should produce same command count as legacy API")
 
-        // Verify command types match
         for (idx, previewCmd) in previewCommands.enumerated() {
             XCTAssertEqual(previewCmd, legacyCommands[idx],
                 "Commands should match at index \(idx)")
         }
     }
 
-    // MARK: - T2: Edit renders only binding layers
+    // MARK: - T2: Edit renders full no-anim variant
 
-    /// T2: Edit mode renders only binding layers — exactly one drawImage per visible block.
-    ///
-    /// Lead correction #4: Shapes are allowed only inside matte/mask scope (as dependencies).
-    func testT2_editRendersOnlyBindingLayers() throws {
-        // Given
+    /// T2: Edit mode renders the full no-anim variant — not just binding layers.
+    func testT2_editRendersFullNoAnimVariant() throws {
         let player = try compiledPlayer()
         let editFrame = ScenePlayer.editFrameIndex
         let visibleAtEditFrame = visibleBlockCount(player: player, at: editFrame)
 
-        // When
         let editCommands = player.renderCommands(mode: .edit)
 
-        // Then — commands must be balanced
         XCTAssertTrue(editCommands.isBalanced(),
             "Edit commands should be balanced")
 
-        // Block groups should be tagged with "(edit)"
-        let editBlockGroups = editCommands.filter {
-            if case .beginGroup(let name) = $0 { return name.contains("(edit)") }
+        // Block groups should exist for each visible block
+        let blockGroupCount = editCommands.filter {
+            if case .beginGroup(let name) = $0 { return name.hasPrefix("Block:") }
             return false
-        }
-        XCTAssertGreaterThan(editBlockGroups.count, 0,
-            "Edit commands should have block groups tagged with '(edit)'")
+        }.count
+        XCTAssertEqual(blockGroupCount, visibleAtEditFrame,
+            "Edit should have \(visibleAtEditFrame) block groups")
 
-        // Count drawImage commands — should be exactly one per visible block at editFrameIndex
+        // At least one drawImage per visible block (binding layer in no-anim)
         let drawImageCount = editCommands.filter {
             if case .drawImage = $0 { return true }
             return false
         }.count
-        XCTAssertEqual(drawImageCount, visibleAtEditFrame,
-            "Edit mode should produce exactly \(visibleAtEditFrame) drawImage (one binding layer per visible block)")
-
-        // Shapes/strokes should only appear inside matte or mask scope
-        assertShapesOnlyInMatteOrMaskScope(editCommands)
+        XCTAssertGreaterThanOrEqual(drawImageCount, visibleAtEditFrame,
+            "Edit mode should produce at least \(visibleAtEditFrame) drawImage commands")
     }
 
-    /// T2b: Edit produces fewer drawImage commands than preview at frame 120.
-    ///
-    /// Preview renders all layers; edit renders only binding layer per block.
-    func testT2b_editHasFewerDrawImagesThanPreview() throws {
-        // Given
+    /// T2b: Edit uses inputClip from no-anim variant (mediaInput → inputClip mask).
+    func testT2b_editUsesInputClip() throws {
         let player = try compiledPlayer()
 
-        // When
-        let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
         let editCommands = player.renderCommands(mode: .edit)
 
-        // Then
-        let previewDrawImages = previewCommands.filter {
-            if case .drawImage = $0 { return true }
+        // no-anim variants have mediaInput → inputClip should produce intersect masks
+        let inputClipGroups = editCommands.filter {
+            if case .beginGroup(let name) = $0 { return name.contains("(inputClip)") }
             return false
         }.count
 
-        let editDrawImages = editCommands.filter {
-            if case .drawImage = $0 { return true }
-            return false
-        }.count
-
-        // Edit should have fewer or equal drawImage commands
-        // (fewer because decorative layers are skipped in edit)
-        XCTAssertLessThanOrEqual(editDrawImages, previewDrawImages,
-            "Edit should have ≤ drawImage commands than preview (\(editDrawImages) vs \(previewDrawImages))")
+        let visibleAtEdit = visibleBlockCount(player: player, at: ScenePlayer.editFrameIndex)
+        XCTAssertEqual(inputClipGroups, visibleAtEdit,
+            "Edit should have inputClip group for each visible block (has mediaInput)")
     }
 
     // MARK: - T3: Edit ignores sceneFrameIndex
 
     /// T3: Edit mode always renders at editFrameIndex (0), regardless of sceneFrameIndex.
-    ///
-    /// Lead correction #1: Edit mode always uses editFrameIndex = 0 directly, no timing/loop policies.
     func testT3_editIgnoresSceneFrameIndex() throws {
-        // Given
         let player = try compiledPlayer()
 
-        // When — render edit at different sceneFrameIndex values
         let editAt0 = player.renderCommands(mode: .edit, sceneFrameIndex: 0)
         let editAt50 = player.renderCommands(mode: .edit, sceneFrameIndex: 50)
         let editAt150 = player.renderCommands(mode: .edit, sceneFrameIndex: 150)
 
-        // Then — all should produce identical output (edit ignores sceneFrameIndex)
         XCTAssertEqual(editAt0.count, editAt50.count,
             "Edit at frame 0 and frame 50 should have same command count")
         XCTAssertEqual(editAt0.count, editAt150.count,
             "Edit at frame 0 and frame 150 should have same command count")
 
-        // Verify commands are identical
         for (idx, cmd0) in editAt0.enumerated() {
             XCTAssertEqual(cmd0, editAt50[idx],
                 "Edit commands should be identical regardless of sceneFrameIndex (index \(idx))")
@@ -197,71 +165,66 @@ final class TemplateModeTests: XCTestCase {
             "Canonical editFrameIndex should be 0")
     }
 
-    // MARK: - T4: Edit produces fewer commands than preview
+    // MARK: - T4: Edit uses no-anim variant override
 
-    /// T4: Edit produces fewer total commands than preview — no decorative layers.
-    ///
-    /// Uses frame 120 for preview so all visible blocks render content (matching edit which
-    /// sees blocks visible at editFrameIndex per their timing windows).
-    func testT4_editFewerCommandsThanPreview() throws {
-        // Given
+    /// T4: Edit uses no-anim variant regardless of user's variant selection.
+    func testT4_editUsesNoAnimRegardlessOfSelection() throws {
         let player = try compiledPlayer()
 
-        // When — use frame 120 for preview where all blocks render content
-        let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
+        // Select animated variant v1 for first block
+        player.setSelectedVariant(blockId: "block_01", variantId: "v1")
+
+        // Edit should still render no-anim (not affected by selection)
         let editCommands = player.renderCommands(mode: .edit)
-
-        // Then — edit should have fewer total commands (no decorative content)
-        XCTAssertLessThan(editCommands.count, previewCommands.count,
-            "Edit should have fewer commands than preview (\(editCommands.count) vs \(previewCommands.count))")
-
-        // Both must be balanced
-        XCTAssertTrue(previewCommands.isBalanced(), "Preview commands should be balanced")
         XCTAssertTrue(editCommands.isBalanced(), "Edit commands should be balanced")
+        XCTAssertFalse(editCommands.isEmpty, "Edit should produce commands")
+
+        // Verify editVariantId is "no-anim" for all blocks
+        guard let runtime = player.compiledScene?.runtime else {
+            XCTFail("Should have compiled runtime")
+            return
+        }
+        for block in runtime.blocks {
+            XCTAssertEqual(block.editVariantId, "no-anim",
+                "Block \(block.blockId) editVariantId should be 'no-anim'")
+        }
     }
 
-    /// T4b: Edit drawImage asset IDs are a subset of preview assets at frame 120.
-    ///
-    /// Uses frame 120 for preview so all blocks are visible and all assets are rendered.
-    func testT4b_editExcludesDecorativeLayers() throws {
-        // Given
+    /// T4b: Edit drawImage asset IDs are a subset of all compiled assets.
+    func testT4b_editAssetsAreSubsetOfCompiled() throws {
         let player = try compiledPlayer()
 
-        // When — use frame 120 where all blocks are visible and render content
-        let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
         let editCommands = player.renderCommands(mode: .edit)
 
-        // Collect drawImage asset IDs from each mode
-        let previewAssetIds = Set(previewCommands.compactMap { cmd -> String? in
-            if case .drawImage(let assetId, _) = cmd { return assetId }
-            return nil
-        })
         let editAssetIds = Set(editCommands.compactMap { cmd -> String? in
             if case .drawImage(let assetId, _) = cmd { return assetId }
             return nil
         })
 
-        // Edit asset IDs should be a subset of preview asset IDs
-        XCTAssertTrue(editAssetIds.isSubset(of: previewAssetIds),
-            "Edit drawImage assets (\(editAssetIds)) should be a subset of preview assets (\(previewAssetIds))")
+        // All edit asset IDs should be in the compiled asset index
+        guard let mergedAssets = player.compiledScene?.mergedAssetIndex else {
+            XCTFail("Should have compiled assets")
+            return
+        }
+        for assetId in editAssetIds {
+            XCTAssertNotNil(mergedAssets.byId[assetId],
+                "Edit asset '\(assetId)' should exist in merged asset index")
+        }
     }
 
     // MARK: - T5: Determinism
 
     /// T5: Two independent ScenePlayer instances produce identical edit commands.
     func testT5_determinism_twoPlayersIdenticalOutput() throws {
-        // Given
         let (package, animations) = try loadTestPackage()
         let player1 = ScenePlayer()
         let player2 = ScenePlayer()
         _ = try player1.compile(package: package, loadedAnimations: animations)
         _ = try player2.compile(package: package, loadedAnimations: animations)
 
-        // When
         let editCommands1 = player1.renderCommands(mode: .edit)
         let editCommands2 = player2.renderCommands(mode: .edit)
 
-        // Then — identical output
         XCTAssertEqual(editCommands1.count, editCommands2.count,
             "Two players should produce same edit command count")
         for (idx, cmd1) in editCommands1.enumerated() {
@@ -272,18 +235,15 @@ final class TemplateModeTests: XCTestCase {
 
     /// T5b: Determinism in preview mode — two players produce identical output.
     func testT5b_determinism_previewIdentical() throws {
-        // Given
         let (package, animations) = try loadTestPackage()
         let player1 = ScenePlayer()
         let player2 = ScenePlayer()
         _ = try player1.compile(package: package, loadedAnimations: animations)
         _ = try player2.compile(package: package, loadedAnimations: animations)
 
-        // When
         let previewCommands1 = player1.renderCommands(mode: .preview, sceneFrameIndex: 60)
         let previewCommands2 = player2.renderCommands(mode: .preview, sceneFrameIndex: 60)
 
-        // Then
         XCTAssertEqual(previewCommands1.count, previewCommands2.count,
             "Two players should produce same preview command count")
         for (idx, cmd1) in previewCommands1.enumerated() {
@@ -292,55 +252,262 @@ final class TemplateModeTests: XCTestCase {
         }
     }
 
+    // MARK: - T6: Compilation errors
+
+    /// T6a: Missing no-anim variant triggers compilation error.
+    func testT6a_missingNoAnimVariantThrows() throws {
+        let (package, animations) = try loadTestPackage()
+
+        // Reconstruct block_01 without its no-anim variant
+        let originalBlock = package.scene.mediaBlocks[0]
+        let strippedBlock = MediaBlock(
+            id: originalBlock.id,
+            zIndex: originalBlock.zIndex,
+            rect: originalBlock.rect,
+            containerClip: originalBlock.containerClip,
+            timing: originalBlock.timing,
+            input: originalBlock.input,
+            variants: originalBlock.variants.filter { $0.id != "no-anim" }
+        )
+
+        var modifiedBlocks = package.scene.mediaBlocks
+        modifiedBlocks[0] = strippedBlock
+
+        let modifiedScene = Scene(
+            schemaVersion: package.scene.schemaVersion,
+            sceneId: package.scene.sceneId,
+            canvas: package.scene.canvas,
+            background: package.scene.background,
+            mediaBlocks: modifiedBlocks
+        )
+        let modifiedPackage = ScenePackage(
+            rootURL: package.rootURL,
+            scene: modifiedScene,
+            animFilesByRef: package.animFilesByRef,
+            imagesRootURL: package.imagesRootURL
+        )
+
+        let player = ScenePlayer()
+        XCTAssertThrowsError(try player.compile(package: modifiedPackage, loadedAnimations: animations)) { error in
+            guard let sceneError = error as? ScenePlayerError else {
+                XCTFail("Expected ScenePlayerError, got \(error)")
+                return
+            }
+            if case .missingNoAnimVariant(let blockId) = sceneError {
+                XCTAssertEqual(blockId, "block_01")
+            } else {
+                XCTFail("Expected missingNoAnimVariant, got \(sceneError)")
+            }
+        }
+    }
+
+    /// T6b: Binding layer visible but unreachable (precomp container ip=10) triggers error.
+    func testT6b_unreachableBindingThrows() throws {
+        // no-anim Lottie: binding is inside comp_0, but precomp container in root has ip=10
+        // → binding layer itself is visible at frame 0, but full render skips the precomp
+        let unreachableNoAnimJSON = """
+        {
+          "v": "5.12.1", "fr": 30, "ip": 0, "op": 30, "w": 540, "h": 960,
+          "nm": "no-anim-unreachable", "ddd": 0,
+          "assets": [
+            { "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img_1.png", "e": 0 },
+            {
+              "id": "comp_0", "nm": "media_comp", "fr": 30,
+              "layers": [
+                {
+                  "ddd": 0, "ind": 1, "ty": 4, "nm": "mediaInput", "hd": true,
+                  "ks": {
+                    "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                    "p": { "a": 0, "k": [0, 0, 0] }, "a": { "a": 0, "k": [0, 0, 0] },
+                    "s": { "a": 0, "k": [100, 100, 100] }
+                  },
+                  "shapes": [{ "ty": "gr", "it": [
+                    { "ty": "sh", "ks": { "a": 0, "k": {
+                      "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]],
+                      "v": [[0,0],[540,0],[540,960],[0,960]], "c": true
+                    }}},
+                    { "ty": "fl", "c": { "a": 0, "k": [0,0,0,1] }, "o": { "a": 0, "k": 100 } }
+                  ]}],
+                  "ip": 0, "op": 300, "st": 0
+                },
+                {
+                  "ddd": 0, "ind": 2, "ty": 2, "nm": "media", "refId": "image_0",
+                  "ks": {
+                    "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                    "p": { "a": 0, "k": [270, 480, 0] }, "a": { "a": 0, "k": [270, 480, 0] },
+                    "s": { "a": 0, "k": [100, 100, 100] }
+                  },
+                  "ip": 0, "op": 300, "st": 0
+                }
+              ]
+            }
+          ],
+          "layers": [
+            {
+              "ddd": 0, "ind": 1, "ty": 0, "nm": "media_comp", "refId": "comp_0",
+              "ks": {
+                "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [270, 480, 0] }, "a": { "a": 0, "k": [270, 480, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
+              "w": 540, "h": 960,
+              "ip": 10, "op": 300, "st": 0
+            }
+          ],
+          "markers": [], "props": {}
+        }
+        """
+
+        // Normal no-anim for v1 (binding in root comp, always reachable)
+        let goodNoAnimJSON = """
+        {
+          "v": "5.12.1", "fr": 30, "ip": 0, "op": 1, "w": 540, "h": 960,
+          "nm": "good-no-anim", "ddd": 0,
+          "assets": [
+            { "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img_1.png", "e": 0 }
+          ],
+          "layers": [
+            {
+              "ddd": 0, "ind": 1, "ty": 4, "nm": "mediaInput", "hd": true,
+              "ks": {
+                "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [0, 0, 0] }, "a": { "a": 0, "k": [0, 0, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
+              "shapes": [{ "ty": "gr", "it": [
+                { "ty": "sh", "ks": { "a": 0, "k": {
+                  "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]],
+                  "v": [[0,0],[540,0],[540,960],[0,960]], "c": true
+                }}},
+                { "ty": "fl", "c": { "a": 0, "k": [0,0,0,1] }, "o": { "a": 0, "k": 100 } }
+              ]}],
+              "ip": 0, "op": 1, "st": 0
+            },
+            {
+              "ddd": 0, "ind": 2, "ty": 2, "nm": "media", "refId": "image_0",
+              "ks": {
+                "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [270, 480, 0] }, "a": { "a": 0, "k": [270, 480, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
+              "ip": 0, "op": 1, "st": 0
+            }
+          ],
+          "markers": [], "props": {}
+        }
+        """
+
+        let decoder = JSONDecoder()
+        let unreachableLottie = try decoder.decode(LottieJSON.self, from: unreachableNoAnimJSON.data(using: .utf8)!)
+        let goodLottie = try decoder.decode(LottieJSON.self, from: goodNoAnimJSON.data(using: .utf8)!)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img_1.png"])
+
+        let scene = Scene(
+            schemaVersion: "0.1",
+            sceneId: "test-unreachable",
+            canvas: Canvas(width: 540, height: 960, fps: 30, durationFrames: 300),
+            mediaBlocks: [
+                MediaBlock(
+                    id: "block-test",
+                    zIndex: 0,
+                    rect: Rect(x: 0, y: 0, width: 540, height: 960),
+                    containerClip: .slotRect,
+                    input: MediaInput(
+                        rect: Rect(x: 0, y: 0, width: 540, height: 960),
+                        bindingKey: "media",
+                        allowedMedia: ["photo"]
+                    ),
+                    variants: [
+                        Variant(id: "v1", animRef: "good.json"),
+                        Variant(id: "no-anim", animRef: "unreachable.json")
+                    ]
+                )
+            ]
+        )
+
+        let package = ScenePackage(
+            rootURL: URL(fileURLWithPath: "/tmp"),
+            scene: scene,
+            animFilesByRef: [:],
+            imagesRootURL: nil
+        )
+        let animations = LoadedAnimations(
+            lottieByAnimRef: [
+                "good.json": goodLottie,
+                "unreachable.json": unreachableLottie
+            ],
+            assetIndexByAnimRef: [
+                "good.json": assetIndex,
+                "unreachable.json": assetIndex
+            ]
+        )
+
+        let player = ScenePlayer()
+        XCTAssertThrowsError(try player.compile(package: package, loadedAnimations: animations)) { error in
+            guard let sceneError = error as? ScenePlayerError else {
+                XCTFail("Expected ScenePlayerError, got \(error)")
+                return
+            }
+            if case .noAnimBindingNotRenderedAtEditFrame(let blockId, let animRef, let editFrameIndex) = sceneError {
+                XCTAssertEqual(blockId, "block-test")
+                XCTAssertEqual(animRef, "unreachable.json")
+                XCTAssertEqual(editFrameIndex, 0)
+            } else {
+                XCTFail("Expected noAnimBindingNotRenderedAtEditFrame, got \(sceneError)")
+            }
+        }
+    }
+
+    // MARK: - T7: Edit overlays/hitTest use no-anim
+
+    /// T7: Overlays in edit mode resolve from no-anim variant.
+    func testT7_editOverlaysUseNoAnimVariant() throws {
+        let player = try compiledPlayer()
+
+        let editOverlays = player.overlays(frame: ScenePlayer.editFrameIndex, mode: .edit)
+        let visibleAtEdit = visibleBlockCount(player: player, at: ScenePlayer.editFrameIndex)
+
+        XCTAssertEqual(editOverlays.count, visibleAtEdit,
+            "Edit overlays should have one entry per visible block")
+
+        for overlay in editOverlays {
+            XCTAssertFalse(overlay.hitPath.vertices.isEmpty,
+                "Overlay for \(overlay.blockId) should have non-empty hit path")
+        }
+    }
+
     // MARK: - Additional: UserTransform in edit mode
 
-    /// UserTransform API works in edit mode — set/get/reset cycle.
-    ///
-    /// Note: userTransform is only applied to the binding layer when mediaInput
-    /// (inputGeometry) is present. Without mediaInput, the transform is stored
-    /// but doesn't alter the render output. This test verifies the API contract
-    /// and balanced commands.
+    /// UserTransform API works in edit mode.
     func testEditMode_userTransformAPI() throws {
-        // Given
         let player = try compiledPlayer()
         guard let firstBlock = player.compiledScene?.runtime.blocks.first else {
             XCTFail("Should have at least one block")
             return
         }
 
-        // When — set a user transform and render
         let transform = Matrix2D(a: 1.5, b: 0, c: 0, d: 1.5, tx: 10, ty: 20)
         player.setUserTransform(blockId: firstBlock.blockId, transform: transform)
 
         let editCommands = player.renderCommands(mode: .edit)
 
-        // Then — commands should be balanced and non-empty
         XCTAssertTrue(editCommands.isBalanced(), "Edit with user transform should be balanced")
         XCTAssertFalse(editCommands.isEmpty, "Edit with user transform should produce commands")
 
-        // Verify the transform is stored correctly
         let storedTransform = player.userTransform(blockId: firstBlock.blockId)
         XCTAssertEqual(storedTransform, transform, "Stored transform should match set value")
 
-        // Reset and verify
         player.resetAllUserTransforms()
         let resetTransform = player.userTransform(blockId: firstBlock.blockId)
         XCTAssertEqual(resetTransform, .identity, "After reset, transform should be identity")
     }
 
-    // MARK: - Additional: TemplateMode and RenderPolicy enums
+    // MARK: - Additional: TemplateMode enum
 
     /// Verify TemplateMode raw values match expected strings.
     func testTemplateModeRawValues() {
         XCTAssertEqual(TemplateMode.preview.rawValue, "preview")
         XCTAssertEqual(TemplateMode.edit.rawValue, "edit")
-    }
-
-    /// Verify RenderPolicy enum has expected cases.
-    func testRenderPolicyCases() {
-        let fullPreview = RenderPolicy.fullPreview
-        let editInputsOnly = RenderPolicy.editInputsOnly
-        XCTAssertNotEqual(fullPreview, editInputsOnly)
     }
 
     // MARK: - Additional: Uncompiled player returns empty
@@ -354,36 +521,5 @@ final class TemplateModeTests: XCTestCase {
 
         let editCommands = player.renderCommands(mode: .edit)
         XCTAssertTrue(editCommands.isEmpty, "Uncompiled player should return empty for edit")
-    }
-
-    // MARK: - Helpers
-
-    /// Asserts that drawShape/drawStroke commands appear only inside matte or mask scope.
-    ///
-    /// Lead correction #4: shapes are allowed only as matte/mask dependencies.
-    private func assertShapesOnlyInMatteOrMaskScope(_ commands: [RenderCommand]) {
-        var matteDepth = 0
-        var maskDepth = 0
-
-        for (idx, command) in commands.enumerated() {
-            switch command {
-            case .beginMatte:
-                matteDepth += 1
-            case .endMatte:
-                matteDepth -= 1
-            case .beginMask:
-                maskDepth += 1
-            case .endMask:
-                maskDepth -= 1
-            case .drawShape:
-                XCTAssertTrue(matteDepth > 0 || maskDepth > 0,
-                    "drawShape at index \(idx) should be inside matte or mask scope (matteDepth=\(matteDepth), maskDepth=\(maskDepth))")
-            case .drawStroke:
-                XCTAssertTrue(matteDepth > 0 || maskDepth > 0,
-                    "drawStroke at index \(idx) should be inside matte or mask scope (matteDepth=\(matteDepth), maskDepth=\(maskDepth))")
-            default:
-                break
-            }
-        }
     }
 }

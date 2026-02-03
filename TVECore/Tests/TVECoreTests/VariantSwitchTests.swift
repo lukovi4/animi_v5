@@ -56,7 +56,7 @@ final class VariantSwitchTests: XCTestCase {
 
         let block01 = compiled.runtime.blocks.first { $0.blockId == "block_01" }
         XCTAssertNotNil(block01)
-        XCTAssertEqual(block01!.variants.count, 2, "block_01 should have 2 compiled variants")
+        XCTAssertEqual(block01!.variants.count, 3, "block_01 should have 3 compiled variants (v1, v2, no-anim)")
         XCTAssertEqual(block01!.variants[0].variantId, "v1")
         XCTAssertEqual(block01!.variants[1].variantId, "v2")
     }
@@ -67,7 +67,7 @@ final class VariantSwitchTests: XCTestCase {
 
         let block02 = compiled.runtime.blocks.first { $0.blockId == "block_02" }
         XCTAssertNotNil(block02)
-        XCTAssertEqual(block02!.variants.count, 1, "block_02 should have 1 compiled variant")
+        XCTAssertEqual(block02!.variants.count, 2, "block_02 should have 2 compiled variants (v1, no-anim)")
     }
 
     // MARK: - T2: availableVariants
@@ -76,11 +76,13 @@ final class VariantSwitchTests: XCTestCase {
         let player = try makePlayer()
 
         let variants = player.availableVariants(blockId: "block_01")
-        XCTAssertEqual(variants.count, 2)
+        XCTAssertEqual(variants.count, 3)
         XCTAssertEqual(variants[0].id, "v1")
         XCTAssertEqual(variants[0].animRef, "anim-v1.json")
         XCTAssertEqual(variants[1].id, "v2")
         XCTAssertEqual(variants[1].animRef, "anim-v2.json")
+        XCTAssertEqual(variants[2].id, "no-anim")
+        XCTAssertEqual(variants[2].animRef, "no-anim-b1.json")
     }
 
     func testAvailableVariants_unknownBlock_returnsEmpty() throws {
@@ -160,23 +162,25 @@ final class VariantSwitchTests: XCTestCase {
             "block_02 assets should not change when block_01 variant switches")
     }
 
-    // MARK: - T6: Variant switch affects edit mode render commands
+    // MARK: - T6: Edit mode always uses no-anim variant
 
-    func testVariantSwitch_affectsEditMode() throws {
+    func testEditMode_alwaysUsesNoAnimVariant() throws {
         let player = try makePlayer()
 
-        // Default (v1) in edit mode
-        let editV1 = player.renderCommands(mode: .edit)
-        let editAssetsV1 = drawImageAssetIds(from: editV1)
-        XCTAssertTrue(editAssetsV1.contains("anim-v1.json|image_0"),
-            "Edit mode default should render v1. Got: \(editAssetsV1)")
+        // Edit mode should use no-anim regardless of selected variant
+        let editDefault = player.renderCommands(mode: .edit)
+        let editAssetsDefault = drawImageAssetIds(from: editDefault)
+        XCTAssertTrue(editAssetsDefault.contains("no-anim-b1.json|image_0"),
+            "Edit mode should render no-anim variant. Got: \(editAssetsDefault)")
 
-        // Switch to v2
+        // Switch to v2 — edit mode should still use no-anim
         player.setSelectedVariant(blockId: "block_01", variantId: "v2")
-        let editV2 = player.renderCommands(mode: .edit)
-        let editAssetsV2 = drawImageAssetIds(from: editV2)
-        XCTAssertTrue(editAssetsV2.contains("anim-v2.json|image_0"),
-            "Edit mode after switch should render v2. Got: \(editAssetsV2)")
+        let editAfterSwitch = player.renderCommands(mode: .edit)
+        let editAssetsAfterSwitch = drawImageAssetIds(from: editAfterSwitch)
+        XCTAssertTrue(editAssetsAfterSwitch.contains("no-anim-b1.json|image_0"),
+            "Edit mode after variant switch should still render no-anim. Got: \(editAssetsAfterSwitch)")
+        XCTAssertFalse(editAssetsAfterSwitch.contains("anim-v2.json|image_0"),
+            "Edit mode should NOT render selected animated variant")
     }
 
     // MARK: - T7: Invalid variant falls back to default
