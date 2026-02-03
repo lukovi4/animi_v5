@@ -5,6 +5,7 @@ import XCTest
 /// Verifies multi-level precomp transform multiplication, st mapping, visibility, masks, and cycle detection
 final class NestedPrecompPropagationTests: XCTestCase {
     var compiler: AnimIRCompiler!
+    private var _testRegistry = PathRegistry()
 
     override func setUp() {
         super.setUp()
@@ -33,8 +34,7 @@ final class NestedPrecompPropagationTests: XCTestCase {
 
         let assetIndex = AssetIndex(byId: ["image_0": "images/img_nested.png"])
 
-        // Use new compile API with scene-level path registry
-        // Paths are registered during compilation, no registerPaths() call needed
+        // Compile with scene-level path registry
         var registry = PathRegistry()
         let ir = try compiler.compile(
             lottie: lottie,
@@ -233,7 +233,7 @@ final class NestedPrecompPropagationTests: XCTestCase {
 
         for (index, command) in commands.enumerated() {
             switch command {
-            case .beginMask, .beginMaskAdd:
+            case .beginMask:
                 if beginMaskIndex == nil { beginMaskIndex = index }
             case .drawImage:
                 if drawImageIndex == nil { drawImageIndex = index }
@@ -363,7 +363,8 @@ final class NestedPrecompPropagationTests: XCTestCase {
             lottie: lottie2,
             animRef: "test-missing-precomp",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         _ = ir.renderCommands(frameIndex: 0)

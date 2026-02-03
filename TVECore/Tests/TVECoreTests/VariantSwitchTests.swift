@@ -307,7 +307,45 @@ final class VariantSwitchTests: XCTestCase {
             "Merged index should contain block_02 asset")
     }
 
-    // MARK: - T13: No operation before compile
+    // MARK: - T13: InputClip override from editVariant (PR-26)
+
+    /// Preview with anim variant (no mediaInput) must produce inputClip
+    /// using geometry from the editVariant (no-anim).
+    func testPreviewAnimVariant_hasInputClipFromEditVariant() throws {
+        let player = try makePlayer()
+
+        // v1 is an anim variant WITHOUT mediaInput
+        player.setSelectedVariant(blockId: "block_01", variantId: "v1")
+
+        let commands = player.renderCommands(mode: .preview, sceneFrameIndex: 0)
+        XCTAssertFalse(commands.isEmpty)
+        XCTAssertTrue(commands.isBalanced())
+
+        // Must have beginMask(.intersect) — inputClip from editVariant
+        let hasIntersectMask = commands.contains { cmd in
+            if case .beginMask(mode: .intersect, _, _, _, _) = cmd { return true }
+            return false
+        }
+        XCTAssertTrue(hasIntersectMask,
+            "Preview with anim variant must have inputClip from editVariant (no-anim)")
+    }
+
+    /// Edit mode uses no-anim directly — inputClip comes from its own inputGeometry.
+    func testEditMode_hasInputClip() throws {
+        let player = try makePlayer()
+
+        let commands = player.renderCommands(mode: .edit)
+        XCTAssertTrue(commands.isBalanced())
+
+        let hasIntersectMask = commands.contains { cmd in
+            if case .beginMask(mode: .intersect, _, _, _, _) = cmd { return true }
+            return false
+        }
+        XCTAssertTrue(hasIntersectMask,
+            "Edit mode (no-anim) must have inputClip from own inputGeometry")
+    }
+
+    // MARK: - T14: No operation before compile
 
     func testBeforeCompile_apiReturnsDefaults() {
         let player = ScenePlayer()

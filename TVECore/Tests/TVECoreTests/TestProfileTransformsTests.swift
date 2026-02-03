@@ -40,8 +40,7 @@ final class TestProfileTransformsTests: XCTestCase {
 
         let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
 
-        // Use new compile API with scene-level registry
-        // Paths are registered during compilation, no registerPaths() call needed
+        // Compile with scene-level path registry
         var registry = PathRegistry()
         let ir = try compiler.compile(
             lottie: lottie,
@@ -319,13 +318,21 @@ final class TestProfileTransformsTests: XCTestCase {
         let animRefs = ["anim-1.json", "anim-2.json", "anim-3.json", "anim-4.json"]
         let frames = [0, 15, 30, 45, 60, 75, 90, 105, 120]
 
+        // BINDING_LAYER_MASKS_IGNORED is an expected hardening warning (not a bug).
+        // anim-1.json has masksProperties on the binding layer — the engine correctly
+        // ignores them and emits this advisory warning.
+        let expectedHardeningCodes: Set<String> = [RenderIssue.codeBindingLayerMasksIgnored]
+
         for animRef in animRefs {
             var ir = try loadAnimIR(animRef)
             for frame in frames {
                 _ = ir.renderCommands(frameIndex: frame)
+                let unexpectedIssues = ir.lastRenderIssues.filter {
+                    !expectedHardeningCodes.contains($0.code)
+                }
                 XCTAssertTrue(
-                    ir.lastRenderIssues.isEmpty,
-                    "\(animRef) at frame \(frame) should have no render issues, got: \(ir.lastRenderIssues)"
+                    unexpectedIssues.isEmpty,
+                    "\(animRef) at frame \(frame) should have no unexpected render issues, got: \(unexpectedIssues)"
                 )
             }
         }

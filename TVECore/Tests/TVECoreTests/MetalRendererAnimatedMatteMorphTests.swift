@@ -57,7 +57,6 @@ final class MetalRendererAnimatedMatteMorphTests: XCTestCase {
         let assetIndex = AssetIndex(byId: ["image_0": "images/img_3.png"])
 
         // Compile to AnimIR with scene-level path registry
-        // Paths are registered during compilation, no registerPaths() call needed
         var pathRegistry = PathRegistry()
         var animIR = try compiler.compile(
             lottie: lottie,

@@ -40,8 +40,6 @@ public enum AnimValidationCode {
     /// Mask mode not supported (only a/s/i allowed)
     public static let unsupportedMaskMode = "UNSUPPORTED_MASK_MODE"
 
-    /// Inverted mask not supported (legacy code, inv is now allowed)
-    public static let unsupportedMaskInvert = "UNSUPPORTED_MASK_INVERT"
 
     /// Animated mask path not supported (pt.a == 1)
     public static let unsupportedMaskPathAnimated = "UNSUPPORTED_MASK_PATH_ANIMATED"

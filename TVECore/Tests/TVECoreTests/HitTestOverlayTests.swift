@@ -684,19 +684,6 @@ final class HitTestOverlayTests: XCTestCase {
         XCTAssertTrue(overlays.isEmpty)
     }
 
-    /// Default OverlayState is .inactive
-    func testT5_overlays_defaultState() throws {
-        let json = lottieJSON()
-        let (package, animations) = try makeScenePackage(lottieJSON: json)
-
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
-
-        let overlays = player.overlays(frame: 0)
-        XCTAssertEqual(overlays[0].state, .inactive,
-            "Default overlay state must be .inactive")
-    }
-
     // MARK: - hitTestMode Propagation
 
     /// hitTestMode from MediaInput is correctly propagated to BlockRuntime
@@ -766,12 +753,4 @@ final class HitTestOverlayTests: XCTestCase {
         XCTAssertTrue(commands.isBalanced())
     }
 
-    // MARK: - OverlayState Enum
-
-    /// OverlayState raw values are stable
-    func testOverlayState_rawValues() {
-        XCTAssertEqual(OverlayState.inactive.rawValue, "inactive")
-        XCTAssertEqual(OverlayState.hover.rawValue, "hover")
-        XCTAssertEqual(OverlayState.selected.rawValue, "selected")
-    }
 }

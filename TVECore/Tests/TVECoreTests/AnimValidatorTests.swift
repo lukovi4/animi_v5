@@ -473,10 +473,7 @@ final class AnimValidatorTests: XCTestCase {
         let anim = animJSON(masksJSON: maskJSON)
         let report = try validatePackage(sceneJSON: scene, animJSON: anim)
 
-        let error = report.errors.first {
-            $0.code == AnimValidationCode.unsupportedMaskInvert
-        }
-        XCTAssertNil(error, "Inverted masks should be supported")
+        XCTAssertTrue(report.errors.isEmpty, "Inverted masks should be supported")
     }
 
     func testValidate_maskPathAnimated_returnsError_whenDisabled() throws {

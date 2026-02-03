@@ -77,9 +77,9 @@ final class MaskExtractionTests: XCTestCase {
         XCTAssertEqual(scope.endIndex, 7)
     }
 
-    func testExtract_legacyBeginMaskAdd_convertsToAdd() throws {
+    func testExtract_additiveMask_convertsToAdd() throws {
         let commands: [RenderCommand] = [
-            .beginMaskAdd(pathId: PathID(5), opacity: 0.75, frame: 10),
+            .beginMask(mode: .add, inverted: false, pathId: PathID(5), opacity: 0.75, frame: 10),
             .pushTransform(.identity),
             .endMask
         ]
@@ -98,10 +98,10 @@ final class MaskExtractionTests: XCTestCase {
         XCTAssertEqual(scope.opsInAeOrder[0].frame, 10)
     }
 
-    func testExtract_mixedNewAndLegacyMasks_handledCorrectly() throws {
+    func testExtract_mixedMaskModes_handledCorrectly() throws {
         let commands: [RenderCommand] = [
             .beginMask(mode: .subtract, inverted: true, pathId: PathID(2), opacity: 0.9, frame: 0),
-            .beginMaskAdd(pathId: PathID(1), opacity: 0.5, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: PathID(1), opacity: 0.5, frame: 0),
             .drawImage(assetId: "inner", opacity: 1.0),
             .endMask,
             .endMask
@@ -198,7 +198,7 @@ final class MaskExtractionTests: XCTestCase {
         // Verify none of the inner commands are mask commands
         for cmd in scope.innerCommands {
             switch cmd {
-            case .beginMask, .beginMaskAdd, .endMask:
+            case .beginMask, .endMask:
                 XCTFail("Inner commands should not contain mask commands")
             default:
                 break

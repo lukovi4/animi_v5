@@ -77,7 +77,7 @@ final class MetalRendererMaskTests: XCTestCase {
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -114,7 +114,7 @@ final class MetalRendererMaskTests: XCTestCase {
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(pathId: pathId, opacity: 0.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 0.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -152,7 +152,7 @@ final class MetalRendererMaskTests: XCTestCase {
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -179,7 +179,7 @@ final class MetalRendererMaskTests: XCTestCase {
 
         let commands: [RenderCommand] = [
             .beginGroup(name: "root"),
-            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 1.0, frame: 0),
             .pushTransform(.identity),
             .drawImage(assetId: "test", opacity: 1.0),
             .popTransform,
@@ -204,9 +204,9 @@ final class MetalRendererMaskTests: XCTestCase {
         let innerPathId = registerPath(innerPath, in: &registry)
 
         let commands: [RenderCommand] = [
-            .beginMaskAdd(pathId: outerPathId, opacity: 1.0, frame: 0),  // 0
+            .beginMask(mode: .add, inverted: false, pathId: outerPathId, opacity: 1.0, frame: 0),  // 0
             .pushTransform(.identity),                                    // 1
-            .beginMaskAdd(pathId: innerPathId, opacity: 1.0, frame: 0),   // 2
+            .beginMask(mode: .add, inverted: false, pathId: innerPathId, opacity: 1.0, frame: 0),   // 2
             .drawImage(assetId: "test", opacity: 1.0),                    // 3
             .endMask,                                                     // 4 (matches inner)
             .popTransform,                                                // 5
@@ -241,7 +241,7 @@ final class MetalRendererMaskTests: XCTestCase {
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(pathId: pathId, opacity: 0.8, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 0.8, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -280,7 +280,7 @@ final class MetalRendererMaskTests: XCTestCase {
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.identity),
-            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -316,7 +316,7 @@ final class MetalRendererMaskTests: XCTestCase {
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
             .pushTransform(.translation(x: 16, y: 0)),
-            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -356,7 +356,7 @@ final class MetalRendererMaskTests: XCTestCase {
             .beginGroup(name: "test"),
             .pushClipRect(RectD(x: 0, y: 0, width: 8, height: 8)),
             .pushTransform(.identity),
-            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             .endMask,
             .popTransform,
@@ -402,7 +402,7 @@ final class MetalRendererMaskTests: XCTestCase {
         // BeginMaskAdd without EndMask
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"),
-            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0),
             // Missing .endMask - malformed scope
             .endGroup

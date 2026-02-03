@@ -194,7 +194,7 @@ extension MetalRenderer {
 
             for idx in segmentStart..<commands.count {
                 switch commands[idx] {
-                case .beginMask, .beginMaskAdd:
+                case .beginMask:
                     segmentEnd = idx
                     foundScopeType = .mask
                 case .beginMatte:
@@ -1039,19 +1039,15 @@ struct MatteScope {
 extension MetalRenderer {
     /// Extracts a mask scope starting at the given index.
     /// Handles nested masks by counting begin/end pairs.
-    /// Supports both new beginMask and legacy beginMaskAdd commands.
     func extractMaskScope(from commands: [RenderCommand], startIndex: Int) -> MaskScope? {
         guard startIndex < commands.count else { return nil }
 
-        // Extract pathId, opacity, frame from either beginMask or beginMaskAdd
         let pathId: PathID
         let opacity: Double
         let frame: Double
 
         switch commands[startIndex] {
         case .beginMask(_, _, let pid, let op, let fr):
-            pathId = pid; opacity = op; frame = fr
-        case .beginMaskAdd(let pid, let op, let fr):
             pathId = pid; opacity = op; frame = fr
         default:
             return nil
@@ -1062,7 +1058,7 @@ extension MetalRenderer {
 
         while index < commands.count && depth > 0 {
             switch commands[index] {
-            case .beginMask, .beginMaskAdd:
+            case .beginMask:
                 depth += 1
             case .endMask:
                 depth -= 1
@@ -1124,10 +1120,6 @@ extension MetalRenderer {
             case .beginMask(let mode, let inverted, let pathId, let opacity, let frame):
                 ops.append(MaskOp(mode: mode, inverted: inverted, pathId: pathId, opacity: opacity, frame: frame))
                 index += 1
-            case .beginMaskAdd(let pathId, let opacity, let frame):
-                // Legacy command: treat as add, non-inverted
-                ops.append(MaskOp(mode: .add, inverted: false, pathId: pathId, opacity: opacity, frame: frame))
-                index += 1
             default:
                 break
             }
@@ -1135,7 +1127,7 @@ extension MetalRenderer {
             // Check if next command is also a beginMask
             if index < commands.count {
                 switch commands[index] {
-                case .beginMask, .beginMaskAdd:
+                case .beginMask:
                     continue
                 default:
                     break
@@ -1156,7 +1148,7 @@ extension MetalRenderer {
         // and included in innerCommands — they will be handled recursively by drawInternal.
         while index < commands.count && depth > 0 {
             switch commands[index] {
-            case .beginMask, .beginMaskAdd:
+            case .beginMask:
                 depth += 1
 
             case .endMask:
@@ -1222,7 +1214,7 @@ extension MetalRenderer {
         // Count initial beginMask commands
         while index < commands.count {
             switch commands[index] {
-            case .beginMask, .beginMaskAdd:
+            case .beginMask:
                 depth += 1
                 index += 1
             default:
@@ -1230,7 +1222,7 @@ extension MetalRenderer {
             }
             if index < commands.count {
                 switch commands[index] {
-                case .beginMask, .beginMaskAdd:
+                case .beginMask:
                     continue
                 default:
                     break
@@ -1249,7 +1241,7 @@ extension MetalRenderer {
         var firstEndMaskIndex: Int?
         while index < commands.count && depth > 0 {
             switch commands[index] {
-            case .beginMask, .beginMaskAdd:
+            case .beginMask:
                 // Nested mask - just count it
                 depth += 1
             case .endMask:
@@ -1465,8 +1457,8 @@ extension MetalRenderer {
             #if DEBUG
             perf?.endPhase(.executeStrokeTotal)
             #endif
-        case .beginMask, .beginMaskAdd:
-            // Both new and deprecated mask commands increment depth.
+        case .beginMask:
+            // Mask commands increment depth.
             // Actual GPU mask rendering will be implemented in PR-C via extraction.
             state.maskDepth += 1
         case .endMask:

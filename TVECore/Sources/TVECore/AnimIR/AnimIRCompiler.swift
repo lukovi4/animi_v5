@@ -183,38 +183,6 @@ public final class AnimIRCompiler {
         )
     }
 
-    /// Compiles a Lottie animation into AnimIR (legacy/standalone mode).
-    ///
-    /// This method creates a local PathRegistry and registers paths into it.
-    /// Use `compile(..., pathRegistry:)` for scene compilation with shared registry.
-    ///
-    /// - Parameters:
-    ///   - lottie: Parsed Lottie JSON
-    ///   - animRef: Animation reference identifier
-    ///   - bindingKey: Layer name to bind for content replacement
-    ///   - assetIndex: Asset index from AnimLoader
-    /// - Returns: Compiled AnimIR with paths registered in local pathRegistry
-    /// - Throws: AnimIRCompilerError or UnsupportedFeature if compilation fails
-    @available(*, deprecated, message: "Use compile(..., pathRegistry:) for scene-level path registration")
-    public func compile(
-        lottie: LottieJSON,
-        animRef: String,
-        bindingKey: String,
-        assetIndex: AssetIndex
-    ) throws -> AnimIR {
-        var localRegistry = PathRegistry()
-        var animIR = try compile(
-            lottie: lottie,
-            animRef: animRef,
-            bindingKey: bindingKey,
-            assetIndex: assetIndex,
-            pathRegistry: &localRegistry
-        )
-        // For standalone usage, store local registry in AnimIR
-        animIR.pathRegistry = localRegistry
-        return animIR
-    }
-
     // MARK: - Layer Compilation
 
     /// Compiles an array of Lottie layers into IR layers with matte relationships

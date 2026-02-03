@@ -660,8 +660,3 @@ public struct LottieShapeStrokeDash: Decodable, Equatable, Sendable {
     }
 }
 
-// MARK: - Legacy LottieShape (deprecated, kept for compatibility)
-
-/// Legacy shape item structure - use ShapeItem enum instead
-@available(*, deprecated, message: "Use ShapeItem enum instead")
-public typealias LottieShape = ShapeItem

@@ -110,7 +110,7 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
             print("  commands.count: \(commands.count)")
             print("  drawImage: \(counts["drawImage"] ?? 0)")
             print("  drawShape: \(counts["drawShape"] ?? 0)")
-            print("  beginMaskAdd/endMask: \(counts["beginMaskAdd"] ?? 0)/\(counts["endMask"] ?? 0)")
+            print("  beginMask/endMask: \(counts["beginMask"] ?? 0)/\(counts["endMask"] ?? 0)")
             print("  beginMatte/endMatte: \(counts["beginMatte"] ?? 0)/\(counts["endMatte"] ?? 0)")
             print("  pushTransform/popTransform: \(counts["pushTransform"] ?? 0)/\(counts["popTransform"] ?? 0)")
             print("  pushClipRect/popClipRect: \(counts["pushClipRect"] ?? 0)/\(counts["popClipRect"] ?? 0)")
@@ -195,7 +195,7 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
             print("  drawImage count: \(drawImageCount)")
 
             // Check beginMask/beginMatte
-            let hasMask = cmds.contains { if case .beginMaskAdd = $0 { return true }; return false }
+            let hasMask = cmds.contains { if case .beginMask = $0 { return true }; return false }
             let hasMatte = cmds.contains { if case .beginMatte = $0 { return true }; return false }
             print("  hasMask: \(hasMask), hasMatte: \(hasMatte)")
 

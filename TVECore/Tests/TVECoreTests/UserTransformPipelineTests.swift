@@ -651,6 +651,213 @@ final class UserTransformPipelineTests: XCTestCase {
         }
     }
 
+    // MARK: - userTransform Without mediaInput (PR-25)
+
+    /// Binding layer in a variant WITHOUT mediaInput (inputGeometry == nil)
+    /// must still apply userTransform. This is the standard path (no inputClip).
+    func testUserTransform_appliedWithoutMediaInput() throws {
+        // Lottie with binding layer but NO mediaInput shape layer
+        let json = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }
+          ],
+          "layers": [
+            {
+              "ty": 2, "ind": 1, "nm": "media", "refId": "image_0",
+              "ks": {
+                "o": { "a": 0, "k": 100 },
+                "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [270, 480, 0] },
+                "a": { "a": 0, "k": [270, 480, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
+              "ip": 0, "op": 300, "st": 0
+            }
+          ]
+        }
+        """
+        let lottie = try decodeLottie(json)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+        var registry = PathRegistry()
+        var ir = try compiler.compile(
+            lottie: lottie, animRef: "test", bindingKey: "media",
+            assetIndex: assetIndex, pathRegistry: &registry
+        )
+
+        // Verify: no mediaInput present
+        XCTAssertNil(ir.inputGeometry, "This variant has no mediaInput layer")
+
+        let userShift = Matrix2D.translation(x: 50, y: 100)
+
+        let cmdsIdentity = ir.renderCommands(frameIndex: 0, userTransform: .identity)
+        let cmdsWithUser = ir.renderCommands(frameIndex: 0, userTransform: userShift)
+
+        // Both must be balanced
+        XCTAssertTrue(cmdsIdentity.isBalanced())
+        XCTAssertTrue(cmdsWithUser.isBalanced())
+
+        // Transforms must differ — userTransform must be applied
+        let identityTransforms = pushTransforms(from: cmdsIdentity)
+        let withUserTransforms = pushTransforms(from: cmdsWithUser)
+
+        XCTAssertNotEqual(identityTransforms, withUserTransforms,
+            "userTransform must affect binding layer even without mediaInput/inputClip")
+
+        // There should be no intersect mask (no inputClip)
+        let hasMask = cmdsWithUser.contains { cmd in
+            if case .beginMask(mode: .intersect, _, _, _, _) = cmd { return true }
+            return false
+        }
+        XCTAssertFalse(hasMask, "No inputClip mask expected without mediaInput")
+    }
+
+    // MARK: - InputClip Override (PR-26)
+
+    /// Anim variant (no mediaInput) rendered with InputClipOverride from no-anim
+    /// must produce inputClip (beginMask.intersect). Without override — no clip.
+    func testInputClipOverride_producesIntersectMask() throws {
+        // 1. Compile no-anim Lottie (with mediaInput) — the clip source
+        let noAnimJson = lottieJSON()
+        let noAnimLottie = try decodeLottie(noAnimJson)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+        var registry = PathRegistry()
+        var noAnimIR = try compiler.compile(
+            lottie: noAnimLottie, animRef: "no-anim", bindingKey: "media",
+            assetIndex: assetIndex, pathRegistry: &registry
+        )
+        XCTAssertNotNil(noAnimIR.inputGeometry, "no-anim must have mediaInput")
+
+        // 2. Compile anim Lottie (without mediaInput) — the active variant
+        let animJson = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }
+          ],
+          "layers": [
+            {
+              "ty": 2, "ind": 1, "nm": "media", "refId": "image_0",
+              "ks": {
+                "o": { "a": 0, "k": 100 },
+                "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [270, 480, 0] },
+                "a": { "a": 0, "k": [270, 480, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
+              "ip": 0, "op": 300, "st": 0
+            }
+          ]
+        }
+        """
+        let animLottie = try decodeLottie(animJson)
+        var animIR = try compiler.compile(
+            lottie: animLottie, animRef: "anim-x", bindingKey: "media",
+            assetIndex: assetIndex, pathRegistry: &registry
+        )
+        XCTAssertNil(animIR.inputGeometry, "anim variant must NOT have mediaInput")
+
+        // 3. Build InputClipOverride from no-anim
+        let editGeo = noAnimIR.inputGeometry!
+        let clipWorld = noAnimIR.mediaInputInCompWorldMatrix(frame: 0)!
+        let override = InputClipOverride(
+            inputGeometry: editGeo,
+            clipWorldMatrix: clipWorld
+        )
+
+        // 4. Render WITH override
+        let userShift = Matrix2D.translation(x: 50, y: 100)
+        let cmds = animIR.renderCommands(
+            frameIndex: 0,
+            userTransform: userShift,
+            inputClipOverride: override
+        )
+
+        // 5. Must have beginMask(.intersect)
+        let hasIntersectMask = cmds.contains { cmd in
+            if case .beginMask(mode: .intersect, _, _, _, _) = cmd { return true }
+            return false
+        }
+        XCTAssertTrue(hasIntersectMask,
+            "inputClip mask must be present with override from editVariant")
+
+        // 6. Commands must be balanced
+        XCTAssertTrue(cmds.isBalanced())
+
+        // 7. Without override — no intersect mask (PR-25 standard path)
+        let cmdsNoOverride = animIR.renderCommands(
+            frameIndex: 0, userTransform: userShift
+        )
+        let noOverrideMask = cmdsNoOverride.contains { cmd in
+            if case .beginMask(mode: .intersect, _, _, _, _) = cmd { return true }
+            return false
+        }
+        XCTAssertFalse(noOverrideMask,
+            "Without override, no inputClip mask expected")
+        XCTAssertTrue(cmdsNoOverride.isBalanced())
+    }
+
+    /// Override's clipWorldMatrix must position the mask correctly.
+    /// A non-identity clipWorld should appear in the pushTransform commands.
+    func testInputClipOverride_usesClipWorldMatrix() throws {
+        let noAnimJson = lottieJSON()
+        let noAnimLottie = try decodeLottie(noAnimJson)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+        var registry = PathRegistry()
+        var noAnimIR = try compiler.compile(
+            lottie: noAnimLottie, animRef: "no-anim", bindingKey: "media",
+            assetIndex: assetIndex, pathRegistry: &registry
+        )
+
+        let animJson = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [
+            { "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }
+          ],
+          "layers": [
+            {
+              "ty": 2, "ind": 1, "nm": "media", "refId": "image_0",
+              "ks": {
+                "o": { "a": 0, "k": 100 },
+                "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [270, 480, 0] },
+                "a": { "a": 0, "k": [270, 480, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
+              "ip": 0, "op": 300, "st": 0
+            }
+          ]
+        }
+        """
+        let animLottie = try decodeLottie(animJson)
+        var animIR = try compiler.compile(
+            lottie: animLottie, animRef: "anim-x", bindingKey: "media",
+            assetIndex: assetIndex, pathRegistry: &registry
+        )
+
+        // Use a distinctive clipWorld that we can detect in the commands
+        let clipWorld = Matrix2D.translation(x: 777, y: 888)
+        let override = InputClipOverride(
+            inputGeometry: noAnimIR.inputGeometry!,
+            clipWorldMatrix: clipWorld
+        )
+
+        let cmds = animIR.renderCommands(
+            frameIndex: 0,
+            userTransform: .identity,
+            inputClipOverride: override
+        )
+
+        // The clipWorld matrix (T(777,888)) must appear in pushTransform commands
+        let transforms = pushTransforms(from: cmds)
+        let hasClipWorld = transforms.contains { $0 == clipWorld }
+        XCTAssertTrue(hasClipWorld,
+            "Override clipWorldMatrix must be used as pushTransform for inputClip positioning")
+        XCTAssertTrue(cmds.isBalanced())
+    }
+
     // MARK: - Backwards Compatibility
 
     /// Existing ScenePlayer.renderCommands(sceneFrameIndex:) works without setUserTransform

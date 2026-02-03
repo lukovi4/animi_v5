@@ -253,7 +253,6 @@ public final class ScenePlayer {
         }
 
         // Compile AnimIR with scene-level path registry
-        // PathIDs are assigned during compilation, no post-pass registerPaths needed
         let animIR: AnimIR
         do {
             animIR = try compiler.compile(

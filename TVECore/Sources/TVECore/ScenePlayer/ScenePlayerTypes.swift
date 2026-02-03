@@ -192,27 +192,12 @@ public enum TemplateMode: String, Sendable, Equatable {
     case edit
 }
 
-// MARK: - Overlay State (PR-17)
-
-/// Visual state of a media-input overlay in the editor.
-/// The editor uses this to decide which UI decoration to draw.
-public enum OverlayState: String, Sendable, Equatable {
-    /// Block is visible but not selected or hovered — no outline
-    case inactive
-
-    /// Pointer is hovering over the block — light outline
-    case hover
-
-    /// Block is selected — full outline with handles
-    case selected
-}
-
 // MARK: - Media Input Overlay (PR-17)
 
 /// Describes one media-input overlay for the editor's overlay layer.
 ///
 /// Contains all geometry the editor needs to draw an interactive overlay:
-/// the canvas-space hit path, the block rect, and the current visual state.
+/// the canvas-space hit path and the block rect.
 public struct MediaInputOverlay: Sendable {
     /// Block identifier (matches `BlockRuntime.blockId`)
     public let blockId: String
@@ -225,14 +210,10 @@ public struct MediaInputOverlay: Sendable {
     /// Block rectangle in canvas coordinates (always available as a fallback)
     public let rectCanvas: RectD
 
-    /// Current visual state (set by the editor, default `.inactive`)
-    public let state: OverlayState
-
-    public init(blockId: String, hitPath: BezierPath, rectCanvas: RectD, state: OverlayState = .inactive) {
+    public init(blockId: String, hitPath: BezierPath, rectCanvas: RectD) {
         self.blockId = blockId
         self.hitPath = hitPath
         self.rectCanvas = rectCanvas
-        self.state = state
     }
 }
 

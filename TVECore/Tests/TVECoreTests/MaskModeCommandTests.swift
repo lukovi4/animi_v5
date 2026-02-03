@@ -97,10 +97,10 @@ final class MaskModeCommandTests: XCTestCase {
     }
 
     func testMixedMaskCommands_balanced() {
-        // Mix of new beginMask and deprecated beginMaskAdd
+        // Two beginMask commands (both add mode)
         let commands: [RenderCommand] = [
             .beginMask(mode: .add, inverted: false, pathId: PathID(1), opacity: 1.0, frame: 0),
-            .beginMaskAdd(pathId: PathID(2), opacity: 0.5, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: PathID(2), opacity: 0.5, frame: 0),
             .endMask,
             .endMask
         ]
@@ -144,60 +144,81 @@ final class MaskModeCommandTests: XCTestCase {
 
     // MARK: - Lottie JSON Test Data
 
-    /// Lottie with single add mask
+    /// Lottie with single add mask (on non-binding layer; separate "media" layer is binding)
     private let lottieWithAddMaskJSON = """
     {
       "v": "5.12.1", "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920, "nm": "Test",
       "assets": [{ "id": "img", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }],
-      "layers": [{
-        "ind": 1, "ty": 2, "nm": "media", "refId": "img",
-        "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[270,480,0]}, "a": {"a":0,"k":[270,480,0]}, "s": {"a":0,"k":[100,100,100]} },
-        "hasMask": true,
-        "masksProperties": [{
-          "inv": false, "mode": "a",
-          "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[0,0],[540,0],[540,960],[0,960]], "c": true } },
-          "o": { "a": 0, "k": 80 }
-        }],
-        "ip": 0, "op": 300, "st": 0
-      }]
+      "layers": [
+        {
+          "ind": 1, "ty": 2, "nm": "masked_layer", "refId": "img",
+          "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[270,480,0]}, "a": {"a":0,"k":[270,480,0]}, "s": {"a":0,"k":[100,100,100]} },
+          "hasMask": true,
+          "masksProperties": [{
+            "inv": false, "mode": "a",
+            "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[0,0],[540,0],[540,960],[0,960]], "c": true } },
+            "o": { "a": 0, "k": 80 }
+          }],
+          "ip": 0, "op": 300, "st": 0
+        },
+        {
+          "ind": 99, "ty": 2, "nm": "media", "refId": "img",
+          "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[0,0,0]}, "a": {"a":0,"k":[0,0,0]}, "s": {"a":0,"k":[100,100,100]} },
+          "ip": 0, "op": 300, "st": 0
+        }
+      ]
     }
     """
 
-    /// Lottie with subtract mask (inverted)
+    /// Lottie with subtract mask (inverted, on non-binding layer)
     private let lottieWithSubtractMaskJSON = """
     {
       "v": "5.12.1", "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920, "nm": "Test",
       "assets": [{ "id": "img", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }],
-      "layers": [{
-        "ind": 1, "ty": 2, "nm": "media", "refId": "img",
-        "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[270,480,0]}, "a": {"a":0,"k":[270,480,0]}, "s": {"a":0,"k":[100,100,100]} },
-        "hasMask": true,
-        "masksProperties": [{
-          "inv": true, "mode": "s",
-          "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[100,100],[200,100],[200,200],[100,200]], "c": true } },
-          "o": { "a": 0, "k": 50 }
-        }],
-        "ip": 0, "op": 300, "st": 0
-      }]
+      "layers": [
+        {
+          "ind": 1, "ty": 2, "nm": "masked_layer", "refId": "img",
+          "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[270,480,0]}, "a": {"a":0,"k":[270,480,0]}, "s": {"a":0,"k":[100,100,100]} },
+          "hasMask": true,
+          "masksProperties": [{
+            "inv": true, "mode": "s",
+            "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[100,100],[200,100],[200,200],[100,200]], "c": true } },
+            "o": { "a": 0, "k": 50 }
+          }],
+          "ip": 0, "op": 300, "st": 0
+        },
+        {
+          "ind": 99, "ty": 2, "nm": "media", "refId": "img",
+          "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[0,0,0]}, "a": {"a":0,"k":[0,0,0]}, "s": {"a":0,"k":[100,100,100]} },
+          "ip": 0, "op": 300, "st": 0
+        }
+      ]
     }
     """
 
-    /// Lottie with multiple masks (add, subtract, intersect) for reverse order test
+    /// Lottie with multiple masks (add, subtract, intersect) on non-binding layer
     private let lottieWithMultipleMasksJSON = """
     {
       "v": "5.12.1", "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920, "nm": "Test",
       "assets": [{ "id": "img", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }],
-      "layers": [{
-        "ind": 1, "ty": 2, "nm": "media", "refId": "img",
-        "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[270,480,0]}, "a": {"a":0,"k":[270,480,0]}, "s": {"a":0,"k":[100,100,100]} },
-        "hasMask": true,
-        "masksProperties": [
-          { "inv": false, "mode": "a", "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[0,0],[100,0],[100,100],[0,100]], "c": true } }, "o": { "a": 0, "k": 100 } },
-          { "inv": true, "mode": "s", "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[50,50],[150,50],[150,150],[50,150]], "c": true } }, "o": { "a": 0, "k": 75 } },
-          { "inv": false, "mode": "i", "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[25,25],[125,25],[125,125],[25,125]], "c": true } }, "o": { "a": 0, "k": 60 } }
-        ],
-        "ip": 0, "op": 300, "st": 0
-      }]
+      "layers": [
+        {
+          "ind": 1, "ty": 2, "nm": "masked_layer", "refId": "img",
+          "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[270,480,0]}, "a": {"a":0,"k":[270,480,0]}, "s": {"a":0,"k":[100,100,100]} },
+          "hasMask": true,
+          "masksProperties": [
+            { "inv": false, "mode": "a", "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[0,0],[100,0],[100,100],[0,100]], "c": true } }, "o": { "a": 0, "k": 100 } },
+            { "inv": true, "mode": "s", "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[50,50],[150,50],[150,150],[50,150]], "c": true } }, "o": { "a": 0, "k": 75 } },
+            { "inv": false, "mode": "i", "pt": { "a": 0, "k": { "i": [[0,0],[0,0],[0,0],[0,0]], "o": [[0,0],[0,0],[0,0],[0,0]], "v": [[25,25],[125,25],[125,125],[25,125]], "c": true } }, "o": { "a": 0, "k": 60 } }
+          ],
+          "ip": 0, "op": 300, "st": 0
+        },
+        {
+          "ind": 99, "ty": 2, "nm": "media", "refId": "img",
+          "ks": { "o": {"a":0,"k":100}, "r": {"a":0,"k":0}, "p": {"a":0,"k":[0,0,0]}, "a": {"a":0,"k":[0,0,0]}, "s": {"a":0,"k":[100,100,100]} },
+          "ip": 0, "op": 300, "st": 0
+        }
+      ]
     }
     """
 

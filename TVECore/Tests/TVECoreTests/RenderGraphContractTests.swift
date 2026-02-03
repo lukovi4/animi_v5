@@ -44,7 +44,7 @@ final class RenderGraphContractTests: XCTestCase {
     }
     """
 
-    /// Lottie with precomp and mask (like anim-1)
+    /// Lottie with precomp and mask (on non-binding layer; "media" binding layer has no masks)
     private let lottieWithMaskJSON = """
     {
       "v": "5.12.1",
@@ -63,7 +63,7 @@ final class RenderGraphContractTests: XCTestCase {
           "fr": 30,
           "layers": [
             {
-              "ind": 1, "ty": 2, "nm": "media", "refId": "image_0",
+              "ind": 1, "ty": 2, "nm": "masked_layer", "refId": "image_0",
               "ks": {
                 "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
                 "p": { "a": 0, "k": [270, 480, 0] }, "a": { "a": 0, "k": [270, 480, 0] },
@@ -77,6 +77,15 @@ final class RenderGraphContractTests: XCTestCase {
                   "o": { "a": 0, "k": 100 }
                 }
               ],
+              "ip": 0, "op": 300, "st": 0
+            },
+            {
+              "ind": 99, "ty": 2, "nm": "media", "refId": "image_0",
+              "ks": {
+                "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                "p": { "a": 0, "k": [0, 0, 0] }, "a": { "a": 0, "k": [0, 0, 0] },
+                "s": { "a": 0, "k": [100, 100, 100] }
+              },
               "ip": 0, "op": 300, "st": 0
             }
           ]
@@ -173,8 +182,7 @@ final class RenderGraphContractTests: XCTestCase {
         let lottie = try JSONDecoder().decode(LottieJSON.self, from: data)
         let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
 
-        // Use new compile API with scene-level path registry
-        // Paths are registered during compilation, no registerPaths() call needed
+        // Compile with scene-level path registry
         var registry = PathRegistry()
         let ir = try compiler.compile(
             lottie: lottie,
@@ -233,8 +241,7 @@ final class RenderGraphContractTests: XCTestCase {
         XCTAssertTrue(commands.hasMaskCommands, "Should have mask commands")
 
         let counts = commands.commandCounts()
-        // PR-B: uses beginMask instead of beginMaskAdd
-        let maskBegins = (counts["beginMask"] ?? 0) + (counts["beginMaskAdd"] ?? 0)
+        let maskBegins = counts["beginMask"] ?? 0
         let maskEnds = counts["endMask"] ?? 0
         XCTAssertEqual(maskBegins, maskEnds, "Mask begin/end should be balanced")
     }
@@ -248,7 +255,7 @@ final class RenderGraphContractTests: XCTestCase {
 
         for command in commands {
             switch command {
-            case .beginMask, .beginMaskAdd:
+            case .beginMask:
                 inMask = true
             case .drawImage where inMask:
                 foundMaskBeforeImage = true

@@ -334,7 +334,7 @@ final class PerfMetrics {
         case .endGroup: counters.commandsEndGroup += 1
         case .pushClipRect: counters.commandsPushClipRect += 1
         case .popClipRect: counters.commandsPopClipRect += 1
-        case .beginMask, .beginMaskAdd: break // counted separately
+        case .beginMask: break // counted separately
         case .endMask: break
         case .beginMatte: break // counted separately
         case .endMatte: break

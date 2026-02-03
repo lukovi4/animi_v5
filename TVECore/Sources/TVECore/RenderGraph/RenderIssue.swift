@@ -58,6 +58,9 @@ extension RenderIssue {
 
     /// InputClip transform is not invertible (degenerate, e.g. scale=0)
     public static let codeInputClipNonInvertible = "INPUT_CLIP_NON_INVERTIBLE"
+
+    /// Binding layer has masksProperties that were ignored (hardening)
+    public static let codeBindingLayerMasksIgnored = "BINDING_LAYER_MASKS_IGNORED"
 }
 
 // MARK: - Debug Description

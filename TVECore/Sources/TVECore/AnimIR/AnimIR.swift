@@ -75,99 +75,6 @@ extension AnimIR {
     }
 }
 
-// MARK: - Path Registration (Legacy)
-
-extension AnimIR {
-    /// Registers all paths (masks and shapes) in the PathRegistry.
-    /// - Note: Deprecated no-op. Paths are now registered during compilation.
-    ///   Use `AnimIRCompiler.compile(..., pathRegistry:)` for scene-level path registration.
-    @available(*, deprecated, message: "Paths are now registered during compilation. Use AnimIRCompiler.compile(..., pathRegistry:)")
-    public mutating func registerPaths() {
-        // NO-OP: Paths are registered during compilation.
-        // This method is kept only for API compatibility.
-        // Do not call - use compile(..., pathRegistry:) instead.
-    }
-
-    /// Registers all paths into an external PathRegistry.
-    ///
-    /// - Note: This is **legacy/debug** behavior. Paths are now registered during compilation.
-    ///   Use `AnimIRCompiler.compile(..., pathRegistry:)` for scene-level path registration.
-    ///
-    /// - Important: Best-effort legacy path registration. May silently skip untriangulatable
-    ///   paths (when `PathResourceBuilder.build` returns nil). For guaranteed registration
-    ///   with proper error handling, use `AnimIRCompiler.compile(..., pathRegistry:)`.
-    ///
-    /// - Parameter registry: External registry to register paths into
-    @available(*, deprecated, message: "Paths are now registered during compilation. Use AnimIRCompiler.compile(..., pathRegistry:)")
-    public mutating func registerPaths(into registry: inout PathRegistry) {
-        // Collect keys in deterministic order to ensure consistent PathID assignment
-        // Root composition first, then precomps sorted alphabetically
-        let compIds = comps.keys.sorted { lhs, rhs in
-            if lhs == AnimIR.rootCompId { return true }
-            if rhs == AnimIR.rootCompId { return false }
-            return lhs < rhs
-        }
-
-        for compId in compIds {
-            guard let comp = comps[compId] else { continue }
-            var updatedLayers: [Layer] = []
-
-            for var layer in comp.layers {
-                // Register mask paths
-                var updatedMasks: [Mask] = []
-                for var mask in layer.masks {
-                    if mask.pathId == nil {
-                        // Use dummy PathID for build, rely only on assignedId from register()
-                        if let resource = PathResourceBuilder.build(from: mask.path, pathId: PathID(0)) {
-                            let assignedId = registry.register(resource)
-                            mask.pathId = assignedId
-                        }
-                    }
-                    updatedMasks.append(mask)
-                }
-
-                // Register shape paths (for matte sources)
-                var updatedContent = layer.content
-                if case .shapes(var shapeGroup) = layer.content {
-                    if shapeGroup.pathId == nil, let animPath = shapeGroup.animPath {
-                        // Use dummy PathID for build, rely only on assignedId from register()
-                        if let resource = PathResourceBuilder.build(from: animPath, pathId: PathID(0)) {
-                            let assignedId = registry.register(resource)
-                            shapeGroup.pathId = assignedId
-                            updatedContent = .shapes(shapeGroup)
-                        }
-                    }
-                }
-
-                // Create updated layer with new masks and content
-                layer = Layer(
-                    id: layer.id,
-                    name: layer.name,
-                    type: layer.type,
-                    timing: layer.timing,
-                    parent: layer.parent,
-                    transform: layer.transform,
-                    masks: updatedMasks,
-                    matte: layer.matte,
-                    content: updatedContent,
-                    isMatteSource: layer.isMatteSource,
-                    isHidden: layer.isHidden
-                )
-                updatedLayers.append(layer)
-            }
-
-            // Update composition with updated layers
-            let updatedComp = Composition(id: compId, size: comp.size, layers: updatedLayers)
-            comps[compId] = updatedComp
-        }
-
-        // IMPORTANT: Do NOT copy registry to pathRegistry here.
-        // This was the source of the duplication bug where each AnimIR
-        // stored the entire merged registry.
-        // Scene pipeline should use scene-level registry, not AnimIR.pathRegistry.
-    }
-}
-
 // MARK: - Visibility
 
 extension AnimIR {
@@ -228,6 +135,8 @@ extension AnimIR {
         let userTransform: Matrix2D
         /// Input geometry for mediaInput (nil if not present)
         let inputGeometry: InputGeometryInfo?
+        /// PR-26: Override clip from editVariant when active variant lacks mediaInput.
+        let inputClipOverride: InputClipOverride?
         /// Current composition ID (for same-comp check)
         let currentCompId: CompID
     }
@@ -250,11 +159,15 @@ extension AnimIR {
     ///   - userTransform: User pan/zoom/rotate transform applied to binding layer (PR-15).
     ///     Default is `.identity` (no user transform). The binding layer's world matrix becomes
     ///     `lottieWorld * userTransform`, i.e. animation is applied *after* user edits.
+    ///   - inputClipOverride: PR-26: Clip geometry + world matrix from the editVariant.
+    ///     When the active variant lacks `inputGeometry` (anim-x without mediaInput),
+    ///     this override supplies the clip window from the no-anim variant.
     /// - Returns: Array of render commands in execution order
     /// - Note: Check `lastRenderIssues` after calling for any errors encountered
     public mutating func renderCommands(
         frameIndex: Int,
-        userTransform: Matrix2D = .identity
+        userTransform: Matrix2D = .identity,
+        inputClipOverride: InputClipOverride? = nil
     ) -> [RenderCommand] {
         // Reset issues from previous call
         lastRenderIssues.removeAll(keepingCapacity: true)
@@ -281,6 +194,7 @@ extension AnimIR {
                 bindingCompId: binding.boundCompId,
                 userTransform: userTransform,
                 inputGeometry: inputGeometry,
+                inputClipOverride: inputClipOverride,
                 currentCompId: rootComp
             )
             renderComposition(rootComposition, context: context, commands: &commands)
@@ -295,10 +209,15 @@ extension AnimIR {
     /// Convenience method that returns commands and issues without requiring var
     public func renderCommandsWithIssues(
         frameIndex: Int,
-        userTransform: Matrix2D = .identity
+        userTransform: Matrix2D = .identity,
+        inputClipOverride: InputClipOverride? = nil
     ) -> (commands: [RenderCommand], issues: [RenderIssue]) {
         var copy = self
-        let commands = copy.renderCommands(frameIndex: frameIndex, userTransform: userTransform)
+        let commands = copy.renderCommands(
+            frameIndex: frameIndex,
+            userTransform: userTransform,
+            inputClipOverride: inputClipOverride
+        )
         return (commands, copy.lastRenderIssues)
     }
 
@@ -454,16 +373,28 @@ extension AnimIR {
         context: RenderContext,
         commands: inout [RenderCommand]
     ) {
+        // PR-26: Effective input geometry — override from editVariant or own.
+        let effectiveInputGeometry = context.inputClipOverride?.inputGeometry ?? context.inputGeometry
+
         // PR-15: Check if this is the binding layer with inputClip
-        let needsInputClip = isBindingLayer(layer, context: context) && context.inputGeometry != nil
+        let needsInputClip = isBindingLayer(layer, context: context) && effectiveInputGeometry != nil
 
         // PR-22: Pre-compute inverse for scope-balanced inputClip emission.
         // The inverse compensates inputLayerWorld so content inside the mask scope
         // is not affected by the mask-positioning transform, while keeping all
         // push/pop transforms balanced within the mask scope boundary.
         let inputClipTransforms: (world: Matrix2D, inverse: Matrix2D)?
-        if needsInputClip, let inputGeo = context.inputGeometry {
-            let world = computeMediaInputWorld(inputGeo: inputGeo, context: context)
+        if needsInputClip, let inputGeo = effectiveInputGeometry {
+            // PR-26: Use pre-computed clipWorld from override when available.
+            // The override is needed because the mediaInput layer may not exist
+            // in the current AnimIR (anim-x variant), so computeMediaInputWorld
+            // would fail to find the layer and return .identity (wrong position).
+            let world: Matrix2D
+            if let override = context.inputClipOverride {
+                world = override.clipWorldMatrix
+            } else {
+                world = computeMediaInputWorld(inputGeo: inputGeo, context: context)
+            }
             if let inv = world.inverse {
                 inputClipTransforms = (world, inv)
             } else {
@@ -480,7 +411,7 @@ extension AnimIR {
             inputClipTransforms = nil
         }
 
-        if let inputGeo = context.inputGeometry, let clip = inputClipTransforms {
+        if let inputGeo = effectiveInputGeometry, let clip = inputClipTransforms {
             // === InputClip path for binding layer (scope-balanced, PR-22) ===
             //
             // Structure (fixes cross-boundary transforms from original emission):
@@ -489,7 +420,7 @@ extension AnimIR {
             //     beginMask(mode: .intersect, pathId: mediaInputPathId)
             //       pushTransform(inverse(inputLayerWorld))  ← compensation (balanced in scope)
             //       pushTransform(mediaWorld * userTransform)
-            //         [masks + content]
+            //         [content]                                 ← masks skipped (hardening)
             //       popTransform(mediaWorld)
             //       popTransform(inverse)                    ← balanced within scope
             //     endMask
@@ -521,27 +452,25 @@ extension AnimIR {
             let mediaWorldWithUser = resolved.worldMatrix.concatenating(context.userTransform)
             commands.append(.pushTransform(mediaWorldWithUser))
 
-            // 5) Layer masks (masksProperties) — applied inside inputClip scope
-            var emittedMaskCount = 0
-            for mask in layer.masks.reversed() {
-                if let pathId = mask.pathId {
-                    let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
-                    commands.append(.beginMask(
-                        mode: mask.mode,
-                        inverted: mask.inverted,
-                        pathId: pathId,
-                        opacity: normalizedOpacity,
-                        frame: context.frame
-                    ))
-                    emittedMaskCount += 1
-                }
+            // 5) Binding-layer masksProperties — SKIPPED (hardening).
+            //
+            // masksProperties sits inside pushTransform(mediaWorldWithUser), so the
+            // mask moves WITH the photo when userTransform changes — "crop" effect.
+            // The inputClip mask (step 2) is in comp-space and stays fixed — "clip".
+            // Emitting masksProperties here would cause crop-vs-clip mismatch; the
+            // inputClip is the authoritative viewport for the binding layer.
+            if !layer.masks.isEmpty {
+                lastRenderIssues.append(RenderIssue(
+                    severity: .warning,
+                    code: RenderIssue.codeBindingLayerMasksIgnored,
+                    path: "anim(\(meta.sourceAnimRef)).layers[id=\(layer.id)]",
+                    message: "Binding layer '\(layer.name)' has \(layer.masks.count) masksProperties — ignored; inputClip (mediaInput) is the authoritative clip",
+                    frameIndex: context.frameIndex
+                ))
             }
 
             // 6) Content (drawImage)
             renderLayerContent(layer, resolved: resolved, context: context, commands: &commands)
-
-            // 7) End layer masks (LIFO)
-            for _ in 0..<emittedMaskCount { commands.append(.endMask) }
 
             // 8) Pop media transform
             commands.append(.popTransform)
@@ -560,24 +489,45 @@ extension AnimIR {
         } else {
             // === Standard path (non-binding layer or no inputGeometry) ===
             commands.append(.beginGroup(name: "Layer:\(layer.name)(\(layer.id))"))
-            commands.append(.pushTransform(resolved.worldMatrix))
 
-            // Masks begin - emit in REVERSE order for correct AE application order.
-            // AE applies masks top-to-bottom (index 0 first). With LIFO-nested structure,
-            // reversed emission ensures masks are applied in AE order after unwrapping.
+            // PR-25: Binding layer must apply userTransform even without inputClip.
+            // Variants without mediaInput (inputGeometry == nil) still need user
+            // pan/zoom/rotate — otherwise the transform "resets" on variant switch.
+            let worldMatrix = isBindingLayer(layer, context: context)
+                ? resolved.worldMatrix.concatenating(context.userTransform)
+                : resolved.worldMatrix
+            commands.append(.pushTransform(worldMatrix))
+
+            // Masks — skip for binding layer (hardening, same rationale as inputClip path).
+            // masksProperties inside pushTransform(worldMatrix+userTransform) would move
+            // WITH the photo on user pan/zoom — "crop" effect instead of fixed "clip".
             var emittedMaskCount = 0
-            for mask in layer.masks.reversed() {
-                if let pathId = mask.pathId {
-                    // Normalize opacity from 0..100 to 0..1, clamped
-                    let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
-                    commands.append(.beginMask(
-                        mode: mask.mode,
-                        inverted: mask.inverted,
-                        pathId: pathId,
-                        opacity: normalizedOpacity,
-                        frame: context.frame
+            if isBindingLayer(layer, context: context) {
+                if !layer.masks.isEmpty {
+                    lastRenderIssues.append(RenderIssue(
+                        severity: .warning,
+                        code: RenderIssue.codeBindingLayerMasksIgnored,
+                        path: "anim(\(meta.sourceAnimRef)).layers[id=\(layer.id)]",
+                        message: "Binding layer '\(layer.name)' has \(layer.masks.count) masksProperties — ignored; use mediaInput for clipping",
+                        frameIndex: context.frameIndex
                     ))
-                    emittedMaskCount += 1
+                }
+            } else {
+                // Non-binding: emit in REVERSE order for correct AE application order.
+                // AE applies masks top-to-bottom (index 0 first). With LIFO-nested structure,
+                // reversed emission ensures masks are applied in AE order after unwrapping.
+                for mask in layer.masks.reversed() {
+                    if let pathId = mask.pathId {
+                        let normalizedOpacity = min(1.0, max(0.0, mask.opacity / 100.0))
+                        commands.append(.beginMask(
+                            mode: mask.mode,
+                            inverted: mask.inverted,
+                            pathId: pathId,
+                            opacity: normalizedOpacity,
+                            frame: context.frame
+                        ))
+                        emittedMaskCount += 1
+                    }
                 }
             }
 
@@ -885,6 +835,7 @@ extension AnimIR {
                 bindingCompId: context.bindingCompId,
                 userTransform: context.userTransform,
                 inputGeometry: context.inputGeometry,
+                inputClipOverride: context.inputClipOverride,
                 currentCompId: compId
             )
             renderComposition(precomp, context: childContext, commands: &commands)
@@ -990,33 +941,27 @@ extension AnimIR {
             sceneFrameIndex: frame
         )
     }
-}
 
-// MARK: - Lookup Helpers
+    /// Returns the **in-comp** world matrix of the mediaInput layer (PR-26).
+    ///
+    /// This is the mediaInput layer's world matrix **within its composition**,
+    /// without the precomp container chain.  Used by `SceneRenderPlan` to
+    /// pre-compute the clip world matrix for `InputClipOverride`.
+    ///
+    /// During render traversal the precomp container transform is already on the
+    /// command stack, so the in-comp matrix is exactly what `computeMediaInputWorld`
+    /// produces for the inputClip branch.
+    ///
+    /// - Parameter frame: Frame to compute transform at (default: 0)
+    /// - Returns: In-comp composed matrix, or nil if no mediaInput
+    mutating func mediaInputInCompWorldMatrix(frame: Int = 0) -> Matrix2D? {
+        guard let inputGeo = inputGeometry else { return nil }
 
-extension AnimIR {
-    /// Finds a layer by ID across all compositions
-    public func findLayer(byId layerId: LayerID) -> (layer: Layer, compId: CompID)? {
-        for (compId, comp) in comps {
-            if let layer = comp.layers.first(where: { $0.id == layerId }) {
-                return (layer, compId)
-            }
-        }
-        return nil
-    }
-
-    /// Finds a layer by name across all compositions
-    public func findLayer(byName name: String) -> (layer: Layer, compId: CompID)? {
-        for (compId, comp) in comps {
-            if let layer = comp.layers.first(where: { $0.name == name }) {
-                return (layer, compId)
-            }
-        }
-        return nil
-    }
-
-    /// Gets the root composition
-    public var rootComposition: Composition? {
-        comps[rootComp]
+        return computeMediaInputComposedMatrix(
+            inputGeo: inputGeo,
+            frame: Double(frame),
+            sceneFrameIndex: frame
+        )
     }
 }
+

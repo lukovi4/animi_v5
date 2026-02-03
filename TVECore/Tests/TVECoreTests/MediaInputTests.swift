@@ -5,6 +5,7 @@ import XCTest
 
 final class MediaInputTests: XCTestCase {
     var compiler: AnimIRCompiler!
+    private var _testRegistry = PathRegistry()
 
     override func setUp() {
         super.setUp()
@@ -163,7 +164,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -183,7 +185,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -215,7 +218,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -235,7 +239,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then: find the mediaInput layer in precomp
@@ -259,7 +264,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -312,7 +318,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )) { error in
             guard case AnimIRCompilerError.mediaInputNotInSameComp = error else {
                 XCTFail("Expected mediaInputNotInSameComp, got \(error)")
@@ -358,7 +365,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let commands = ir.renderCommands(frameIndex: 0)
 
@@ -393,7 +401,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let commands = ir.renderCommands(frameIndex: 0)
 
@@ -444,7 +453,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let commands = ir.renderCommands(frameIndex: 0)
 
@@ -477,7 +487,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         let cmdsIdentity = ir.renderCommands(frameIndex: 0, userTransform: .identity)
@@ -522,7 +533,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let commands = ir.renderCommands(frameIndex: 0)
 
@@ -547,7 +559,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let path = ir.mediaInputPath(frame: 0)
 
@@ -581,7 +594,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let path = ir.mediaInputPath(frame: 0)
 
@@ -613,7 +627,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let path = ir.mediaInputPath(frame: 0)
 
@@ -704,7 +719,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // When
@@ -802,7 +818,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // When
@@ -834,7 +851,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let matrix = ir.mediaInputWorldMatrix(frame: 0)
 
@@ -867,7 +885,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         XCTAssertNil(ir.mediaInputWorldMatrix(frame: 0))
@@ -937,7 +956,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let commands = ir.renderCommands(frameIndex: 0)
 
@@ -976,18 +996,22 @@ final class MediaInputTests: XCTestCase {
         let lottie = try decodeLottie(json)
         let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
 
-        // When: compile twice
+        // When: compile twice with separate registries so PathIDs match
+        var reg1 = PathRegistry()
         let ir1 = try compiler.compile(
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &reg1
         )
+        var reg2 = PathRegistry()
         let ir2 = try compiler.compile(
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &reg2
         )
 
         // Then
@@ -1049,7 +1073,8 @@ final class MediaInputTests: XCTestCase {
             lottie: lottie,
             animRef: "test",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let commands = ir.renderCommands(frameIndex: 0)
 
@@ -1076,6 +1101,265 @@ final class MediaInputTests: XCTestCase {
         }.count
         XCTAssertEqual(pushCount, popCount,
             "pushTransform (\(pushCount)) and popTransform (\(popCount)) must match")
+    }
+
+    // MARK: - Binding Layer Masks Ignored (Hardening)
+
+    /// Binding layer in root with masksProperties + mediaInput (→ inputClip path).
+    /// masksProperties must be SKIPPED, only beginMask(.intersect) from inputClip allowed.
+    private static let bindingWithMasksAndMediaInputJSON = """
+    {
+      "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+      "assets": [{ "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }],
+      "layers": [
+        {
+          "ty": 4, "ind": 10, "nm": "mediaInput", "hd": true,
+          "shapes": [{ "ty": "gr", "it": [
+            { "ty": "sh", "ks": { "a": 0, "k": {
+              "v": [[0,0],[540,0],[540,960],[0,960]],
+              "i": [[0,0],[0,0],[0,0],[0,0]],
+              "o": [[0,0],[0,0],[0,0],[0,0]],
+              "c": true
+            }}},
+            { "ty": "fl", "c": { "a": 0, "k": [0,0,0,1] }, "o": { "a": 0, "k": 100 } }
+          ]}],
+          "ks": { "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                  "p": { "a": 0, "k": [0,0,0] }, "a": { "a": 0, "k": [0,0,0] },
+                  "s": { "a": 0, "k": [100,100,100] } },
+          "ip": 0, "op": 300, "st": 0
+        },
+        {
+          "ty": 2, "ind": 1, "nm": "media", "refId": "image_0",
+          "hasMask": true,
+          "masksProperties": [{
+            "inv": false, "mode": "a",
+            "pt": { "a": 0, "k": {
+              "v": [[10,10],[500,10],[500,900],[10,900]],
+              "i": [[0,0],[0,0],[0,0],[0,0]],
+              "o": [[0,0],[0,0],[0,0],[0,0]],
+              "c": true
+            }},
+            "o": { "a": 0, "k": 100 }
+          }],
+          "ks": { "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                  "p": { "a": 0, "k": [270,480,0] }, "a": { "a": 0, "k": [270,480,0] },
+                  "s": { "a": 0, "k": [100,100,100] } },
+          "ip": 0, "op": 300, "st": 0
+        }
+      ]
+    }
+    """
+
+    /// Binding layer in root with masksProperties but NO mediaInput (→ standard path).
+    private static let bindingWithMasksNoMediaInputJSON = """
+    {
+      "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+      "assets": [{ "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }],
+      "layers": [
+        {
+          "ty": 2, "ind": 1, "nm": "media", "refId": "image_0",
+          "hasMask": true,
+          "masksProperties": [{
+            "inv": false, "mode": "a",
+            "pt": { "a": 0, "k": {
+              "v": [[10,10],[500,10],[500,900],[10,900]],
+              "i": [[0,0],[0,0],[0,0],[0,0]],
+              "o": [[0,0],[0,0],[0,0],[0,0]],
+              "c": true
+            }},
+            "o": { "a": 0, "k": 100 }
+          }],
+          "ks": { "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                  "p": { "a": 0, "k": [270,480,0] }, "a": { "a": 0, "k": [270,480,0] },
+                  "s": { "a": 0, "k": [100,100,100] } },
+          "ip": 0, "op": 300, "st": 0
+        }
+      ]
+    }
+    """
+
+    func testBindingLayerMasksIgnored_inputClipPath_noAddMask() throws {
+        // Given: binding layer with masksProperties + mediaInput (inputClip path)
+        let lottie = try decodeLottie(Self.bindingWithMasksAndMediaInputJSON)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        var ir = try compiler.compile(
+            lottie: lottie,
+            animRef: "test",
+            bindingKey: "media",
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
+        )
+
+        // When: render with non-identity userTransform (the bug scenario)
+        let userShift = Matrix2D.translation(x: 50, y: -30)
+        let (commands, issues) = ir.renderCommandsWithIssues(
+            frameIndex: 0,
+            userTransform: userShift
+        )
+
+        // Then: only beginMask(.intersect) from inputClip — NO beginMask(.add) from masksProperties
+        let addMasks = commands.filter {
+            if case .beginMask(let mode, _, _, _, _) = $0 { return mode == .add }
+            return false
+        }
+        XCTAssertEqual(addMasks.count, 0,
+            "Binding layer masksProperties must be SKIPPED (inputClip path). Found \(addMasks.count) add masks.")
+
+        let intersectMasks = commands.filter {
+            if case .beginMask(let mode, _, _, _, _) = $0 { return mode == .intersect }
+            return false
+        }
+        XCTAssertEqual(intersectMasks.count, 1,
+            "Should have exactly 1 inputClip intersect mask, got \(intersectMasks.count)")
+
+        // Warning must be emitted
+        let maskWarnings = issues.filter { $0.code == RenderIssue.codeBindingLayerMasksIgnored }
+        XCTAssertEqual(maskWarnings.count, 1,
+            "Should emit exactly 1 BINDING_LAYER_MASKS_IGNORED warning")
+        XCTAssertEqual(maskWarnings.first?.severity, .warning)
+
+        // Commands must be balanced
+        XCTAssertTrue(commands.isBalanced(), "Commands must be balanced after skipping masks")
+        let errors = RenderCommandValidator.validateScopeBalance(commands)
+        XCTAssertTrue(errors.isEmpty, "Scope balance errors: \(errors)")
+    }
+
+    func testBindingLayerMasksIgnored_standardPath_noMaskEmitted() throws {
+        // Given: binding layer with masksProperties but NO mediaInput (standard path)
+        let lottie = try decodeLottie(Self.bindingWithMasksNoMediaInputJSON)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        var ir = try compiler.compile(
+            lottie: lottie,
+            animRef: "test",
+            bindingKey: "media",
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
+        )
+
+        // When: render with non-identity userTransform
+        let userShift = Matrix2D.translation(x: 50, y: -30)
+        let (commands, issues) = ir.renderCommandsWithIssues(
+            frameIndex: 0,
+            userTransform: userShift
+        )
+
+        // Then: NO beginMask at all (no inputClip, no masksProperties)
+        let allMasks = commands.filter {
+            if case .beginMask = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(allMasks.count, 0,
+            "Standard path: binding layer masksProperties must be SKIPPED. Found \(allMasks.count) masks.")
+
+        // Warning must be emitted
+        let maskWarnings = issues.filter { $0.code == RenderIssue.codeBindingLayerMasksIgnored }
+        XCTAssertEqual(maskWarnings.count, 1,
+            "Should emit BINDING_LAYER_MASKS_IGNORED warning even on standard path")
+
+        // Commands must be balanced
+        XCTAssertTrue(commands.isBalanced())
+    }
+
+    func testBindingLayerMasksIgnored_userTransformDoesNotShrinkVisibleArea() throws {
+        // Regression: with the old code, userTransform ≠ identity would cause
+        // masksProperties to shift with the photo (inside pushTransform(mediaWorldWithUser)),
+        // creating a smaller intersection with the fixed inputClip — "crop" vs "clip".
+        // After the fix, changing userTransform must NOT change the number of mask commands.
+        let lottie = try decodeLottie(Self.bindingWithMasksAndMediaInputJSON)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        var ir = try compiler.compile(
+            lottie: lottie,
+            animRef: "test",
+            bindingKey: "media",
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
+        )
+
+        let cmdsIdentity = ir.renderCommands(frameIndex: 0, userTransform: .identity)
+        let cmdsShifted = ir.renderCommands(
+            frameIndex: 0,
+            userTransform: Matrix2D.translation(x: 200, y: -150)
+        )
+
+        // Mask count must be identical regardless of userTransform
+        let maskCountIdentity = cmdsIdentity.filter {
+            if case .beginMask = $0 { return true }; return false
+        }.count
+        let maskCountShifted = cmdsShifted.filter {
+            if case .beginMask = $0 { return true }; return false
+        }.count
+
+        XCTAssertEqual(maskCountIdentity, maskCountShifted,
+            "Mask count must not change with userTransform (identity: \(maskCountIdentity), shifted: \(maskCountShifted))")
+        XCTAssertEqual(maskCountIdentity, 1, "Only inputClip intersect mask expected")
+    }
+
+    func testNonBindingLayerMasks_stillEmitted() throws {
+        // Non-binding layers with masksProperties must still emit masks normally.
+        // This ensures the hardening doesn't over-suppress.
+        let json = """
+        {
+          "fr": 30, "ip": 0, "op": 300, "w": 1080, "h": 1920,
+          "assets": [{ "id": "image_0", "w": 540, "h": 960, "u": "images/", "p": "img.png", "e": 0 }],
+          "layers": [
+            {
+              "ty": 2, "ind": 1, "nm": "decoration", "refId": "image_0",
+              "hasMask": true,
+              "masksProperties": [{
+                "inv": false, "mode": "a",
+                "pt": { "a": 0, "k": {
+                  "v": [[0,0],[540,0],[540,960],[0,960]],
+                  "i": [[0,0],[0,0],[0,0],[0,0]],
+                  "o": [[0,0],[0,0],[0,0],[0,0]],
+                  "c": true
+                }},
+                "o": { "a": 0, "k": 100 }
+              }],
+              "ks": { "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                      "p": { "a": 0, "k": [270,480,0] }, "a": { "a": 0, "k": [270,480,0] },
+                      "s": { "a": 0, "k": [100,100,100] } },
+              "ip": 0, "op": 300, "st": 0
+            },
+            {
+              "ty": 2, "ind": 99, "nm": "media", "refId": "image_0",
+              "ks": { "o": { "a": 0, "k": 100 }, "r": { "a": 0, "k": 0 },
+                      "p": { "a": 0, "k": [0,0,0] }, "a": { "a": 0, "k": [0,0,0] },
+                      "s": { "a": 0, "k": [100,100,100] } },
+              "ip": 0, "op": 300, "st": 0
+            }
+          ]
+        }
+        """
+        let lottie = try decodeLottie(json)
+        let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
+
+        // Compile with bindingKey "media" — layer "decoration" is NOT the binding layer
+        let ir = try compiler.compile(
+            lottie: lottie,
+            animRef: "test",
+            bindingKey: "media",
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
+        )
+        let (commands, issues) = ir.renderCommandsWithIssues(frameIndex: 0)
+
+        // Non-binding layer masks MUST be emitted
+        let addMasks = commands.filter {
+            if case .beginMask(let mode, _, _, _, _) = $0 { return mode == .add }
+            return false
+        }
+        XCTAssertEqual(addMasks.count, 1,
+            "Non-binding layer masks must be emitted normally")
+
+        // No BINDING_LAYER_MASKS_IGNORED warning
+        let maskWarnings = issues.filter { $0.code == RenderIssue.codeBindingLayerMasksIgnored }
+        XCTAssertTrue(maskWarnings.isEmpty,
+            "Non-binding layer should not produce BINDING_LAYER_MASKS_IGNORED warning")
+
+        XCTAssertTrue(commands.isBalanced())
     }
 }
 

@@ -104,10 +104,26 @@ public enum SceneRenderPlan {
             animIR: variant.animIR
         )
 
+        // PR-26: If active variant lacks inputGeometry, get clip override from editVariant.
+        // The editVariant (no-anim) always has mediaInput by contract (validated in compileBlock).
+        var inputClipOverride: InputClipOverride?
+        if variant.animIR.inputGeometry == nil {
+            if var editIR = block.variants.first(where: { $0.variantId == block.editVariantId })?.animIR,
+               let editGeo = editIR.inputGeometry {
+                if let clipWorld = editIR.mediaInputInCompWorldMatrix(frame: Self.editFrameIndex) {
+                    inputClipOverride = InputClipOverride(
+                        inputGeometry: editGeo,
+                        clipWorldMatrix: clipWorld
+                    )
+                }
+            }
+        }
+
         // Get animation render commands with user transform (PR-16)
         let animCommands = variant.animIR.renderCommands(
             frameIndex: localFrameIndex,
-            userTransform: userTransform
+            userTransform: userTransform,
+            inputClipOverride: inputClipOverride
         )
         commands.append(contentsOf: animCommands)
 

@@ -262,6 +262,27 @@ public struct InputGeometryInfo: Sendable, Equatable {
     }
 }
 
+// MARK: - Input Clip Override (PR-26)
+
+/// Override for inputClip when the active variant lacks mediaInput.
+///
+/// Provides the clip geometry and pre-computed world matrix from the
+/// editVariant (no-anim), so that anim-x variants can clip content
+/// using the no-anim template's mediaInput window.
+public struct InputClipOverride: Sendable, Equatable {
+    /// Input geometry from the editVariant (path, pathId, compId, layerId)
+    public let inputGeometry: InputGeometryInfo
+
+    /// Pre-computed in-comp world matrix of the mediaInput layer.
+    /// Computed from editVariant's AnimIR where the layer actually exists.
+    public let clipWorldMatrix: Matrix2D
+
+    public init(inputGeometry: InputGeometryInfo, clipWorldMatrix: Matrix2D) {
+        self.inputGeometry = inputGeometry
+        self.clipWorldMatrix = clipWorldMatrix
+    }
+}
+
 // MARK: - Matte Mode
 
 /// Track matte types - maps directly to Lottie tt values

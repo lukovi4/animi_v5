@@ -162,7 +162,7 @@ final class MetalRendererBaselineTests: XCTestCase {
         ))
         let cmds: [RenderCommand] = [
             .beginGroup(name: "test"), .pushTransform(.identity),
-            .beginMaskAdd(pathId: pathId, opacity: 1.0, frame: 0),
+            .beginMask(mode: .add, inverted: false, pathId: pathId, opacity: 1.0, frame: 0),
             .drawImage(assetId: "test", opacity: 1.0), .endMask, .popTransform, .endGroup
         ]
         let result = try renderer.drawOffscreen(

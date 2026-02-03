@@ -4,6 +4,7 @@ import XCTest
 final class AnimIRCompilerTests: XCTestCase {
     var compiler: AnimIRCompiler!
     var tempDir: URL!
+    private var _testRegistry = PathRegistry()
 
     override func setUp() {
         super.setUp()
@@ -309,7 +310,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -330,7 +332,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -351,7 +354,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "my-animation.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -370,7 +374,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -390,7 +395,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -408,7 +414,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "nonexistent",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )) { error in
             guard case AnimIRCompilerError.bindingLayerNotFound = error else {
                 XCTFail("Expected bindingLayerNotFound error")
@@ -429,7 +436,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -454,7 +462,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -480,7 +489,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -506,7 +516,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -542,7 +553,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then - asset IDs are namespaced with animRef using | separator
@@ -564,13 +576,15 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "anim-1.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let ir2 = try compiler.compile(
             lottie: lottie,
             animRef: "anim-2.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then: Each IR has distinct namespaced asset IDs
@@ -592,7 +606,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let commands = ir.renderCommands(frameIndex: 0)
 
@@ -618,13 +633,15 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
         let ir2 = try compiler.compile(
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -646,7 +663,8 @@ final class AnimIRCompilerTests: XCTestCase {
             lottie: lottie,
             animRef: "test.json",
             bindingKey: "media",
-            assetIndex: assetIndex
+            assetIndex: assetIndex,
+            pathRegistry: &_testRegistry
         )
 
         // Then
@@ -683,7 +701,7 @@ final class AnimIRCompilerTests: XCTestCase {
         let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
 
         // When
-        var ir = try compiler.compile(lottie: lottie, animRef: "test", bindingKey: "media", assetIndex: assetIndex)
+        var ir = try compiler.compile(lottie: lottie, animRef: "test", bindingKey: "media", assetIndex: assetIndex, pathRegistry: &_testRegistry)
         let commands = ir.renderCommands(frameIndex: 0)
 
         // Then: Should have beginMatte with .luma mode
@@ -712,7 +730,7 @@ final class AnimIRCompilerTests: XCTestCase {
         let assetIndex = AssetIndex(byId: ["image_0": "images/img.png"])
 
         // When
-        var ir = try compiler.compile(lottie: lottie, animRef: "test", bindingKey: "media", assetIndex: assetIndex)
+        var ir = try compiler.compile(lottie: lottie, animRef: "test", bindingKey: "media", assetIndex: assetIndex, pathRegistry: &_testRegistry)
         let commands = ir.renderCommands(frameIndex: 0)
 
         // Then: Should have beginMatte with .lumaInverted mode

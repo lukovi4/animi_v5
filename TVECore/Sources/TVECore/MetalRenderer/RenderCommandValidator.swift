@@ -65,7 +65,7 @@ enum RenderCommandValidator {
                 }
 
             // --- Mask scope ---
-            case .beginMask, .beginMaskAdd:
+            case .beginMask:
                 scopeStack.append(("mask", transformDepth, clipDepth, i))
             case .endMask:
                 if let scope = scopeStack.last, scope.kind == "mask" {
