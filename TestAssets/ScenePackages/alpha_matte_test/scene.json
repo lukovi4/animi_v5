@@ -17,7 +17,7 @@
       "input": {
         "rect": { "x": 0.0, "y": 0.0, "width": 1080.0, "height": 1920.0 },
         "bindingKey": "Img_1.png",
-        "hitTest": "rect",
+        "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
         "emptyPolicy": "hideWholeBlock",
         "fitModesAllowed": ["cover", "contain", "fill"],
