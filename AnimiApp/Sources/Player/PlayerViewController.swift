@@ -18,7 +18,7 @@ final class PlayerViewController: UIViewController {
     // MARK: - UI Components
 
     private lazy var sceneSelector: UISegmentedControl = {
-        let control = UISegmentedControl(items: ["4 Blocks", "Alpha Matte", "Variant Demo"])
+        let control = UISegmentedControl(items: ["4 Blocks", "Alpha Matte", "Variant Demo", "Shared Decor"])
         control.translatesAutoresizingMaskIntoConstraints = false
         control.selectedSegmentIndex = 0
         return control
@@ -146,6 +146,7 @@ final class PlayerViewController: UIViewController {
     private lazy var commandQueue: MTLCommandQueue? = { metalView.device?.makeCommandQueue() }()
     private var renderer: MetalRenderer?
     private var textureProvider: ScenePackageTextureProvider?
+    private var currentResolver: CompositeAssetResolver?
 
     // Scene playback
     private var compiledScene: CompiledScene?
@@ -324,7 +325,7 @@ final class PlayerViewController: UIViewController {
         stopPlayback()
         renderErrorLogged = false
         log("---\nLoading scene package...")
-        let sceneNames = ["example_4blocks", "alpha_matte_test", "variant_switch_demo"]
+        let sceneNames = ["example_4blocks", "alpha_matte_test", "variant_switch_demo", "polaroid_shared_demo"]
         let idx = sceneSelector.selectedSegmentIndex
         let sceneName = idx < sceneNames.count ? sceneNames[idx] : sceneNames[0]
         let subdir = "TestAssets/ScenePackages/\(sceneName)"
@@ -521,20 +522,28 @@ final class PlayerViewController: UIViewController {
         let package = try loader.load(from: rootURL)
         currentPackage = package
         logPackageInfo(package)
+
+        // PR-28: Create resolver early — needed for both validation and texture loading.
+        let localIndex = try LocalAssetsIndex(imagesRootURL: package.imagesRootURL)
+        let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
+        let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
+        currentResolver = resolver
+
         let sceneReport = sceneValidator.validate(scene: package.scene)
         logValidationReport(sceneReport, title: "SceneValidation")
         isSceneValid = !sceneReport.hasErrors
         guard isSceneValid else { log("Scene invalid"); metalView.setNeedsDisplay(); return }
-        try loadAndValidateAnimations(for: package)
+        try loadAndValidateAnimations(for: package, resolver: resolver)
         try compileScene(for: package)
         metalView.setNeedsDisplay()
     }
 
-    private func loadAndValidateAnimations(for package: ScenePackage) throws {
+    private func loadAndValidateAnimations(for package: ScenePackage, resolver: CompositeAssetResolver) throws {
         let loaded = try animLoader.loadAnimations(from: package)
         loadedAnimations = loaded
         log("Loaded \(loaded.lottieByAnimRef.count) animations")
-        let report = animValidator.validate(scene: package.scene, package: package, loaded: loaded)
+        // PR-28: Pass resolver for basename-based asset validation (TL requirement B)
+        let report = animValidator.validate(scene: package.scene, package: package, loaded: loaded, resolver: resolver)
         logValidationReport(report, title: "AnimValidation")
         isAnimValid = !report.hasErrors
         if report.hasErrors { log("Animations invalid") }
@@ -566,11 +575,13 @@ final class PlayerViewController: UIViewController {
         // Store merged asset sizes for renderer
         mergedAssetSizes = compiled.mergedAssetIndex.sizeById
 
-        // Create texture provider for entire scene
+        // Create texture provider (PR-28: reuse resolver from validation, pass bindingAssetIds)
+        let resolver = currentResolver ?? CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty)
         textureProvider = SceneTextureProviderFactory.create(
             device: device,
-            package: package,
             mergedAssetIndex: compiled.mergedAssetIndex,
+            resolver: resolver,
+            bindingAssetIds: compiled.bindingAssetIds,
             logger: { [weak self] msg in self?.log(msg) }
         )
 

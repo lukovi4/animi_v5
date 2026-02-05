@@ -61,6 +61,9 @@ extension RenderIssue {
 
     /// Binding layer has masksProperties that were ignored (hardening)
     public static let codeBindingLayerMasksIgnored = "BINDING_LAYER_MASKS_IGNORED"
+
+    /// PR-29: Cycle detected in matte chain (source → consumer → ... → source)
+    public static let codeMatteChainCycle = "MATTE_CHAIN_CYCLE"
 }
 
 // MARK: - Debug Description

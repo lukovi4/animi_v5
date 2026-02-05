@@ -56,8 +56,11 @@ public enum AnimValidationCode {
     /// Matte source layer is not immediately before consumer (layers[i-1].td != 1)
     public static let unsupportedMatteLayerOrder = "UNSUPPORTED_MATTE_LAYER_ORDER"
 
-    /// Matte source (td=1) should not itself be a matte consumer (has tt)
-    public static let unsupportedMatteSourceHasConsumer = "UNSUPPORTED_MATTE_SOURCE_HAS_CONSUMER"
+    /// Matte target (tp) references a layer ind that does not exist
+    public static let matteTargetNotFound = "MATTE_TARGET_NOT_FOUND"
+
+    /// Matte target (tp) references a layer that appears after the consumer in the array
+    public static let matteTargetInvalidOrder = "MATTE_TARGET_INVALID_ORDER"
 
     /// Shape item type not supported in matte source
     public static let unsupportedShapeItem = "UNSUPPORTED_SHAPE_ITEM"

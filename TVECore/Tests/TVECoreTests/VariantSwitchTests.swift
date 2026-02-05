@@ -37,6 +37,10 @@ final class VariantSwitchTests: XCTestCase {
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
         try player.compile(package: package, loadedAnimations: animations)
+        // PR-28: Set user media present for all blocks so binding layers render
+        for block in player.compiledScene!.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
         return player
     }
 

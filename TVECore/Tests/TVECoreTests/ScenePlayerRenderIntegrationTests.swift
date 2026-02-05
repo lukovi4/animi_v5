@@ -96,14 +96,23 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         let player = ScenePlayer()
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
+        let localIndex = try LocalAssetsIndex(imagesRootURL: package.imagesRootURL)
+        let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: .empty)
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
-            package: package,
-            mergedAssetIndex: compiled.mergedAssetIndex
+            mergedAssetIndex: compiled.mergedAssetIndex,
+            resolver: resolver
         )
 
         // When - render frame 30 (anim-1 opacity should be 100%)
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 30)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 30,
+            userMediaPresent: userMediaPresent
+        )
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -131,14 +140,23 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         let player = ScenePlayer()
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
+        let localIndex = try LocalAssetsIndex(imagesRootURL: package.imagesRootURL)
+        let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: .empty)
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
-            package: package,
-            mergedAssetIndex: compiled.mergedAssetIndex
+            mergedAssetIndex: compiled.mergedAssetIndex,
+            resolver: resolver
         )
 
         // When - render frame 60 (anim-2 position animation complete)
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 60)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 60,
+            userMediaPresent: userMediaPresent
+        )
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -168,14 +186,23 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         let player = ScenePlayer()
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
+        let localIndex = try LocalAssetsIndex(imagesRootURL: package.imagesRootURL)
+        let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: .empty)
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
-            package: package,
-            mergedAssetIndex: compiled.mergedAssetIndex
+            mergedAssetIndex: compiled.mergedAssetIndex,
+            resolver: resolver
         )
 
         // When - render frame 90 (anim-3 scale animation complete)
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 90)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 90,
+            userMediaPresent: userMediaPresent
+        )
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -207,14 +234,23 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         let player = ScenePlayer()
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
+        let localIndex = try LocalAssetsIndex(imagesRootURL: package.imagesRootURL)
+        let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: .empty)
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
-            package: package,
-            mergedAssetIndex: compiled.mergedAssetIndex
+            mergedAssetIndex: compiled.mergedAssetIndex,
+            resolver: resolver
         )
 
         // When - render frame 120 (anim-4 scale animation complete)
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 120)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 120,
+            userMediaPresent: userMediaPresent
+        )
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -241,14 +277,23 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         let player = ScenePlayer()
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
+        let localIndex = try LocalAssetsIndex(imagesRootURL: package.imagesRootURL)
+        let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: .empty)
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
-            package: package,
-            mergedAssetIndex: compiled.mergedAssetIndex
+            mergedAssetIndex: compiled.mergedAssetIndex,
+            resolver: resolver
         )
 
         // When - render frame 150 (all anims fully visible)
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 150)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 150,
+            userMediaPresent: userMediaPresent
+        )
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -275,14 +320,23 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         let player = ScenePlayer()
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
+        let localIndex = try LocalAssetsIndex(imagesRootURL: package.imagesRootURL)
+        let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: .empty)
         let textureProvider = SceneTextureProviderFactory.create(
             device: device,
-            package: package,
-            mergedAssetIndex: compiled.mergedAssetIndex
+            mergedAssetIndex: compiled.mergedAssetIndex,
+            resolver: resolver
         )
 
         // When - render frame 150
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 150)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 150,
+            userMediaPresent: userMediaPresent
+        )
 
         let resultTex = try renderer.drawOffscreen(
             commands: commands,
@@ -316,7 +370,14 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
         // When - render at frame 150
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 150)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 150,
+            userMediaPresent: userMediaPresent
+        )
 
         // Then - should have 4 pushClipRect commands (one per block)
         var pushClipCount = 0
@@ -347,7 +408,14 @@ final class ScenePlayerRenderIntegrationTests: XCTestCase {
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
         // When - render at frame 150
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 150)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 150,
+            userMediaPresent: userMediaPresent
+        )
 
         // Then - count transforms that are identity
         var identityTransformCount = 0

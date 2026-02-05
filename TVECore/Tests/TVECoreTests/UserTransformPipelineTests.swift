@@ -269,7 +269,12 @@ final class UserTransformPipelineTests: XCTestCase {
 
         // Compile via ScenePlayer with default (no userTransform)
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         let cmdsDefault = player.renderCommands(sceneFrameIndex: 0)
 
@@ -299,7 +304,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // Baseline
         let cmdsBaseline = player.renderCommands(sceneFrameIndex: 0)
@@ -331,7 +341,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         let cmdsBaseline = player.renderCommands(sceneFrameIndex: 0)
         let baselineTransforms = pushTransforms(from: cmdsBaseline)
@@ -366,7 +381,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         let cmdsBaseline = player.renderCommands(sceneFrameIndex: 0)
         let baselineTransforms = pushTransforms(from: cmdsBaseline)
@@ -392,7 +412,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         let userShift = Matrix2D.translation(x: 30, y: 60)
         player.setUserTransform(blockId: "block-1", transform: userShift)
@@ -463,7 +488,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         let transform = Matrix2D.translation(x: 10, y: 20)
             .concatenating(.scale(1.5))
@@ -488,11 +518,19 @@ final class UserTransformPipelineTests: XCTestCase {
         let transform = Matrix2D.translation(x: 33, y: -15)
 
         let player1 = ScenePlayer()
-        try player1.compile(package: package1, loadedAnimations: animations1)
+        let compiled1 = try player1.compile(package: package1, loadedAnimations: animations1)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled1.runtime.blocks {
+            player1.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
         player1.setUserTransform(blockId: "block-1", transform: transform)
 
         let player2 = ScenePlayer()
-        try player2.compile(package: package2, loadedAnimations: animations2)
+        let compiled2 = try player2.compile(package: package2, loadedAnimations: animations2)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled2.runtime.blocks {
+            player2.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
         player2.setUserTransform(blockId: "block-1", transform: transform)
 
         let cmds1 = player1.renderCommands(sceneFrameIndex: 50)
@@ -510,7 +548,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // Default is identity
         XCTAssertEqual(player.userTransform(blockId: "block-1"), .identity,
@@ -536,7 +579,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         player.setUserTransform(blockId: "block-1", transform: .scale(2.0))
         player.resetAllUserTransforms()
@@ -552,7 +600,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeTwoBlockScenePackage()
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // Baseline — no user transforms
         let cmdsBaseline = player.renderCommands(sceneFrameIndex: 0)
@@ -605,13 +658,16 @@ final class UserTransformPipelineTests: XCTestCase {
         let player = ScenePlayer()
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
+        // PR-28: userMediaPresent must be true so binding layer renders and userTransform is observable
         let cmdsDefault = SceneRenderPlan.renderCommands(
-            for: compiled.runtime, sceneFrameIndex: 0
+            for: compiled.runtime, sceneFrameIndex: 0,
+            userMediaPresent: ["block-1": true]
         )
         let cmdsWithTransform = SceneRenderPlan.renderCommands(
             for: compiled.runtime,
             sceneFrameIndex: 0,
-            userTransforms: ["block-1": .translation(x: 10, y: 20)]
+            userTransforms: ["block-1": .translation(x: 10, y: 20)],
+            userMediaPresent: ["block-1": true]
         )
 
         let defaultTransforms = pushTransforms(from: cmdsDefault)
@@ -866,7 +922,12 @@ final class UserTransformPipelineTests: XCTestCase {
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
         let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // Just call renderCommands without ever calling setUserTransform
         let commands = player.renderCommands(sceneFrameIndex: 0)
@@ -882,7 +943,14 @@ final class UserTransformPipelineTests: XCTestCase {
         let player = ScenePlayer()
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: 0)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: 0,
+            userMediaPresent: userMediaPresent
+        )
         XCTAssertFalse(commands.isEmpty)
         XCTAssertTrue(commands.isBalanced())
     }

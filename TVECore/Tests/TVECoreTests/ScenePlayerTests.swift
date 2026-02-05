@@ -55,7 +55,12 @@ final class ScenePlayerTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        _ = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // When
         let commands = player.renderCommands(sceneFrameIndex: 0)
@@ -78,7 +83,12 @@ final class ScenePlayerTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        _ = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // When - frame 120 is past all animation in-points
         let commands = player.renderCommands(sceneFrameIndex: 120)
@@ -96,7 +106,12 @@ final class ScenePlayerTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        _ = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // When
         let commands = player.renderCommands(sceneFrameIndex: 0)
@@ -140,7 +155,12 @@ final class ScenePlayerTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        _ = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // When - render same frame multiple times
         let commands1 = player.renderCommands(sceneFrameIndex: 50)
@@ -226,7 +246,12 @@ final class ScenePlayerTests: XCTestCase {
         // Given
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
-        _ = try player.compile(package: package, loadedAnimations: animations)
+        let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled.runtime.blocks {
+            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         // When
         let commands = player.renderCommands(sceneFrameIndex: 0)

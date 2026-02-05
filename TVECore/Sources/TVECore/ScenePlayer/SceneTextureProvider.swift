@@ -5,28 +5,31 @@ import Foundation
 
 /// Factory for creating a texture provider for an entire scene.
 /// Uses the merged asset index from ScenePlayer which contains namespaced asset IDs
-/// from all animations in the scene.
+/// from all animations in the scene, and resolves assets via CompositeAssetResolver (PR-28).
 public enum SceneTextureProviderFactory {
 
-    /// Creates a texture provider for the entire scene
+    /// Creates a texture provider for the entire scene with resolver-based asset resolution.
     ///
     /// - Parameters:
     ///   - device: Metal device for texture creation
-    ///   - package: Scene package containing images root URL
-    ///   - mergedAssetIndex: Merged asset index from ScenePlayer (with namespaced IDs)
+    ///   - mergedAssetIndex: Merged asset index from ScenePlayer (with namespaced IDs and basenames)
+    ///   - resolver: Composite resolver for Local → Shared asset resolution
+    ///   - bindingAssetIds: Namespaced IDs of binding layer assets (no file on disk).
+    ///     Only these may be skipped during preload. All other missing assets are errors.
     ///   - logger: Optional logger for diagnostic messages
     /// - Returns: Texture provider that can serve textures for all animations in the scene
     public static func create(
         device: MTLDevice,
-        package: ScenePackage,
         mergedAssetIndex: AssetIndexIR,
+        resolver: CompositeAssetResolver,
+        bindingAssetIds: Set<String> = [],
         logger: TVELogger? = nil
     ) -> ScenePackageTextureProvider {
-        // Use package.rootURL because asset paths include "images/" prefix
         return ScenePackageTextureProvider(
             device: device,
-            imagesRootURL: package.rootURL,
             assetIndex: mergedAssetIndex,
+            resolver: resolver,
+            bindingAssetIds: bindingAssetIds,
             logger: logger
         )
     }

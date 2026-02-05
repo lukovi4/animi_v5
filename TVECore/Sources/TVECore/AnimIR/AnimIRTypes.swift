@@ -454,21 +454,32 @@ public struct AssetSize: Sendable, Equatable {
 
 /// IR-specific asset index (decoupled from Lottie types)
 public struct AssetIndexIR: Sendable, Equatable {
-    /// Mapping from asset ID to relative file path
+    /// Mapping from asset ID to relative file path (retained for diagnostics/logging)
     public let byId: [String: String]
 
     /// Mapping from asset ID to asset size (from Lottie w/h)
     public let sizeById: [String: AssetSize]
 
-    public init(byId: [String: String] = [:], sizeById: [String: AssetSize] = [:]) {
+    /// Mapping from asset ID to basename (filename without extension, case-sensitive).
+    /// Used by TextureProvider for resolver-based asset resolution (PR-28).
+    /// Built from Lottie `assets[].p` (filename field) during compilation.
+    public let basenameById: [String: String]
+
+    public init(
+        byId: [String: String] = [:],
+        sizeById: [String: AssetSize] = [:],
+        basenameById: [String: String] = [:]
+    ) {
         self.byId = byId
         self.sizeById = sizeById
+        self.basenameById = basenameById
     }
 
-    /// Creates from PR3 AssetIndex (legacy, no sizes)
+    /// Creates from PR3 AssetIndex (legacy, no sizes or basenames)
     public init(from assetIndex: AssetIndex) {
         self.byId = assetIndex.byId
         self.sizeById = [:]
+        self.basenameById = [:]
     }
 }
 

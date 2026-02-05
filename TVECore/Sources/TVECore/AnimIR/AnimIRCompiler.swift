@@ -35,6 +35,8 @@ public enum AnimIRCompilerError: Error, Sendable {
     case bindingLayerNoAsset(bindingKey: String, animRef: String)
     case unsupportedLayerType(layerType: Int, layerName: String, animRef: String)
     case mediaInputNotInSameComp(animRef: String, mediaInputCompId: String, bindingCompId: String)
+    case matteTargetNotFound(tp: Int, consumerName: String, animRef: String)
+    case matteTargetInvalidOrder(tp: Int, consumerName: String, animRef: String)
 }
 
 extension AnimIRCompilerError: LocalizedError {
@@ -50,6 +52,10 @@ extension AnimIRCompilerError: LocalizedError {
             return "Unsupported layer type \(layerType) for layer '\(layerName)' in \(animRef)"
         case .mediaInputNotInSameComp(let animRef, let mediaInputCompId, let bindingCompId):
             return "mediaInput (comp=\(mediaInputCompId)) must be in same composition as binding layer (comp=\(bindingCompId)) in \(animRef)"
+        case .matteTargetNotFound(let tp, let consumerName, let animRef):
+            return "Matte target tp=\(tp) not found (no layer with ind=\(tp)) for consumer '\(consumerName)' in \(animRef)"
+        case .matteTargetInvalidOrder(let tp, let consumerName, let animRef):
+            return "Matte target tp=\(tp) must appear before consumer '\(consumerName)' in layer array in \(animRef)"
         }
     }
 }
@@ -147,6 +153,7 @@ public final class AnimIRCompiler {
         // Build asset index IR with namespaced keys
         var namespacedById: [String: String] = [:]
         var namespacedSizeById: [String: AssetSize] = [:]
+        var namespacedBasenameById: [String: String] = [:]
 
         for (originalId, path) in assetIndex.byId {
             let nsId = namespacedAssetId(animRef: animRef, assetId: originalId)
@@ -154,13 +161,24 @@ public final class AnimIRCompiler {
         }
 
         for asset in lottie.assets where asset.isImage {
+            let nsId = namespacedAssetId(animRef: animRef, assetId: asset.id)
             if let width = asset.width, let height = asset.height {
-                let nsId = namespacedAssetId(animRef: animRef, assetId: asset.id)
                 namespacedSizeById[nsId] = AssetSize(width: width, height: height)
+            }
+            // PR-28: Extract basename from Lottie filename (p) for resolver-based resolution
+            if let filename = asset.filename, !filename.isEmpty {
+                let basename = (filename as NSString).deletingPathExtension
+                if !basename.isEmpty {
+                    namespacedBasenameById[nsId] = basename
+                }
             }
         }
 
-        let assetsIR = AssetIndexIR(byId: namespacedById, sizeById: namespacedSizeById)
+        let assetsIR = AssetIndexIR(
+            byId: namespacedById,
+            sizeById: namespacedSizeById,
+            basenameById: namespacedBasenameById
+        )
 
         // PR-15: Find mediaInput layer and build InputGeometryInfo
         let inputGeometry = try findMediaInput(
@@ -193,19 +211,60 @@ public final class AnimIRCompiler {
         fallbackOp: Double,
         pathRegistry: inout PathRegistry
     ) throws -> [Layer] {
-        // First pass: identify matte source → consumer relationships
-        // In Lottie, matte source (td=1) is immediately followed by consumer (tt=1|2)
-        var matteSourceForConsumer: [LayerID: LayerID] = [:]
+        // Build lookup tables (once per composition)
+        // indToArrayIndex: maps layer "ind" → position in the layers[] array
+        // indToLayerId:    maps layer "ind" → LayerID used in IR
+        var indToArrayIndex: [Int: Int] = [:]
+        var indToLayerId: [Int: LayerID] = [:]
 
-        for (index, lottieLayer) in lottieLayers.enumerated() where (lottieLayer.isMatteSource ?? 0) == 1 {
-            let sourceId = lottieLayer.index ?? index
-            // The next layer is the consumer
-            if index + 1 < lottieLayers.count {
-                let consumerLayer = lottieLayers[index + 1]
-                let consumerId = consumerLayer.index ?? (index + 1)
-                matteSourceForConsumer[consumerId] = sourceId
+        for (arrayIndex, lottieLayer) in lottieLayers.enumerated() {
+            if let ind = lottieLayer.index {
+                indToArrayIndex[ind] = arrayIndex
+                indToLayerId[ind] = ind
             }
         }
+
+        // First pass: consumer-driven matte binding
+        // For each consumer (tt != nil), resolve source via tp or legacy adjacency
+        var matteSourceForConsumer: [LayerID: LayerID] = [:]
+
+        for (arrayIndex, lottieLayer) in lottieLayers.enumerated() {
+            guard lottieLayer.trackMatteType != nil else { continue }
+            let consumerId: LayerID = lottieLayer.index ?? arrayIndex
+            let consumerName = lottieLayer.name ?? "Layer_\(arrayIndex)"
+
+            if let tp = lottieLayer.matteTarget {
+                // tp-based resolution: tp references "ind" of matte source
+                guard let sourceId = indToLayerId[tp],
+                      let sourceArrayIndex = indToArrayIndex[tp] else {
+                    throw AnimIRCompilerError.matteTargetNotFound(
+                        tp: tp, consumerName: consumerName, animRef: animRef
+                    )
+                }
+
+                // Source must appear before consumer in the array
+                guard sourceArrayIndex < arrayIndex else {
+                    throw AnimIRCompilerError.matteTargetInvalidOrder(
+                        tp: tp, consumerName: consumerName, animRef: animRef
+                    )
+                }
+
+                matteSourceForConsumer[consumerId] = sourceId
+            } else {
+                // Legacy adjacency fallback: previous layer must be td=1
+                if arrayIndex > 0 {
+                    let prevLayer = lottieLayers[arrayIndex - 1]
+                    if (prevLayer.isMatteSource ?? 0) == 1 {
+                        let sourceId: LayerID = prevLayer.index ?? (arrayIndex - 1)
+                        matteSourceForConsumer[consumerId] = sourceId
+                    }
+                }
+            }
+        }
+
+        // PR-29: Collect implicit matte source layer IDs.
+        // Any layer targeted via tp is an implicit matte source (even without td=1).
+        let implicitMatteSourceIds = Set(matteSourceForConsumer.values)
 
         // Second pass: compile all layers with matte info
         var layers: [Layer] = []
@@ -228,6 +287,7 @@ public final class AnimIRCompiler {
                 animRef: animRef,
                 fallbackOp: fallbackOp,
                 matteInfo: matteInfo,
+                implicitMatteSourceIds: implicitMatteSourceIds,
                 pathRegistry: &pathRegistry
             )
             layers.append(layer)
@@ -244,6 +304,7 @@ public final class AnimIRCompiler {
         animRef: String,
         fallbackOp: Double,
         matteInfo: MatteInfo?,
+        implicitMatteSourceIds: Set<LayerID>,
         pathRegistry: inout PathRegistry
     ) throws -> Layer {
         // Determine layer ID (from ind or index)
@@ -287,8 +348,8 @@ public final class AnimIRCompiler {
             pathRegistry: &pathRegistry
         )
 
-        // Check if this is a matte source
-        let isMatteSource = (lottie.isMatteSource ?? 0) == 1
+        // PR-29: Matte source = explicit (td=1) OR implicit (tp-target from another consumer)
+        let isMatteSource = (lottie.isMatteSource ?? 0) == 1 || implicitMatteSourceIds.contains(layerId)
 
         // PR-15: Hidden flag (hd=true)
         let isHidden = lottie.hidden ?? false

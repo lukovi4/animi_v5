@@ -15,10 +15,21 @@ public struct CompiledScene: Sendable {
     /// Scene-level path registry with globally unique PathIDs assigned during compilation
     public let pathRegistry: PathRegistry
 
-    public init(runtime: SceneRuntime, mergedAssetIndex: AssetIndexIR, pathRegistry: PathRegistry) {
+    /// Namespaced asset IDs that belong to binding layers (PR-28).
+    /// These assets have no file on disk — user media is injected at runtime.
+    /// Used by TextureProvider to distinguish expected missing assets from template errors.
+    public let bindingAssetIds: Set<String>
+
+    public init(
+        runtime: SceneRuntime,
+        mergedAssetIndex: AssetIndexIR,
+        pathRegistry: PathRegistry,
+        bindingAssetIds: Set<String> = []
+    ) {
         self.runtime = runtime
         self.mergedAssetIndex = mergedAssetIndex
         self.pathRegistry = pathRegistry
+        self.bindingAssetIds = bindingAssetIds
     }
 }
 

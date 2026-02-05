@@ -51,6 +51,14 @@ final class TemplateModeTests: XCTestCase {
     /// T1: Preview mode at frame 120 renders all visible blocks with full content.
     func testT1_previewRendersFullScene() throws {
         let player = try compiledPlayer()
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+        }
+
         let expectedBlocks = visibleBlockCount(player: player, at: 120)
 
         let commands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
@@ -77,6 +85,13 @@ final class TemplateModeTests: XCTestCase {
     func testT1b_previewMatchesLegacyAPI() throws {
         let player = try compiledPlayer()
 
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+        }
+
         let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
         let legacyCommands = player.renderCommands(sceneFrameIndex: 120)
 
@@ -94,6 +109,14 @@ final class TemplateModeTests: XCTestCase {
     /// T2: Edit mode renders the full no-anim variant — not just binding layers.
     func testT2_editRendersFullNoAnimVariant() throws {
         let player = try compiledPlayer()
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+        }
+
         let editFrame = ScenePlayer.editFrameIndex
         let visibleAtEditFrame = visibleBlockCount(player: player, at: editFrame)
 
@@ -123,6 +146,13 @@ final class TemplateModeTests: XCTestCase {
     func testT2b_editUsesInputClip() throws {
         let player = try compiledPlayer()
 
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+        }
+
         let editCommands = player.renderCommands(mode: .edit)
 
         // no-anim variants have mediaInput → inputClip should produce intersect masks
@@ -141,6 +171,13 @@ final class TemplateModeTests: XCTestCase {
     /// T3: Edit mode always renders at editFrameIndex (0), regardless of sceneFrameIndex.
     func testT3_editIgnoresSceneFrameIndex() throws {
         let player = try compiledPlayer()
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+        }
 
         let editAt0 = player.renderCommands(mode: .edit, sceneFrameIndex: 0)
         let editAt50 = player.renderCommands(mode: .edit, sceneFrameIndex: 50)
@@ -171,6 +208,13 @@ final class TemplateModeTests: XCTestCase {
     func testT4_editUsesNoAnimRegardlessOfSelection() throws {
         let player = try compiledPlayer()
 
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+        }
+
         // Select animated variant v1 for first block
         player.setSelectedVariant(blockId: "block_01", variantId: "v1")
 
@@ -193,6 +237,13 @@ final class TemplateModeTests: XCTestCase {
     /// T4b: Edit drawImage asset IDs are a subset of all compiled assets.
     func testT4b_editAssetsAreSubsetOfCompiled() throws {
         let player = try compiledPlayer()
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+        }
 
         let editCommands = player.renderCommands(mode: .edit)
 
@@ -219,8 +270,16 @@ final class TemplateModeTests: XCTestCase {
         let (package, animations) = try loadTestPackage()
         let player1 = ScenePlayer()
         let player2 = ScenePlayer()
-        _ = try player1.compile(package: package, loadedAnimations: animations)
-        _ = try player2.compile(package: package, loadedAnimations: animations)
+        let compiled1 = try player1.compile(package: package, loadedAnimations: animations)
+        let compiled2 = try player2.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled1.runtime.blocks {
+            player1.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
+        for block in compiled2.runtime.blocks {
+            player2.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         let editCommands1 = player1.renderCommands(mode: .edit)
         let editCommands2 = player2.renderCommands(mode: .edit)
@@ -238,8 +297,16 @@ final class TemplateModeTests: XCTestCase {
         let (package, animations) = try loadTestPackage()
         let player1 = ScenePlayer()
         let player2 = ScenePlayer()
-        _ = try player1.compile(package: package, loadedAnimations: animations)
-        _ = try player2.compile(package: package, loadedAnimations: animations)
+        let compiled1 = try player1.compile(package: package, loadedAnimations: animations)
+        let compiled2 = try player2.compile(package: package, loadedAnimations: animations)
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        for block in compiled1.runtime.blocks {
+            player1.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
+        for block in compiled2.runtime.blocks {
+            player2.setUserMediaPresent(blockId: block.blockId, present: true)
+        }
 
         let previewCommands1 = player1.renderCommands(mode: .preview, sceneFrameIndex: 60)
         let previewCommands2 = player2.renderCommands(mode: .preview, sceneFrameIndex: 60)
@@ -464,6 +531,13 @@ final class TemplateModeTests: XCTestCase {
     func testT7_editOverlaysUseNoAnimVariant() throws {
         let player = try compiledPlayer()
 
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+        }
+
         let editOverlays = player.overlays(frame: ScenePlayer.editFrameIndex, mode: .edit)
         let visibleAtEdit = visibleBlockCount(player: player, at: ScenePlayer.editFrameIndex)
 
@@ -484,6 +558,13 @@ final class TemplateModeTests: XCTestCase {
         guard let firstBlock = player.compiledScene?.runtime.blocks.first else {
             XCTFail("Should have at least one block")
             return
+        }
+
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        if let compiled = player.compiledScene {
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
         }
 
         let transform = Matrix2D(a: 1.5, b: 0, c: 0, d: 1.5, tx: 10, ty: 20)

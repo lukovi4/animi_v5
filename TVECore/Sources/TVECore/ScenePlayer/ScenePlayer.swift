@@ -27,6 +27,13 @@ public final class ScenePlayer {
     /// Compiled data remains immutable — overrides live here.
     private var variantOverrides: [String: String] = [:]
 
+    /// Per-block user media presence (PR-28).
+    /// Key: blockId. Value: `true` if user has selected media for this block.
+    /// Blocks without an entry default to `false` (binding layer hidden).
+    /// When `false`, the binding layer is excluded from render commands entirely,
+    /// preventing any texture requests for the binding placeholder.
+    private var userMediaPresent: [String: Bool] = [:]
+
     // MARK: - Initialization
 
     public init() {}
@@ -67,6 +74,7 @@ public final class ScenePlayer {
         var blockRuntimes: [BlockRuntime] = []
         var allAssetsByIdMerged: [String: String] = [:]
         var allSizesByIdMerged: [String: AssetSize] = [:]
+        var allBasenameByIdMerged: [String: String] = [:]
 
         for (index, mediaBlock) in scene.mediaBlocks.enumerated() {
             let blockRuntime = try compileBlock(
@@ -86,6 +94,9 @@ public final class ScenePlayer {
                 for (assetId, size) in variant.animIR.assets.sizeById {
                     allSizesByIdMerged[assetId] = size
                 }
+                for (assetId, basename) in variant.animIR.assets.basenameById {
+                    allBasenameByIdMerged[assetId] = basename
+                }
             }
         }
 
@@ -94,7 +105,21 @@ public final class ScenePlayer {
         blockRuntimes.sort { ($0.zIndex, $0.orderIndex) < ($1.zIndex, $1.orderIndex) }
 
         // Create merged asset index
-        let mergedAssets = AssetIndexIR(byId: allAssetsByIdMerged, sizeById: allSizesByIdMerged)
+        let mergedAssets = AssetIndexIR(
+            byId: allAssetsByIdMerged,
+            sizeById: allSizesByIdMerged,
+            basenameById: allBasenameByIdMerged
+        )
+
+        // PR-28: Collect binding asset IDs across all variants.
+        // These are namespaced IDs of image assets referenced by binding layers.
+        // They have no file on disk — user media is injected at runtime.
+        var bindingAssetIds: Set<String> = []
+        for block in blockRuntimes {
+            for variant in block.variants {
+                bindingAssetIds.insert(variant.animIR.binding.boundAssetId)
+            }
+        }
 
         // Create runtime
         let sceneRuntime = SceneRuntime(
@@ -109,7 +134,8 @@ public final class ScenePlayer {
         let compiled = CompiledScene(
             runtime: sceneRuntime,
             mergedAssetIndex: mergedAssets,
-            pathRegistry: sharedPathRegistry
+            pathRegistry: sharedPathRegistry,
+            bindingAssetIds: bindingAssetIds
         )
 
         self.compiledScene = compiled
@@ -194,11 +220,15 @@ public final class ScenePlayer {
 
         // Validate no-anim: binding layer must actually render at edit frame 0
         // (reachability check — catches invisible precomp containers)
+        // PR-28: Probe runs with bindingLayerVisible=true to verify that the binding
+        // layer is CAPABLE of rendering. The actual visibility at runtime is controlled
+        // separately by hasUserMedia (empty binding is allowed at runtime).
         if case .image(let bindingAssetId) = bindingLayer.content {
             var probeIR = editVariant.animIR
             let probeCommands = probeIR.renderCommands(
                 frameIndex: SceneRenderPlan.editFrameIndex,
-                userTransform: .identity
+                userTransform: .identity,
+                bindingLayerVisible: true
             )
             let bindingRendered = probeCommands.contains { cmd in
                 if case .drawImage(let assetId, _) = cmd {
@@ -371,6 +401,29 @@ public final class ScenePlayer {
         variantOverrides.removeValue(forKey: blockId)
     }
 
+    // MARK: - User Media State (PR-28)
+
+    /// Sets whether user media is present for a block.
+    ///
+    /// When `true`, the binding layer renders normally (user photo is shown).
+    /// When `false`, the binding layer is excluded from render commands entirely —
+    /// no draw commands are emitted and no texture requests are made.
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block
+    ///   - present: Whether user media is available for this block
+    public func setUserMediaPresent(blockId: String, present: Bool) {
+        userMediaPresent[blockId] = present
+    }
+
+    /// Returns whether user media is present for a block.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: `true` if user media is set, `false` otherwise (default)
+    public func isUserMediaPresent(blockId: String) -> Bool {
+        userMediaPresent[blockId] ?? false
+    }
+
     /// Resolves the active `VariantRuntime` for a block, respecting mode and overrides.
     ///
     /// - `.edit` → always uses `editVariantId` (no-anim variant)
@@ -535,6 +588,7 @@ public final class ScenePlayer {
     ///
     /// User transforms stored via `setUserTransform(blockId:transform:)` are
     /// automatically forwarded to each block's AnimIR render pass.
+    /// User media presence (PR-28) controls binding layer visibility per block.
     ///
     /// - Parameter sceneFrameIndex: Frame index in scene timeline
     /// - Returns: Render commands for all visible blocks, or empty array if not compiled
@@ -546,7 +600,8 @@ public final class ScenePlayer {
             for: compiledScene.runtime,
             sceneFrameIndex: sceneFrameIndex,
             userTransforms: userTransforms,
-            variantOverrides: variantOverrides
+            variantOverrides: variantOverrides,
+            userMediaPresent: userMediaPresent
         )
     }
 
@@ -593,7 +648,8 @@ public final class ScenePlayer {
             for: compiledScene.runtime,
             sceneFrameIndex: frameIndex,
             userTransforms: userTransforms,
-            variantOverrides: overrides
+            variantOverrides: overrides,
+            userMediaPresent: userMediaPresent
         )
     }
 }

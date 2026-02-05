@@ -9,31 +9,54 @@ public typealias TVELogger = (String) -> Void
 
 // MARK: - Scene Package Texture Provider
 
-/// Texture provider that loads textures from a scene package's images folder.
-/// Uses MTKTextureLoader with caching by asset ID.
+/// Texture provider that resolves textures via basename-based asset resolution (PR-28).
+///
+/// Resolution pipeline per asset ID:
+/// 1. Check cache (includes externally injected textures, e.g. user media photos)
+/// 2. Look up basename via `AssetIndexIR.basenameById`
+/// 3. Resolve URL via `CompositeAssetResolver` (Local → Shared)
+/// 4. Load texture from resolved URL
+///
+/// Binding layer textures are injected externally via `setTexture(_:for:)`.
+/// When user media is not selected, the binding layer is skipped at render time (PR-28 Q2),
+/// so TextureProvider is never asked for the binding asset ID.
 public final class ScenePackageTextureProvider: TextureProvider {
     // MARK: - Properties
 
     private let device: MTLDevice
-    private let imagesRootURL: URL
     private let assetIndex: AssetIndexIR
+    private let resolver: CompositeAssetResolver
     private let loader: MTKTextureLoader
     private var cache: [String: MTLTexture] = [:]
     private var missingAssets: Set<String> = []
     private let logger: TVELogger?
 
+    /// Namespaced asset IDs that belong to binding layers (PR-28 Fix-A).
+    /// These assets have no file on disk — user media is injected at runtime.
+    /// Only these IDs may be skipped during preload; all others are treated as errors.
+    private let bindingAssetIds: Set<String>
+
     // MARK: - Initialization
 
-    /// Creates a texture provider for a scene package.
+    /// Creates a texture provider with resolver-based asset resolution.
     /// - Parameters:
     ///   - device: Metal device for texture creation
-    ///   - imagesRootURL: Root URL for images folder
-    ///   - assetIndex: Asset index mapping asset IDs to relative paths
+    ///   - assetIndex: Asset index with basename mappings (from compilation)
+    ///   - resolver: Composite resolver for Local → Shared resolution
+    ///   - bindingAssetIds: Namespaced IDs of binding layer assets (no file on disk).
+    ///     Only these may be skipped during preload. All other missing assets are errors.
     ///   - logger: Optional logger for diagnostic messages
-    public init(device: MTLDevice, imagesRootURL: URL, assetIndex: AssetIndexIR, logger: TVELogger? = nil) {
+    public init(
+        device: MTLDevice,
+        assetIndex: AssetIndexIR,
+        resolver: CompositeAssetResolver,
+        bindingAssetIds: Set<String> = [],
+        logger: TVELogger? = nil
+    ) {
         self.device = device
-        self.imagesRootURL = imagesRootURL
         self.assetIndex = assetIndex
+        self.resolver = resolver
+        self.bindingAssetIds = bindingAssetIds
         self.loader = MTKTextureLoader(device: device)
         self.logger = logger
     }
@@ -42,8 +65,9 @@ public final class ScenePackageTextureProvider: TextureProvider {
 
     /// Returns the texture for the given asset ID.
     /// Textures are loaded on first access and cached for subsequent calls.
+    /// Externally injected textures (via `setTexture`) are returned from cache directly.
     public func texture(for assetId: String) -> MTLTexture? {
-        // Check cache first
+        // Check cache first (includes injected user media textures)
         if let cached = cache[assetId] {
             return cached
         }
@@ -53,17 +77,24 @@ public final class ScenePackageTextureProvider: TextureProvider {
             return nil
         }
 
-        // Look up relative path in asset index
-        guard let relativePath = assetIndex.byId[assetId] else {
-            logger?("[TextureProvider] Asset '\(assetId)' not in index")
+        // Look up basename in asset index (PR-28)
+        guard let basename = assetIndex.basenameById[assetId] else {
+            logger?("[TextureProvider] Asset '\(assetId)' has no basename in index")
             missingAssets.insert(assetId)
             return nil
         }
 
-        // Build full URL
-        let textureURL = imagesRootURL.appendingPathComponent(relativePath)
+        // Resolve URL via CompositeAssetResolver (Local → Shared)
+        let textureURL: URL
+        do {
+            textureURL = try resolver.resolveURL(forKey: basename)
+        } catch {
+            logger?("[TextureProvider] Asset '\(assetId)' (basename='\(basename)') not found: \(error.localizedDescription)")
+            missingAssets.insert(assetId)
+            return nil
+        }
 
-        // Load texture
+        // Load texture from resolved URL
         guard let texture = loadTexture(from: textureURL, assetId: assetId) else {
             missingAssets.insert(assetId)
             return nil
@@ -74,22 +105,56 @@ public final class ScenePackageTextureProvider: TextureProvider {
         return texture
     }
 
+    // MARK: - External Texture Injection
+
+    /// Injects an externally provided texture (e.g. user-selected media photo).
+    ///
+    /// Injected textures are stored in cache and returned directly by `texture(for:)`,
+    /// bypassing resolver-based resolution. Used for binding layer user media.
+    ///
+    /// - Parameters:
+    ///   - texture: Metal texture to inject
+    ///   - assetId: Asset ID to associate the texture with (namespaced)
+    public func setTexture(_ texture: MTLTexture, for assetId: String) {
+        cache[assetId] = texture
+        missingAssets.remove(assetId)
+    }
+
+    /// Removes an injected texture, allowing re-resolution or marking as missing.
+    ///
+    /// - Parameter assetId: Asset ID to remove from cache
+    public func removeTexture(for assetId: String) {
+        cache.removeValue(forKey: assetId)
+        missingAssets.remove(assetId)
+    }
+
     // MARK: - Preloading
 
-    /// Preloads all textures from the asset index.
-    /// Call this to avoid loading delays during rendering.
-    /// - Throws: Error if any texture fails to load
-    public func preloadAll() throws {
-        for (assetId, relativePath) in assetIndex.byId {
-            if cache[assetId] != nil {
+    /// Preloads all resolvable textures from the asset index.
+    ///
+    /// Binding assets (identified by `bindingAssetIds`) are expected to have no file on disk
+    /// and are skipped with a debug log. All other non-resolvable assets are logged as errors
+    /// and added to `missingAssets` — this indicates a corrupted template.
+    public func preloadAll() {
+        for (assetId, basename) in assetIndex.basenameById {
+            // Skip already cached (including injected textures)
+            if cache[assetId] != nil { continue }
+
+            guard let textureURL = try? resolver.resolveURL(forKey: basename) else {
+                if bindingAssetIds.contains(assetId) {
+                    // Expected: binding asset has no file (user media injected at runtime)
+                    logger?("[TextureProvider] Preload skipped binding asset '\(assetId)'")
+                } else {
+                    // Unexpected: non-binding asset missing — template corrupted
+                    logger?("[TextureProvider] ERROR: Asset '\(assetId)' (basename='\(basename)') not resolvable — template may be corrupted")
+                    missingAssets.insert(assetId)
+                }
                 continue
             }
 
-            let textureURL = imagesRootURL.appendingPathComponent(relativePath)
-            guard let texture = loadTexture(from: textureURL, assetId: assetId) else {
-                throw TextureLoadError.failedToLoad(assetId: assetId, path: relativePath)
+            if let texture = loadTexture(from: textureURL, assetId: assetId) {
+                cache[assetId] = texture
             }
-            cache[assetId] = texture
         }
     }
 

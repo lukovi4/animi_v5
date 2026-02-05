@@ -103,7 +103,14 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
         print(String(repeating: "=", count: 80))
 
         for frame in testFrames {
-            let commands = runtime.renderCommands(sceneFrameIndex: frame)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            let userMediaPresent = Dictionary(
+                uniqueKeysWithValues: runtime.blocks.map { ($0.blockId, true) }
+            )
+            let commands = runtime.renderCommands(
+                sceneFrameIndex: frame,
+                userMediaPresent: userMediaPresent
+            )
             let counts = commands.commandCounts()
 
             print("\n[Frame \(frame)]")
@@ -130,7 +137,14 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
         let runtime = compiled.runtime
 
         let frame = 150
-        let commands = runtime.renderCommands(sceneFrameIndex: frame)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = runtime.renderCommands(
+            sceneFrameIndex: frame,
+            userMediaPresent: userMediaPresent
+        )
 
         print("\n" + String(repeating: "=", count: 80))
         print("BLOCK-LEVEL SCOPE DUMP (Frame \(frame))")
@@ -237,7 +251,14 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
         let compiled = try player.compile(package: package, loadedAnimations: animations)
 
         let frame = 150
-        let commands = compiled.runtime.renderCommands(sceneFrameIndex: frame)
+        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+        let userMediaPresent = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, true) }
+        )
+        let commands = compiled.runtime.renderCommands(
+            sceneFrameIndex: frame,
+            userMediaPresent: userMediaPresent
+        )
 
         print("\n" + String(repeating: "=", count: 80))
         print("EFFECTIVE MATRIX + SCISSOR PER DRAWIMAGE (Frame \(frame))")

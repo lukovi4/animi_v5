@@ -31,11 +31,20 @@ public final class AnimValidator {
         self.fileManager = fileManager
     }
 
-    /// Validates all loaded animations against the scene
+    /// Validates all loaded animations against the scene.
+    ///
+    /// - Parameters:
+    ///   - scene: Scene configuration
+    ///   - package: Scene package with images root
+    ///   - loaded: Loaded Lottie animations
+    ///   - resolver: PR-28: Optional asset resolver for basename-based resolution.
+    ///     When provided, asset presence is validated via Local → Shared resolution
+    ///     and binding assets are skipped. When `nil`, uses legacy file-exists check.
     public func validate(
         scene: Scene,
         package: ScenePackage,
-        loaded: LoadedAnimations
+        loaded: LoadedAnimations,
+        resolver: CompositeAssetResolver? = nil
     ) -> ValidationReport {
         var issues: [ValidationIssue] = []
 
@@ -49,7 +58,8 @@ public final class AnimValidator {
                 lottie: lottie,
                 blocks: blocks,
                 scene: scene,
-                package: package
+                package: package,
+                resolver: resolver
             )
             validateAnimation(ctx, issues: &issues)
         }
@@ -79,13 +89,22 @@ extension AnimValidator {
         let blocks: [MediaBlock]
         let scene: Scene
         let package: ScenePackage
+        /// PR-28: Optional resolver for basename-based asset resolution
+        let resolver: CompositeAssetResolver?
     }
 
     func validateAnimation(_ ctx: AnimContext, issues: inout [ValidationIssue]) {
         validateRootSanity(animRef: ctx.animRef, lottie: ctx.lottie, issues: &issues)
         validateFPSInvariant(animRef: ctx.animRef, lottie: ctx.lottie, scene: ctx.scene, issues: &issues)
         validateSizeMismatch(animRef: ctx.animRef, lottie: ctx.lottie, blocks: ctx.blocks, issues: &issues)
-        validateAssetPresence(animRef: ctx.animRef, lottie: ctx.lottie, package: ctx.package, issues: &issues)
+        validateAssetPresence(
+            animRef: ctx.animRef,
+            lottie: ctx.lottie,
+            package: ctx.package,
+            blocks: ctx.blocks,
+            resolver: ctx.resolver,
+            issues: &issues
+        )
 
         for block in ctx.blocks {
             validateBindingLayer(
@@ -205,21 +224,82 @@ extension AnimValidator {
         animRef: String,
         lottie: LottieJSON,
         package: ScenePackage,
+        blocks: [MediaBlock],
+        resolver: CompositeAssetResolver?,
         issues: inout [ValidationIssue]
     ) {
-        for asset in lottie.assets where asset.isImage {
-            guard let relativePath = asset.relativePath else { continue }
+        if let resolver = resolver {
+            // PR-28: Resolver-based validation with binding skip
+            // Find all binding asset IDs: refId of binding layers (nm == bindingKey, ty == 2)
+            let bindingAssetIds = findBindingAssetIds(lottie: lottie, blocks: blocks)
 
-            let fileURL = package.rootURL.appendingPathComponent(relativePath)
-            if !fileManager.fileExists(atPath: fileURL.path) {
-                issues.append(ValidationIssue(
-                    code: AnimValidationCode.assetMissing,
-                    severity: .error,
-                    path: "anim(\(animRef)).assets[id=\(asset.id)].p",
-                    message: "Missing file \(relativePath) for asset \(asset.id)"
-                ))
+            for asset in lottie.assets where asset.isImage {
+                // Skip binding assets — they have no file on disk (user media injected at runtime)
+                if bindingAssetIds.contains(asset.id) {
+                    continue
+                }
+
+                guard let filename = asset.filename, !filename.isEmpty else { continue }
+                let basename = (filename as NSString).deletingPathExtension
+                guard !basename.isEmpty else { continue }
+
+                // Resolve via Local → Shared
+                if !resolver.canResolve(key: basename) {
+                    let stage = "shared" // searched up to shared stage
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.assetMissing,
+                        severity: .error,
+                        path: "anim(\(animRef)).assets[id=\(asset.id)].p",
+                        message: "Asset '\(basename)' (from \(filename)) not found in local or \(stage) assets"
+                    ))
+                }
+            }
+        } else {
+            // Legacy: file-exists check (no resolver, no binding skip)
+            for asset in lottie.assets where asset.isImage {
+                guard let relativePath = asset.relativePath else { continue }
+
+                let fileURL = package.rootURL.appendingPathComponent(relativePath)
+                if !fileManager.fileExists(atPath: fileURL.path) {
+                    issues.append(ValidationIssue(
+                        code: AnimValidationCode.assetMissing,
+                        severity: .error,
+                        path: "anim(\(animRef)).assets[id=\(asset.id)].p",
+                        message: "Missing file \(relativePath) for asset \(asset.id)"
+                    ))
+                }
             }
         }
+    }
+
+    /// Finds asset IDs referenced by binding layers.
+    ///
+    /// Binding layer: `nm == bindingKey && ty == 2 (image)`.
+    /// Returns the set of Lottie asset IDs (refId) that belong to binding layers.
+    private func findBindingAssetIds(lottie: LottieJSON, blocks: [MediaBlock]) -> Set<String> {
+        let bindingKeys = Set(blocks.map { $0.input.bindingKey })
+        var bindingAssetIds = Set<String>()
+
+        func scanLayers(_ layers: [LottieLayer]) {
+            for layer in layers {
+                if let name = layer.name, bindingKeys.contains(name),
+                   layer.type == 2, let refId = layer.refId, !refId.isEmpty {
+                    bindingAssetIds.insert(refId)
+                }
+            }
+        }
+
+        // Scan root layers
+        scanLayers(lottie.layers)
+
+        // Scan precomp layers
+        for asset in lottie.assets where asset.isPrecomp {
+            if let layers = asset.layers {
+                scanLayers(layers)
+            }
+        }
+
+        return bindingAssetIds
     }
 
     func validatePrecompRefs(animRef: String, lottie: LottieJSON, issues: inout [ValidationIssue]) {
@@ -536,28 +616,15 @@ extension AnimValidator {
             ))
         }
 
-        // Collapse transform (ct != 0) - context-aware severity (PR-12)
+        // Collapse transform (ct != 0) — always warning (ct is ignored by compiler)
         // SKIP for hidden layers (hd=true) — not rendered, ct has no effect
-        // WARNING for:
-        //   - matte source layers (td=1)
-        //   - layers inside matte-source precomps (inMatteSourceContext)
-        // ERROR for all other layers where ct could cause incorrect compositing
         if let ct = layer.collapseTransform, ct != 0, layer.hidden != true {
-            if isMatteSource || inMatteSourceContext {
-                issues.append(ValidationIssue(
-                    code: AnimValidationCode.unsupportedLayerCollapseTransform,
-                    severity: .warning,
-                    path: "\(basePath).ct",
-                    message: "Collapse transform (ct=\(ct)) ignored in matte-source context (best-effort)"
-                ))
-            } else {
-                issues.append(ValidationIssue(
-                    code: AnimValidationCode.unsupportedLayerCollapseTransform,
-                    severity: .error,
-                    path: "\(basePath).ct",
-                    message: "Collapse transform (ct=\(ct)) not supported outside matte-source context"
-                ))
-            }
+            issues.append(ValidationIssue(
+                code: AnimValidationCode.unsupportedLayerCollapseTransform,
+                severity: .warning,
+                path: "\(basePath).ct",
+                message: "Collapse transform (ct=\(ct)) not supported, ignored (best-effort)"
+            ))
         }
 
         // Blend mode (bm != 0)
@@ -996,22 +1063,28 @@ extension AnimValidator {
         }
     }
 
-    // MARK: - Matte Pair Validation (PR-12)
+    // MARK: - Matte Pair Validation (PR-12, PR-27 tp-based)
 
     /// Validates matte source/consumer pairs in a layer list.
     ///
     /// For each consumer layer (tt != nil):
-    /// - Must not be the first layer (i != 0)
-    /// - Previous layer must be a matte source (td == 1)
-    ///
-    /// For each matte source layer (td == 1):
-    /// - Should not itself be a matte consumer (tt should be nil)
+    /// - If tp != nil: validate via tp (ind-based lookup, order check).
+    ///   td==1 is NOT required — tp-targets become implicit matte sources (PR-29).
+    /// - If tp == nil: legacy adjacency (previous layer must be td==1)
     func validateMattePairs(
         layers: [LottieLayer],
         context: String,
         animRef: String,
         issues: inout [ValidationIssue]
     ) {
+        // Build ind → arrayIndex lookup for tp-based resolution
+        var indToArrayIndex: [Int: Int] = [:]
+        for (arrayIndex, layer) in layers.enumerated() {
+            if let ind = layer.index {
+                indToArrayIndex[ind] = arrayIndex
+            }
+        }
+
         for (index, layer) in layers.enumerated() {
             let basePath = "anim(\(animRef)).\(context)[\(index)]"
 
@@ -1019,42 +1092,59 @@ extension AnimValidator {
             if let trackMatteType = layer.trackMatteType,
                Self.supportedMatteTypes.contains(trackMatteType) {
 
-                // Consumer cannot be first layer (no source above it)
-                if index == 0 {
-                    issues.append(ValidationIssue(
-                        code: AnimValidationCode.unsupportedMatteLayerMissing,
-                        severity: .error,
-                        path: "\(basePath).tt",
-                        message: "Matte consumer (tt=\(trackMatteType)) at index 0 has no matte source layer above it"
-                    ))
-                    continue
-                }
+                if let tp = layer.matteTarget {
+                    // tp-based validation: resolve source via ind
+                    guard let sourceArrayIndex = indToArrayIndex[tp] else {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.matteTargetNotFound,
+                            severity: .error,
+                            path: "\(basePath).tp",
+                            message: "Matte target tp=\(tp) not found (no layer with ind=\(tp))"
+                        ))
+                        continue
+                    }
 
-                // Previous layer must be a matte source (td == 1)
-                let previousLayer = layers[index - 1]
-                let previousIsMatteSource = (previousLayer.isMatteSource ?? 0) == 1
+                    // PR-29: td==1 is NOT required for tp-targets.
+                    // tp-targets become implicit matte sources in the compiler.
 
-                if !previousIsMatteSource {
-                    let prevPath = "anim(\(animRef)).\(context)[\(index - 1)]"
-                    issues.append(ValidationIssue(
-                        code: AnimValidationCode.unsupportedMatteLayerOrder,
-                        severity: .error,
-                        path: "\(prevPath).td",
-                        message: "Layer before matte consumer (tt=\(trackMatteType)) must be matte source (td=1), but td=\(previousLayer.isMatteSource ?? 0)"
-                    ))
+                    // Source must appear before consumer in array
+                    if sourceArrayIndex >= index {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.matteTargetInvalidOrder,
+                            severity: .error,
+                            path: "\(basePath).tp",
+                            message: "Matte target tp=\(tp) at array index \(sourceArrayIndex) must appear before consumer at index \(index)"
+                        ))
+                    }
+                } else {
+                    // Legacy adjacency fallback (no tp)
+                    if index == 0 {
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedMatteLayerMissing,
+                            severity: .error,
+                            path: "\(basePath).tt",
+                            message: "Matte consumer (tt=\(trackMatteType)) at index 0 has no matte source layer above it"
+                        ))
+                        continue
+                    }
+
+                    let previousLayer = layers[index - 1]
+                    let previousIsMatteSource = (previousLayer.isMatteSource ?? 0) == 1
+
+                    if !previousIsMatteSource {
+                        let prevPath = "anim(\(animRef)).\(context)[\(index - 1)]"
+                        issues.append(ValidationIssue(
+                            code: AnimValidationCode.unsupportedMatteLayerOrder,
+                            severity: .error,
+                            path: "\(prevPath).td",
+                            message: "Layer before matte consumer (tt=\(trackMatteType)) must be matte source (td=1), but td=\(previousLayer.isMatteSource ?? 0)"
+                        ))
+                    }
                 }
             }
 
-            // Check if matte source (td=1) is also a consumer (has tt) - this is invalid
-            let isMatteSource = (layer.isMatteSource ?? 0) == 1
-            if isMatteSource, let trackMatteType = layer.trackMatteType {
-                issues.append(ValidationIssue(
-                    code: AnimValidationCode.unsupportedMatteSourceHasConsumer,
-                    severity: .error,
-                    path: "\(basePath).td",
-                    message: "Matte source (td=1) should not be a matte consumer (tt=\(trackMatteType))"
-                ))
-            }
+            // PR-29: Matte source (td=1) CAN be a consumer (matte chains).
+            // Removed unsupportedMatteSourceHasConsumer check per TL decision.
         }
     }
 

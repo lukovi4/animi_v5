@@ -19,12 +19,16 @@ public enum SceneRenderPlan {
     ///   - variantOverrides: Per-block variant overrides keyed by blockId (PR-20).
     ///     Blocks not present use `block.selectedVariantId` (compilation default).
     ///     For edit mode, the caller passes `{ blockId: editVariantId }` for all blocks.
+    ///   - userMediaPresent: Per-block flag indicating whether user media is available (PR-28).
+    ///     Blocks not present in the dictionary default to `false` (binding layer hidden).
+    ///     When `false`, the binding layer is excluded from render commands entirely.
     /// - Returns: Array of render commands for all visible blocks
     public static func renderCommands(
         for runtime: SceneRuntime,
         sceneFrameIndex: Int,
         userTransforms: [String: Matrix2D] = [:],
-        variantOverrides: [String: String] = [:]
+        variantOverrides: [String: String] = [:],
+        userMediaPresent: [String: Bool] = [:]
     ) -> [RenderCommand] {
         var commands: [RenderCommand] = []
 
@@ -54,12 +58,16 @@ public enum SceneRenderPlan {
             // Resolve user transform for this block (default: identity)
             let userTransform = userTransforms[block.blockId] ?? .identity
 
+            // PR-28: Resolve user media presence (default: false = binding hidden)
+            let hasUserMedia = userMediaPresent[block.blockId] ?? false
+
             let blockCommands = renderBlockCommands(
                 block: block,
                 variant: &variant,
                 sceneFrameIndex: sceneFrameIndex,
                 canvasSize: canvasSize,
-                userTransform: userTransform
+                userTransform: userTransform,
+                hasUserMedia: hasUserMedia
             )
             commands.append(contentsOf: blockCommands)
         }
@@ -76,7 +84,8 @@ public enum SceneRenderPlan {
         variant: inout VariantRuntime,
         sceneFrameIndex: Int,
         canvasSize: SizeD,
-        userTransform: Matrix2D
+        userTransform: Matrix2D,
+        hasUserMedia: Bool
     ) -> [RenderCommand] {
         var commands: [RenderCommand] = []
 
@@ -120,10 +129,12 @@ public enum SceneRenderPlan {
         }
 
         // Get animation render commands with user transform (PR-16)
+        // PR-28: Pass bindingLayerVisible to skip binding layer when user media is absent
         let animCommands = variant.animIR.renderCommands(
             frameIndex: localFrameIndex,
             userTransform: userTransform,
-            inputClipOverride: inputClipOverride
+            inputClipOverride: inputClipOverride,
+            bindingLayerVisible: hasUserMedia
         )
         commands.append(contentsOf: animCommands)
 
@@ -164,7 +175,18 @@ public enum SceneRenderPlan {
 extension SceneRuntime {
     /// Generates render commands for the given scene frame.
     /// Convenience method that delegates to SceneRenderPlan with no user transforms.
-    public func renderCommands(sceneFrameIndex: Int) -> [RenderCommand] {
-        SceneRenderPlan.renderCommands(for: self, sceneFrameIndex: sceneFrameIndex)
+    ///
+    /// - Parameters:
+    ///   - sceneFrameIndex: Frame index in scene timeline
+    ///   - userMediaPresent: Per-block user media presence flags (default: empty = all binding hidden)
+    public func renderCommands(
+        sceneFrameIndex: Int,
+        userMediaPresent: [String: Bool] = [:]
+    ) -> [RenderCommand] {
+        SceneRenderPlan.renderCommands(
+            for: self,
+            sceneFrameIndex: sceneFrameIndex,
+            userMediaPresent: userMediaPresent
+        )
     }
 }

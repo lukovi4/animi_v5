@@ -139,6 +139,10 @@ extension AnimIR {
         let inputClipOverride: InputClipOverride?
         /// Current composition ID (for same-comp check)
         let currentCompId: CompID
+        /// PR-28: Whether binding layer should be rendered.
+        /// When `false`, binding layer is skipped entirely (no draw commands, no texture request).
+        /// Controlled by ScenePlayer/SceneRenderPlan based on user media state.
+        let bindingLayerVisible: Bool
     }
 
     /// Resolved world transform for a layer
@@ -162,12 +166,17 @@ extension AnimIR {
     ///   - inputClipOverride: PR-26: Clip geometry + world matrix from the editVariant.
     ///     When the active variant lacks `inputGeometry` (anim-x without mediaInput),
     ///     this override supplies the clip window from the no-anim variant.
+    ///   - bindingLayerVisible: PR-28: Whether to render the binding layer.
+    ///     When `false`, the binding layer is skipped entirely — no draw commands are emitted
+    ///     and no texture requests are made. Decor/shared layers render normally.
+    ///     Default is `true` (binding layer renders as usual).
     /// - Returns: Array of render commands in execution order
     /// - Note: Check `lastRenderIssues` after calling for any errors encountered
     public mutating func renderCommands(
         frameIndex: Int,
         userTransform: Matrix2D = .identity,
-        inputClipOverride: InputClipOverride? = nil
+        inputClipOverride: InputClipOverride? = nil,
+        bindingLayerVisible: Bool = true
     ) -> [RenderCommand] {
         // Reset issues from previous call
         lastRenderIssues.removeAll(keepingCapacity: true)
@@ -195,7 +204,8 @@ extension AnimIR {
                 userTransform: userTransform,
                 inputGeometry: inputGeometry,
                 inputClipOverride: inputClipOverride,
-                currentCompId: rootComp
+                currentCompId: rootComp,
+                bindingLayerVisible: bindingLayerVisible
             )
             renderComposition(rootComposition, context: context, commands: &commands)
         }
@@ -210,13 +220,15 @@ extension AnimIR {
     public func renderCommandsWithIssues(
         frameIndex: Int,
         userTransform: Matrix2D = .identity,
-        inputClipOverride: InputClipOverride? = nil
+        inputClipOverride: InputClipOverride? = nil,
+        bindingLayerVisible: Bool = true
     ) -> (commands: [RenderCommand], issues: [RenderIssue]) {
         var copy = self
         let commands = copy.renderCommands(
             frameIndex: frameIndex,
             userTransform: userTransform,
-            inputClipOverride: inputClipOverride
+            inputClipOverride: inputClipOverride,
+            bindingLayerVisible: bindingLayerVisible
         )
         return (commands, copy.lastRenderIssues)
     }
@@ -246,6 +258,12 @@ extension AnimIR {
 
         // Skip hidden layers (hd=true) - they are geometry sources only (e.g. mediaInput)
         guard !layer.isHidden else { return }
+
+        // PR-28: Skip binding layer when user media is not selected.
+        // This prevents any draw commands and texture requests for the binding placeholder.
+        if !context.bindingLayerVisible && isBindingLayer(layer, context: context) {
+            return
+        }
 
         // Skip if layer is not visible at this frame
         guard Self.isVisible(layer, at: context.frame) else { return }
@@ -309,7 +327,8 @@ extension AnimIR {
         consumerResolved: ResolvedTransform,
         matte: MatteInfo,
         context: RenderContext,
-        commands: inout [RenderCommand]
+        commands: inout [RenderCommand],
+        matteChainVisited: Set<LayerID> = []
     ) {
         // Map IR MatteMode to RenderCommand RenderMatteMode
         let renderMatteMode: RenderMatteMode
@@ -328,17 +347,15 @@ extension AnimIR {
 
         // Emit matteSource group
         commands.append(.beginGroup(name: "matteSource"))
-        if let sourceLayer = context.layerById[matte.sourceLayerId] {
-            // Compute matte source world transform
-            if let sourceResolved = computeLayerWorld(sourceLayer, context: context) {
-                // Render matte source as regular layer (no matte wrapping for the source itself)
-                emitRegularLayerCommands(
-                    sourceLayer,
-                    resolved: sourceResolved,
-                    context: context,
-                    commands: &commands
-                )
-            }
+        if context.layerById[matte.sourceLayerId] != nil {
+            // PR-29: Delegate to helper that supports matte chains.
+            // If the source is itself a consumer (chain), this recurses via emitMatteScope.
+            emitLayerForMatteSource(
+                layerId: matte.sourceLayerId,
+                context: context,
+                commands: &commands,
+                visited: matteChainVisited
+            )
         } else {
             // Matte source layer not found - record issue
             let issue = RenderIssue(
@@ -363,6 +380,62 @@ extension AnimIR {
         commands.append(.endGroup)
 
         commands.append(.endMatte)
+    }
+
+    /// PR-29: Renders a matte source layer, supporting matte chains.
+    ///
+    /// If the source layer is itself a matte consumer (chain), this recurses
+    /// through `emitMatteScope` to apply the nested matte before rendering.
+    /// Otherwise, renders the source via `emitRegularLayerCommands`.
+    ///
+    /// Recursion is bounded by two mechanisms:
+    /// 1. Compiler order check (`sourceArrayIndex < consumerArrayIndex`) guarantees DAG
+    /// 2. Runtime `visited` set detects cycles defensively (future-proofing)
+    private mutating func emitLayerForMatteSource(
+        layerId: LayerID,
+        context: RenderContext,
+        commands: inout [RenderCommand],
+        visited: Set<LayerID> = []
+    ) {
+        // Defensive cycle guard: should never trigger with compiler-validated IR,
+        // but protects against manually-constructed or future-modified IR.
+        guard !visited.contains(layerId) else {
+            assertionFailure("Matte chain cycle detected at layerId=\(layerId)")
+            lastRenderIssues.append(RenderIssue(
+                severity: .error,
+                code: RenderIssue.codeMatteChainCycle,
+                path: "anim(\(meta.sourceAnimRef)).layers[id=\(layerId)]",
+                message: "Matte chain cycle detected at layer id=\(layerId)",
+                frameIndex: context.frameIndex
+            ))
+            return
+        }
+
+        guard let layer = context.layerById[layerId],
+              let resolved = computeLayerWorld(layer, context: context) else { return }
+
+        var nextVisited = visited
+        nextVisited.insert(layerId)
+
+        if let matte = layer.matte {
+            // Matte chain: source is itself a consumer — recurse via emitMatteScope
+            emitMatteScope(
+                consumer: layer,
+                consumerResolved: resolved,
+                matte: matte,
+                context: context,
+                commands: &commands,
+                matteChainVisited: nextVisited
+            )
+        } else {
+            // Terminal source: render normally
+            emitRegularLayerCommands(
+                layer,
+                resolved: resolved,
+                context: context,
+                commands: &commands
+            )
+        }
     }
 
     /// Emits render commands for a regular layer (without matte wrapping)
@@ -836,7 +909,8 @@ extension AnimIR {
                 userTransform: context.userTransform,
                 inputGeometry: context.inputGeometry,
                 inputClipOverride: context.inputClipOverride,
-                currentCompId: compId
+                currentCompId: compId,
+                bindingLayerVisible: context.bindingLayerVisible
             )
             renderComposition(precomp, context: childContext, commands: &commands)
 

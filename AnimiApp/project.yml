@@ -22,6 +22,9 @@ targets:
       - path: ../TestAssets
         type: folder
         buildPhase: resources
+      - path: ../SharedAssets
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: TVECore
     settings:

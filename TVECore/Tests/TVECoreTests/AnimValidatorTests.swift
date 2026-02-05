@@ -932,8 +932,8 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertTrue(error?.message.contains("sr=2") ?? false)
     }
 
-    func testValidate_layerCollapseTransform_returnsError() throws {
-        // PR-12: ct=1 on NON-matte-source layer should be ERROR
+    func testValidate_layerCollapseTransform_returnsWarning() throws {
+        // ct=1 always produces WARNING (ct is ignored by compiler)
         let scene = sceneJSON()
         let anim = """
         {
@@ -949,19 +949,19 @@ final class AnimValidatorTests: XCTestCase {
         """
         let report = try validatePackage(sceneJSON: scene, animJSON: anim)
 
-        // ct=1 on regular layer (not td=1) should be ERROR
-        let error = report.errors.first {
-            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
-        }
-        XCTAssertNotNil(error, "ct=1 outside matte-source context should produce an error")
-        XCTAssertTrue(error?.path.contains(".ct") ?? false)
-        XCTAssertTrue(error?.message.contains("outside matte-source context") ?? false)
-
-        // Should NOT be a warning (on regular layers)
+        // ct=1 should always be WARNING (not error)
         let warning = report.warnings.first {
             $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
         }
-        XCTAssertNil(warning, "ct=1 outside matte-source context should NOT be a warning")
+        XCTAssertNotNil(warning, "ct=1 should produce a warning")
+        XCTAssertTrue(warning?.path.contains(".ct") ?? false)
+        XCTAssertTrue(warning?.message.contains("not supported") ?? false)
+
+        // Should NOT be an error
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
+        }
+        XCTAssertNil(error, "ct=1 should NOT produce an error")
     }
 
     func testValidate_blendMode_returnsError() throws {
@@ -2564,34 +2564,34 @@ final class AnimValidatorTests: XCTestCase {
 
     // MARK: - PR-12: ct Context-Aware Severity Tests
 
-    func testNegativeAsset_collapseTransform_onRegularLayer_returnsError() throws {
-        // ct=1 on a regular layer (not td=1, not in matte-source precomp) should be ERROR (PR-12)
+    func testNegativeAsset_collapseTransform_onRegularLayer_returnsWarning() throws {
+        // ct=1 always produces WARNING (ct is ignored by compiler)
         let report = try validateNegativeCase("neg_layer_ct_collapse_transform")
 
-        let error = report.errors.first {
-            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
-        }
-        XCTAssertNotNil(error, "ct=1 outside matte-source context should produce ERROR")
-        XCTAssertTrue(error?.message.contains("outside matte-source context") == true)
-
-        // Should NOT be a warning (outside matte-source context)
         let warning = report.warnings.first {
             $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
         }
-        XCTAssertNil(warning, "ct=1 outside matte-source context should NOT be warning")
+        XCTAssertNotNil(warning, "ct=1 should produce WARNING")
+        XCTAssertTrue(warning?.message.contains("not supported") == true)
+
+        // Should NOT be an error
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
+        }
+        XCTAssertNil(error, "ct=1 should NOT produce error")
     }
 
     func testNegativeAsset_collapseTransform_onMatteSource_returnsWarning() throws {
-        // ct=1 on matte source (td=1) should be WARNING (PR-12)
+        // ct=1 always produces WARNING (ct is ignored by compiler)
         let report = try validateNegativeCase("neg_layer_ct_on_matte_source")
 
         let warning = report.warnings.first {
             $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
         }
         XCTAssertNotNil(warning, "ct=1 on matte source (td=1) should produce WARNING")
-        XCTAssertTrue(warning?.message.contains("matte-source context") == true)
+        XCTAssertTrue(warning?.message.contains("not supported") == true)
 
-        // Should NOT be an error (on matte source layers)
+        // Should NOT be an error
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
         }
@@ -2599,7 +2599,7 @@ final class AnimValidatorTests: XCTestCase {
     }
 
     func testNegativeAsset_collapseTransform_inMatteSourcePrecomp_returnsWarning() throws {
-        // ct=1 inside a matte-source precomp should be WARNING (PR-12 fix)
+        // ct=1 always produces WARNING (ct is ignored by compiler)
         let report = try validateNegativeCase("neg_layer_ct_in_matte_precomp")
 
         let warning = report.warnings.first {
@@ -2607,31 +2607,31 @@ final class AnimValidatorTests: XCTestCase {
         }
         XCTAssertNotNil(warning, "ct=1 inside matte-source precomp should produce WARNING")
         XCTAssertTrue(warning?.path.contains("assets[id=comp_matte]") == true)
-        XCTAssertTrue(warning?.message.contains("matte-source context") == true)
+        XCTAssertTrue(warning?.message.contains("not supported") == true)
 
-        // Should NOT be an error (in matte-source context)
+        // Should NOT be an error
         let error = report.errors.first {
             $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
         }
         XCTAssertNil(error, "ct=1 inside matte-source precomp should NOT be error")
     }
 
-    func testNegativeAsset_collapseTransform_inRegularPrecomp_returnsError() throws {
-        // ct=1 inside a regular precomp (not matte source) should be ERROR (PR-12)
+    func testNegativeAsset_collapseTransform_inRegularPrecomp_returnsWarning() throws {
+        // ct=1 always produces WARNING (ct is ignored by compiler)
         let report = try validateNegativeCase("neg_layer_ct_in_regular_precomp")
 
-        let error = report.errors.first {
-            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
-        }
-        XCTAssertNotNil(error, "ct=1 inside regular precomp should produce ERROR")
-        XCTAssertTrue(error?.path.contains("assets[id=comp_regular]") == true)
-        XCTAssertTrue(error?.message.contains("outside matte-source context") == true)
-
-        // Should NOT be a warning (not in matte-source context)
         let warning = report.warnings.first {
             $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
         }
-        XCTAssertNil(warning, "ct=1 inside regular precomp should NOT be warning")
+        XCTAssertNotNil(warning, "ct=1 inside regular precomp should produce WARNING")
+        XCTAssertTrue(warning?.path.contains("assets[id=comp_regular]") == true)
+        XCTAssertTrue(warning?.message.contains("not supported") == true)
+
+        // Should NOT be an error
+        let error = report.errors.first {
+            $0.code == AnimValidationCode.unsupportedLayerCollapseTransform
+        }
+        XCTAssertNil(error, "ct=1 inside regular precomp should NOT be error")
     }
 
     // MARK: - PR-12: Matte Pair Validation Tests
@@ -2658,15 +2658,14 @@ final class AnimValidatorTests: XCTestCase {
         XCTAssertTrue(error?.path.contains("[0].td") == true)
     }
 
-    func testNegativeAsset_matteSourceIsConsumer_returnsError() throws {
-        // Matte source (td=1) that is also a consumer (has tt) is invalid
+    func testNegativeAsset_matteSourceIsConsumer_noLongerError() throws {
+        // PR-29: Matte source (td=1) that is also a consumer (has tt) is valid (matte chains)
         let report = try validateNegativeCase("neg_matte_source_is_consumer")
 
         let error = report.errors.first {
-            $0.code == AnimValidationCode.unsupportedMatteSourceHasConsumer
+            $0.code == "UNSUPPORTED_MATTE_SOURCE_HAS_CONSUMER"
         }
-        XCTAssertNotNil(error, "Matte source with tt should produce UNSUPPORTED_MATTE_SOURCE_HAS_CONSUMER")
-        XCTAssertTrue(error?.path.contains(".td") == true)
+        XCTAssertNil(error, "Matte source with tt should no longer produce error (PR-29 matte chains)")
     }
 
     func testNegativeAsset_blendMode_returnsUnsupportedBlendMode() throws {
