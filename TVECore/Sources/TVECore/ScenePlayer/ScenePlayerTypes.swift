@@ -151,6 +151,29 @@ public struct BlockRuntime: Sendable, Codable {
     }
 }
 
+// MARK: - Block Priority Info (PR-F)
+
+/// Priority information for video budget decisions.
+///
+/// Used by `UserMediaService` to determine which video providers should be active.
+/// Priority is determined by: visibility > area (larger = higher) > zIndex (higher = higher).
+public struct BlockPriorityInfo: Sendable {
+    /// Whether the block is visible at the queried frame
+    public let isVisible: Bool
+
+    /// Block area in canvas coordinates (width × height)
+    public let area: Double
+
+    /// Z-index for render ordering (higher = front)
+    public let zIndex: Int
+
+    public init(isVisible: Bool, area: Double, zIndex: Int) {
+        self.isVisible = isVisible
+        self.area = area
+        self.zIndex = zIndex
+    }
+}
+
 // MARK: - Block Timing
 
 /// Timing information for block visibility

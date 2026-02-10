@@ -5,6 +5,9 @@ import Foundation
 /// Runtime player for compiled scenes.
 /// Handles playback, user transforms, variant selection, and render command generation.
 /// Does NOT handle compilation — use SceneCompiler from TVECompilerCore for that.
+///
+/// Model A contract: All mutable state access happens on main thread during playback/render.
+@MainActor
 public final class ScenePlayer {
 
     // MARK: - Properties
@@ -219,6 +222,35 @@ public final class ScenePlayer {
     /// - Returns: BlockTiming with startFrame/endFrame, or `nil` if block not found
     public func blockTiming(for blockId: String) -> BlockTiming? {
         timingByBlockId[blockId]
+    }
+
+    // MARK: - Block Priority Info (PR-F)
+
+    /// Returns priority information for a block at a given scene frame.
+    ///
+    /// Used by `UserMediaService` to determine which video providers should be active
+    /// when the number of videos exceeds the budget limit.
+    ///
+    /// Priority criteria (in order):
+    /// 1. Visibility — visible blocks have higher priority
+    /// 2. Area — larger blocks (in canvas units) have higher priority
+    /// 3. zIndex — blocks with higher zIndex have higher priority
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block
+    ///   - sceneFrameIndex: Current scene frame for visibility check
+    /// - Returns: `BlockPriorityInfo` with visibility, area, and zIndex; `nil` if block not found
+    public func blockPriorityInfo(blockId: String, at sceneFrameIndex: Int) -> BlockPriorityInfo? {
+        guard let compiled = compiledScene else { return nil }
+        guard let block = compiled.runtime.blocks.first(where: { $0.blockId == blockId }) else {
+            return nil
+        }
+
+        let isVisible = block.timing.isVisible(at: sceneFrameIndex)
+        let area = block.rectCanvas.width * block.rectCanvas.height
+        let zIndex = block.zIndex
+
+        return BlockPriorityInfo(isVisible: isVisible, area: area, zIndex: zIndex)
     }
 
     // MARK: - Binding Asset IDs (PR-32)
