@@ -857,8 +857,170 @@ extension MetalRenderer {
 
     // MARK: - Matte Scope Rendering
 
-    /// **PR Hot Path:** Takes full commands array + scope with ranges (no array copy).
+    /// **PR Matte BBox:** Renders matte scope using bbox-based offscreen textures.
+    ///
+    /// Algorithm:
+    /// 1. Compute bbox from source and consumer command ranges
+    /// 2. If bbox valid: allocate bbox-sized textures, render with viewport offset
+    /// 3. If bbox invalid: fallback to full-frame rendering (current behavior)
+    ///
+    /// - Parameters:
+    ///   - commands: Full command array
+    ///   - scope: Extracted matte scope with source/consumer ranges
+    ///   - ctx: Matte scope rendering context
+    ///   - inheritedState: Current execution state
     private func renderMatteScope(
+        commands: [RenderCommand],
+        scope: MatteScope,
+        ctx: MatteScopeContext,
+        inheritedState: ExecutionState
+    ) throws {
+        let targetSize = ctx.target.sizePx
+        let currentScissor = inheritedState.currentScissor
+
+        // Step 0: Compute bbox for matte scope
+        let bboxFloat = computeMatteBBox(
+            commands: commands,
+            sourceRange: scope.sourceRange,
+            consumerRange: scope.consumerRange,
+            inheritedTransform: inheritedState.currentTransform,
+            animToViewport: ctx.animToViewport,
+            assetSizes: ctx.assetSizes,
+            pathRegistry: ctx.pathRegistry
+        )
+
+        // Check if bbox is valid and convert to pixels
+        if let floatBbox = bboxFloat,
+           let bbox = roundClampIntersectBBoxToPixels(
+               floatBbox,
+               targetSize: targetSize,
+               scissor: currentScissor,
+               expandAA: 2
+           ) {
+            // Bbox-based rendering path
+            try renderMatteScopeBBox(
+                commands: commands,
+                scope: scope,
+                ctx: ctx,
+                inheritedState: inheritedState,
+                bbox: bbox
+            )
+        } else {
+            // Fallback: full-frame rendering (original behavior)
+            try renderMatteScopeFullFrame(
+                commands: commands,
+                scope: scope,
+                ctx: ctx,
+                inheritedState: inheritedState
+            )
+        }
+    }
+
+    /// Renders matte scope using bbox-sized offscreen textures.
+    ///
+    /// This is the optimized path that reduces VRAM and bandwidth usage.
+    // swiftlint:disable:next function_parameter_count
+    private func renderMatteScopeBBox(
+        commands: [RenderCommand],
+        scope: MatteScope,
+        ctx: MatteScopeContext,
+        inheritedState: ExecutionState,
+        bbox: PixelBBox
+    ) throws {
+        let bboxSize = (width: bbox.width, height: bbox.height)
+        let bboxLocalScissor = MTLScissorRect(x: 0, y: 0, width: bbox.width, height: bbox.height)
+
+        // Allocate bbox-sized textures
+        guard let matteTex = texturePool.acquireColorTexture(size: bboxSize) else {
+            return
+        }
+        defer { texturePool.release(matteTex) }
+
+        guard let consumerTex = texturePool.acquireColorTexture(size: bboxSize) else {
+            return
+        }
+        defer { texturePool.release(consumerTex) }
+
+        // Compute viewport offset for bbox-local rendering
+        // viewportToBbox: translate by -bbox.origin
+        let viewportToBbox = Matrix2D.translation(x: Double(-bbox.x), y: Double(-bbox.y))
+        let bboxAnimToViewport = viewportToBbox.concatenating(ctx.animToViewport)
+
+        // Create bbox-local state
+        var bboxState = inheritedState
+        bboxState.clipStack = [bboxLocalScissor]
+
+        // Create bbox-sized offscreen target
+        let offscreenTarget = RenderTarget(
+            texture: matteTex,
+            drawableScale: ctx.target.drawableScale,
+            animSize: ctx.target.animSize
+        )
+
+        // Step 1: Render matte source to bbox-sized matteTex
+        let sourceDescriptor = MTLRenderPassDescriptor()
+        sourceDescriptor.colorAttachments[0].texture = matteTex
+        sourceDescriptor.colorAttachments[0].loadAction = .clear
+        sourceDescriptor.colorAttachments[0].storeAction = .store
+        sourceDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+        try drawInternal(
+            commands: commands,
+            in: scope.sourceRange,
+            renderPassDescriptor: sourceDescriptor,
+            target: offscreenTarget,
+            textureProvider: ctx.textureProvider,
+            commandBuffer: ctx.commandBuffer,
+            assetSizes: ctx.assetSizes,
+            pathRegistry: ctx.pathRegistry,
+            initialState: bboxState,
+            overrideAnimToViewport: bboxAnimToViewport
+        )
+
+        // Step 2: Render matte consumer to bbox-sized consumerTex
+        let consumerOffscreenTarget = RenderTarget(
+            texture: consumerTex,
+            drawableScale: ctx.target.drawableScale,
+            animSize: ctx.target.animSize
+        )
+
+        let consumerDescriptor = MTLRenderPassDescriptor()
+        consumerDescriptor.colorAttachments[0].texture = consumerTex
+        consumerDescriptor.colorAttachments[0].loadAction = .clear
+        consumerDescriptor.colorAttachments[0].storeAction = .store
+        consumerDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+        try drawInternal(
+            commands: commands,
+            in: scope.consumerRange,
+            renderPassDescriptor: consumerDescriptor,
+            target: consumerOffscreenTarget,
+            textureProvider: ctx.textureProvider,
+            commandBuffer: ctx.commandBuffer,
+            assetSizes: ctx.assetSizes,
+            pathRegistry: ctx.pathRegistry,
+            initialState: bboxState,
+            overrideAnimToViewport: bboxAnimToViewport
+        )
+
+        // Step 3: Composite with bbox offset
+        try compositeWithMatteBBox(
+            consumerTex: consumerTex,
+            matteTex: matteTex,
+            mode: scope.mode,
+            bbox: bbox,
+            target: ctx.target,
+            viewportToNDC: ctx.viewportToNDC,
+            commandBuffer: ctx.commandBuffer,
+            scissor: inheritedState.currentScissor
+        )
+    }
+
+    /// Fallback: Renders matte scope using full-frame offscreen textures.
+    ///
+    /// This is the original behavior, used when bbox cannot be computed.
+    /// Preserves 100% visual compatibility.
+    private func renderMatteScopeFullFrame(
         commands: [RenderCommand],
         scope: MatteScope,
         ctx: MatteScopeContext,
@@ -998,6 +1160,65 @@ extension MetalRenderer {
         encoder.setFragmentTexture(consumerTex, index: 0)
         encoder.setFragmentTexture(matteTex, index: 1)
         encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+        encoder.drawIndexedPrimitives(
+            type: .triangle,
+            indexCount: resources.quadIndexCount,
+            indexType: .uint16,
+            indexBuffer: resources.quadIndexBuffer,
+            indexBufferOffset: 0
+        )
+    }
+
+    /// Composites bbox-sized matte textures to target with offset.
+    ///
+    /// Uses MVP translation instead of custom vertex buffer to avoid allocations.
+    /// Quad vertices are (0..w, 0..h), positioning is done via matrix.
+    // swiftlint:disable:next function_parameter_count
+    private func compositeWithMatteBBox(
+        consumerTex: MTLTexture,
+        matteTex: MTLTexture,
+        mode: RenderMatteMode,
+        bbox: PixelBBox,
+        target: RenderTarget,
+        viewportToNDC: Matrix2D,
+        commandBuffer: MTLCommandBuffer,
+        scissor: MTLScissorRect?
+    ) throws {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target.texture
+        descriptor.colorAttachments[0].loadAction = .load
+        descriptor.colorAttachments[0].storeAction = .store
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+        defer { encoder.endEncoding() }
+
+        // Set parent scissor (not bbox-local!)
+        if let scissor = scissor {
+            encoder.setScissorRect(scissor)
+        }
+
+        // Use standard quad buffer (0..w, 0..h) — no allocations
+        guard let vertexBuffer = resources.makeQuadVertexBuffer(
+            device: device,
+            width: Float(bbox.width),
+            height: Float(bbox.height)
+        ) else { return }
+
+        // Position quad at bbox.origin via MVP translation
+        // MVP = viewportToNDC ∘ translation(bbox.x, bbox.y)
+        let bboxTranslation = Matrix2D.translation(x: Double(bbox.x), y: Double(bbox.y))
+        let mvp = viewportToNDC.concatenating(bboxTranslation).toFloat4x4()
+        var uniforms = MatteCompositeUniforms(mvp: mvp, mode: mode.shaderModeValue)
+
+        encoder.setRenderPipelineState(resources.matteCompositePipelineState)
+        encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<MatteCompositeUniforms>.stride, index: 1)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<MatteCompositeUniforms>.stride, index: 1)
+        encoder.setFragmentTexture(consumerTex, index: 0)
+        encoder.setFragmentTexture(matteTex, index: 1)
         encoder.drawIndexedPrimitives(
             type: .triangle,
             indexCount: resources.quadIndexCount,
