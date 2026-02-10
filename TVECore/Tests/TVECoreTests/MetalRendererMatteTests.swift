@@ -2,6 +2,7 @@
 import XCTest
 import Metal
 @testable import TVECore
+@testable import TVECompilerCore
 
 // MARK: - Metal Renderer Matte Tests
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Scene represents the root structure of a scene.json file
-public struct Scene: Decodable, Equatable, Sendable {
+public struct Scene: Codable, Equatable, Sendable {
     /// Schema version for compatibility checking
     public let schemaVersion: String
 

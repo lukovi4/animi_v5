@@ -1,7 +1,7 @@
 import Foundation
 
 /// 2D size with double precision
-public struct SizeD: Equatable, Sendable {
+public struct SizeD: Equatable, Sendable, Codable {
     public let width: Double
     public let height: Double
 
@@ -14,7 +14,7 @@ public struct SizeD: Equatable, Sendable {
 }
 
 /// 2D rectangle with double precision
-public struct RectD: Equatable, Sendable {
+public struct RectD: Equatable, Sendable, Codable {
     public let x: Double
     public let y: Double
     public let width: Double
@@ -41,7 +41,7 @@ public struct RectD: Equatable, Sendable {
 }
 
 /// 2D vector with double precision
-public struct Vec2D: Equatable, Sendable {
+public struct Vec2D: Equatable, Sendable, Codable {
     public let x: Double
     public let y: Double
 

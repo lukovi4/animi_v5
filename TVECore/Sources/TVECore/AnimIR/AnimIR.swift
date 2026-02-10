@@ -143,6 +143,9 @@ extension AnimIR {
         /// When `false`, binding layer is skipped entirely (no draw commands, no texture request).
         /// Controlled by ScenePlayer/SceneRenderPlan based on user media state.
         let bindingLayerVisible: Bool
+        /// PR-30: Set of toggle IDs that are currently disabled.
+        /// Layers with `toggleId` in this set are skipped during rendering.
+        let disabledToggleIds: Set<String>
     }
 
     /// Resolved world transform for a layer
@@ -170,13 +173,17 @@ extension AnimIR {
     ///     When `false`, the binding layer is skipped entirely — no draw commands are emitted
     ///     and no texture requests are made. Decor/shared layers render normally.
     ///     Default is `true` (binding layer renders as usual).
+    ///   - disabledToggleIds: PR-30: Set of toggle IDs that are currently disabled.
+    ///     Layers with matching `toggleId` are skipped during rendering.
+    ///     Default is empty set (all toggleable layers rendered).
     /// - Returns: Array of render commands in execution order
     /// - Note: Check `lastRenderIssues` after calling for any errors encountered
     public mutating func renderCommands(
         frameIndex: Int,
         userTransform: Matrix2D = .identity,
         inputClipOverride: InputClipOverride? = nil,
-        bindingLayerVisible: Bool = true
+        bindingLayerVisible: Bool = true,
+        disabledToggleIds: Set<String> = []
     ) -> [RenderCommand] {
         // Reset issues from previous call
         lastRenderIssues.removeAll(keepingCapacity: true)
@@ -205,7 +212,8 @@ extension AnimIR {
                 inputGeometry: inputGeometry,
                 inputClipOverride: inputClipOverride,
                 currentCompId: rootComp,
-                bindingLayerVisible: bindingLayerVisible
+                bindingLayerVisible: bindingLayerVisible,
+                disabledToggleIds: disabledToggleIds
             )
             renderComposition(rootComposition, context: context, commands: &commands)
         }
@@ -221,14 +229,16 @@ extension AnimIR {
         frameIndex: Int,
         userTransform: Matrix2D = .identity,
         inputClipOverride: InputClipOverride? = nil,
-        bindingLayerVisible: Bool = true
+        bindingLayerVisible: Bool = true,
+        disabledToggleIds: Set<String> = []
     ) -> (commands: [RenderCommand], issues: [RenderIssue]) {
         var copy = self
         let commands = copy.renderCommands(
             frameIndex: frameIndex,
             userTransform: userTransform,
             inputClipOverride: inputClipOverride,
-            bindingLayerVisible: bindingLayerVisible
+            bindingLayerVisible: bindingLayerVisible,
+            disabledToggleIds: disabledToggleIds
         )
         return (commands, copy.lastRenderIssues)
     }
@@ -258,6 +268,11 @@ extension AnimIR {
 
         // Skip hidden layers (hd=true) - they are geometry sources only (e.g. mediaInput)
         guard !layer.isHidden else { return }
+
+        // PR-30: Skip disabled toggle layers
+        if let toggleId = layer.toggleId, context.disabledToggleIds.contains(toggleId) {
+            return
+        }
 
         // PR-28: Skip binding layer when user media is not selected.
         // This prevents any draw commands and texture requests for the binding placeholder.
@@ -910,7 +925,8 @@ extension AnimIR {
                 inputGeometry: context.inputGeometry,
                 inputClipOverride: context.inputClipOverride,
                 currentCompId: compId,
-                bindingLayerVisible: context.bindingLayerVisible
+                bindingLayerVisible: context.bindingLayerVisible,
+                disabledToggleIds: context.disabledToggleIds
             )
             renderComposition(precomp, context: childContext, commands: &commands)
 
@@ -972,6 +988,45 @@ extension AnimIR {
         case .none:
             break
         }
+    }
+}
+
+// MARK: - AnimIR Codable
+
+extension AnimIR: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case meta
+        case rootComp
+        case comps
+        case assets
+        case binding
+        case pathRegistry
+        case inputGeometry
+        // Note: lastRenderIssues is intentionally excluded — runtime-only diagnostic state
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(meta, forKey: .meta)
+        try container.encode(rootComp, forKey: .rootComp)
+        try container.encode(comps, forKey: .comps)
+        try container.encode(assets, forKey: .assets)
+        try container.encode(binding, forKey: .binding)
+        try container.encode(pathRegistry, forKey: .pathRegistry)
+        try container.encodeIfPresent(inputGeometry, forKey: .inputGeometry)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.meta = try container.decode(Meta.self, forKey: .meta)
+        self.rootComp = try container.decode(CompID.self, forKey: .rootComp)
+        self.comps = try container.decode([CompID: Composition].self, forKey: .comps)
+        self.assets = try container.decode(AssetIndexIR.self, forKey: .assets)
+        self.binding = try container.decode(BindingInfo.self, forKey: .binding)
+        self.pathRegistry = try container.decode(PathRegistry.self, forKey: .pathRegistry)
+        self.inputGeometry = try container.decodeIfPresent(InputGeometryInfo.self, forKey: .inputGeometry)
+        // lastRenderIssues is not serialized — initialize empty on decode
+        self.lastRenderIssues = []
     }
 }
 

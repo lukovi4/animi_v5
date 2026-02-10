@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 final class GeometryMappingTests: XCTestCase {
     let epsilon = 1e-6

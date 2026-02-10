@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for PR-B: MaskMode extension and RenderCommand.beginMask
 final class MaskModeCommandTests: XCTestCase {

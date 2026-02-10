@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// PR-29: Tests for implicit `tp` matte sources and matte chains.
 ///

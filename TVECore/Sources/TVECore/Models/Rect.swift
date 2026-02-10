@@ -1,7 +1,7 @@
 import Foundation
 
 /// Represents a rectangle with position and size
-public struct Rect: Decodable, Equatable, Sendable {
+public struct Rect: Codable, Equatable, Sendable {
     /// X coordinate of the rectangle origin
     public let x: Double
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// MediaBlock defines a replaceable animated container in the scene
-public struct MediaBlock: Decodable, Equatable, Sendable {
+public struct MediaBlock: Codable, Equatable, Sendable {
     /// Unique identifier for this block
     public let id: String
 
@@ -23,6 +23,9 @@ public struct MediaBlock: Decodable, Equatable, Sendable {
     /// Available animation variants
     public let variants: [Variant]
 
+    /// Toggleable layer definitions for this block (PR-30)
+    public let layerToggles: [LayerToggle]?
+
     public init(
         id: String,
         zIndex: Int,
@@ -30,7 +33,8 @@ public struct MediaBlock: Decodable, Equatable, Sendable {
         containerClip: ContainerClip,
         timing: Timing? = nil,
         input: MediaInput,
-        variants: [Variant]
+        variants: [Variant],
+        layerToggles: [LayerToggle]? = nil
     ) {
         self.id = id
         self.zIndex = zIndex
@@ -39,6 +43,7 @@ public struct MediaBlock: Decodable, Equatable, Sendable {
         self.timing = timing
         self.input = input
         self.variants = variants
+        self.layerToggles = layerToggles
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -49,5 +54,6 @@ public struct MediaBlock: Decodable, Equatable, Sendable {
         case timing
         case input
         case variants
+        case layerToggles
     }
 }

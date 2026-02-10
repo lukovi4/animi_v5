@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for PR-14B: PathSamplingCache
 /// Verifies two-level caching (FrameMemo + LRU) for samplePath results.

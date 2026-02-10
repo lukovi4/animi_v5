@@ -4,7 +4,7 @@ import Foundation
 
 /// Unique identifier for a path resource in the AnimIR.
 /// Used to reference paths in RenderCommands instead of passing BezierPath directly.
-public struct PathID: Hashable, Sendable, Equatable {
+public struct PathID: Hashable, Sendable, Equatable, Codable {
     public let value: Int
 
     public init(_ value: Int) {
@@ -20,7 +20,7 @@ public struct PathID: Hashable, Sendable, Equatable {
 /// Memory layout:
 /// - positions: [keyframeIndex][vertexIndex] -> (x, y)
 /// - indices: shared triangulation indices (same topology across keyframes)
-public struct PathResource: Sendable, Equatable {
+public struct PathResource: Sendable, Equatable, Codable {
     /// Path identifier (index in registry)
     public let pathId: PathID
 
@@ -50,7 +50,7 @@ public struct PathResource: Sendable, Equatable {
     public let keyframeEasing: [KeyframeEasing?]
 
     /// Easing parameters for a keyframe segment
-    public struct KeyframeEasing: Sendable, Equatable {
+    public struct KeyframeEasing: Sendable, Equatable, Codable {
         /// Out tangent X (0-1)
         public let outX: Double
         /// Out tangent Y (0-1)
@@ -205,7 +205,8 @@ public struct PathRegistry: Sendable, Equatable {
     /// Unique generation ID for this registry instance (PR-14B).
     /// Monotonically increasing; prevents path sampling cache collisions
     /// when a MetalRenderer is reused across scene recompilations.
-    public let generationId: Int
+    /// Note: This is regenerated on decode, not serialized.
+    public private(set) var generationId: Int
 
     /// All registered path resources
     public private(set) var paths: [PathResource] = []
@@ -270,6 +271,27 @@ public struct PathRegistry: Sendable, Equatable {
 
     /// Number of registered paths
     public var count: Int { paths.count }
+}
+
+// MARK: - PathRegistry Codable
+
+extension PathRegistry: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case paths
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(paths, forKey: .paths)
+        // Note: generationId is NOT serialized — it's a runtime identity marker
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.paths = try container.decode([PathResource].self, forKey: .paths)
+        // Regenerate generationId on decode for cache invalidation safety
+        self.generationId = RegistryGenerationCounter.shared.next()
+    }
 }
 
 // MARK: - Path Resource Builder

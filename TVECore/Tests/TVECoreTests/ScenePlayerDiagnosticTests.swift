@@ -1,6 +1,7 @@
 // swiftlint:disable file_length function_body_length
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Diagnostic tests for ScenePlayer - NO FIXES, ONLY DATA COLLECTION
 /// Per review.md: structured dump to localize issues

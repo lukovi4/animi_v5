@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Loads and parses scene packages from disk
 public final class ScenePackageLoader {

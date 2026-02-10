@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Report containing all validation issues found during scene validation
 public struct ValidationReport: Equatable, Sendable {

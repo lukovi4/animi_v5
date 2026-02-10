@@ -12,6 +12,14 @@ let package = Package(
         .library(
             name: "TVECore",
             targets: ["TVECore"]
+        ),
+        .library(
+            name: "TVECompilerCore",
+            targets: ["TVECompilerCore"]
+        ),
+        .executable(
+            name: "TVETemplateCompiler",
+            targets: ["TVETemplateCompiler"]
         )
     ],
     targets: [
@@ -19,11 +27,25 @@ let package = Package(
             name: "TVECore",
             dependencies: [],
             path: "Sources/TVECore",
-            exclude: ["MetalRenderer/Shaders/QuadShaders.metal"]
+            resources: [
+                .process("MetalRenderer/Shaders")
+            ]
         ),
+        .target(
+            name: "TVECompilerCore",
+            dependencies: ["TVECore"],
+            path: "Sources/TVECompilerCore"
+        ),
+        .executableTarget(
+            name: "TVETemplateCompiler",
+            dependencies: ["TVECompilerCore"],
+            path: "Tools/TVETemplateCompiler"
+        ),
+        // NOTE: TVECoreTests temporarily depends on TVECompilerCore (variant A from review.md)
+        // TODO: Split into TVECoreTests + TVECompilerCoreTests (variant B) in separate task
         .testTarget(
             name: "TVECoreTests",
-            dependencies: ["TVECore"],
+            dependencies: ["TVECore", "TVECompilerCore"],
             path: "Tests/TVECoreTests",
             resources: [
                 .copy("Resources")

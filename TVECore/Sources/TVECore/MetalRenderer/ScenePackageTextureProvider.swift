@@ -20,7 +20,9 @@ public typealias TVELogger = (String) -> Void
 /// Binding layer textures are injected externally via `setTexture(_:for:)`.
 /// When user media is not selected, the binding layer is skipped at render time (PR-28 Q2),
 /// so TextureProvider is never asked for the binding asset ID.
-public final class ScenePackageTextureProvider: TextureProvider {
+///
+/// Conforms to `MutableTextureProvider` (PR-32) for user media injection.
+public final class ScenePackageTextureProvider: MutableTextureProvider {
     // MARK: - Properties
 
     private let device: MTLDevice
@@ -168,11 +170,12 @@ public final class ScenePackageTextureProvider: TextureProvider {
 
     private func loadTexture(from url: URL, assetId: String) -> MTLTexture? {
         // Load with options for premultiplied alpha
+        // PR1: Use .private storage — textures are GPU-only (shaderRead), no CPU access needed
         let options: [MTKTextureLoader.Option: Any] = [
             .SRGB: false, // Linear color space for correct blending
             .generateMipmaps: false,
             .textureUsage: MTLTextureUsage.shaderRead.rawValue,
-            .textureStorageMode: MTLStorageMode.shared.rawValue
+            .textureStorageMode: MTLStorageMode.private.rawValue
         ]
 
         do {

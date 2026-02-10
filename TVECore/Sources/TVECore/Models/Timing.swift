@@ -1,7 +1,7 @@
 import Foundation
 
 /// Timing defines the visibility window for a media block in scene frames
-public struct Timing: Decodable, Equatable, Sendable {
+public struct Timing: Codable, Equatable, Sendable {
     /// Frame number when the block becomes visible
     public let startFrame: Int
 

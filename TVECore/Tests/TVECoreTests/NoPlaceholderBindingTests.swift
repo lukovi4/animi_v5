@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// PR-28: Integration tests for No-Placeholder Binding behavior.
 ///

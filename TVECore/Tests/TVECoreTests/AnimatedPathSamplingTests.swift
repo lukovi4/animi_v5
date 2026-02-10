@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for AnimPath keyframe sampling with bezier easing
 final class AnimatedPathSamplingTests: XCTestCase {

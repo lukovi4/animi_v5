@@ -22,13 +22,16 @@ public enum SceneRenderPlan {
     ///   - userMediaPresent: Per-block flag indicating whether user media is available (PR-28).
     ///     Blocks not present in the dictionary default to `false` (binding layer hidden).
     ///     When `false`, the binding layer is excluded from render commands entirely.
+    ///   - layerToggleState: Per-block toggle state (PR-30).
+    ///     Maps blockId → (toggleId → enabled). Toggles not present default to enabled.
     /// - Returns: Array of render commands for all visible blocks
     public static func renderCommands(
         for runtime: SceneRuntime,
         sceneFrameIndex: Int,
         userTransforms: [String: Matrix2D] = [:],
         variantOverrides: [String: String] = [:],
-        userMediaPresent: [String: Bool] = [:]
+        userMediaPresent: [String: Bool] = [:],
+        layerToggleState: [String: [String: Bool]] = [:]
     ) -> [RenderCommand] {
         var commands: [RenderCommand] = []
 
@@ -61,13 +64,18 @@ public enum SceneRenderPlan {
             // PR-28: Resolve user media presence (default: false = binding hidden)
             let hasUserMedia = userMediaPresent[block.blockId] ?? false
 
+            // PR-30: Compute disabled toggle IDs from state (toggles default to enabled)
+            let blockToggleState = layerToggleState[block.blockId] ?? [:]
+            let disabledToggleIds = Set(blockToggleState.filter { !$0.value }.map { $0.key })
+
             let blockCommands = renderBlockCommands(
                 block: block,
                 variant: &variant,
                 sceneFrameIndex: sceneFrameIndex,
                 canvasSize: canvasSize,
                 userTransform: userTransform,
-                hasUserMedia: hasUserMedia
+                hasUserMedia: hasUserMedia,
+                disabledToggleIds: disabledToggleIds
             )
             commands.append(contentsOf: blockCommands)
         }
@@ -85,7 +93,8 @@ public enum SceneRenderPlan {
         sceneFrameIndex: Int,
         canvasSize: SizeD,
         userTransform: Matrix2D,
-        hasUserMedia: Bool
+        hasUserMedia: Bool,
+        disabledToggleIds: Set<String>
     ) -> [RenderCommand] {
         var commands: [RenderCommand] = []
 
@@ -130,11 +139,13 @@ public enum SceneRenderPlan {
 
         // Get animation render commands with user transform (PR-16)
         // PR-28: Pass bindingLayerVisible to skip binding layer when user media is absent
+        // PR-30: Pass disabledToggleIds to skip disabled toggle layers
         let animCommands = variant.animIR.renderCommands(
             frameIndex: localFrameIndex,
             userTransform: userTransform,
             inputClipOverride: inputClipOverride,
-            bindingLayerVisible: hasUserMedia
+            bindingLayerVisible: hasUserMedia,
+            disabledToggleIds: disabledToggleIds
         )
         commands.append(contentsOf: animCommands)
 

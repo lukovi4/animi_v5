@@ -1,7 +1,7 @@
 import Foundation
 
 /// Canvas defines the scene dimensions, frame rate, and duration
-public struct Canvas: Decodable, Equatable, Sendable {
+public struct Canvas: Codable, Equatable, Sendable {
     /// Width of the canvas in pixels
     public let width: Int
 
@@ -23,7 +23,7 @@ public struct Canvas: Decodable, Equatable, Sendable {
 }
 
 /// Background configuration for the scene
-public struct Background: Decodable, Equatable, Sendable {
+public struct Background: Codable, Equatable, Sendable {
     /// Type of background (e.g., "solid")
     public let type: String
 

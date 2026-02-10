@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Validates Scene objects against Scene.json Spec v0.1
 public final class SceneValidator: Sendable {
@@ -142,6 +143,11 @@ extension SceneValidator {
 
         validateMediaInput(input: block.input, basePath: basePath, issues: &issues)
         validateVariants(variants: block.variants, basePath: basePath, issues: &issues)
+
+        // PR-30: Validate layer toggles
+        if let layerToggles = block.layerToggles {
+            validateLayerToggles(layerToggles: layerToggles, basePath: basePath, issues: &issues)
+        }
     }
 }
 
@@ -374,6 +380,62 @@ extension SceneValidator {
                 message: "LoopRange is invalid: startFrame=\(loopRange.startFrame), " +
                          "endFrame=\(loopRange.endFrame). Must satisfy: 0 <= startFrame < endFrame"
             ))
+        }
+    }
+}
+
+// MARK: - Layer Toggles Validation (PR-30)
+
+extension SceneValidator {
+    /// Validates layer toggle definitions in scene.json.
+    ///
+    /// Checks:
+    /// - Each toggle has a non-empty `id`
+    /// - Each toggle has a non-empty `title`
+    /// - No duplicate toggle ids within the block
+    func validateLayerToggles(
+        layerToggles: [LayerToggle],
+        basePath: String,
+        issues: inout [ValidationIssue]
+    ) {
+        var seenIds = Set<String>()
+
+        for (index, toggle) in layerToggles.enumerated() {
+            let togglePath = "\(basePath).layerToggles[\(index)]"
+
+            // Validate non-empty id
+            if toggle.id.isEmpty {
+                issues.append(ValidationIssue(
+                    code: SceneValidationCode.layerToggleIdEmpty,
+                    severity: .error,
+                    path: "\(togglePath).id",
+                    message: "LayerToggle id must not be empty"
+                ))
+            }
+
+            // Validate non-empty title
+            if toggle.title.isEmpty {
+                issues.append(ValidationIssue(
+                    code: SceneValidationCode.layerToggleTitleEmpty,
+                    severity: .error,
+                    path: "\(togglePath).title",
+                    message: "LayerToggle title must not be empty"
+                ))
+            }
+
+            // Check for duplicate ids
+            if !toggle.id.isEmpty {
+                if seenIds.contains(toggle.id) {
+                    issues.append(ValidationIssue(
+                        code: SceneValidationCode.layerToggleIdDuplicate,
+                        severity: .error,
+                        path: "\(togglePath).id",
+                        message: "Duplicate LayerToggle id '\(toggle.id)' in block"
+                    ))
+                } else {
+                    seenIds.insert(toggle.id)
+                }
+            }
         }
     }
 }

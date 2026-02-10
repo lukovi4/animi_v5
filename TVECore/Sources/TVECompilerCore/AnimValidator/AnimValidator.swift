@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Validates loaded animations against scene requirements and Part 1 subset constraints
 public final class AnimValidator {

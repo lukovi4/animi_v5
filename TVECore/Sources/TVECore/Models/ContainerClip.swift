@@ -1,7 +1,7 @@
 import Foundation
 
 /// Defines how the container clips its content
-public enum ContainerClip: String, Decodable, Equatable, Sendable {
+public enum ContainerClip: String, Codable, Equatable, Sendable {
     /// Clip to the slot rectangle immediately
     case slotRect
 

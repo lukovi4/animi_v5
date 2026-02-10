@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for PR-27: tp-based track matte resolution (shared matte support).
 ///

@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Stable validation error and warning codes for animation validation
 public enum AnimValidationCode {

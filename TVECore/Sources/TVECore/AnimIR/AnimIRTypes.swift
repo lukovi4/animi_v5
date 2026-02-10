@@ -11,7 +11,7 @@ public typealias CompID = String
 // MARK: - Layer Type
 
 /// Supported layer types in Part 1 subset
-public enum LayerType: Int, Sendable, Equatable {
+public enum LayerType: Int, Sendable, Equatable, Codable {
     case precomp = 0    // ty=0: Precomposition reference
     case image = 2      // ty=2: Image layer
     case null = 3       // ty=3: Null/transform layer
@@ -26,7 +26,7 @@ public enum LayerType: Int, Sendable, Equatable {
 // MARK: - Layer Timing
 
 /// Timing information for a layer (in frames)
-public struct LayerTiming: Sendable, Equatable {
+public struct LayerTiming: Sendable, Equatable, Codable {
     /// In point - frame when layer becomes visible
     public let inPoint: Double
 
@@ -54,7 +54,7 @@ public struct LayerTiming: Sendable, Equatable {
 // MARK: - Layer Content
 
 /// Content payload for different layer types
-public enum LayerContent: Sendable, Equatable {
+public enum LayerContent: Sendable, Equatable, Codable {
     /// Image layer content - references an image asset
     case image(assetId: String)
 
@@ -73,7 +73,7 @@ public enum LayerContent: Sendable, Equatable {
 /// Transform for shape groups (tr inside gr)
 /// Supports both static and animated position/anchor/scale/rotation/opacity
 /// Applied at render time, NOT baked into path vertices
-public struct GroupTransform: Sendable, Equatable {
+public struct GroupTransform: Sendable, Equatable, Codable {
     /// Position (default: (0, 0))
     public let position: AnimTrack<Vec2D>
 
@@ -142,7 +142,7 @@ public struct GroupTransform: Sendable, Equatable {
 
 /// Stroke rendering style for shape layers (PR-10)
 /// Contains all parameters needed to render a stroke
-public struct StrokeStyle: Sendable, Equatable {
+public struct StrokeStyle: Sendable, Equatable, Codable {
     /// Stroke color RGB (0...1 per component)
     public let color: [Double]
 
@@ -182,7 +182,7 @@ public struct StrokeStyle: Sendable, Equatable {
 
 /// Simplified shape group for matte source layers
 /// Full shape rendering is not needed in Part 1 - shapes are used only as matte sources
-public struct ShapeGroup: Sendable, Equatable {
+public struct ShapeGroup: Sendable, Equatable, Codable {
     /// Combined path from all shapes (supports static and animated paths)
     /// Path is in LOCAL coordinates - NOT transformed by group transform
     public let animPath: AnimPath?
@@ -241,7 +241,7 @@ public struct ShapeGroup: Sendable, Equatable {
 /// Geometry information for the mediaInput layer
 /// Used for inputClip (clipping binding layer to mediaInput shape)
 /// and for hit-test in the editor
-public struct InputGeometryInfo: Sendable, Equatable {
+public struct InputGeometryInfo: Sendable, Equatable, Codable {
     /// Layer ID of the mediaInput layer
     public let layerId: LayerID
 
@@ -269,7 +269,7 @@ public struct InputGeometryInfo: Sendable, Equatable {
 /// Provides the clip geometry and pre-computed world matrix from the
 /// editVariant (no-anim), so that anim-x variants can clip content
 /// using the no-anim template's mediaInput window.
-public struct InputClipOverride: Sendable, Equatable {
+public struct InputClipOverride: Sendable, Equatable, Codable {
     /// Input geometry from the editVariant (path, pathId, compId, layerId)
     public let inputGeometry: InputGeometryInfo
 
@@ -286,7 +286,7 @@ public struct InputClipOverride: Sendable, Equatable {
 // MARK: - Matte Mode
 
 /// Track matte types - maps directly to Lottie tt values
-public enum MatteMode: Int, Sendable, Equatable {
+public enum MatteMode: Int, Sendable, Equatable, Codable {
     case alpha = 1         // tt=1: Alpha matte
     case alphaInverted = 2 // tt=2: Alpha inverted matte
     case luma = 3          // tt=3: Luma matte
@@ -301,7 +301,7 @@ public enum MatteMode: Int, Sendable, Equatable {
 // MARK: - Matte Info
 
 /// Matte relationship information stored on consumer layer
-public struct MatteInfo: Sendable, Equatable {
+public struct MatteInfo: Sendable, Equatable, Codable {
     /// Matte mode (alpha or alpha inverted)
     public let mode: MatteMode
 
@@ -319,7 +319,7 @@ public struct MatteInfo: Sendable, Equatable {
 /// Mask boolean operation modes matching AE/Lottie mask operations.
 /// Used for GPU mask accumulation: each mode defines how coverage
 /// is combined with the accumulator texture.
-public enum MaskMode: String, Sendable, Equatable {
+public enum MaskMode: String, Sendable, Equatable, Codable {
     /// Additive mask: result = max(accumulator, coverage)
     case add = "a"
     /// Subtractive mask: result = accumulator * (1 - coverage)
@@ -331,7 +331,7 @@ public enum MaskMode: String, Sendable, Equatable {
 // MARK: - Layer
 
 /// IR representation of a Lottie layer
-public struct Layer: Sendable, Equatable {
+public struct Layer: Sendable, Equatable, Codable {
     /// Unique layer identifier within composition
     public let id: LayerID
 
@@ -366,6 +366,11 @@ public struct Layer: Sendable, Equatable {
     /// but can still be used as geometry source (e.g. mediaInput)
     public let isHidden: Bool
 
+    /// Toggle ID if this layer is user-toggleable (PR-30).
+    /// Extracted from layer name prefix `toggle:<id>`.
+    /// When non-nil, the layer can be enabled/disabled at runtime.
+    public let toggleId: String?
+
     public init(
         id: LayerID,
         name: String,
@@ -377,7 +382,8 @@ public struct Layer: Sendable, Equatable {
         matte: MatteInfo?,
         content: LayerContent,
         isMatteSource: Bool,
-        isHidden: Bool = false
+        isHidden: Bool = false,
+        toggleId: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -390,13 +396,14 @@ public struct Layer: Sendable, Equatable {
         self.content = content
         self.isMatteSource = isMatteSource
         self.isHidden = isHidden
+        self.toggleId = toggleId
     }
 }
 
 // MARK: - Composition
 
 /// IR representation of a Lottie composition (root or precomp)
-public struct Composition: Sendable, Equatable {
+public struct Composition: Sendable, Equatable, Codable {
     /// Composition identifier
     public let id: CompID
 
@@ -416,7 +423,7 @@ public struct Composition: Sendable, Equatable {
 // MARK: - Binding Info
 
 /// Information about the replaceable image layer binding
-public struct BindingInfo: Sendable, Equatable {
+public struct BindingInfo: Sendable, Equatable, Codable {
     /// Binding key (layer name to match)
     public let bindingKey: String
 
@@ -440,7 +447,7 @@ public struct BindingInfo: Sendable, Equatable {
 // MARK: - Asset Size
 
 /// Asset size in Lottie coordinates
-public struct AssetSize: Sendable, Equatable {
+public struct AssetSize: Sendable, Equatable, Codable {
     public let width: Double
     public let height: Double
 
@@ -453,7 +460,7 @@ public struct AssetSize: Sendable, Equatable {
 // MARK: - Asset Index IR
 
 /// IR-specific asset index (decoupled from Lottie types)
-public struct AssetIndexIR: Sendable, Equatable {
+public struct AssetIndexIR: Sendable, Equatable, Codable {
     /// Mapping from asset ID to relative file path (retained for diagnostics/logging)
     public let byId: [String: String]
 
@@ -474,19 +481,12 @@ public struct AssetIndexIR: Sendable, Equatable {
         self.sizeById = sizeById
         self.basenameById = basenameById
     }
-
-    /// Creates from PR3 AssetIndex (legacy, no sizes or basenames)
-    public init(from assetIndex: AssetIndex) {
-        self.byId = assetIndex.byId
-        self.sizeById = [:]
-        self.basenameById = [:]
-    }
 }
 
 // MARK: - Meta
 
 /// Animation metadata
-public struct Meta: Sendable, Equatable {
+public struct Meta: Sendable, Equatable, Codable {
     /// Animation width
     public let width: Double
 

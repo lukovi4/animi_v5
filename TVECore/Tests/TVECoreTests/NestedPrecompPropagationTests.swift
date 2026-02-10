@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for PR6: Nested precomp inheritance and transform propagation correctness
 /// Verifies multi-level precomp transform multiplication, st mapping, visibility, masks, and cycle detection

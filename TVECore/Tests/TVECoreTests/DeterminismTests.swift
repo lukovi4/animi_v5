@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for PR-14A: Determinism & Hashing
 /// Verifies that quantized hashes are stable and eliminate floating-point noise issues.

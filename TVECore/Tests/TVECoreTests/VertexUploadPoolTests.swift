@@ -1,6 +1,7 @@
 import XCTest
 import Metal
 @testable import TVECore
+@testable import TVECompilerCore
 
 // MARK: - Vertex Upload Pool Tests (PR-C3)
 

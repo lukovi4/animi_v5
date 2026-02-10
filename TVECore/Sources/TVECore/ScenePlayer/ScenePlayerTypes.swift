@@ -5,7 +5,7 @@ import Foundation
 /// Single source of truth for a compiled scene.
 /// Contains all artifacts from compilation: runtime, assets, and path registry.
 /// Guarantees that if you have a CompiledScene, all required data is present.
-public struct CompiledScene: Sendable {
+public struct CompiledScene: Sendable, Codable {
     /// Compiled scene runtime with blocks and timing
     public let runtime: SceneRuntime
 
@@ -36,7 +36,7 @@ public struct CompiledScene: Sendable {
 // MARK: - Scene Runtime
 
 /// Runtime representation of a compiled scene ready for playback
-public struct SceneRuntime: Sendable {
+public struct SceneRuntime: Sendable, Codable {
     /// Original scene configuration
     public let scene: Scene
 
@@ -70,7 +70,7 @@ public struct SceneRuntime: Sendable {
 // MARK: - Block Runtime
 
 /// Runtime representation of a compiled media block
-public struct BlockRuntime: Sendable {
+public struct BlockRuntime: Sendable, Codable {
     /// Block identifier
     public let blockId: String
 
@@ -154,7 +154,7 @@ public struct BlockRuntime: Sendable {
 // MARK: - Block Timing
 
 /// Timing information for block visibility
-public struct BlockTiming: Sendable, Equatable {
+public struct BlockTiming: Sendable, Equatable, Codable {
     /// Frame when block becomes visible (inclusive)
     public let startFrame: Int
 
@@ -198,7 +198,7 @@ public struct BlockTiming: Sendable, Equatable {
 /// - `edit`: Static editing mode. Time frozen at `editFrameIndex`.
 ///   Renders the full `no-anim` variant for each block.
 ///   `mediaInput` from `no-anim` defines hit-test and overlay geometry.
-public enum TemplateMode: String, Sendable, Equatable {
+public enum TemplateMode: String, Sendable, Equatable, Codable {
     case preview
     case edit
 }
@@ -209,7 +209,7 @@ public enum TemplateMode: String, Sendable, Equatable {
 ///
 /// Contains all geometry the editor needs to draw an interactive overlay:
 /// the canvas-space hit path and the block rect.
-public struct MediaInputOverlay: Sendable {
+public struct MediaInputOverlay: Sendable, Codable {
     /// Block identifier (matches `BlockRuntime.blockId`)
     public let blockId: String
 
@@ -231,7 +231,7 @@ public struct MediaInputOverlay: Sendable {
 // MARK: - Variant Info (PR-20)
 
 /// Lightweight variant descriptor for UI — does not expose AnimIR internals.
-public struct VariantInfo: Sendable, Equatable {
+public struct VariantInfo: Sendable, Equatable, Codable {
     /// Variant identifier
     public let id: String
 
@@ -247,7 +247,7 @@ public struct VariantInfo: Sendable, Equatable {
 // MARK: - Variant Runtime
 
 /// Runtime representation of a compiled animation variant
-public struct VariantRuntime: Sendable {
+public struct VariantRuntime: Sendable, Codable {
     /// Variant identifier
     public let variantId: String
 

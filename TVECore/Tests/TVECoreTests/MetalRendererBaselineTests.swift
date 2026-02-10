@@ -1,6 +1,7 @@
 import XCTest
 import Metal
 @testable import TVECore
+@testable import TVECompilerCore
 
 struct TestColor { let red, green, blue, alpha: UInt8 }
 struct TestPoint { let xPos, yPos: Int }

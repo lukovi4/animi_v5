@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 // MARK: - Unsupported Feature Error
 
@@ -354,6 +355,9 @@ public final class AnimIRCompiler {
         // PR-15: Hidden flag (hd=true)
         let isHidden = lottie.hidden ?? false
 
+        // PR-30: Extract toggle ID from layer name (prefix "toggle:<id>")
+        let toggleId = Self.extractToggleId(from: layerName)
+
         return Layer(
             id: layerId,
             name: layerName,
@@ -365,8 +369,19 @@ public final class AnimIRCompiler {
             matte: matteInfo,
             content: content,
             isMatteSource: isMatteSource,
-            isHidden: isHidden
+            isHidden: isHidden,
+            toggleId: toggleId
         )
+    }
+
+    /// Extracts toggle ID from layer name if it follows the `toggle:<id>` convention.
+    /// - Parameter layerName: The layer's name from Lottie JSON
+    /// - Returns: The toggle ID (substring after "toggle:"), or nil if not a toggle layer
+    private static func extractToggleId(from layerName: String) -> String? {
+        let prefix = "toggle:"
+        guard layerName.hasPrefix(prefix) else { return nil }
+        let id = String(layerName.dropFirst(prefix.count))
+        return id.isEmpty ? nil : id
     }
 
     /// Compiles masks from Lottie mask properties with path registration

@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for ShapeItem decoding with overloaded "r" field
 /// - Fill shapes: "r" is Int (fill rule: 1=non-zero, 2=even-odd)

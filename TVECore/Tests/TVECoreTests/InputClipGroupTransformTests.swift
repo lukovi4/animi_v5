@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// PR-23: Verifies that inputClip world transform includes shape groupTransforms.
 ///

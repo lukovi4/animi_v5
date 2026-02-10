@@ -1,7 +1,7 @@
 import Foundation
 
 /// MediaInput defines the editable input slot within a media block
-public struct MediaInput: Decodable, Equatable, Sendable {
+public struct MediaInput: Codable, Equatable, Sendable {
     /// Rectangle defining the input slot position in local block coordinates
     public let rect: Rect
 
@@ -65,7 +65,7 @@ public enum AllowedMediaType: String, CaseIterable, Sendable {
 }
 
 /// Hit test mode for tap detection
-public enum HitTestMode: String, Decodable, Equatable, Sendable {
+public enum HitTestMode: String, Codable, Equatable, Sendable {
     /// Use exact mask shape for hit testing
     case mask
 
@@ -74,7 +74,7 @@ public enum HitTestMode: String, Decodable, Equatable, Sendable {
 }
 
 /// Policy for handling empty input slots
-public enum EmptyPolicy: String, Decodable, Equatable, Sendable {
+public enum EmptyPolicy: String, Codable, Equatable, Sendable {
     /// Hide the entire block when input is empty
     case hideWholeBlock
 
@@ -83,7 +83,7 @@ public enum EmptyPolicy: String, Decodable, Equatable, Sendable {
 }
 
 /// Media fit modes
-public enum FitMode: String, Decodable, Equatable, Sendable {
+public enum FitMode: String, Codable, Equatable, Sendable {
     /// Scale to cover the entire area (may crop)
     case cover
 
@@ -95,7 +95,7 @@ public enum FitMode: String, Decodable, Equatable, Sendable {
 }
 
 /// User transform permissions
-public struct UserTransformsAllowed: Decodable, Equatable, Sendable {
+public struct UserTransformsAllowed: Codable, Equatable, Sendable {
     /// Whether panning is allowed
     public let pan: Bool
 
@@ -113,7 +113,7 @@ public struct UserTransformsAllowed: Decodable, Equatable, Sendable {
 }
 
 /// Audio configuration for video inputs
-public struct AudioConfig: Decodable, Equatable, Sendable {
+public struct AudioConfig: Codable, Equatable, Sendable {
     /// Whether audio is enabled
     public let enabled: Bool
 

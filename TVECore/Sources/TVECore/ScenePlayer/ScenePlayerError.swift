@@ -32,6 +32,17 @@ public enum ScenePlayerError: Error, Sendable, Equatable {
     /// The binding layer in `no-anim` variant does not produce any draw commands at edit frame
     /// (e.g. binding is reachable by layer visibility but its precomp container is invisible)
     case noAnimBindingNotRenderedAtEditFrame(blockId: String, animRef: String, editFrameIndex: Int)
+
+    /// Template is corrupted — fatal structural error in toggle configuration (PR-30).
+    /// Reason codes:
+    /// - `TOGGLE_SCENE_MISSING_ID`: sceneId required when toggles are present
+    /// - `TOGGLE_MISMATCH`: scene.json toggles don't match Lottie layers
+    /// - `TOGGLE_VARIANT_INCONSISTENT`: variants have different toggle sets
+    /// - `TOGGLE_DUPLICATE_IN_ANIM`: duplicate toggleId in animation
+    /// - `TOGGLE_LAYER_IS_MATTE_SOURCE`: toggle layer cannot be matte source
+    /// - `TOGGLE_LAYER_IS_MATTE_CONSUMER`: toggle layer cannot be matte consumer
+    /// - `TOGGLE_LAYER_IS_PARENT`: toggle layer cannot be parent of other layers
+    case templateCorrupted(reason: String)
 }
 
 extension ScenePlayerError: LocalizedError {
@@ -57,6 +68,8 @@ extension ScenePlayerError: LocalizedError {
             return "Binding layer in no-anim variant '\(animRef)' for block '\(blockId)' is not visible at edit frame \(editFrameIndex)"
         case .noAnimBindingNotRenderedAtEditFrame(let blockId, let animRef, let editFrameIndex):
             return "Binding layer in no-anim variant '\(animRef)' for block '\(blockId)' is not rendered at edit frame \(editFrameIndex) (unreachable via precomp chain)"
+        case .templateCorrupted(let reason):
+            return "Template corrupted: \(reason)"
         }
     }
 }

@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for ShapePathExtractor group transform handling
 /// PR-11: Transform is NOT baked into path - extracted separately via extractGroupTransforms()

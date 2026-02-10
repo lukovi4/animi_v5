@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Represents a single validation issue found during scene validation
 public struct ValidationIssue: Equatable, Sendable {

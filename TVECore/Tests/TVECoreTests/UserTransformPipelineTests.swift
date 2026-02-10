@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 // MARK: - PR-16: UserTransform Pipeline Tests
 //

@@ -2,19 +2,17 @@ import Foundation
 
 // MARK: - Scene Player
 
-/// Compiles a ScenePackage into a runtime representation for playback.
-/// Handles animation compilation, block layout, and render command generation.
+/// Runtime player for compiled scenes.
+/// Handles playback, user transforms, variant selection, and render command generation.
+/// Does NOT handle compilation — use SceneCompiler from TVECompilerCore for that.
 public final class ScenePlayer {
 
     // MARK: - Properties
 
-    /// Compiled scene (single source of truth after compilation)
+    /// Compiled scene (single source of truth after loading)
     /// Contains runtime, merged assets, and path registry.
-    /// Nil before compile() is called.
+    /// Nil before loadCompiledScene() is called.
     public private(set) var compiledScene: CompiledScene?
-
-    /// Animation compiler
-    private let compiler = AnimIRCompiler()
 
     /// Per-block user transforms (pan/zoom/rotate from editor UI).
     /// Key: blockId (MediaBlock.id). Value: user-specified Matrix2D.
@@ -34,277 +32,63 @@ public final class ScenePlayer {
     /// preventing any texture requests for the binding placeholder.
     private var userMediaPresent: [String: Bool] = [:]
 
+    /// Per-block layer toggle state (PR-30).
+    /// Key: blockId. Value: dictionary of (toggleId → enabled).
+    /// All toggles for each block are stored (full state, not sparse).
+    /// Toggles default to `defaultOn` from scene.json if no persisted value exists.
+    private var layerToggleState: [String: [String: Bool]] = [:]
+
+    /// Per-block timing cache (PR1).
+    /// Key: blockId. Value: BlockTiming.
+    /// Built once during load for O(1) access.
+    private var timingByBlockId: [String: BlockTiming] = [:]
+
+    /// Optional persistence store for layer toggle state (PR-30).
+    /// If nil, toggle state is only kept in memory for the session.
+    private let toggleStore: LayerToggleStore?
+
     // MARK: - Initialization
 
-    public init() {}
-
-    // MARK: - Compilation
-
-    /// Compiles a scene package into a CompiledScene.
+    /// Creates a new ScenePlayer.
     ///
-    /// PathIDs are assigned deterministically during compilation into a shared
-    /// scene-level registry. This ensures:
-    /// - No runtime path registration needed
-    /// - Variant switching works without registry rebuild
-    /// - Each AnimIR has empty pathRegistry (scene uses CompiledScene.pathRegistry)
+    /// - Parameter toggleStore: Optional persistence store for layer toggle state.
+    ///   If provided, toggle state is saved/loaded across sessions.
+    public init(toggleStore: LayerToggleStore? = nil) {
+        self.toggleStore = toggleStore
+    }
+
+    // MARK: - Load Pre-Compiled Scene (PR2)
+
+    /// Loads a pre-compiled scene from a CompiledScenePackage.
     ///
-    /// - Parameters:
-    ///   - package: Scene package with scene.json and animation files
-    ///   - loadedAnimations: Pre-loaded Lottie animations from AnimLoader
-    /// - Returns: CompiledScene containing runtime, assets, and path registry
-    /// - Throws: ScenePlayerError if compilation fails
+    /// This bypasses the Lottie JSON compilation path — the scene was compiled
+    /// offline by TVETemplateCompiler. Performs minimal post-load initialization:
+    /// - Clears stale overrides
+    /// - Sets compiledScene
+    /// - Builds timing cache
+    /// - Initializes toggle state
+    ///
+    /// Used in Release builds where templates are pre-compiled at build time.
+    ///
+    /// - Parameter compiled: Pre-compiled scene from CompiledScenePackageLoader
+    /// - Returns: The loaded CompiledScene for convenience
     @discardableResult
-    public func compile(
-        package: ScenePackage,
-        loadedAnimations: LoadedAnimations
-    ) throws -> CompiledScene {
-        // Clear stale overrides from a previous scene (PR-20 review fix)
+    public func loadCompiledScene(_ compiled: CompiledScene) -> CompiledScene {
+        // 1. Clear stale overrides from a previous scene
         variantOverrides.removeAll()
 
-        let scene = package.scene
-
-        guard !scene.mediaBlocks.isEmpty else {
-            throw ScenePlayerError.noMediaBlocks
-        }
-
-        // Scene-level path registry - paths are registered during compilation
-        var sharedPathRegistry = PathRegistry()
-
-        // Compile all blocks
-        var blockRuntimes: [BlockRuntime] = []
-        var allAssetsByIdMerged: [String: String] = [:]
-        var allSizesByIdMerged: [String: AssetSize] = [:]
-        var allBasenameByIdMerged: [String: String] = [:]
-
-        for (index, mediaBlock) in scene.mediaBlocks.enumerated() {
-            let blockRuntime = try compileBlock(
-                mediaBlock: mediaBlock,
-                orderIndex: index,
-                loadedAnimations: loadedAnimations,
-                sceneDurationFrames: scene.canvas.durationFrames,
-                pathRegistry: &sharedPathRegistry
-            )
-            blockRuntimes.append(blockRuntime)
-
-            // Merge assets from all variants of this block
-            for variant in blockRuntime.variants {
-                for (assetId, path) in variant.animIR.assets.byId {
-                    allAssetsByIdMerged[assetId] = path
-                }
-                for (assetId, size) in variant.animIR.assets.sizeById {
-                    allSizesByIdMerged[assetId] = size
-                }
-                for (assetId, basename) in variant.animIR.assets.basenameById {
-                    allBasenameByIdMerged[assetId] = basename
-                }
-            }
-        }
-
-        // Sort blocks by zIndex for correct render order (lower zIndex rendered first)
-        // Use orderIndex as tiebreaker for stable sorting when zIndex is equal
-        blockRuntimes.sort { ($0.zIndex, $0.orderIndex) < ($1.zIndex, $1.orderIndex) }
-
-        // Create merged asset index
-        let mergedAssets = AssetIndexIR(
-            byId: allAssetsByIdMerged,
-            sizeById: allSizesByIdMerged,
-            basenameById: allBasenameByIdMerged
-        )
-
-        // PR-28: Collect binding asset IDs across all variants.
-        // These are namespaced IDs of image assets referenced by binding layers.
-        // They have no file on disk — user media is injected at runtime.
-        var bindingAssetIds: Set<String> = []
-        for block in blockRuntimes {
-            for variant in block.variants {
-                bindingAssetIds.insert(variant.animIR.binding.boundAssetId)
-            }
-        }
-
-        // Create runtime
-        let sceneRuntime = SceneRuntime(
-            scene: scene,
-            canvas: scene.canvas,
-            blocks: blockRuntimes,
-            durationFrames: scene.canvas.durationFrames,
-            fps: scene.canvas.fps
-        )
-
-        // Create CompiledScene (single source of truth)
-        let compiled = CompiledScene(
-            runtime: sceneRuntime,
-            mergedAssetIndex: mergedAssets,
-            pathRegistry: sharedPathRegistry,
-            bindingAssetIds: bindingAssetIds
-        )
-
+        // 2. Set compiled scene (single source of truth)
         self.compiledScene = compiled
+
+        // 3. Build timing cache for O(1) access
+        self.timingByBlockId = Dictionary(
+            uniqueKeysWithValues: compiled.runtime.blocks.map { ($0.blockId, $0.timing) }
+        )
+
+        // 4. Initialize toggle state (load from store or use defaults)
+        initializeToggleState()
+
         return compiled
-    }
-
-    // MARK: - Block Compilation
-
-    /// Compiles a single media block
-    private func compileBlock(
-        mediaBlock: MediaBlock,
-        orderIndex: Int,
-        loadedAnimations: LoadedAnimations,
-        sceneDurationFrames: Int,
-        pathRegistry: inout PathRegistry
-    ) throws -> BlockRuntime {
-        guard !mediaBlock.variants.isEmpty else {
-            throw ScenePlayerError.noVariantsForBlock(blockId: mediaBlock.id)
-        }
-
-        // Validate timing
-        let timing = BlockTiming(from: mediaBlock.timing, sceneDurationFrames: sceneDurationFrames)
-        if timing.startFrame >= timing.endFrame {
-            throw ScenePlayerError.invalidBlockTiming(
-                blockId: mediaBlock.id,
-                startFrame: timing.startFrame,
-                endFrame: timing.endFrame
-            )
-        }
-
-        // Compile all variants
-        var variantRuntimes: [VariantRuntime] = []
-
-        for variant in mediaBlock.variants {
-            let variantRuntime = try compileVariant(
-                variant: variant,
-                bindingKey: mediaBlock.input.bindingKey,
-                blockId: mediaBlock.id,
-                loadedAnimations: loadedAnimations,
-                pathRegistry: &pathRegistry
-            )
-            variantRuntimes.append(variantRuntime)
-        }
-
-        // Select first variant as default
-        let selectedVariantId = mediaBlock.variants.first?.id ?? ""
-
-        // Resolve edit variant (must be "no-anim")
-        guard let editVariant = variantRuntimes.first(where: { $0.variantId == "no-anim" }) else {
-            throw ScenePlayerError.missingNoAnimVariant(blockId: mediaBlock.id)
-        }
-
-        // Validate no-anim: must have mediaInput (inputGeometry)
-        guard editVariant.animIR.inputGeometry != nil else {
-            throw ScenePlayerError.noAnimMissingMediaInput(
-                blockId: mediaBlock.id,
-                animRef: editVariant.animRef
-            )
-        }
-
-        // Validate no-anim: binding layer must exist
-        let bindingLayerId = editVariant.animIR.binding.boundLayerId
-        let bindingCompId = editVariant.animIR.binding.boundCompId
-        guard let bindingComp = editVariant.animIR.comps[bindingCompId],
-              let bindingLayer = bindingComp.layers.first(where: { $0.id == bindingLayerId }) else {
-            throw ScenePlayerError.noAnimMissingBindingLayer(
-                blockId: mediaBlock.id,
-                animRef: editVariant.animRef,
-                bindingKey: mediaBlock.input.bindingKey
-            )
-        }
-
-        // Validate no-anim: binding layer must be visible at edit frame 0
-        let editFrame = Double(SceneRenderPlan.editFrameIndex)
-        guard AnimIR.isVisible(bindingLayer, at: editFrame) else {
-            throw ScenePlayerError.noAnimBindingNotVisibleAtEditFrame(
-                blockId: mediaBlock.id,
-                animRef: editVariant.animRef,
-                editFrameIndex: SceneRenderPlan.editFrameIndex
-            )
-        }
-
-        // Validate no-anim: binding layer must actually render at edit frame 0
-        // (reachability check — catches invisible precomp containers)
-        // PR-28: Probe runs with bindingLayerVisible=true to verify that the binding
-        // layer is CAPABLE of rendering. The actual visibility at runtime is controlled
-        // separately by hasUserMedia (empty binding is allowed at runtime).
-        if case .image(let bindingAssetId) = bindingLayer.content {
-            var probeIR = editVariant.animIR
-            let probeCommands = probeIR.renderCommands(
-                frameIndex: SceneRenderPlan.editFrameIndex,
-                userTransform: .identity,
-                bindingLayerVisible: true
-            )
-            let bindingRendered = probeCommands.contains { cmd in
-                if case .drawImage(let assetId, _) = cmd {
-                    return assetId == bindingAssetId
-                }
-                return false
-            }
-            guard bindingRendered else {
-                throw ScenePlayerError.noAnimBindingNotRenderedAtEditFrame(
-                    blockId: mediaBlock.id,
-                    animRef: editVariant.animRef,
-                    editFrameIndex: SceneRenderPlan.editFrameIndex
-                )
-            }
-        }
-
-        return BlockRuntime(
-            blockId: mediaBlock.id,
-            zIndex: mediaBlock.zIndex,
-            orderIndex: orderIndex,
-            rectCanvas: RectD(from: mediaBlock.rect),
-            inputRect: RectD(from: mediaBlock.input.rect),
-            timing: timing,
-            containerClip: mediaBlock.containerClip,
-            hitTestMode: mediaBlock.input.hitTest,
-            selectedVariantId: selectedVariantId,
-            editVariantId: editVariant.variantId,
-            variants: variantRuntimes
-        )
-    }
-
-    // MARK: - Variant Compilation
-
-    /// Compiles a single variant with path registration into scene-level registry
-    private func compileVariant(
-        variant: Variant,
-        bindingKey: String,
-        blockId: String,
-        loadedAnimations: LoadedAnimations,
-        pathRegistry: inout PathRegistry
-    ) throws -> VariantRuntime {
-        let animRef = variant.animRef
-
-        // Get Lottie JSON for this animation
-        guard let lottie = loadedAnimations.lottieByAnimRef[animRef] else {
-            throw ScenePlayerError.animRefNotFound(animRef: animRef, blockId: blockId)
-        }
-
-        // Get asset index for this animation
-        guard let assetIndex = loadedAnimations.assetIndexByAnimRef[animRef] else {
-            throw ScenePlayerError.animRefNotFound(animRef: animRef, blockId: blockId)
-        }
-
-        // Compile AnimIR with scene-level path registry
-        let animIR: AnimIR
-        do {
-            animIR = try compiler.compile(
-                lottie: lottie,
-                animRef: animRef,
-                bindingKey: bindingKey,
-                assetIndex: assetIndex,
-                pathRegistry: &pathRegistry
-            )
-        } catch {
-            throw ScenePlayerError.compilationFailed(
-                animRef: animRef,
-                reason: error.localizedDescription
-            )
-        }
-
-        return VariantRuntime(
-            variantId: variant.id,
-            animRef: animRef,
-            animIR: animIR,
-            bindingKey: bindingKey
-        )
     }
 
     // MARK: - User Transform (PR-16)
@@ -422,6 +206,187 @@ public final class ScenePlayer {
     /// - Returns: `true` if user media is set, `false` otherwise (default)
     public func isUserMediaPresent(blockId: String) -> Bool {
         userMediaPresent[blockId] ?? false
+    }
+
+    // MARK: - Block Timing (PR1)
+
+    /// Returns the timing information for a block.
+    ///
+    /// Used by `UserMediaService` to compute `tBlock` (time from block start)
+    /// for video frame synchronization with trim/offset.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: BlockTiming with startFrame/endFrame, or `nil` if block not found
+    public func blockTiming(for blockId: String) -> BlockTiming? {
+        timingByBlockId[blockId]
+    }
+
+    // MARK: - Binding Asset IDs (PR-32)
+
+    /// Returns the binding asset ID for the edit variant of a block.
+    ///
+    /// This is the namespaced asset ID where user media textures should be injected.
+    /// The edit variant ("no-anim") is used because UI editing always operates on this variant.
+    ///
+    /// Example return value: `"no-anim.json|image_2"`
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: Namespaced binding asset ID, or `nil` if block not found
+    public func bindingAssetId(blockId: String) -> String? {
+        guard let compiled = compiledScene else { return nil }
+        guard let block = compiled.runtime.blocks.first(where: { $0.blockId == blockId }) else {
+            return nil
+        }
+        guard let editVariant = block.variants.first(where: { $0.variantId == block.editVariantId }) else {
+            return nil
+        }
+        return editVariant.animIR.binding.boundAssetId
+    }
+
+    /// Returns binding asset IDs for all variants of a block.
+    ///
+    /// When setting user media, textures should be injected for ALL variant binding asset IDs
+    /// to ensure media persists across variant switches.
+    ///
+    /// Example return value:
+    /// ```
+    /// [
+    ///     "no-anim": "no-anim.json|image_2",
+    ///     "anim-1": "anim-1.json|image_2"
+    /// ]
+    /// ```
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: Dictionary mapping variantId → namespaced binding asset ID, or empty if block not found
+    public func bindingAssetIdsByVariant(blockId: String) -> [String: String] {
+        guard let compiled = compiledScene else { return [:] }
+        guard let block = compiled.runtime.blocks.first(where: { $0.blockId == blockId }) else {
+            return [:]
+        }
+        var result: [String: String] = [:]
+        for variant in block.variants {
+            result[variant.variantId] = variant.animIR.binding.boundAssetId
+        }
+        return result
+    }
+
+    // MARK: - Layer Toggles (PR-30)
+
+    /// Returns the list of available toggles for a block.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: Array of `LayerToggle` metadata, or empty if block not found or has no toggles
+    public func availableToggles(blockId: String) -> [LayerToggle] {
+        guard let compiled = compiledScene else { return [] }
+        guard let block = compiled.runtime.scene.mediaBlocks.first(where: { $0.id == blockId }) else {
+            return []
+        }
+        return block.layerToggles ?? []
+    }
+
+    /// Sets the enabled state for a layer toggle.
+    ///
+    /// The state is saved to the persistence store (if provided) and takes effect
+    /// on the next render.
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block
+    ///   - toggleId: Identifier of the toggle (from scene.json)
+    ///   - enabled: Whether the toggle layer should be visible
+    public func setLayerToggle(blockId: String, toggleId: String, enabled: Bool) {
+        guard let compiled = compiledScene else { return }
+
+        // Ensure toggle exists in this block
+        guard let block = compiled.runtime.scene.mediaBlocks.first(where: { $0.id == blockId }),
+              let toggles = block.layerToggles,
+              toggles.contains(where: { $0.id == toggleId }) else {
+            return
+        }
+
+        // Update in-memory state
+        if layerToggleState[blockId] == nil {
+            layerToggleState[blockId] = [:]
+        }
+        layerToggleState[blockId]?[toggleId] = enabled
+
+        // Persist if store available
+        if let store = toggleStore, let sceneId = compiled.runtime.scene.sceneId {
+            store.save(templateId: sceneId, blockId: blockId, toggleId: toggleId, value: enabled)
+        }
+    }
+
+    /// Returns the current enabled state for a layer toggle.
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block
+    ///   - toggleId: Identifier of the toggle
+    /// - Returns: `true` if enabled, `false` if disabled, `nil` if toggle not found
+    public func isLayerToggleEnabled(blockId: String, toggleId: String) -> Bool? {
+        guard let state = layerToggleState[blockId] else { return nil }
+        return state[toggleId]
+    }
+
+    /// Resets a toggle to its default state from scene.json.
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block
+    ///   - toggleId: Identifier of the toggle
+    public func resetLayerToggle(blockId: String, toggleId: String) {
+        guard let compiled = compiledScene else { return }
+        guard let block = compiled.runtime.scene.mediaBlocks.first(where: { $0.id == blockId }),
+              let toggles = block.layerToggles,
+              let toggle = toggles.first(where: { $0.id == toggleId }) else {
+            return
+        }
+
+        setLayerToggle(blockId: blockId, toggleId: toggleId, enabled: toggle.defaultOn)
+    }
+
+    /// Resets all toggles for a block to their default states.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    public func resetAllToggles(blockId: String) {
+        guard let compiled = compiledScene else { return }
+        guard let block = compiled.runtime.scene.mediaBlocks.first(where: { $0.id == blockId }),
+              let toggles = block.layerToggles else {
+            return
+        }
+
+        for toggle in toggles {
+            setLayerToggle(blockId: blockId, toggleId: toggle.id, enabled: toggle.defaultOn)
+        }
+    }
+
+    /// Initializes toggle state for all blocks after loading.
+    ///
+    /// Called internally after loadCompiledScene() succeeds. Loads persisted state from store
+    /// or falls back to `defaultOn` from scene.json.
+    private func initializeToggleState() {
+        guard let compiled = compiledScene else { return }
+        let sceneId = compiled.runtime.scene.sceneId
+
+        layerToggleState.removeAll()
+
+        for block in compiled.runtime.scene.mediaBlocks {
+            guard let toggles = block.layerToggles, !toggles.isEmpty else {
+                continue
+            }
+
+            var blockState: [String: Bool] = [:]
+
+            for toggle in toggles {
+                // Try to load from persistence store
+                if let store = toggleStore, let sid = sceneId,
+                   let persisted = store.load(templateId: sid, blockId: block.id, toggleId: toggle.id) {
+                    blockState[toggle.id] = persisted
+                } else {
+                    // Fall back to default
+                    blockState[toggle.id] = toggle.defaultOn
+                }
+            }
+
+            layerToggleState[block.id] = blockState
+        }
     }
 
     /// Resolves the active `VariantRuntime` for a block, respecting mode and overrides.
@@ -589,6 +554,7 @@ public final class ScenePlayer {
     /// User transforms stored via `setUserTransform(blockId:transform:)` are
     /// automatically forwarded to each block's AnimIR render pass.
     /// User media presence (PR-28) controls binding layer visibility per block.
+    /// Layer toggle state (PR-30) controls toggle layer visibility per block.
     ///
     /// - Parameter sceneFrameIndex: Frame index in scene timeline
     /// - Returns: Render commands for all visible blocks, or empty array if not compiled
@@ -601,7 +567,8 @@ public final class ScenePlayer {
             sceneFrameIndex: sceneFrameIndex,
             userTransforms: userTransforms,
             variantOverrides: variantOverrides,
-            userMediaPresent: userMediaPresent
+            userMediaPresent: userMediaPresent,
+            layerToggleState: layerToggleState
         )
     }
 
@@ -649,7 +616,8 @@ public final class ScenePlayer {
             sceneFrameIndex: frameIndex,
             userTransforms: userTransforms,
             variantOverrides: overrides,
-            userMediaPresent: userMediaPresent
+            userMediaPresent: userMediaPresent,
+            layerToggleState: layerToggleState
         )
     }
 }

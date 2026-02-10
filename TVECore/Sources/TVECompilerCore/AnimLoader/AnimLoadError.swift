@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Errors that can occur during animation loading
 public enum AnimLoadError: Error, Equatable, Sendable {

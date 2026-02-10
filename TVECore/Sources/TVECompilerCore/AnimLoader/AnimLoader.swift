@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Index of image assets by their ID
 public struct AssetIndex: Sendable, Equatable {

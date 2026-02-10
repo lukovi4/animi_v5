@@ -2,6 +2,7 @@ import XCTest
 import Metal
 import simd
 @testable import TVECore
+@testable import TVECompilerCore
 
 // MARK: - Test Helpers
 

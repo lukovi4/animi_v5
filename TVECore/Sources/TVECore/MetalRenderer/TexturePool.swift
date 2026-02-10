@@ -37,12 +37,13 @@ final class TexturePool {
     /// Acquires a color texture (BGRA8Unorm) for offscreen rendering.
     /// - Parameter size: Texture dimensions in pixels
     /// - Returns: A texture configured for render target and shader read
+    /// - Note: PR1 — uses `.private` storage for GPU-only access (no CPU read/write)
     func acquireColorTexture(size: (width: Int, height: Int)) -> MTLTexture? {
         acquire(
             size: size,
             pixelFormat: .bgra8Unorm,
             usage: [.renderTarget, .shaderRead],
-            storageMode: .shared
+            storageMode: .private
         )
     }
 

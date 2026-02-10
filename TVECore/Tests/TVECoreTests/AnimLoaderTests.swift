@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 final class AnimLoaderTests: XCTestCase {
     private var loader: AnimLoader!

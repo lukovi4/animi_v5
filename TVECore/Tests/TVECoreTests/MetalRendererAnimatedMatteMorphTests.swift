@@ -2,6 +2,7 @@
 import XCTest
 import Metal
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Integration tests for animated matte morph rendering (anim-3).
 /// Verifies that matte shape path animation actually affects rendered output.

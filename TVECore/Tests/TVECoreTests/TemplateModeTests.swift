@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Template Modes — Preview vs Edit (no-anim refactor)
 ///

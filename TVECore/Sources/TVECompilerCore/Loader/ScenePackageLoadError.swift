@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Errors that can occur when loading a scene package
 public enum ScenePackageLoadError: Error, Equatable, Sendable {

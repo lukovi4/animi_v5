@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// ScenePackage represents a loaded scene with all its resources
 public struct ScenePackage: Equatable, Sendable {

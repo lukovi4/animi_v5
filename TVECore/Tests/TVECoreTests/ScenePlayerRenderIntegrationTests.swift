@@ -2,6 +2,7 @@
 import XCTest
 import Metal
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Integration tests for ScenePlayer rendering (PR10.1)
 /// Verifies that all 4 blocks render correctly with proper transform and clip inheritance

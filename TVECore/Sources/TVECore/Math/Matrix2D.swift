@@ -7,7 +7,7 @@ import Foundation
 /// | a  b  tx |
 /// | c  d  ty |
 /// | 0  0  1  |
-public struct Matrix2D: Equatable, Sendable {
+public struct Matrix2D: Equatable, Sendable, Codable {
     public let a: Double   // scale x
     public let b: Double   // skew y
     public let c: Double   // skew x

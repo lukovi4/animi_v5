@@ -1,6 +1,7 @@
 import XCTest
 import Metal
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Integration tests for alpha matte rendering (track mattes with tt:2).
 /// Verifies that alpha mattes correctly clip content based on matte layer alpha.

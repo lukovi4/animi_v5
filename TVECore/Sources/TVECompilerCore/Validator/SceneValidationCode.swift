@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Stable validation error and warning codes for scene validation
 public enum SceneValidationCode {
@@ -54,6 +55,17 @@ public enum SceneValidationCode {
 
     /// Variant loopRange is invalid
     public static let variantLoopRangeInvalid = "VARIANT_LOOPRANGE_INVALID"
+
+    // MARK: - Layer Toggles (PR-30)
+
+    /// LayerToggle id is empty
+    public static let layerToggleIdEmpty = "LAYER_TOGGLE_ID_EMPTY"
+
+    /// LayerToggle title is empty
+    public static let layerToggleTitleEmpty = "LAYER_TOGGLE_TITLE_EMPTY"
+
+    /// Duplicate LayerToggle id within block
+    public static let layerToggleIdDuplicate = "LAYER_TOGGLE_ID_DUPLICATE"
 
     // MARK: - Warnings
 

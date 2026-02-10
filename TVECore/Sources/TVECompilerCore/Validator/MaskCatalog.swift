@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 /// Protocol for mask asset catalog lookup
 /// Used by SceneValidator to verify maskRef references

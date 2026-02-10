@@ -1,7 +1,7 @@
 import Foundation
 
 /// Variant represents an animation variant for a media block
-public struct Variant: Decodable, Equatable, Sendable {
+public struct Variant: Codable, Equatable, Sendable {
     /// Unique identifier for this variant
     public let id: String
 
@@ -53,7 +53,7 @@ public struct Variant: Decodable, Equatable, Sendable {
 }
 
 /// Behavior when animation duration doesn't match scene duration
-public enum AnimationDurationBehavior: String, Decodable, Equatable, Sendable {
+public enum AnimationDurationBehavior: String, Codable, Equatable, Sendable {
     /// Hold the last frame
     case holdLastFrame
 
@@ -65,7 +65,7 @@ public enum AnimationDurationBehavior: String, Decodable, Equatable, Sendable {
 }
 
 /// Range for looping animations
-public struct LoopRange: Decodable, Equatable, Sendable {
+public struct LoopRange: Codable, Equatable, Sendable {
     /// Start frame for the loop
     public let startFrame: Int
 

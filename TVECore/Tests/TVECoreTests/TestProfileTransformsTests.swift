@@ -1,5 +1,6 @@
 import XCTest
 @testable import TVECore
+@testable import TVECompilerCore
 
 /// Tests for PR5 transforms using real test profile anim-1..4.json files
 /// Verifies visibility, opacity sampling, position animation, and parenting
