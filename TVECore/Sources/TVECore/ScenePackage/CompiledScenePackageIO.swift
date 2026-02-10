@@ -11,7 +11,7 @@ public enum CompiledPackageError: Error {
     case invalidMagic
     case unsupportedNewerFormat(found: UInt16, supported: UInt16)
     case unsupportedOlderFormat(found: UInt16, supported: UInt16)
-    case engineMismatch(found: UInt32, expected: UInt32)
+    case unsupportedSchemaVersion(found: UInt16, supported: ClosedRange<UInt16>)
     case payloadLengthMismatch
     case payloadDecodeFailed
 }
@@ -26,8 +26,17 @@ public enum CompiledPackageConstants {
     /// Current supported format version
     public static let supportedFormatVersion: UInt16 = 1
 
-    /// Header size for v1 format (16 bytes)
+    /// Header size for v1 format (16 bytes) - legacy without irSchemaVersion
     public static let headerSizeV1: UInt16 = 16
+
+    /// Header size for v1 format with schema version (18 bytes)
+    public static let headerSizeV1WithSchema: UInt16 = 18
+
+    /// Current IR schema version (increment only on breaking payload changes)
+    public static let currentIRSchemaVersion: UInt16 = 1
+
+    /// Supported IR schema version range
+    public static let supportedIRSchemaRange: ClosedRange<UInt16> = 1...1
 }
 
 // MARK: - Engine Version Hash

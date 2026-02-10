@@ -23,9 +23,10 @@ public enum CompiledScenePackageWriter {
         let payloadData = try encoder.encode(payload)
 
         let formatVersion = CompiledPackageConstants.supportedFormatVersion
-        let headerLength = CompiledPackageConstants.headerSizeV1
+        let headerLength = CompiledPackageConstants.headerSizeV1WithSchema
         let payloadLength = UInt32(payloadData.count)
         let versionHash = engineVersionHash(engineVersion)
+        let schemaVersion = CompiledPackageConstants.currentIRSchemaVersion
 
         var data = Data()
         data.reserveCapacity(Int(headerLength) + payloadData.count)
@@ -36,14 +37,17 @@ public enum CompiledScenePackageWriter {
         // UInt16 compiledFormatVersion (LE)
         data.appendLE(formatVersion)
 
-        // UInt16 headerLength (LE) — v1 = 16
+        // UInt16 headerLength (LE) — v1 with schema = 18
         data.appendLE(headerLength)
 
         // UInt32 payloadLength (LE)
         data.appendLE(payloadLength)
 
-        // UInt32 engineVersionHash (LE)
+        // UInt32 engineVersionHash (LE) — diagnostic only
         data.appendLE(versionHash)
+
+        // UInt16 irSchemaVersion (LE)
+        data.appendLE(schemaVersion)
 
         // JSON payload
         data.append(payloadData)

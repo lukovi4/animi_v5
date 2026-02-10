@@ -78,11 +78,33 @@ public final class CompiledScenePackageLoader {
 
         let payloadLength: UInt32 = data.readLE(at: 8)
 
-        // Validate engine version hash
+        // Engine version hash — diagnostic only, no hard fail
         let foundHash: UInt32 = data.readLE(at: 12)
         let expectedHash = engineVersionHash(engineVersion)
-        guard foundHash == expectedHash else {
-            throw CompiledPackageError.engineMismatch(found: foundHash, expected: expectedHash)
+        if foundHash != expectedHash {
+            #if DEBUG
+            print("[TVECore] Warning: engineVersionHash mismatch - found \(foundHash), expected \(expectedHash). Template may have been compiled with a different engine version.")
+            #endif
+        }
+
+        // Determine IR schema version
+        // Legacy header (16 bytes) → implicit schema = 1
+        // New header (≥18 bytes) → read from offset 16
+        let irSchemaVersion: UInt16
+        if headerLength >= CompiledPackageConstants.headerSizeV1WithSchema {
+            guard data.count >= Int(CompiledPackageConstants.headerSizeV1WithSchema) else {
+                throw CompiledPackageError.payloadLengthMismatch
+            }
+            irSchemaVersion = data.readLE(at: 16)
+        } else {
+            // Legacy .tve without explicit schema → treat as schema 1
+            irSchemaVersion = 1
+        }
+
+        // Validate schema version
+        let supportedRange = CompiledPackageConstants.supportedIRSchemaRange
+        guard supportedRange.contains(irSchemaVersion) else {
+            throw CompiledPackageError.unsupportedSchemaVersion(found: irSchemaVersion, supported: supportedRange)
         }
 
         // Extract and decode payload
