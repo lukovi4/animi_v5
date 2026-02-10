@@ -192,7 +192,7 @@ final class MetalRendererMaskTests: XCTestCase {
         XCTAssertNotNil(scope, "Should extract mask scope")
         XCTAssertEqual(scope?.startIndex, 1)
         XCTAssertEqual(scope?.endIndex, 5)
-        XCTAssertEqual(scope?.innerCommands.count, 3)
+        XCTAssertEqual(scope?.innerRange.count, 3)
     }
 
     // MARK: - Test 5: Nested mask scope extraction
@@ -218,13 +218,13 @@ final class MetalRendererMaskTests: XCTestCase {
         XCTAssertNotNil(outerScope)
         XCTAssertEqual(outerScope?.startIndex, 0)
         XCTAssertEqual(outerScope?.endIndex, 6, "Outer scope should end at index 6")
-        XCTAssertEqual(outerScope?.innerCommands.count, 5, "Outer scope should have 5 inner commands")
+        XCTAssertEqual(outerScope?.innerRange.count, 5, "Outer scope should have 5 inner commands")
 
         let innerScope = renderer.extractMaskScope(from: commands, startIndex: 2)
         XCTAssertNotNil(innerScope)
         XCTAssertEqual(innerScope?.startIndex, 2)
         XCTAssertEqual(innerScope?.endIndex, 4, "Inner scope should end at index 4")
-        XCTAssertEqual(innerScope?.innerCommands.count, 1, "Inner scope should have 1 inner command")
+        XCTAssertEqual(innerScope?.innerRange.count, 1, "Inner scope should have 1 inner command")
     }
 
     // MARK: - Test 6: Determinism - same mask renders same pixels

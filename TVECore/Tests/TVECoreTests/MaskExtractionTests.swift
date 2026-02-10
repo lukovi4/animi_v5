@@ -26,7 +26,7 @@ final class MaskExtractionTests: XCTestCase {
         XCTAssertEqual(scope.opsInAeOrder[0].inverted, false)
         XCTAssertEqual(scope.opsInAeOrder[0].pathId, PathID(1))
         XCTAssertEqual(scope.opsInAeOrder[0].opacity, 1.0)
-        XCTAssertEqual(scope.innerCommands.count, 2) // pushTransform, popTransform
+        XCTAssertEqual(scope.innerRange.count, 2) // pushTransform, popTransform
         XCTAssertEqual(scope.endIndex, 4) // Next command after endMask
     }
 
@@ -67,9 +67,9 @@ final class MaskExtractionTests: XCTestCase {
         XCTAssertEqual(scope.opsInAeOrder[2].inverted, false)
         XCTAssertEqual(scope.opsInAeOrder[2].opacity, 0.8)
 
-        // Verify innerCommands is exactly [.drawImage]
-        XCTAssertEqual(scope.innerCommands.count, 1)
-        if case .drawImage(let assetId, _) = scope.innerCommands[0] {
+        // Verify innerRange covers exactly [.drawImage]
+        XCTAssertEqual(scope.innerRange.count, 1)
+        if case .drawImage(let assetId, _) = commands[scope.innerRange.lowerBound] {
             XCTAssertEqual(assetId, "test")
         } else {
             XCTFail("Inner command should be drawImage")
@@ -140,7 +140,7 @@ final class MaskExtractionTests: XCTestCase {
         }
 
         XCTAssertEqual(scope.opsInAeOrder.count, 1)
-        XCTAssertTrue(scope.innerCommands.isEmpty)
+        XCTAssertTrue(scope.innerRange.isEmpty)
         XCTAssertEqual(scope.endIndex, 2)
     }
 
@@ -194,11 +194,11 @@ final class MaskExtractionTests: XCTestCase {
             return
         }
 
-        XCTAssertEqual(scope.innerCommands.count, 4)
+        XCTAssertEqual(scope.innerRange.count, 4)
 
         // Verify none of the inner commands are mask commands
-        for cmd in scope.innerCommands {
-            switch cmd {
+        for i in scope.innerRange {
+            switch commands[i] {
             case .beginMask, .endMask:
                 XCTFail("Inner commands should not contain mask commands")
             default:
@@ -232,10 +232,10 @@ final class MaskExtractionTests: XCTestCase {
         XCTAssertEqual(scope.opsInAeOrder[0].mode, .add)
 
         // Inner commands: pushTransform, beginMask(nested), drawImage, endMask, popTransform
-        XCTAssertEqual(scope.innerCommands.count, 5)
+        XCTAssertEqual(scope.innerRange.count, 5)
 
         // Verify nested beginMask is in inner commands
-        if case .beginMask(let mode, _, let pathId, _, _) = scope.innerCommands[1] {
+        if case .beginMask(let mode, _, let pathId, _, _) = commands[scope.innerRange.lowerBound + 1] {
             XCTAssertEqual(mode, .subtract)
             XCTAssertEqual(pathId, PathID(2))
         } else {
@@ -243,7 +243,7 @@ final class MaskExtractionTests: XCTestCase {
         }
 
         // Verify nested endMask is in inner commands
-        if case .endMask = scope.innerCommands[3] {
+        if case .endMask = commands[scope.innerRange.lowerBound + 3] {
             // OK
         } else {
             XCTFail("Expected endMask at index 3 of inner commands")
@@ -282,15 +282,15 @@ final class MaskExtractionTests: XCTestCase {
         XCTAssertEqual(scope.opsInAeOrder[0].pathId, PathID(1))
 
         // Inner: beginGroup, beginMask(B), pushTransform, beginMask(C), drawImage, endMask(C), popTransform, endMask(B), endGroup
-        XCTAssertEqual(scope.innerCommands.count, 9)
+        XCTAssertEqual(scope.innerRange.count, 9)
 
         // Verify B and C are both in inner commands
-        if case .beginMask(_, _, let pid, _, _) = scope.innerCommands[1] {
+        if case .beginMask(_, _, let pid, _, _) = commands[scope.innerRange.lowerBound + 1] {
             XCTAssertEqual(pid, PathID(2), "B should be at index 1")
         } else {
             XCTFail("Expected beginMask(B) at index 1")
         }
-        if case .beginMask(_, _, let pid, _, _) = scope.innerCommands[3] {
+        if case .beginMask(_, _, let pid, _, _) = commands[scope.innerRange.lowerBound + 3] {
             XCTAssertEqual(pid, PathID(3), "C should be at index 3")
         } else {
             XCTFail("Expected beginMask(C) at index 3")
@@ -327,10 +327,10 @@ final class MaskExtractionTests: XCTestCase {
         XCTAssertEqual(scope.opsInAeOrder[1].mode, .subtract)
 
         // Inner: pushTransform, beginMask(N), drawImage, endMask(N), popTransform
-        XCTAssertEqual(scope.innerCommands.count, 5)
+        XCTAssertEqual(scope.innerRange.count, 5)
 
         // Verify nested mask is in inner commands
-        if case .beginMask(let mode, _, let pid, _, _) = scope.innerCommands[1] {
+        if case .beginMask(let mode, _, let pid, _, _) = commands[scope.innerRange.lowerBound + 1] {
             XCTAssertEqual(mode, .intersect)
             XCTAssertEqual(pid, PathID(5))
         } else {
@@ -363,10 +363,10 @@ final class MaskExtractionTests: XCTestCase {
         XCTAssertEqual(scope.opsInAeOrder.count, 1)
 
         // Inner: beginGroup, beginMask, drawImage, endMask, endGroup, drawImage
-        XCTAssertEqual(scope.innerCommands.count, 6)
+        XCTAssertEqual(scope.innerRange.count, 6)
 
         // Last inner command is the extra drawImage
-        if case .drawImage(let assetId, _) = scope.innerCommands[5] {
+        if case .drawImage(let assetId, _) = commands[scope.innerRange.lowerBound + 5] {
             XCTAssertEqual(assetId, "extra")
         } else {
             XCTFail("Expected drawImage('extra') as last inner command")

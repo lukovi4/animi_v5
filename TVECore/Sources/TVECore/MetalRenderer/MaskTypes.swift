@@ -24,7 +24,7 @@ struct MaskOp: Sendable, Equatable {
 // MARK: - Mask Group Scope
 
 /// Extracted mask group scope containing all mask operations
-/// and inner commands to be rendered with mask applied.
+/// and range of inner commands to be rendered with mask applied.
 ///
 /// Structure corresponds to LIFO-nested mask commands in AE order:
 /// ```
@@ -34,14 +34,16 @@ struct MaskOp: Sendable, Equatable {
 ///
 /// Inner commands may themselves contain nested mask scopes (e.g. inputClip inside
 /// a container mask). These are passed verbatim and handled recursively by `drawInternal`.
+///
+/// **PR Hot Path:** Uses `Range<Int>` instead of `[RenderCommand]` to avoid allocations.
 struct MaskGroupScope: Sendable {
     /// Mask operations in AE application order.
     /// First mask in array is applied first (was innermost in LIFO nesting).
     let opsInAeOrder: [MaskOp]
 
-    /// Commands to render inside the mask scope.
-    /// These are rendered to bbox-sized content texture.
-    let innerCommands: [RenderCommand]
+    /// Range of inner commands within the parent command array.
+    /// Commands in this range are rendered to bbox-sized content texture.
+    let innerRange: Range<Int>
 
     /// Index of the next command after the scope (after last endMask).
     /// Used for index jumping in execute loop.

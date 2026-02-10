@@ -207,9 +207,11 @@ extension MetalRenderer {
             }
 
             // Render segment if non-empty
+            // **PR Hot Path:** Pass range instead of copying commands
             if segmentStart < segmentEnd {
                 try renderSegment(
-                    commands: Array(commands[segmentStart..<segmentEnd]),
+                    commands,
+                    in: segmentStart..<segmentEnd,
                     target: target,
                     textureProvider: textureProvider,
                     commandBuffer: commandBuffer,
@@ -244,15 +246,18 @@ extension MetalRenderer {
                         assetSizes: assetSizes,
                         pathRegistry: pathRegistry
                     )
-                    try renderMaskGroupScope(scope: scope, ctx: scopeCtx, inheritedState: state)
+                    // **PR Hot Path:** Pass commands array + scope with range
+                    try renderMaskGroupScope(commands: commands, scope: scope, ctx: scopeCtx, inheritedState: state)
                     index = scope.endIndex // endIndex already points to next command after last endMask
                 } else {
                     // M1-fallback: malformed scope - skip to matching endMask and render inner without mask
                     // This is safer than crashing the entire render
-                    let (innerCommands, endIdx) = skipMalformedMaskScope(from: commands, startIndex: index)
-                    if !innerCommands.isEmpty {
+                    // **PR Hot Path:** skipMalformedMaskScope returns range, not array
+                    let (innerRange, endIdx) = skipMalformedMaskScope(from: commands, startIndex: index)
+                    if !innerRange.isEmpty {
                         try renderSegment(
-                            commands: innerCommands,
+                            commands,
+                            in: innerRange,
                             target: target,
                             textureProvider: textureProvider,
                             commandBuffer: commandBuffer,
@@ -288,7 +293,8 @@ extension MetalRenderer {
                     assetSizes: assetSizes,
                     pathRegistry: pathRegistry
                 )
-                try renderMatteScope(scope: matteScope, ctx: matteScopeCtx, inheritedState: state)
+                // **PR Hot Path:** Pass commands array + scope with ranges
+                try renderMatteScope(commands: commands, scope: matteScope, ctx: matteScopeCtx, inheritedState: state)
                 index = matteScope.endIndex + 1
 
                 #if DEBUG
@@ -308,9 +314,168 @@ extension MetalRenderer {
         try validateBalancedStacks(state, baseline: baseline)
     }
 
+    /// **PR Hot Path:** Overload that renders commands within a specified range.
+    /// Delegates to main drawInternal by iterating over range instead of full array.
+    // swiftlint:disable:next function_body_length
+    func drawInternal(
+        commands: [RenderCommand],
+        in range: Range<Int>,
+        renderPassDescriptor: MTLRenderPassDescriptor,
+        target: RenderTarget,
+        textureProvider: TextureProvider,
+        commandBuffer: MTLCommandBuffer,
+        assetSizes: [String: AssetSize] = [:],
+        pathRegistry: PathRegistry,
+        initialState: ExecutionState? = nil,
+        overrideAnimToViewport: Matrix2D? = nil
+    ) throws {
+        guard !range.isEmpty else { return }
+
+        let baseline = initialState ?? makeInitialState(target: target)
+        var state = baseline
+        let targetRect = RectD(
+            x: 0, y: 0,
+            width: Double(target.sizePx.width),
+            height: Double(target.sizePx.height)
+        )
+        let animToViewport = overrideAnimToViewport ?? GeometryMapping.animToInputContain(animSize: target.animSize, inputRect: targetRect)
+        let viewportToNDC = GeometryMapping.viewportToNDC(width: targetRect.width, height: targetRect.height)
+
+        // Process commands in segments separated by mask/matte scopes
+        var index = range.lowerBound
+        var isFirstPass = true
+
+        #if DEBUG
+        perf?.beginPhase(.executeCommandsTotal)
+        #endif
+
+        while index < range.upperBound {
+            // Find next mask or matte scope or end of range
+            let segmentStart = index
+            var segmentEnd = range.upperBound
+            var foundScopeType: ScopeType?
+
+            for idx in segmentStart..<range.upperBound {
+                switch commands[idx] {
+                case .beginMask:
+                    segmentEnd = idx
+                    foundScopeType = .mask
+                case .beginMatte:
+                    segmentEnd = idx
+                    foundScopeType = .matte
+                default:
+                    continue
+                }
+                break
+            }
+
+            // Render segment if non-empty
+            if segmentStart < segmentEnd {
+                try renderSegment(
+                    commands,
+                    in: segmentStart..<segmentEnd,
+                    target: target,
+                    textureProvider: textureProvider,
+                    commandBuffer: commandBuffer,
+                    animToViewport: animToViewport,
+                    viewportToNDC: viewportToNDC,
+                    assetSizes: assetSizes,
+                    pathRegistry: pathRegistry,
+                    state: &state,
+                    renderPassDescriptor: isFirstPass ? renderPassDescriptor : nil
+                )
+                isFirstPass = false
+            }
+
+            index = segmentEnd
+
+            // Process scope if found
+            switch foundScopeType {
+            case .mask:
+                #if DEBUG
+                perf?.beginPhase(.executeMasksTotal)
+                perf?.recordMask()
+                #endif
+
+                if let scope = extractMaskGroupScope(from: commands, startIndex: index) {
+                    let scopeCtx = MaskScopeContext(
+                        target: target,
+                        textureProvider: textureProvider,
+                        commandBuffer: commandBuffer,
+                        animToViewport: animToViewport,
+                        viewportToNDC: viewportToNDC,
+                        assetSizes: assetSizes,
+                        pathRegistry: pathRegistry
+                    )
+                    try renderMaskGroupScope(commands: commands, scope: scope, ctx: scopeCtx, inheritedState: state)
+                    index = scope.endIndex
+                } else {
+                    let (innerRange, endIdx) = skipMalformedMaskScope(from: commands, startIndex: index)
+                    if !innerRange.isEmpty {
+                        try renderSegment(
+                            commands,
+                            in: innerRange,
+                            target: target,
+                            textureProvider: textureProvider,
+                            commandBuffer: commandBuffer,
+                            animToViewport: animToViewport,
+                            viewportToNDC: viewportToNDC,
+                            assetSizes: assetSizes,
+                            pathRegistry: pathRegistry,
+                            state: &state,
+                            renderPassDescriptor: nil
+                        )
+                    }
+                    index = endIdx
+                }
+
+                #if DEBUG
+                perf?.endPhase(.executeMasksTotal)
+                #endif
+                isFirstPass = false
+
+            case .matte:
+                #if DEBUG
+                perf?.beginPhase(.executeMattesTotal)
+                perf?.recordMatte()
+                #endif
+
+                let matteScope = try extractMatteScope(from: commands, startIndex: index)
+                let matteScopeCtx = MatteScopeContext(
+                    target: target,
+                    textureProvider: textureProvider,
+                    commandBuffer: commandBuffer,
+                    animToViewport: animToViewport,
+                    viewportToNDC: viewportToNDC,
+                    assetSizes: assetSizes,
+                    pathRegistry: pathRegistry
+                )
+                try renderMatteScope(commands: commands, scope: matteScope, ctx: matteScopeCtx, inheritedState: state)
+                index = matteScope.endIndex + 1
+
+                #if DEBUG
+                perf?.endPhase(.executeMattesTotal)
+                #endif
+                isFirstPass = false
+
+            case .none:
+                break
+            }
+        }
+
+        #if DEBUG
+        perf?.endPhase(.executeCommandsTotal)
+        #endif
+
+        try validateBalancedStacks(state, baseline: baseline)
+    }
+
+    /// Renders a segment of commands using range-based iteration (no array allocation).
+    /// **PR Hot Path:** Iterates over range instead of copying commands to new array.
     // swiftlint:disable:next function_parameter_count
     private func renderSegment(
-        commands: [RenderCommand],
+        _ commands: [RenderCommand],
+        in range: Range<Int>,
         target: RenderTarget,
         textureProvider: TextureProvider,
         commandBuffer: MTLCommandBuffer,
@@ -321,6 +486,8 @@ extension MetalRenderer {
         state: inout ExecutionState,
         renderPassDescriptor: MTLRenderPassDescriptor?
     ) throws {
+        guard !range.isEmpty else { return }
+
         let descriptor: MTLRenderPassDescriptor
         if let provided = renderPassDescriptor {
             descriptor = provided
@@ -353,106 +520,13 @@ extension MetalRenderer {
         encoder.setRenderPipelineState(resources.pipelineState)
         encoder.setFragmentSamplerState(resources.samplerState, index: 0)
 
-        for command in commands {
-            try executeCommand(command, ctx: ctx, state: &state)
+        for i in range {
+            try executeCommand(commands[i], ctx: ctx, state: &state)
         }
     }
 
-    /// Legacy CPU mask rendering path.
-    /// - Important: This function must NOT be called. GPU masks only (PR-C2+).
-    /// - Note: Kept for rollback safety. Will be removed in future cleanup PR.
-    private func renderMaskScope(
-        scope: MaskScope,
-        ctx: MaskScopeContext,
-        inheritedState: ExecutionState
-    ) throws {
-#if DEBUG
-        preconditionFailure("CPU mask path is forbidden. Must use GPU mask pipeline (renderMaskGroupScope).")
-#else
-        // Legacy implementation (release-only rollback path)
-        let targetSize = ctx.target.sizePx
-        let currentScissor = inheritedState.currentScissor
-
-        // Get path from registry and sample at current frame
-        guard let pathResource = ctx.pathRegistry.path(for: scope.pathId) else {
-            assertionFailure("Missing path resource for pathId: \(scope.pathId)")
-            throw MetalRendererError.missingPathResource(pathId: scope.pathId)
-        }
-
-        // Sample path at current frame (PR-14B: cached)
-        guard let path = samplePathCached(resource: pathResource, frame: scope.frame, generationId: ctx.pathRegistry.generationId) else {
-            try renderInnerCommandsToTarget(
-                scope.innerCommands,
-                target: ctx.target,
-                textureProvider: ctx.textureProvider,
-                commandBuffer: ctx.commandBuffer,
-                pathRegistry: ctx.pathRegistry,
-                inheritedState: inheritedState
-            )
-            return
-        }
-
-        // Skip if path is empty or degenerate
-        guard path.vertexCount > 2 else {
-            try renderInnerCommandsToTarget(
-                scope.innerCommands,
-                target: ctx.target,
-                textureProvider: ctx.textureProvider,
-                commandBuffer: ctx.commandBuffer,
-                pathRegistry: ctx.pathRegistry,
-                inheritedState: inheritedState
-            )
-            return
-        }
-
-        // Step 1: Render inner commands to offscreen texture
-        guard let contentTex = texturePool.acquireColorTexture(size: targetSize) else {
-            return
-        }
-        defer { texturePool.release(contentTex) }
-
-        let innerCtx = InnerRenderContext(
-            target: ctx.target,
-            textureProvider: ctx.textureProvider,
-            commandBuffer: ctx.commandBuffer,
-            assetSizes: ctx.assetSizes,
-            pathRegistry: ctx.pathRegistry
-        )
-        try renderInnerCommandsToTexture(
-            scope.innerCommands,
-            texture: contentTex,
-            ctx: innerCtx,
-            inheritedState: inheritedState
-        )
-
-        // Step 2: Get or create mask texture (CPU rasterization - TODO: replace with GPU in PR-C)
-        let maskTransform = ctx.animToViewport.concatenating(inheritedState.currentTransform)
-        guard let maskTex = maskCache.texture(
-            for: path,
-            transform: maskTransform,
-            size: targetSize,
-            opacity: scope.opacity
-        ) else {
-            try compositeTextureToTarget(
-                contentTex,
-                target: ctx.target,
-                viewportToNDC: ctx.viewportToNDC,
-                commandBuffer: ctx.commandBuffer,
-                scissor: currentScissor
-            )
-            return
-        }
-
-        // Step 3: Composite with stencil
-        let compositeCtx = MaskCompositeContext(
-            target: ctx.target,
-            viewportToNDC: ctx.viewportToNDC,
-            commandBuffer: ctx.commandBuffer,
-            scissor: currentScissor
-        )
-        try compositeWithStencilMask(contentTex: contentTex, maskTex: maskTex, ctx: compositeCtx)
-#endif
-    }
+    // NOTE: Legacy CPU mask rendering path has been removed.
+    // GPU masks only (PR-C2+). See renderMaskGroupScope for current implementation.
 
     /// Samples a path at the given frame using PathResource keyframes.
     /// Returns interpolated BezierPath for CPU rasterization fallback.
@@ -597,58 +671,8 @@ extension MetalRenderer {
         )
     }
 
-    private func renderInnerCommandsToTarget(
-        _ commands: [RenderCommand],
-        target: RenderTarget,
-        textureProvider: TextureProvider,
-        commandBuffer: MTLCommandBuffer,
-        pathRegistry: PathRegistry,
-        inheritedState: ExecutionState
-    ) throws {
-        let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = target.texture
-        descriptor.colorAttachments[0].loadAction = .load
-        descriptor.colorAttachments[0].storeAction = .store
-
-        try drawInternal(
-            commands: commands,
-            renderPassDescriptor: descriptor,
-            target: target,
-            textureProvider: textureProvider,
-            commandBuffer: commandBuffer,
-            pathRegistry: pathRegistry,
-            initialState: inheritedState
-        )
-    }
-
-    private func renderInnerCommandsToTexture(
-        _ commands: [RenderCommand],
-        texture: MTLTexture,
-        ctx: InnerRenderContext,
-        inheritedState: ExecutionState
-    ) throws {
-        let offscreenTarget = RenderTarget(
-            texture: texture,
-            drawableScale: ctx.target.drawableScale,
-            animSize: ctx.target.animSize
-        )
-
-        let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = texture
-        descriptor.colorAttachments[0].loadAction = .clear
-        descriptor.colorAttachments[0].storeAction = .store
-        descriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-
-        try drawInternal(
-            commands: commands,
-            renderPassDescriptor: descriptor,
-            target: offscreenTarget,
-            textureProvider: ctx.textureProvider,
-            commandBuffer: ctx.commandBuffer,
-            pathRegistry: ctx.pathRegistry,
-            initialState: inheritedState
-        )
-    }
+    // NOTE: renderInnerCommandsToTarget and renderInnerCommandsToTexture removed.
+    // Legacy CPU mask path no longer used - GPU masks only (PR-C2+).
 
     private func compositeTextureToTarget(
         _ texture: MTLTexture,
@@ -833,7 +857,9 @@ extension MetalRenderer {
 
     // MARK: - Matte Scope Rendering
 
+    /// **PR Hot Path:** Takes full commands array + scope with ranges (no array copy).
     private func renderMatteScope(
+        commands: [RenderCommand],
         scope: MatteScope,
         ctx: MatteScopeContext,
         inheritedState: ExecutionState
@@ -848,7 +874,8 @@ extension MetalRenderer {
         defer { texturePool.release(matteTex) }
 
         try renderCommandsToTexture(
-            scope.sourceCommands,
+            commands,
+            in: scope.sourceRange,
             texture: matteTex,
             target: ctx.target,
             textureProvider: ctx.textureProvider,
@@ -865,7 +892,8 @@ extension MetalRenderer {
         defer { texturePool.release(consumerTex) }
 
         try renderCommandsToTexture(
-            scope.consumerCommands,
+            commands,
+            in: scope.consumerRange,
             texture: consumerTex,
             target: ctx.target,
             textureProvider: ctx.textureProvider,
@@ -887,9 +915,11 @@ extension MetalRenderer {
         )
     }
 
+    /// **PR Hot Path:** Takes full commands array + range (no array copy).
     // swiftlint:disable:next function_parameter_count
     private func renderCommandsToTexture(
         _ commands: [RenderCommand],
+        in range: Range<Int>,
         texture: MTLTexture,
         target: RenderTarget,
         textureProvider: TextureProvider,
@@ -918,6 +948,7 @@ extension MetalRenderer {
 
         try drawInternal(
             commands: commands,
+            in: range,
             renderPassDescriptor: descriptor,
             target: offscreenTarget,
             textureProvider: textureProvider,
@@ -1015,11 +1046,12 @@ extension MetalRenderer {
 
 // MARK: - Mask Scope Extraction
 
-/// Result of extracting a mask scope from command list
+/// Result of extracting a mask scope from command list.
+/// **PR Hot Path:** Uses `Range<Int>` instead of `[RenderCommand]` to avoid allocations.
 struct MaskScope {
     let startIndex: Int
     let endIndex: Int
-    let innerCommands: [RenderCommand]
+    let innerRange: Range<Int>
     let pathId: PathID
     let opacity: Double
     let frame: Double
@@ -1027,18 +1059,20 @@ struct MaskScope {
 
 // MARK: - Matte Scope Extraction
 
-/// Result of extracting a matte scope from command list
+/// Result of extracting a matte scope from command list.
+/// **PR Hot Path:** Uses `Range<Int>` instead of `[RenderCommand]` to avoid allocations.
 struct MatteScope {
     let startIndex: Int
     let endIndex: Int
     let mode: RenderMatteMode
-    let sourceCommands: [RenderCommand]
-    let consumerCommands: [RenderCommand]
+    let sourceRange: Range<Int>
+    let consumerRange: Range<Int>
 }
 
 extension MetalRenderer {
     /// Extracts a mask scope starting at the given index.
     /// Handles nested masks by counting begin/end pairs.
+    /// **PR Hot Path:** Returns range instead of copying commands.
     func extractMaskScope(from commands: [RenderCommand], startIndex: Int) -> MaskScope? {
         guard startIndex < commands.count else { return nil }
 
@@ -1074,12 +1108,12 @@ extension MetalRenderer {
             return nil
         }
 
-        let innerCommands = Array(commands[(startIndex + 1)..<index])
+        let innerRange = (startIndex + 1)..<index
 
         return MaskScope(
             startIndex: startIndex,
             endIndex: index,
-            innerCommands: innerCommands,
+            innerRange: innerRange,
             pathId: pathId,
             opacity: opacity,
             frame: frame
@@ -1173,25 +1207,26 @@ extension MetalRenderer {
             return nil
         }
 
-        // Inner commands: everything between outer chain and first outer endMask.
+        // Inner range: everything between outer chain and first outer endMask.
         // For nested scopes, this includes the complete nested beginMask…endMask pair.
-        let innerCommands = (innerEndIdx > innerStart) ? Array(commands[innerStart..<innerEndIdx]) : []
+        // **PR Hot Path:** Use range instead of copying commands.
+        let innerRange = innerStart..<innerEndIdx
 
         // Reverse ops to get AE application order (emission was reversed)
         let opsInAeOrder = Array(ops.reversed())
 
         return MaskGroupScope(
             opsInAeOrder: opsInAeOrder,
-            innerCommands: innerCommands,
+            innerRange: innerRange,
             endIndex: index
         )
     }
 
-    /// Skips a malformed mask scope and extracts inner commands for fallback rendering.
+    /// Skips a malformed mask scope and extracts inner command range for fallback rendering.
     ///
     /// Used when `extractMaskGroupScope` returns nil (malformed structure).
     /// Finds all commands between beginMask chain and matching endMask(s),
-    /// returning them for rendering without mask.
+    /// returning range for rendering without mask.
     ///
     /// **Contract:**
     /// - Nested beginMask inside inner content is NOT supported in normal path,
@@ -1199,13 +1234,15 @@ extension MetalRenderer {
     /// - Goal: **do not crash render**, not guarantee visual equivalence.
     /// - This is best-effort fallback for malformed command streams.
     ///
+    /// **PR Hot Path:** Returns range instead of copying commands.
+    ///
     /// - Parameters:
     ///   - commands: Full command stream
     ///   - startIndex: Index of first beginMask command
-    /// - Returns: Tuple of (innerCommands to render, endIndex after scope)
-    func skipMalformedMaskScope(from commands: [RenderCommand], startIndex: Int) -> ([RenderCommand], Int) {
+    /// - Returns: Tuple of (innerRange to render, endIndex after scope)
+    func skipMalformedMaskScope(from commands: [RenderCommand], startIndex: Int) -> (Range<Int>, Int) {
         guard startIndex < commands.count else {
-            return ([], commands.count)
+            return (0..<0, commands.count)
         }
 
         var index = startIndex
@@ -1232,7 +1269,7 @@ extension MetalRenderer {
         }
 
         guard depth > 0 else {
-            return ([], startIndex)
+            return (0..<0, startIndex)
         }
 
         let innerStart = index
@@ -1256,13 +1293,15 @@ extension MetalRenderer {
         }
 
         let innerEnd = firstEndMaskIndex ?? index
-        let innerCommands = (innerEnd > innerStart) ? Array(commands[innerStart..<innerEnd]) : []
+        // **PR Hot Path:** Return range instead of copying commands.
+        let innerRange = innerStart..<innerEnd
 
-        return (innerCommands, index)
+        return (innerRange, index)
     }
 
     /// Extracts a matte scope starting at the given index.
     /// Expects exactly two child groups: "matteSource" and "matteConsumer".
+    /// **PR Hot Path:** Returns ranges instead of copying commands.
     func extractMatteScope(from commands: [RenderCommand], startIndex: Int) throws -> MatteScope {
         guard startIndex < commands.count,
               case .beginMatte(let mode) = commands[startIndex] else {
@@ -1291,39 +1330,49 @@ extension MetalRenderer {
             throw MetalRendererError.invalidCommandStack(reason: msg)
         }
 
-        // Extract inner commands (between beginMatte and endMatte)
-        let innerCommands = Array(commands[(startIndex + 1)..<endMatteIndex])
+        // Inner range (between beginMatte and endMatte)
+        let innerRange = (startIndex + 1)..<endMatteIndex
 
         // Parse the two groups: matteSource and matteConsumer
-        let (sourceCommands, consumerCommands) = try parseMatteGroups(innerCommands)
+        // **PR Hot Path:** parseMatteGroups now returns ranges
+        let (sourceRange, consumerRange) = try parseMatteGroups(commands, innerRange: innerRange)
 
         return MatteScope(
             startIndex: startIndex,
             endIndex: endMatteIndex,
             mode: mode,
-            sourceCommands: sourceCommands,
-            consumerCommands: consumerCommands
+            sourceRange: sourceRange,
+            consumerRange: consumerRange
         )
     }
 
-    // Parses matte scope inner commands to extract matteSource and matteConsumer group contents.
+    /// Parses matte scope inner commands to extract matteSource and matteConsumer group ranges.
+    /// **PR Hot Path:** Returns ranges into original command array instead of copying.
+    ///
+    /// - Parameters:
+    ///   - commands: Full command array
+    ///   - innerRange: Range of commands between beginMatte and endMatte
+    /// - Returns: Tuple of (sourceRange, consumerRange) as ranges into original commands array
     // swiftlint:disable:next cyclomatic_complexity function_body_length
     private func parseMatteGroups(
-        _ commands: [RenderCommand]
-    ) throws -> (source: [RenderCommand], consumer: [RenderCommand]) {
+        _ commands: [RenderCommand],
+        innerRange: Range<Int>
+    ) throws -> (source: Range<Int>, consumer: Range<Int>) {
+        let baseIndex = innerRange.lowerBound
+
         // Find first group (matteSource)
-        guard !commands.isEmpty,
-              case .beginGroup(let firstName) = commands[0],
+        guard !innerRange.isEmpty,
+              case .beginGroup(let firstName) = commands[baseIndex],
               firstName == "matteSource" else {
             let msg = "Matte scope must start with beginGroup(\"matteSource\")"
             throw MetalRendererError.invalidCommandStack(reason: msg)
         }
 
-        // Find end of matteSource group
+        // Find end of matteSource group (index relative to baseIndex)
         var depth = 1
-        var sourceEndIndex = 1
-        while sourceEndIndex < commands.count && depth > 0 {
-            switch commands[sourceEndIndex] {
+        var sourceEndOffset = 1
+        while (baseIndex + sourceEndOffset) < innerRange.upperBound && depth > 0 {
+            switch commands[baseIndex + sourceEndOffset] {
             case .beginGroup:
                 depth += 1
             case .endGroup:
@@ -1332,7 +1381,7 @@ extension MetalRenderer {
                 break
             }
             if depth > 0 {
-                sourceEndIndex += 1
+                sourceEndOffset += 1
             }
         }
 
@@ -1340,12 +1389,13 @@ extension MetalRenderer {
             throw MetalRendererError.invalidCommandStack(reason: "Unbalanced matteSource group")
         }
 
-        let sourceCommands = Array(commands[1..<sourceEndIndex])
+        // sourceRange: commands inside matteSource group (excluding begin/end group)
+        let sourceRange = (baseIndex + 1)..<(baseIndex + sourceEndOffset)
 
         // Find second group (matteConsumer)
-        let consumerStartIndex = sourceEndIndex + 1
-        guard consumerStartIndex < commands.count,
-              case .beginGroup(let secondName) = commands[consumerStartIndex],
+        let consumerStartOffset = sourceEndOffset + 1
+        guard (baseIndex + consumerStartOffset) < innerRange.upperBound,
+              case .beginGroup(let secondName) = commands[baseIndex + consumerStartOffset],
               secondName == "matteConsumer" else {
             let msg = "Matte scope must have beginGroup(\"matteConsumer\") after matteSource"
             throw MetalRendererError.invalidCommandStack(reason: msg)
@@ -1353,9 +1403,9 @@ extension MetalRenderer {
 
         // Find end of matteConsumer group
         depth = 1
-        var consumerEndIndex = consumerStartIndex + 1
-        while consumerEndIndex < commands.count && depth > 0 {
-            switch commands[consumerEndIndex] {
+        var consumerEndOffset = consumerStartOffset + 1
+        while (baseIndex + consumerEndOffset) < innerRange.upperBound && depth > 0 {
+            switch commands[baseIndex + consumerEndOffset] {
             case .beginGroup:
                 depth += 1
             case .endGroup:
@@ -1364,7 +1414,7 @@ extension MetalRenderer {
                 break
             }
             if depth > 0 {
-                consumerEndIndex += 1
+                consumerEndOffset += 1
             }
         }
 
@@ -1372,15 +1422,16 @@ extension MetalRenderer {
             throw MetalRendererError.invalidCommandStack(reason: "Unbalanced matteConsumer group")
         }
 
-        let consumerCommands = Array(commands[(consumerStartIndex + 1)..<consumerEndIndex])
+        // consumerRange: commands inside matteConsumer group (excluding begin/end group)
+        let consumerRange = (baseIndex + consumerStartOffset + 1)..<(baseIndex + consumerEndOffset)
 
         // Verify nothing else after matteConsumer
-        if consumerEndIndex + 1 < commands.count {
+        if (baseIndex + consumerEndOffset + 1) < innerRange.upperBound {
             let msg = "Unexpected commands after matteConsumer group in matte scope"
             throw MetalRendererError.invalidCommandStack(reason: msg)
         }
 
-        return (sourceCommands, consumerCommands)
+        return (sourceRange, consumerRange)
     }
 }
 

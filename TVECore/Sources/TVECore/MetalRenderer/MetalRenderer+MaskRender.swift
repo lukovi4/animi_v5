@@ -32,11 +32,15 @@ extension MetalRenderer {
     /// 5. Render inner content to bbox-sized texture
     /// 6. Composite content × finalMask to main target
     ///
+    /// **PR Hot Path:** Takes full commands array + scope with range (no array copy).
+    ///
     /// - Parameters:
-    ///   - scope: Extracted mask group scope with ops in AE order
+    ///   - commands: Full command array
+    ///   - scope: Extracted mask group scope with ops in AE order and innerRange
     ///   - ctx: Mask scope rendering context
     ///   - inheritedState: Current execution state (transforms, scissors)
     func renderMaskGroupScope(
+        commands: [RenderCommand],
         scope: MaskGroupScope,
         ctx: MaskScopeContext,
         inheritedState: ExecutionState
@@ -61,7 +65,8 @@ extension MetalRenderer {
             MaskDebugCounters.fallbackCount += 1
             #endif
             try renderInnerCommandsFallback(
-                scope.innerCommands,
+                commands,
+                in: scope.innerRange,
                 ctx: ctx,
                 inheritedState: inheritedState
             )
@@ -81,7 +86,8 @@ extension MetalRenderer {
             MaskDebugCounters.fallbackCount += 1
             #endif
             try renderInnerCommandsFallback(
-                scope.innerCommands,
+                commands,
+                in: scope.innerRange,
                 ctx: ctx,
                 inheritedState: inheritedState
             )
@@ -182,8 +188,10 @@ extension MetalRenderer {
         descriptor.colorAttachments[0].loadAction = .load // Already cleared
         descriptor.colorAttachments[0].storeAction = .store
 
+        // **PR Hot Path:** Pass full commands + range for inner content
         try drawInternal(
-            commands: scope.innerCommands,
+            commands: commands,
+            in: scope.innerRange,
             renderPassDescriptor: descriptor,
             target: offscreenTarget,
             textureProvider: ctx.textureProvider,
@@ -208,8 +216,10 @@ extension MetalRenderer {
 
     /// Fallback: renders inner commands directly to target without mask.
     /// Used when bbox is degenerate or texture allocation fails.
+    /// **PR Hot Path:** Takes full commands array + range (no array copy).
     private func renderInnerCommandsFallback(
         _ commands: [RenderCommand],
+        in range: Range<Int>,
         ctx: MaskScopeContext,
         inheritedState: ExecutionState
     ) throws {
@@ -220,6 +230,7 @@ extension MetalRenderer {
 
         try drawInternal(
             commands: commands,
+            in: range,
             renderPassDescriptor: descriptor,
             target: ctx.target,
             textureProvider: ctx.textureProvider,
