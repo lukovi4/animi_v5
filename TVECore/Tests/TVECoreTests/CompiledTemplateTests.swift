@@ -38,29 +38,32 @@ final class CompiledTemplateTests: XCTestCase {
     }
 
     /// Test: ScenePlayer can load a pre-compiled scene and generate render commands
-    func testScenePlayer_loadsCompiledScene_generatesCommands() throws {
+    func testScenePlayer_loadsCompiledScene_generatesCommands() async throws {
         guard let templateURL = compiledTemplateURL else {
             throw XCTSkip("compiled.tve not found in test resources")
         }
 
-        // Given
+        // Given - loader is not MainActor, can stay outside
         let loader = CompiledScenePackageLoader(engineVersion: TVECore.version)
         let package = try loader.load(from: templateURL)
-        let player = ScenePlayer()
 
-        // When
-        player.loadCompiledScene(package.compiled)
+        try await MainActor.run {
+            let player = ScenePlayer()
 
-        // Set userMediaPresent=true for all blocks so binding layers render
-        for block in package.compiled.runtime.blocks {
-            player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // When
+            player.loadCompiledScene(package.compiled)
+
+            // Set userMediaPresent=true for all blocks so binding layers render
+            for block in package.compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+
+            let commands = player.renderCommands(sceneFrameIndex: 0)
+
+            // Then
+            XCTAssertNotNil(player.compiledScene, "Player should have loaded scene")
+            XCTAssertFalse(commands.isEmpty, "Should generate render commands at frame 0")
         }
-
-        let commands = player.renderCommands(sceneFrameIndex: 0)
-
-        // Then
-        XCTAssertNotNil(player.compiledScene, "Player should have loaded scene")
-        XCTAssertFalse(commands.isEmpty, "Should generate render commands at frame 0")
     }
 
     /// Test: Compiled scene has correct metadata (canvas, fps, duration)

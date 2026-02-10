@@ -27,213 +27,189 @@ final class ScenePlayerTests: XCTestCase {
     // MARK: - Tests
 
     /// Test: ScenePlayer loads example_4blocks and compiles all anim refs
-    func testScenePlayerLoadsExample4Blocks_compilesAllAnimRefs() throws {
-        // Given
+    func testScenePlayerLoadsExample4Blocks_compilesAllAnimRefs() async throws {
         let (package, animations) = try loadTestPackage()
-        let player = ScenePlayer()
 
-        // When
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // Then
-        XCTAssertEqual(compiled.runtime.blocks.count, 4, "Should have 4 blocks")
+            XCTAssertEqual(compiled.runtime.blocks.count, 4, "Should have 4 blocks")
 
-        // Verify each block has compiled variant
-        for block in compiled.runtime.blocks {
-            XCTAssertFalse(block.variants.isEmpty, "Block \(block.blockId) should have variants")
-            XCTAssertNotNil(block.selectedVariant, "Block \(block.blockId) should have selected variant")
+            for block in compiled.runtime.blocks {
+                XCTAssertFalse(block.variants.isEmpty, "Block \(block.blockId) should have variants")
+                XCTAssertNotNil(block.selectedVariant, "Block \(block.blockId) should have selected variant")
+            }
+
+            XCTAssertEqual(compiled.runtime.canvas.width, 1080)
+            XCTAssertEqual(compiled.runtime.canvas.height, 1920)
+            XCTAssertEqual(compiled.runtime.fps, 30)
+            XCTAssertEqual(compiled.runtime.durationFrames, 300)
         }
-
-        // Verify canvas size
-        XCTAssertEqual(compiled.runtime.canvas.width, 1080)
-        XCTAssertEqual(compiled.runtime.canvas.height, 1920)
-        XCTAssertEqual(compiled.runtime.fps, 30)
-        XCTAssertEqual(compiled.runtime.durationFrames, 300)
     }
 
     /// Test: Frame 0 generates commands for visible blocks
-    func testScenePlayer_frame0_generatesCommandsForVisibleBlocks() throws {
-        // Given
+    func testScenePlayer_frame0_generatesCommandsForVisibleBlocks() async throws {
         let (package, animations) = try loadTestPackage()
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        for block in compiled.runtime.blocks {
-            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+
+            let commands = player.renderCommands(sceneFrameIndex: 0)
+
+            XCTAssertFalse(commands.isEmpty, "Should generate commands at frame 0")
+
+            let drawImageCount = commands.filter {
+                if case .drawImage = $0 { return true }
+                return false
+            }.count
+            XCTAssertGreaterThanOrEqual(drawImageCount, 1, "Should have at least 1 drawImage at frame 0")
         }
-
-        // When
-        let commands = player.renderCommands(sceneFrameIndex: 0)
-
-        // Then
-        XCTAssertFalse(commands.isEmpty, "Should generate commands at frame 0")
-
-        // Note: Only anim-1 has layers visible at frame 0
-        // anim-2, anim-3, anim-4 have layers with ip > 0, so they don't render content at frame 0
-        // At least 1 drawImage (from anim-1)
-        let drawImageCount = commands.filter {
-            if case .drawImage = $0 { return true }
-            return false
-        }.count
-        XCTAssertGreaterThanOrEqual(drawImageCount, 1, "Should have at least 1 drawImage at frame 0")
     }
 
     /// Test: Frame 120 has commands from all 4 blocks (all animations are visible)
-    func testScenePlayer_frame120_allBlocksRenderContent() throws {
-        // Given
+    func testScenePlayer_frame120_allBlocksRenderContent() async throws {
         let (package, animations) = try loadTestPackage()
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        for block in compiled.runtime.blocks {
-            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+
+            let commands = player.renderCommands(sceneFrameIndex: 120)
+
+            let drawImageCount = commands.filter {
+                if case .drawImage = $0 { return true }
+                return false
+            }.count
+            XCTAssertGreaterThanOrEqual(drawImageCount, 4, "Should have at least 4 drawImage at frame 120")
         }
-
-        // When - frame 120 is past all animation in-points
-        let commands = player.renderCommands(sceneFrameIndex: 120)
-
-        // Then - all 4 blocks should render content
-        let drawImageCount = commands.filter {
-            if case .drawImage = $0 { return true }
-            return false
-        }.count
-        XCTAssertGreaterThanOrEqual(drawImageCount, 4, "Should have at least 4 drawImage at frame 120")
     }
 
     /// Test: Scene applies block transform and clip
-    func testScenePlayer_appliesBlockTransformAndClip() throws {
-        // Given
+    func testScenePlayer_appliesBlockTransformAndClip() async throws {
         let (package, animations) = try loadTestPackage()
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        for block in compiled.runtime.blocks {
-            player.setUserMediaPresent(blockId: block.blockId, present: true)
-        }
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // When
-        let commands = player.renderCommands(sceneFrameIndex: 0)
-
-        // Then - check for clip rect commands (containerClip = slotRect in test scene)
-        let clipRectCount = commands.filter {
-            if case .pushClipRect = $0 { return true }
-            return false
-        }.count
-
-        // All 4 blocks have containerClip = slotRect
-        XCTAssertEqual(clipRectCount, 4, "Should have 4 pushClipRect commands")
-
-        // Check for transform commands (more than just from AnimIR)
-        let transformCount = commands.filter {
-            if case .pushTransform = $0 { return true }
-            return false
-        }.count
-
-        // At least 4 block transforms + internal layer transforms
-        XCTAssertGreaterThanOrEqual(transformCount, 4, "Should have at least 4 transform commands")
-
-        // Verify clip rects match block positions
-        var clipRects: [RectD] = []
-        for command in commands {
-            if case .pushClipRect(let rect) = command {
-                clipRects.append(rect)
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
             }
-        }
 
-        // Verify we have clips at expected positions (0,0), (540,0), (0,960), (540,960)
-        let expectedOrigins: [(Double, Double)] = [(0, 0), (540, 0), (0, 960), (540, 960)]
-        for (x, y) in expectedOrigins {
-            let found = clipRects.contains { abs($0.x - x) < 1 && abs($0.y - y) < 1 }
-            XCTAssertTrue(found, "Should have clip rect at (\(x), \(y))")
+            let commands = player.renderCommands(sceneFrameIndex: 0)
+
+            let clipRectCount = commands.filter {
+                if case .pushClipRect = $0 { return true }
+                return false
+            }.count
+            XCTAssertEqual(clipRectCount, 4, "Should have 4 pushClipRect commands")
+
+            let transformCount = commands.filter {
+                if case .pushTransform = $0 { return true }
+                return false
+            }.count
+            XCTAssertGreaterThanOrEqual(transformCount, 4, "Should have at least 4 transform commands")
+
+            var clipRects: [RectD] = []
+            for command in commands {
+                if case .pushClipRect(let rect) = command {
+                    clipRects.append(rect)
+                }
+            }
+
+            let expectedOrigins: [(Double, Double)] = [(0, 0), (540, 0), (0, 960), (540, 960)]
+            for (x, y) in expectedOrigins {
+                let found = clipRects.contains { abs($0.x - x) < 1 && abs($0.y - y) < 1 }
+                XCTAssertTrue(found, "Should have clip rect at (\(x), \(y))")
+            }
         }
     }
 
     /// Test: Determinism - same frame produces same command structure
-    func testScenePlayer_determinism_sameFrameSameCommandsStructure() throws {
-        // Given
+    func testScenePlayer_determinism_sameFrameSameCommandsStructure() async throws {
         let (package, animations) = try loadTestPackage()
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        for block in compiled.runtime.blocks {
-            player.setUserMediaPresent(blockId: block.blockId, present: true)
-        }
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // When - render same frame multiple times
-        let commands1 = player.renderCommands(sceneFrameIndex: 50)
-        let commands2 = player.renderCommands(sceneFrameIndex: 50)
-        let commands3 = player.renderCommands(sceneFrameIndex: 50)
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
 
-        // Then - all should be identical
-        XCTAssertEqual(commands1.count, commands2.count, "Command count should be deterministic")
-        XCTAssertEqual(commands2.count, commands3.count, "Command count should be deterministic")
+            let commands1 = player.renderCommands(sceneFrameIndex: 50)
+            let commands2 = player.renderCommands(sceneFrameIndex: 50)
+            let commands3 = player.renderCommands(sceneFrameIndex: 50)
 
-        // Verify command types match
-        for (idx, cmd1) in commands1.enumerated() {
-            let cmd2 = commands2[idx]
-            XCTAssertEqual(
-                String(describing: type(of: cmd1)),
-                String(describing: type(of: cmd2)),
-                "Command types should match at index \(idx)"
-            )
+            XCTAssertEqual(commands1.count, commands2.count, "Command count should be deterministic")
+            XCTAssertEqual(commands2.count, commands3.count, "Command count should be deterministic")
+
+            for (idx, cmd1) in commands1.enumerated() {
+                let cmd2 = commands2[idx]
+                XCTAssertEqual(
+                    String(describing: type(of: cmd1)),
+                    String(describing: type(of: cmd2)),
+                    "Command types should match at index \(idx)"
+                )
+            }
         }
     }
 
     /// Test: Blocks are sorted by zIndex
-    func testScenePlayer_blocksSortedByZIndex() throws {
-        // Given
+    func testScenePlayer_blocksSortedByZIndex() async throws {
         let (package, animations) = try loadTestPackage()
-        let player = ScenePlayer()
 
-        // When
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // Then - blocks should be sorted by zIndex ascending
-        var previousZIndex = Int.min
-        for block in compiled.runtime.blocks {
-            XCTAssertGreaterThanOrEqual(
-                block.zIndex,
-                previousZIndex,
-                "Blocks should be sorted by zIndex ascending"
-            )
-            previousZIndex = block.zIndex
+            var previousZIndex = Int.min
+            for block in compiled.runtime.blocks {
+                XCTAssertGreaterThanOrEqual(
+                    block.zIndex,
+                    previousZIndex,
+                    "Blocks should be sorted by zIndex ascending"
+                )
+                previousZIndex = block.zIndex
+            }
         }
     }
 
     /// Test: Merged asset index contains all animations' assets
-    func testScenePlayer_mergedAssetIndexContainsAllAssets() throws {
-        // Given
+    func testScenePlayer_mergedAssetIndexContainsAllAssets() async throws {
         let (package, animations) = try loadTestPackage()
-        let player = ScenePlayer()
 
-        // When
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // Then - use CompiledScene.mergedAssetIndex
-        let mergedIndex = compiled.mergedAssetIndex
+            let mergedIndex = compiled.mergedAssetIndex
 
-        // Should have assets from all 4 animations
-        XCTAssertGreaterThanOrEqual(mergedIndex.byId.count, 4, "Should have at least 4 assets")
+            XCTAssertGreaterThanOrEqual(mergedIndex.byId.count, 4, "Should have at least 4 assets")
 
-        // All assets should be namespaced
-        for assetId in mergedIndex.byId.keys {
-            XCTAssertTrue(
-                assetId.contains("|"),
-                "Asset ID '\(assetId)' should be namespaced with |"
-            )
+            for assetId in mergedIndex.byId.keys {
+                XCTAssertTrue(
+                    assetId.contains("|"),
+                    "Asset ID '\(assetId)' should be namespaced with |"
+                )
+            }
         }
     }
 
-    /// Test: Block timing visibility
-    func testScenePlayer_blockTimingVisibility() throws {
-        // Given
+    /// Test: Block timing visibility (no MainActor needed - pure data)
+    func testScenePlayer_blockTimingVisibility() {
         let timing = BlockTiming(startFrame: 10, endFrame: 100)
 
-        // Then
         XCTAssertFalse(timing.isVisible(at: 9), "Should not be visible before startFrame")
         XCTAssertTrue(timing.isVisible(at: 10), "Should be visible at startFrame")
         XCTAssertTrue(timing.isVisible(at: 50), "Should be visible in middle")
@@ -243,27 +219,25 @@ final class ScenePlayerTests: XCTestCase {
     }
 
     /// Test: Commands are balanced
-    func testScenePlayer_commandsAreBalanced() throws {
-        // Given
+    func testScenePlayer_commandsAreBalanced() async throws {
         let (package, animations) = try loadTestPackage()
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        for block in compiled.runtime.blocks {
-            player.setUserMediaPresent(blockId: block.blockId, present: true)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
+
+            for block in compiled.runtime.blocks {
+                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+
+            let commands = player.renderCommands(sceneFrameIndex: 0)
+
+            XCTAssertTrue(commands.isBalanced(), "Commands should be balanced (matching begin/end)")
         }
-
-        // When
-        let commands = player.renderCommands(sceneFrameIndex: 0)
-
-        // Then
-        XCTAssertTrue(commands.isBalanced(), "Commands should be balanced (matching begin/end)")
     }
 
     /// Test: Error when no media blocks
-    func testScenePlayer_errorWhenNoMediaBlocks() throws {
-        // Given - create a scene with no blocks
+    func testScenePlayer_errorWhenNoMediaBlocks() async throws {
         let emptyScene = Scene(
             schemaVersion: "0.1",
             canvas: Canvas(width: 100, height: 100, fps: 30, durationFrames: 100),
@@ -276,18 +250,20 @@ final class ScenePlayerTests: XCTestCase {
             imagesRootURL: nil
         )
         let animations = LoadedAnimations()
-        let player = ScenePlayer()
 
-        // When/Then
-        XCTAssertThrowsError(try player.compile(package: package, loadedAnimations: animations)) { error in
-            guard let sceneError = error as? ScenePlayerError else {
-                XCTFail("Expected ScenePlayerError")
-                return
-            }
-            if case .noMediaBlocks = sceneError {
-                // Expected
-            } else {
-                XCTFail("Expected noMediaBlocks error, got \(sceneError)")
+        try await MainActor.run {
+            let player = ScenePlayer()
+
+            XCTAssertThrowsError(try player.compile(package: package, loadedAnimations: animations)) { error in
+                guard let sceneError = error as? ScenePlayerError else {
+                    XCTFail("Expected ScenePlayerError")
+                    return
+                }
+                if case .noMediaBlocks = sceneError {
+                    // Expected
+                } else {
+                    XCTFail("Expected noMediaBlocks error, got \(sceneError)")
+                }
             }
         }
     }

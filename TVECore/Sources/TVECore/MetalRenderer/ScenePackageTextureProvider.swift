@@ -7,6 +7,20 @@ import Foundation
 /// Logger callback for diagnostic messages
 public typealias TVELogger = (String) -> Void
 
+// MARK: - Preload Stats (PR-B)
+
+/// Statistics from texture preloading phase.
+public struct PreloadStats: Sendable {
+    /// Number of textures successfully loaded into cache.
+    public let loadedCount: Int
+    /// Number of assets that failed to load (missing/corrupted).
+    public let missingCount: Int
+    /// Number of binding assets skipped (expected — user media injected at runtime).
+    public let skippedBindingCount: Int
+    /// Duration of preload in milliseconds.
+    public let durationMs: Double
+}
+
 // MARK: - Scene Package Texture Provider
 
 /// Texture provider that resolves textures via basename-based asset resolution (PR-28).
@@ -38,6 +52,9 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
     /// Only these IDs may be skipped during preload; all others are treated as errors.
     private let bindingAssetIds: Set<String>
 
+    /// PR-B: Last preload statistics (available after preloadAll() call).
+    private(set) public var lastPreloadStats: PreloadStats?
+
     // MARK: - Initialization
 
     /// Creates a texture provider with resolver-based asset resolution.
@@ -66,45 +83,33 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
     // MARK: - TextureProvider
 
     /// Returns the texture for the given asset ID.
-    /// Textures are loaded on first access and cached for subsequent calls.
+    ///
+    /// **PR-B: IO-free runtime** — This method performs O(1) cache lookup only.
+    /// No file IO or texture decoding happens here. All textures must be preloaded
+    /// via `preloadAll()` before rendering begins.
+    ///
     /// Externally injected textures (via `setTexture`) are returned from cache directly.
+    ///
+    /// Model A contract: texture access happens only on main during playback/render.
     public func texture(for assetId: String) -> MTLTexture? {
-        // Check cache first (includes injected user media textures)
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        // Check cache (includes preloaded and injected user media textures)
         if let cached = cache[assetId] {
             return cached
         }
 
-        // Skip known missing assets (don't spam log)
+        // Skip known missing assets (don't spam assertions)
         if missingAssets.contains(assetId) {
             return nil
         }
 
-        // Look up basename in asset index (PR-28)
-        guard let basename = assetIndex.basenameById[assetId] else {
-            logger?("[TextureProvider] Asset '\(assetId)' has no basename in index")
-            missingAssets.insert(assetId)
-            return nil
-        }
-
-        // Resolve URL via CompositeAssetResolver (Local → Shared)
-        let textureURL: URL
-        do {
-            textureURL = try resolver.resolveURL(forKey: basename)
-        } catch {
-            logger?("[TextureProvider] Asset '\(assetId)' (basename='\(basename)') not found: \(error.localizedDescription)")
-            missingAssets.insert(assetId)
-            return nil
-        }
-
-        // Load texture from resolved URL
-        guard let texture = loadTexture(from: textureURL, assetId: assetId) else {
-            missingAssets.insert(assetId)
-            return nil
-        }
-
-        // Cache and return
-        cache[assetId] = texture
-        return texture
+        // PR-B: Cache miss in runtime = preload contract violation
+        // In DEBUG: signal developer about missing preload
+        // In Release: assertionFailure is stripped, just return nil
+        assertionFailure("[TextureProvider] Asset not preloaded: '\(assetId)' — call preloadAll() before rendering")
+        missingAssets.insert(assetId)
+        return nil
     }
 
     // MARK: - External Texture Injection
@@ -114,18 +119,24 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
     /// Injected textures are stored in cache and returned directly by `texture(for:)`,
     /// bypassing resolver-based resolution. Used for binding layer user media.
     ///
+    /// Model A contract: texture mutations happen only on main during playback/render.
+    ///
     /// - Parameters:
     ///   - texture: Metal texture to inject
     ///   - assetId: Asset ID to associate the texture with (namespaced)
     public func setTexture(_ texture: MTLTexture, for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
         cache[assetId] = texture
         missingAssets.remove(assetId)
     }
 
     /// Removes an injected texture, allowing re-resolution or marking as missing.
     ///
+    /// Model A contract: texture mutations happen only on main during playback/render.
+    ///
     /// - Parameter assetId: Asset ID to remove from cache
     public func removeTexture(for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
         cache.removeValue(forKey: assetId)
         missingAssets.remove(assetId)
     }
@@ -134,18 +145,31 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
 
     /// Preloads all resolvable textures from the asset index.
     ///
+    /// **PR-B: Must be called before any rendering.** After this call, `texture(for:)`
+    /// becomes a pure O(1) cache lookup with no IO.
+    ///
     /// Binding assets (identified by `bindingAssetIds`) are expected to have no file on disk
     /// and are skipped with a debug log. All other non-resolvable assets are logged as errors
     /// and added to `missingAssets` — this indicates a corrupted template.
+    ///
+    /// Statistics are stored in `lastPreloadStats` after completion.
     public func preloadAll() {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        var loadedCount = 0
+        var skippedBindingCount = 0
+
         for (assetId, basename) in assetIndex.basenameById {
             // Skip already cached (including injected textures)
-            if cache[assetId] != nil { continue }
+            if cache[assetId] != nil {
+                loadedCount += 1 // Count as loaded (was pre-injected)
+                continue
+            }
 
             guard let textureURL = try? resolver.resolveURL(forKey: basename) else {
                 if bindingAssetIds.contains(assetId) {
                     // Expected: binding asset has no file (user media injected at runtime)
                     logger?("[TextureProvider] Preload skipped binding asset '\(assetId)'")
+                    skippedBindingCount += 1
                 } else {
                     // Unexpected: non-binding asset missing — template corrupted
                     logger?("[TextureProvider] ERROR: Asset '\(assetId)' (basename='\(basename)') not resolvable — template may be corrupted")
@@ -156,8 +180,19 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
 
             if let texture = loadTexture(from: textureURL, assetId: assetId) {
                 cache[assetId] = texture
+                loadedCount += 1
             }
+            // Note: loadTexture already adds to missingAssets on failure
         }
+
+        let durationMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
+
+        lastPreloadStats = PreloadStats(
+            loadedCount: loadedCount,
+            missingCount: missingAssets.count,
+            skippedBindingCount: skippedBindingCount,
+            durationMs: durationMs
+        )
     }
 
     /// Clears the texture cache and missing assets set.
@@ -181,6 +216,8 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
         do {
             return try loader.newTexture(URL: url, options: options)
         } catch {
+            // PR-B.1: Mark as missing so we don't retry and missingCount is accurate
+            missingAssets.insert(assetId)
             logger?("[TextureProvider] Failed to load '\(assetId)' at \(url.lastPathComponent): \(error.localizedDescription)")
             return nil
         }

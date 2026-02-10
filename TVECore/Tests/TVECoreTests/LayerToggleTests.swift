@@ -256,19 +256,23 @@ final class LayerToggleTests: XCTestCase {
 
     // MARK: - T6: ScenePlayer API - availableToggles
 
-    func testScenePlayer_availableToggles_beforeCompile_returnsEmpty() {
-        let player = ScenePlayer()
-        XCTAssertTrue(player.availableToggles(blockId: "any").isEmpty)
+    func testScenePlayer_availableToggles_beforeCompile_returnsEmpty() async {
+        await MainActor.run {
+            let player = ScenePlayer()
+            XCTAssertTrue(player.availableToggles(blockId: "any").isEmpty)
+        }
     }
 
     // MARK: - T7: ScenePlayer API - setLayerToggle / isLayerToggleEnabled
 
-    func testScenePlayer_toggleAPI_beforeCompile_noOp() {
-        let player = ScenePlayer()
+    func testScenePlayer_toggleAPI_beforeCompile_noOp() async {
+        await MainActor.run {
+            let player = ScenePlayer()
 
-        // Should not crash
-        player.setLayerToggle(blockId: "block", toggleId: "hearts", enabled: false)
-        XCTAssertNil(player.isLayerToggleEnabled(blockId: "block", toggleId: "hearts"))
+            // Should not crash
+            player.setLayerToggle(blockId: "block", toggleId: "hearts", enabled: false)
+            XCTAssertNil(player.isLayerToggleEnabled(blockId: "block", toggleId: "hearts"))
+        }
     }
 
     // MARK: - T8: LayerToggleStore Protocol

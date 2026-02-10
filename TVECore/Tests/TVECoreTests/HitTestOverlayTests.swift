@@ -262,25 +262,27 @@ final class HitTestOverlayTests: XCTestCase {
 
     /// Refactoring invariance: render commands are identical before & after
     /// extracting computeBlockTransform to SceneTransforms.
-    func testT1_blockTransform_renderCommandsUnchanged() throws {
+    func testT1_blockTransform_renderCommandsUnchanged() async throws {
         let json = lottieJSON()
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        let commands = player.renderCommands(sceneFrameIndex: 0)
-        XCTAssertFalse(commands.isEmpty)
-        XCTAssertTrue(commands.isBalanced())
+            let commands = player.renderCommands(sceneFrameIndex: 0)
+            XCTAssertFalse(commands.isEmpty)
+            XCTAssertTrue(commands.isBalanced())
 
-        // For full-canvas anim: block transform should be identity
-        let pushTransforms = commands.compactMap { cmd -> Matrix2D? in
-            if case .pushTransform(let m) = cmd { return m }
-            return nil
+            // For full-canvas anim: block transform should be identity
+            let pushTransforms = commands.compactMap { cmd -> Matrix2D? in
+                if case .pushTransform(let m) = cmd { return m }
+                return nil
+            }
+            // First pushTransform in the block group is the blockTransform
+            XCTAssertTrue(pushTransforms.contains(.identity),
+                "Full-canvas animation block must have identity blockTransform")
         }
-        // First pushTransform in the block group is the blockTransform
-        XCTAssertTrue(pushTransforms.contains(.identity),
-            "Full-canvas animation block must have identity blockTransform")
     }
 
     /// Near-equal anim/canvas sizes still produce identity (floating-point tolerance)
@@ -428,49 +430,55 @@ final class HitTestOverlayTests: XCTestCase {
     // MARK: - T3: mediaInputHitPath
 
     /// Full-canvas anim → mediaInputHitPath returns the mediaInput shape as-is (identity blockTransform)
-    func testT3_mediaInputHitPath_fullCanvasAnim() throws {
+    func testT3_mediaInputHitPath_fullCanvasAnim() async throws {
         let json = lottieJSON(width: 1080, height: 1920)
         let (package, animations) = try makeScenePackage(
             lottieJSON: json, hitTestMode: .mask
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        let hitPath = player.mediaInputHitPath(blockId: "block-1", frame: 0)
-        XCTAssertNotNil(hitPath, "mediaInputHitPath must return a path for block with mediaInput")
+            let hitPath = player.mediaInputHitPath(blockId: "block-1", frame: 0)
+            XCTAssertNotNil(hitPath, "mediaInputHitPath must return a path for block with mediaInput")
 
-        // The mediaInput shape is a 100×100 rect at origin (identity world transform, identity blockTransform)
-        // So the hit path should be approximately a 100×100 rect
-        if let hp = hitPath {
-            XCTAssertEqual(hp.vertexCount, 4, "Hit path must have 4 vertices (rect)")
-            XCTAssertTrue(hp.closed, "Hit path must be closed")
+            // The mediaInput shape is a 100×100 rect at origin (identity world transform, identity blockTransform)
+            // So the hit path should be approximately a 100×100 rect
+            if let hp = hitPath {
+                XCTAssertEqual(hp.vertexCount, 4, "Hit path must have 4 vertices (rect)")
+                XCTAssertTrue(hp.closed, "Hit path must be closed")
+            }
         }
     }
 
     /// Nonexistent blockId → returns nil
-    func testT3_mediaInputHitPath_unknownBlockId() throws {
+    func testT3_mediaInputHitPath_unknownBlockId() async throws {
         let json = lottieJSON()
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        let hitPath = player.mediaInputHitPath(blockId: "nonexistent", frame: 0)
-        XCTAssertNil(hitPath, "Unknown blockId must return nil")
+            let hitPath = player.mediaInputHitPath(blockId: "nonexistent", frame: 0)
+            XCTAssertNil(hitPath, "Unknown blockId must return nil")
+        }
     }
 
     /// Before compilation → returns nil
-    func testT3_mediaInputHitPath_beforeCompile() {
-        let player = ScenePlayer()
-        let hitPath = player.mediaInputHitPath(blockId: "block-1", frame: 0)
-        XCTAssertNil(hitPath, "Before compilation must return nil")
+    func testT3_mediaInputHitPath_beforeCompile() async {
+        await MainActor.run {
+            let player = ScenePlayer()
+            let hitPath = player.mediaInputHitPath(blockId: "block-1", frame: 0)
+            XCTAssertNil(hitPath, "Before compilation must return nil")
+        }
     }
 
     // MARK: - T4: hitTest
 
     /// hitTestMode == .rect → hit-test by block rect
-    func testT4_hitTest_rectMode_insideBlockRect() throws {
+    func testT4_hitTest_rectMode_insideBlockRect() async throws {
         let json = lottieJSON()
         let (package, animations) = try makeScenePackage(
             lottieJSON: json,
@@ -478,20 +486,22 @@ final class HitTestOverlayTests: XCTestCase {
             blockRect: Rect(x: 100, y: 200, width: 500, height: 500)
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        // Inside block rect
-        let hit = player.hitTest(point: Vec2D(x: 350, y: 450), frame: 0)
-        XCTAssertEqual(hit, "block-1", "Point inside block rect must hit")
+            // Inside block rect
+            let hit = player.hitTest(point: Vec2D(x: 350, y: 450), frame: 0)
+            XCTAssertEqual(hit, "block-1", "Point inside block rect must hit")
 
-        // Outside block rect
-        let miss = player.hitTest(point: Vec2D(x: 50, y: 50), frame: 0)
-        XCTAssertNil(miss, "Point outside block rect must miss")
+            // Outside block rect
+            let miss = player.hitTest(point: Vec2D(x: 50, y: 50), frame: 0)
+            XCTAssertNil(miss, "Point outside block rect must miss")
+        }
     }
 
     /// hitTestMode == nil → falls back to rect hit-test
-    func testT4_hitTest_nilMode_fallsBackToRect() throws {
+    func testT4_hitTest_nilMode_fallsBackToRect() async throws {
         let json = lottieJSON()
         let (package, animations) = try makeScenePackage(
             lottieJSON: json,
@@ -499,20 +509,22 @@ final class HitTestOverlayTests: XCTestCase {
             blockRect: Rect(x: 0, y: 0, width: 1080, height: 1920)
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        // Inside
-        let hit = player.hitTest(point: Vec2D(x: 540, y: 960), frame: 0)
-        XCTAssertEqual(hit, "block-1", "nil hitTestMode must fall back to rect")
+            // Inside
+            let hit = player.hitTest(point: Vec2D(x: 540, y: 960), frame: 0)
+            XCTAssertEqual(hit, "block-1", "nil hitTestMode must fall back to rect")
 
-        // Outside
-        let miss = player.hitTest(point: Vec2D(x: -1, y: -1), frame: 0)
-        XCTAssertNil(miss, "Point outside rect must miss")
+            // Outside
+            let miss = player.hitTest(point: Vec2D(x: -1, y: -1), frame: 0)
+            XCTAssertNil(miss, "Point outside rect must miss")
+        }
     }
 
     /// hitTestMode == .mask → hit-test by mediaInput shape
-    func testT4_hitTest_maskMode_usesShape() throws {
+    func testT4_hitTest_maskMode_usesShape() async throws {
         // mediaInput shape is a 100×100 rect at origin
         // block rect is full canvas 1080×1920
         let json = lottieJSON()
@@ -521,43 +533,47 @@ final class HitTestOverlayTests: XCTestCase {
             hitTestMode: .mask
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        // Inside the mediaInput shape (50,50 is inside 100×100 rect at origin)
-        let hitInside = player.hitTest(point: Vec2D(x: 50, y: 50), frame: 0)
-        XCTAssertEqual(hitInside, "block-1",
-            "Point inside mediaInput shape must hit in mask mode")
+            // Inside the mediaInput shape (50,50 is inside 100×100 rect at origin)
+            let hitInside = player.hitTest(point: Vec2D(x: 50, y: 50), frame: 0)
+            XCTAssertEqual(hitInside, "block-1",
+                "Point inside mediaInput shape must hit in mask mode")
 
-        // Outside the mediaInput shape but inside block rect (e.g. 500, 500)
-        let hitOutsideShape = player.hitTest(point: Vec2D(x: 500, y: 500), frame: 0)
-        XCTAssertNil(hitOutsideShape,
-            "Point outside mediaInput shape must miss in mask mode even if inside block rect")
+            // Outside the mediaInput shape but inside block rect (e.g. 500, 500)
+            let hitOutsideShape = player.hitTest(point: Vec2D(x: 500, y: 500), frame: 0)
+            XCTAssertNil(hitOutsideShape,
+                "Point outside mediaInput shape must miss in mask mode even if inside block rect")
+        }
     }
 
     /// Z-order: topmost block wins (highest zIndex first)
-    func testT4_hitTest_zOrder_topmostWins() throws {
+    func testT4_hitTest_zOrder_topmostWins() async throws {
         let (package, animations) = try makeTwoBlockScene(
             hitTestA: .rect,  // zIndex 0, top half (0,0,1080,960)
             hitTestB: .rect   // zIndex 1, full canvas (0,0,1080,1920) — overlaps A
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        // Point in overlap zone (540, 480) — block-B (zIndex 1) should win
-        let hit = player.hitTest(point: Vec2D(x: 540, y: 480), frame: 0)
-        XCTAssertEqual(hit, "block-B",
-            "Higher zIndex block must win in overlap zone")
+            // Point in overlap zone (540, 480) — block-B (zIndex 1) should win
+            let hit = player.hitTest(point: Vec2D(x: 540, y: 480), frame: 0)
+            XCTAssertEqual(hit, "block-B",
+                "Higher zIndex block must win in overlap zone")
 
-        // Point below block-A's rect but inside block-B (540, 1200)
-        let hitBottom = player.hitTest(point: Vec2D(x: 540, y: 1200), frame: 0)
-        XCTAssertEqual(hitBottom, "block-B",
-            "Only block-B covers the bottom area")
+            // Point below block-A's rect but inside block-B (540, 1200)
+            let hitBottom = player.hitTest(point: Vec2D(x: 540, y: 1200), frame: 0)
+            XCTAssertEqual(hitBottom, "block-B",
+                "Only block-B covers the bottom area")
+        }
     }
 
     /// Invisible block is skipped by hitTest
-    func testT4_hitTest_invisibleBlock_skipped() throws {
+    func testT4_hitTest_invisibleBlock_skipped() async throws {
         // block-B has timing that makes it invisible at frame 0
         let (package, animations) = try makeTwoBlockScene(
             hitTestA: .rect,
@@ -565,71 +581,79 @@ final class HitTestOverlayTests: XCTestCase {
             timingB: Timing(startFrame: 100, endFrame: 200)  // invisible at frame 0
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        // Point in block-B area but B is invisible → should hit A (if inside A's rect)
-        // block-A rect: (0,0,1080,960)
-        let hit = player.hitTest(point: Vec2D(x: 540, y: 480), frame: 0)
-        XCTAssertEqual(hit, "block-A",
-            "Invisible block-B must be skipped; block-A should be hit")
+            // Point in block-B area but B is invisible → should hit A (if inside A's rect)
+            // block-A rect: (0,0,1080,960)
+            let hit = player.hitTest(point: Vec2D(x: 540, y: 480), frame: 0)
+            XCTAssertEqual(hit, "block-A",
+                "Invisible block-B must be skipped; block-A should be hit")
+        }
     }
 
     /// Before compilation → hitTest returns nil
-    func testT4_hitTest_beforeCompile() {
-        let player = ScenePlayer()
-        let hit = player.hitTest(point: Vec2D(x: 100, y: 100), frame: 0)
-        XCTAssertNil(hit, "hitTest before compilation must return nil")
+    func testT4_hitTest_beforeCompile() async {
+        await MainActor.run {
+            let player = ScenePlayer()
+            let hit = player.hitTest(point: Vec2D(x: 100, y: 100), frame: 0)
+            XCTAssertNil(hit, "hitTest before compilation must return nil")
+        }
     }
 
     // MARK: - T5: overlays
 
     /// Overlays returns descriptors for all visible blocks in top-to-bottom order
-    func testT5_overlays_topToBottomOrder() throws {
+    func testT5_overlays_topToBottomOrder() async throws {
         let (package, animations) = try makeTwoBlockScene(
             hitTestA: .rect,
             hitTestB: .rect
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        let overlays = player.overlays(frame: 0)
+            let overlays = player.overlays(frame: 0)
 
-        XCTAssertEqual(overlays.count, 2, "Two visible blocks → two overlays")
+            XCTAssertEqual(overlays.count, 2, "Two visible blocks → two overlays")
 
-        // Top-to-bottom: block-B (zIndex 1) first, then block-A (zIndex 0)
-        XCTAssertEqual(overlays[0].blockId, "block-B",
-            "First overlay must be highest zIndex block")
-        XCTAssertEqual(overlays[1].blockId, "block-A",
-            "Second overlay must be lower zIndex block")
+            // Top-to-bottom: block-B (zIndex 1) first, then block-A (zIndex 0)
+            XCTAssertEqual(overlays[0].blockId, "block-B",
+                "First overlay must be highest zIndex block")
+            XCTAssertEqual(overlays[1].blockId, "block-A",
+                "Second overlay must be lower zIndex block")
+        }
     }
 
     /// Overlay hitPath for .mask mode uses mediaInput shape
-    func testT5_overlays_maskMode_usesShapePath() throws {
+    func testT5_overlays_maskMode_usesShapePath() async throws {
         let json = lottieJSON()
         let (package, animations) = try makeScenePackage(
             lottieJSON: json,
             hitTestMode: .mask
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        let overlays = player.overlays(frame: 0)
-        XCTAssertEqual(overlays.count, 1)
+            let overlays = player.overlays(frame: 0)
+            XCTAssertEqual(overlays.count, 1)
 
-        let overlay = overlays[0]
-        XCTAssertEqual(overlay.blockId, "block-1")
+            let overlay = overlays[0]
+            XCTAssertEqual(overlay.blockId, "block-1")
 
-        // hitPath should be the mediaInput shape (4 vertices for the 100×100 rect)
-        XCTAssertEqual(overlay.hitPath.vertexCount, 4,
-            "Mask mode overlay hitPath must be from mediaInput shape")
-        XCTAssertTrue(overlay.hitPath.closed)
+            // hitPath should be the mediaInput shape (4 vertices for the 100×100 rect)
+            XCTAssertEqual(overlay.hitPath.vertexCount, 4,
+                "Mask mode overlay hitPath must be from mediaInput shape")
+            XCTAssertTrue(overlay.hitPath.closed)
+        }
     }
 
     /// Overlay hitPath for .rect mode (or nil) uses block rect as path
-    func testT5_overlays_rectMode_usesBlockRect() throws {
+    func testT5_overlays_rectMode_usesBlockRect() async throws {
         let json = lottieJSON()
         let blockRect = Rect(x: 100, y: 200, width: 500, height: 600)
         let (package, animations) = try makeScenePackage(
@@ -638,85 +662,95 @@ final class HitTestOverlayTests: XCTestCase {
             blockRect: blockRect
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        let overlays = player.overlays(frame: 0)
-        XCTAssertEqual(overlays.count, 1)
+            let overlays = player.overlays(frame: 0)
+            XCTAssertEqual(overlays.count, 1)
 
-        let overlay = overlays[0]
-        // hitPath should be block rect converted to BezierPath (4 vertices)
-        XCTAssertEqual(overlay.hitPath.vertexCount, 4)
-        XCTAssertTrue(overlay.hitPath.closed)
+            let overlay = overlays[0]
+            // hitPath should be block rect converted to BezierPath (4 vertices)
+            XCTAssertEqual(overlay.hitPath.vertexCount, 4)
+            XCTAssertTrue(overlay.hitPath.closed)
 
-        // Verify the rect geometry: top-left should be at (100, 200)
-        let vertices = overlay.hitPath.vertices
-        XCTAssertEqual(vertices[0].x, 100, accuracy: 0.001)
-        XCTAssertEqual(vertices[0].y, 200, accuracy: 0.001)
-        // bottom-right at (600, 800)
-        XCTAssertEqual(vertices[2].x, 600, accuracy: 0.001)
-        XCTAssertEqual(vertices[2].y, 800, accuracy: 0.001)
+            // Verify the rect geometry: top-left should be at (100, 200)
+            let vertices = overlay.hitPath.vertices
+            XCTAssertEqual(vertices[0].x, 100, accuracy: 0.001)
+            XCTAssertEqual(vertices[0].y, 200, accuracy: 0.001)
+            // bottom-right at (600, 800)
+            XCTAssertEqual(vertices[2].x, 600, accuracy: 0.001)
+            XCTAssertEqual(vertices[2].y, 800, accuracy: 0.001)
 
-        // rectCanvas should be stored
-        XCTAssertEqual(overlay.rectCanvas.x, 100, accuracy: 0.001)
-        XCTAssertEqual(overlay.rectCanvas.width, 500, accuracy: 0.001)
+            // rectCanvas should be stored
+            XCTAssertEqual(overlay.rectCanvas.x, 100, accuracy: 0.001)
+            XCTAssertEqual(overlay.rectCanvas.width, 500, accuracy: 0.001)
+        }
     }
 
     /// Invisible blocks are excluded from overlays
-    func testT5_overlays_invisibleBlock_excluded() throws {
+    func testT5_overlays_invisibleBlock_excluded() async throws {
         let (package, animations) = try makeTwoBlockScene(
             hitTestA: .rect,
             hitTestB: .rect,
             timingB: Timing(startFrame: 100, endFrame: 200)  // invisible at frame 0
         )
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        let overlays = player.overlays(frame: 0)
-        XCTAssertEqual(overlays.count, 1, "Only visible blocks should have overlays")
-        XCTAssertEqual(overlays[0].blockId, "block-A")
+            let overlays = player.overlays(frame: 0)
+            XCTAssertEqual(overlays.count, 1, "Only visible blocks should have overlays")
+            XCTAssertEqual(overlays[0].blockId, "block-A")
+        }
     }
 
     /// Before compilation → overlays returns empty array
-    func testT5_overlays_beforeCompile() {
-        let player = ScenePlayer()
-        let overlays = player.overlays(frame: 0)
-        XCTAssertTrue(overlays.isEmpty)
+    func testT5_overlays_beforeCompile() async {
+        await MainActor.run {
+            let player = ScenePlayer()
+            let overlays = player.overlays(frame: 0)
+            XCTAssertTrue(overlays.isEmpty)
+        }
     }
 
     // MARK: - hitTestMode Propagation
 
     /// hitTestMode from MediaInput is correctly propagated to BlockRuntime
-    func testHitTestMode_propagatedToBlockRuntime() throws {
+    func testHitTestMode_propagatedToBlockRuntime() async throws {
         let json = lottieJSON()
         let (package, animations) = try makeScenePackage(
             lottieJSON: json,
             hitTestMode: .mask
         )
 
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        let block = compiled.runtime.blocks.first
-        XCTAssertEqual(block?.hitTestMode, .mask,
-            "hitTestMode must be propagated from MediaInput to BlockRuntime")
+            let block = compiled.runtime.blocks.first
+            XCTAssertEqual(block?.hitTestMode, .mask,
+                "hitTestMode must be propagated from MediaInput to BlockRuntime")
+        }
     }
 
     /// hitTestMode nil when MediaInput has no hitTest specified
-    func testHitTestMode_nilWhenNotSpecified() throws {
+    func testHitTestMode_nilWhenNotSpecified() async throws {
         let json = lottieJSON()
         let (package, animations) = try makeScenePackage(
             lottieJSON: json,
             hitTestMode: nil
         )
 
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        let block = compiled.runtime.blocks.first
-        XCTAssertNil(block?.hitTestMode,
-            "hitTestMode must be nil when not specified in MediaInput")
+            let block = compiled.runtime.blocks.first
+            XCTAssertNil(block?.hitTestMode,
+                "hitTestMode must be nil when not specified in MediaInput")
+        }
     }
 
     // MARK: - Backwards Compatibility
@@ -741,17 +775,19 @@ final class HitTestOverlayTests: XCTestCase {
     }
 
     /// Existing render pipeline still works after SceneRenderPlan refactoring
-    func testBackwardsCompat_renderCommandsUnchanged() throws {
+    func testBackwardsCompat_renderCommandsUnchanged() async throws {
         let json = lottieJSON()
         let (package, animations) = try makeScenePackage(lottieJSON: json)
 
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        // Render without any hit-test API calls
-        let commands = player.renderCommands(sceneFrameIndex: 0)
-        XCTAssertFalse(commands.isEmpty)
-        XCTAssertTrue(commands.isBalanced())
+            // Render without any hit-test API calls
+            let commands = player.renderCommands(sceneFrameIndex: 0)
+            XCTAssertFalse(commands.isEmpty)
+            XCTAssertTrue(commands.isBalanced())
+        }
     }
 
 }

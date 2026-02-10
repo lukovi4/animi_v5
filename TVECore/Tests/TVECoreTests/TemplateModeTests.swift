@@ -34,6 +34,7 @@ final class TemplateModeTests: XCTestCase {
         return (package, animations)
     }
 
+    @MainActor
     private func compiledPlayer() throws -> ScenePlayer {
         let (package, animations) = try loadTestPackage()
         let player = ScenePlayer()
@@ -42,6 +43,7 @@ final class TemplateModeTests: XCTestCase {
     }
 
     /// Number of blocks visible at the given frame (computed from runtime, not hardcoded).
+    @MainActor
     private func visibleBlockCount(player: ScenePlayer, at frame: Int) -> Int {
         guard let runtime = player.compiledScene?.runtime else { return 0 }
         return runtime.blocks.filter { $0.timing.isVisible(at: frame) }.count
@@ -50,280 +52,300 @@ final class TemplateModeTests: XCTestCase {
     // MARK: - T1: Preview renders full scene
 
     /// T1: Preview mode at frame 120 renders all visible blocks with full content.
-    func testT1_previewRendersFullScene() throws {
-        let player = try compiledPlayer()
+    func testT1_previewRendersFullScene() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
             }
+
+            let expectedBlocks = visibleBlockCount(player: player, at: 120)
+
+            let commands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
+
+            let drawImageCount = commands.filter {
+                if case .drawImage = $0 { return true }
+                return false
+            }.count
+            XCTAssertGreaterThanOrEqual(drawImageCount, expectedBlocks,
+                "Preview at frame 120 should have at least \(expectedBlocks) drawImage commands")
+
+            XCTAssertTrue(commands.isBalanced(),
+                "Preview commands should be balanced (matching begin/end pairs)")
+
+            let blockGroupCount = commands.filter {
+                if case .beginGroup(let name) = $0 { return name.hasPrefix("Block:") }
+                return false
+            }.count
+            XCTAssertEqual(blockGroupCount, expectedBlocks,
+                "Preview should have \(expectedBlocks) block groups")
         }
-
-        let expectedBlocks = visibleBlockCount(player: player, at: 120)
-
-        let commands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
-
-        let drawImageCount = commands.filter {
-            if case .drawImage = $0 { return true }
-            return false
-        }.count
-        XCTAssertGreaterThanOrEqual(drawImageCount, expectedBlocks,
-            "Preview at frame 120 should have at least \(expectedBlocks) drawImage commands")
-
-        XCTAssertTrue(commands.isBalanced(),
-            "Preview commands should be balanced (matching begin/end pairs)")
-
-        let blockGroupCount = commands.filter {
-            if case .beginGroup(let name) = $0 { return name.hasPrefix("Block:") }
-            return false
-        }.count
-        XCTAssertEqual(blockGroupCount, expectedBlocks,
-            "Preview should have \(expectedBlocks) block groups")
     }
 
     /// T1b: Preview mode matches existing renderCommands API (backward compatibility).
-    func testT1b_previewMatchesLegacyAPI() throws {
-        let player = try compiledPlayer()
+    func testT1b_previewMatchesLegacyAPI() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
             }
-        }
 
-        let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
-        let legacyCommands = player.renderCommands(sceneFrameIndex: 120)
+            let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 120)
+            let legacyCommands = player.renderCommands(sceneFrameIndex: 120)
 
-        XCTAssertEqual(previewCommands.count, legacyCommands.count,
-            "Preview mode should produce same command count as legacy API")
+            XCTAssertEqual(previewCommands.count, legacyCommands.count,
+                "Preview mode should produce same command count as legacy API")
 
-        for (idx, previewCmd) in previewCommands.enumerated() {
-            XCTAssertEqual(previewCmd, legacyCommands[idx],
-                "Commands should match at index \(idx)")
+            for (idx, previewCmd) in previewCommands.enumerated() {
+                XCTAssertEqual(previewCmd, legacyCommands[idx],
+                    "Commands should match at index \(idx)")
+            }
         }
     }
 
     // MARK: - T2: Edit renders full no-anim variant
 
     /// T2: Edit mode renders the full no-anim variant — not just binding layers.
-    func testT2_editRendersFullNoAnimVariant() throws {
-        let player = try compiledPlayer()
+    func testT2_editRendersFullNoAnimVariant() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
             }
+
+            let editFrame = ScenePlayer.editFrameIndex
+            let visibleAtEditFrame = visibleBlockCount(player: player, at: editFrame)
+
+            let editCommands = player.renderCommands(mode: .edit)
+
+            XCTAssertTrue(editCommands.isBalanced(),
+                "Edit commands should be balanced")
+
+            // Block groups should exist for each visible block
+            let blockGroupCount = editCommands.filter {
+                if case .beginGroup(let name) = $0 { return name.hasPrefix("Block:") }
+                return false
+            }.count
+            XCTAssertEqual(blockGroupCount, visibleAtEditFrame,
+                "Edit should have \(visibleAtEditFrame) block groups")
+
+            // At least one drawImage per visible block (binding layer in no-anim)
+            let drawImageCount = editCommands.filter {
+                if case .drawImage = $0 { return true }
+                return false
+            }.count
+            XCTAssertGreaterThanOrEqual(drawImageCount, visibleAtEditFrame,
+                "Edit mode should produce at least \(visibleAtEditFrame) drawImage commands")
         }
-
-        let editFrame = ScenePlayer.editFrameIndex
-        let visibleAtEditFrame = visibleBlockCount(player: player, at: editFrame)
-
-        let editCommands = player.renderCommands(mode: .edit)
-
-        XCTAssertTrue(editCommands.isBalanced(),
-            "Edit commands should be balanced")
-
-        // Block groups should exist for each visible block
-        let blockGroupCount = editCommands.filter {
-            if case .beginGroup(let name) = $0 { return name.hasPrefix("Block:") }
-            return false
-        }.count
-        XCTAssertEqual(blockGroupCount, visibleAtEditFrame,
-            "Edit should have \(visibleAtEditFrame) block groups")
-
-        // At least one drawImage per visible block (binding layer in no-anim)
-        let drawImageCount = editCommands.filter {
-            if case .drawImage = $0 { return true }
-            return false
-        }.count
-        XCTAssertGreaterThanOrEqual(drawImageCount, visibleAtEditFrame,
-            "Edit mode should produce at least \(visibleAtEditFrame) drawImage commands")
     }
 
     /// T2b: Edit uses inputClip from no-anim variant (mediaInput → inputClip mask).
-    func testT2b_editUsesInputClip() throws {
-        let player = try compiledPlayer()
+    func testT2b_editUsesInputClip() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
             }
+
+            let editCommands = player.renderCommands(mode: .edit)
+
+            // no-anim variants have mediaInput → inputClip should produce intersect masks
+            let inputClipGroups = editCommands.filter {
+                if case .beginGroup(let name) = $0 { return name.contains("(inputClip)") }
+                return false
+            }.count
+
+            let visibleAtEdit = visibleBlockCount(player: player, at: ScenePlayer.editFrameIndex)
+            XCTAssertEqual(inputClipGroups, visibleAtEdit,
+                "Edit should have inputClip group for each visible block (has mediaInput)")
         }
-
-        let editCommands = player.renderCommands(mode: .edit)
-
-        // no-anim variants have mediaInput → inputClip should produce intersect masks
-        let inputClipGroups = editCommands.filter {
-            if case .beginGroup(let name) = $0 { return name.contains("(inputClip)") }
-            return false
-        }.count
-
-        let visibleAtEdit = visibleBlockCount(player: player, at: ScenePlayer.editFrameIndex)
-        XCTAssertEqual(inputClipGroups, visibleAtEdit,
-            "Edit should have inputClip group for each visible block (has mediaInput)")
     }
 
     // MARK: - T3: Edit ignores sceneFrameIndex
 
     /// T3: Edit mode always renders at editFrameIndex (0), regardless of sceneFrameIndex.
-    func testT3_editIgnoresSceneFrameIndex() throws {
-        let player = try compiledPlayer()
+    func testT3_editIgnoresSceneFrameIndex() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
             }
-        }
 
-        let editAt0 = player.renderCommands(mode: .edit, sceneFrameIndex: 0)
-        let editAt50 = player.renderCommands(mode: .edit, sceneFrameIndex: 50)
-        let editAt150 = player.renderCommands(mode: .edit, sceneFrameIndex: 150)
+            let editAt0 = player.renderCommands(mode: .edit, sceneFrameIndex: 0)
+            let editAt50 = player.renderCommands(mode: .edit, sceneFrameIndex: 50)
+            let editAt150 = player.renderCommands(mode: .edit, sceneFrameIndex: 150)
 
-        XCTAssertEqual(editAt0.count, editAt50.count,
-            "Edit at frame 0 and frame 50 should have same command count")
-        XCTAssertEqual(editAt0.count, editAt150.count,
-            "Edit at frame 0 and frame 150 should have same command count")
+            XCTAssertEqual(editAt0.count, editAt50.count,
+                "Edit at frame 0 and frame 50 should have same command count")
+            XCTAssertEqual(editAt0.count, editAt150.count,
+                "Edit at frame 0 and frame 150 should have same command count")
 
-        for (idx, cmd0) in editAt0.enumerated() {
-            XCTAssertEqual(cmd0, editAt50[idx],
-                "Edit commands should be identical regardless of sceneFrameIndex (index \(idx))")
-            XCTAssertEqual(cmd0, editAt150[idx],
-                "Edit commands should be identical regardless of sceneFrameIndex (index \(idx))")
+            for (idx, cmd0) in editAt0.enumerated() {
+                XCTAssertEqual(cmd0, editAt50[idx],
+                    "Edit commands should be identical regardless of sceneFrameIndex (index \(idx))")
+                XCTAssertEqual(cmd0, editAt150[idx],
+                    "Edit commands should be identical regardless of sceneFrameIndex (index \(idx))")
+            }
         }
     }
 
     /// T3b: Verify editFrameIndex constant is 0.
-    func testT3b_editFrameIndexIsZero() {
-        XCTAssertEqual(ScenePlayer.editFrameIndex, 0,
-            "Canonical editFrameIndex should be 0")
+    func testT3b_editFrameIndexIsZero() async {
+        await MainActor.run {
+            XCTAssertEqual(ScenePlayer.editFrameIndex, 0,
+                "Canonical editFrameIndex should be 0")
+        }
     }
 
     // MARK: - T4: Edit uses no-anim variant override
 
     /// T4: Edit uses no-anim variant regardless of user's variant selection.
-    func testT4_editUsesNoAnimRegardlessOfSelection() throws {
-        let player = try compiledPlayer()
+    func testT4_editUsesNoAnimRegardlessOfSelection() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
             }
-        }
 
-        // Select animated variant v1 for first block
-        player.setSelectedVariant(blockId: "block_01", variantId: "v1")
+            // Select animated variant v1 for first block
+            player.setSelectedVariant(blockId: "block_01", variantId: "v1")
 
-        // Edit should still render no-anim (not affected by selection)
-        let editCommands = player.renderCommands(mode: .edit)
-        XCTAssertTrue(editCommands.isBalanced(), "Edit commands should be balanced")
-        XCTAssertFalse(editCommands.isEmpty, "Edit should produce commands")
+            // Edit should still render no-anim (not affected by selection)
+            let editCommands = player.renderCommands(mode: .edit)
+            XCTAssertTrue(editCommands.isBalanced(), "Edit commands should be balanced")
+            XCTAssertFalse(editCommands.isEmpty, "Edit should produce commands")
 
-        // Verify editVariantId is "no-anim" for all blocks
-        guard let runtime = player.compiledScene?.runtime else {
-            XCTFail("Should have compiled runtime")
-            return
-        }
-        for block in runtime.blocks {
-            XCTAssertEqual(block.editVariantId, "no-anim",
-                "Block \(block.blockId) editVariantId should be 'no-anim'")
+            // Verify editVariantId is "no-anim" for all blocks
+            guard let runtime = player.compiledScene?.runtime else {
+                XCTFail("Should have compiled runtime")
+                return
+            }
+            for block in runtime.blocks {
+                XCTAssertEqual(block.editVariantId, "no-anim",
+                    "Block \(block.blockId) editVariantId should be 'no-anim'")
+            }
         }
     }
 
     /// T4b: Edit drawImage asset IDs are a subset of all compiled assets.
-    func testT4b_editAssetsAreSubsetOfCompiled() throws {
-        let player = try compiledPlayer()
+    func testT4b_editAssetsAreSubsetOfCompiled() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
             }
-        }
 
-        let editCommands = player.renderCommands(mode: .edit)
+            let editCommands = player.renderCommands(mode: .edit)
 
-        let editAssetIds = Set(editCommands.compactMap { cmd -> String? in
-            if case .drawImage(let assetId, _) = cmd { return assetId }
-            return nil
-        })
+            let editAssetIds = Set(editCommands.compactMap { cmd -> String? in
+                if case .drawImage(let assetId, _) = cmd { return assetId }
+                return nil
+            })
 
-        // All edit asset IDs should be in the compiled asset index
-        guard let mergedAssets = player.compiledScene?.mergedAssetIndex else {
-            XCTFail("Should have compiled assets")
-            return
-        }
-        for assetId in editAssetIds {
-            XCTAssertNotNil(mergedAssets.byId[assetId],
-                "Edit asset '\(assetId)' should exist in merged asset index")
+            // All edit asset IDs should be in the compiled asset index
+            guard let mergedAssets = player.compiledScene?.mergedAssetIndex else {
+                XCTFail("Should have compiled assets")
+                return
+            }
+            for assetId in editAssetIds {
+                XCTAssertNotNil(mergedAssets.byId[assetId],
+                    "Edit asset '\(assetId)' should exist in merged asset index")
+            }
         }
     }
 
     // MARK: - T5: Determinism
 
     /// T5: Two independent ScenePlayer instances produce identical edit commands.
-    func testT5_determinism_twoPlayersIdenticalOutput() throws {
+    func testT5_determinism_twoPlayersIdenticalOutput() async throws {
         let (package, animations) = try loadTestPackage()
-        let player1 = ScenePlayer()
-        let player2 = ScenePlayer()
-        let compiled1 = try player1.compile(package: package, loadedAnimations: animations)
-        let compiled2 = try player2.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player1 = ScenePlayer()
+            let player2 = ScenePlayer()
+            let compiled1 = try player1.compile(package: package, loadedAnimations: animations)
+            let compiled2 = try player2.compile(package: package, loadedAnimations: animations)
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        for block in compiled1.runtime.blocks {
-            player1.setUserMediaPresent(blockId: block.blockId, present: true)
-        }
-        for block in compiled2.runtime.blocks {
-            player2.setUserMediaPresent(blockId: block.blockId, present: true)
-        }
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            for block in compiled1.runtime.blocks {
+                player1.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+            for block in compiled2.runtime.blocks {
+                player2.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
 
-        let editCommands1 = player1.renderCommands(mode: .edit)
-        let editCommands2 = player2.renderCommands(mode: .edit)
+            let editCommands1 = player1.renderCommands(mode: .edit)
+            let editCommands2 = player2.renderCommands(mode: .edit)
 
-        XCTAssertEqual(editCommands1.count, editCommands2.count,
-            "Two players should produce same edit command count")
-        for (idx, cmd1) in editCommands1.enumerated() {
-            XCTAssertEqual(cmd1, editCommands2[idx],
-                "Edit commands should be identical between two players at index \(idx)")
+            XCTAssertEqual(editCommands1.count, editCommands2.count,
+                "Two players should produce same edit command count")
+            for (idx, cmd1) in editCommands1.enumerated() {
+                XCTAssertEqual(cmd1, editCommands2[idx],
+                    "Edit commands should be identical between two players at index \(idx)")
+            }
         }
     }
 
     /// T5b: Determinism in preview mode — two players produce identical output.
-    func testT5b_determinism_previewIdentical() throws {
+    func testT5b_determinism_previewIdentical() async throws {
         let (package, animations) = try loadTestPackage()
-        let player1 = ScenePlayer()
-        let player2 = ScenePlayer()
-        let compiled1 = try player1.compile(package: package, loadedAnimations: animations)
-        let compiled2 = try player2.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player1 = ScenePlayer()
+            let player2 = ScenePlayer()
+            let compiled1 = try player1.compile(package: package, loadedAnimations: animations)
+            let compiled2 = try player2.compile(package: package, loadedAnimations: animations)
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        for block in compiled1.runtime.blocks {
-            player1.setUserMediaPresent(blockId: block.blockId, present: true)
-        }
-        for block in compiled2.runtime.blocks {
-            player2.setUserMediaPresent(blockId: block.blockId, present: true)
-        }
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            for block in compiled1.runtime.blocks {
+                player1.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
+            for block in compiled2.runtime.blocks {
+                player2.setUserMediaPresent(blockId: block.blockId, present: true)
+            }
 
-        let previewCommands1 = player1.renderCommands(mode: .preview, sceneFrameIndex: 60)
-        let previewCommands2 = player2.renderCommands(mode: .preview, sceneFrameIndex: 60)
+            let previewCommands1 = player1.renderCommands(mode: .preview, sceneFrameIndex: 60)
+            let previewCommands2 = player2.renderCommands(mode: .preview, sceneFrameIndex: 60)
 
-        XCTAssertEqual(previewCommands1.count, previewCommands2.count,
-            "Two players should produce same preview command count")
-        for (idx, cmd1) in previewCommands1.enumerated() {
-            XCTAssertEqual(cmd1, previewCommands2[idx],
-                "Preview commands should be identical between two players at index \(idx)")
+            XCTAssertEqual(previewCommands1.count, previewCommands2.count,
+                "Two players should produce same preview command count")
+            for (idx, cmd1) in previewCommands1.enumerated() {
+                XCTAssertEqual(cmd1, previewCommands2[idx],
+                    "Preview commands should be identical between two players at index \(idx)")
+            }
         }
     }
 
     // MARK: - T6: Compilation errors
 
     /// T6a: Missing no-anim variant triggers compilation error.
-    func testT6a_missingNoAnimVariantThrows() throws {
+    func testT6a_missingNoAnimVariantThrows() async throws {
         let (package, animations) = try loadTestPackage()
 
         // Reconstruct block_01 without its no-anim variant
@@ -355,22 +377,24 @@ final class TemplateModeTests: XCTestCase {
             imagesRootURL: package.imagesRootURL
         )
 
-        let player = ScenePlayer()
-        XCTAssertThrowsError(try player.compile(package: modifiedPackage, loadedAnimations: animations)) { error in
-            guard let sceneError = error as? ScenePlayerError else {
-                XCTFail("Expected ScenePlayerError, got \(error)")
-                return
-            }
-            if case .missingNoAnimVariant(let blockId) = sceneError {
-                XCTAssertEqual(blockId, "block_01")
-            } else {
-                XCTFail("Expected missingNoAnimVariant, got \(sceneError)")
+        try await MainActor.run {
+            let player = ScenePlayer()
+            XCTAssertThrowsError(try player.compile(package: modifiedPackage, loadedAnimations: animations)) { error in
+                guard let sceneError = error as? ScenePlayerError else {
+                    XCTFail("Expected ScenePlayerError, got \(error)")
+                    return
+                }
+                if case .missingNoAnimVariant(let blockId) = sceneError {
+                    XCTAssertEqual(blockId, "block_01")
+                } else {
+                    XCTFail("Expected missingNoAnimVariant, got \(sceneError)")
+                }
             }
         }
     }
 
     /// T6b: Binding layer visible but unreachable (precomp container ip=10) triggers error.
-    func testT6b_unreachableBindingThrows() throws {
+    func testT6b_unreachableBindingThrows() async throws {
         // no-anim Lottie: binding is inside comp_0, but precomp container in root has ip=10
         // → binding layer itself is visible at frame 0, but full render skips the precomp
         let unreachableNoAnimJSON = """
@@ -510,18 +534,20 @@ final class TemplateModeTests: XCTestCase {
             ]
         )
 
-        let player = ScenePlayer()
-        XCTAssertThrowsError(try player.compile(package: package, loadedAnimations: animations)) { error in
-            guard let sceneError = error as? ScenePlayerError else {
-                XCTFail("Expected ScenePlayerError, got \(error)")
-                return
-            }
-            if case .noAnimBindingNotRenderedAtEditFrame(let blockId, let animRef, let editFrameIndex) = sceneError {
-                XCTAssertEqual(blockId, "block-test")
-                XCTAssertEqual(animRef, "unreachable.json")
-                XCTAssertEqual(editFrameIndex, 0)
-            } else {
-                XCTFail("Expected noAnimBindingNotRenderedAtEditFrame, got \(sceneError)")
+        try await MainActor.run {
+            let player = ScenePlayer()
+            XCTAssertThrowsError(try player.compile(package: package, loadedAnimations: animations)) { error in
+                guard let sceneError = error as? ScenePlayerError else {
+                    XCTFail("Expected ScenePlayerError, got \(error)")
+                    return
+                }
+                if case .noAnimBindingNotRenderedAtEditFrame(let blockId, let animRef, let editFrameIndex) = sceneError {
+                    XCTAssertEqual(blockId, "block-test")
+                    XCTAssertEqual(animRef, "unreachable.json")
+                    XCTAssertEqual(editFrameIndex, 0)
+                } else {
+                    XCTFail("Expected noAnimBindingNotRenderedAtEditFrame, got \(sceneError)")
+                }
             }
         }
     }
@@ -529,59 +555,63 @@ final class TemplateModeTests: XCTestCase {
     // MARK: - T7: Edit overlays/hitTest use no-anim
 
     /// T7: Overlays in edit mode resolve from no-anim variant.
-    func testT7_editOverlaysUseNoAnimVariant() throws {
-        let player = try compiledPlayer()
+    func testT7_editOverlaysUseNoAnimVariant() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
 
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
             }
-        }
 
-        let editOverlays = player.overlays(frame: ScenePlayer.editFrameIndex, mode: .edit)
-        let visibleAtEdit = visibleBlockCount(player: player, at: ScenePlayer.editFrameIndex)
+            let editOverlays = player.overlays(frame: ScenePlayer.editFrameIndex, mode: .edit)
+            let visibleAtEdit = visibleBlockCount(player: player, at: ScenePlayer.editFrameIndex)
 
-        XCTAssertEqual(editOverlays.count, visibleAtEdit,
-            "Edit overlays should have one entry per visible block")
+            XCTAssertEqual(editOverlays.count, visibleAtEdit,
+                "Edit overlays should have one entry per visible block")
 
-        for overlay in editOverlays {
-            XCTAssertFalse(overlay.hitPath.vertices.isEmpty,
-                "Overlay for \(overlay.blockId) should have non-empty hit path")
+            for overlay in editOverlays {
+                XCTAssertFalse(overlay.hitPath.vertices.isEmpty,
+                    "Overlay for \(overlay.blockId) should have non-empty hit path")
+            }
         }
     }
 
     // MARK: - Additional: UserTransform in edit mode
 
     /// UserTransform API works in edit mode.
-    func testEditMode_userTransformAPI() throws {
-        let player = try compiledPlayer()
-        guard let firstBlock = player.compiledScene?.runtime.blocks.first else {
-            XCTFail("Should have at least one block")
-            return
-        }
-
-        // PR-28: Set userMediaPresent=true for all blocks to show binding layers
-        if let compiled = player.compiledScene {
-            for block in compiled.runtime.blocks {
-                player.setUserMediaPresent(blockId: block.blockId, present: true)
+    func testEditMode_userTransformAPI() async throws {
+        try await MainActor.run {
+            let player = try compiledPlayer()
+            guard let firstBlock = player.compiledScene?.runtime.blocks.first else {
+                XCTFail("Should have at least one block")
+                return
             }
+
+            // PR-28: Set userMediaPresent=true for all blocks to show binding layers
+            if let compiled = player.compiledScene {
+                for block in compiled.runtime.blocks {
+                    player.setUserMediaPresent(blockId: block.blockId, present: true)
+                }
+            }
+
+            let transform = Matrix2D(a: 1.5, b: 0, c: 0, d: 1.5, tx: 10, ty: 20)
+            player.setUserTransform(blockId: firstBlock.blockId, transform: transform)
+
+            let editCommands = player.renderCommands(mode: .edit)
+
+            XCTAssertTrue(editCommands.isBalanced(), "Edit with user transform should be balanced")
+            XCTAssertFalse(editCommands.isEmpty, "Edit with user transform should produce commands")
+
+            let storedTransform = player.userTransform(blockId: firstBlock.blockId)
+            XCTAssertEqual(storedTransform, transform, "Stored transform should match set value")
+
+            player.resetAllUserTransforms()
+            let resetTransform = player.userTransform(blockId: firstBlock.blockId)
+            XCTAssertEqual(resetTransform, .identity, "After reset, transform should be identity")
         }
-
-        let transform = Matrix2D(a: 1.5, b: 0, c: 0, d: 1.5, tx: 10, ty: 20)
-        player.setUserTransform(blockId: firstBlock.blockId, transform: transform)
-
-        let editCommands = player.renderCommands(mode: .edit)
-
-        XCTAssertTrue(editCommands.isBalanced(), "Edit with user transform should be balanced")
-        XCTAssertFalse(editCommands.isEmpty, "Edit with user transform should produce commands")
-
-        let storedTransform = player.userTransform(blockId: firstBlock.blockId)
-        XCTAssertEqual(storedTransform, transform, "Stored transform should match set value")
-
-        player.resetAllUserTransforms()
-        let resetTransform = player.userTransform(blockId: firstBlock.blockId)
-        XCTAssertEqual(resetTransform, .identity, "After reset, transform should be identity")
     }
 
     // MARK: - Additional: TemplateMode enum
@@ -595,13 +625,15 @@ final class TemplateModeTests: XCTestCase {
     // MARK: - Additional: Uncompiled player returns empty
 
     /// renderCommands(mode:) returns empty array before compile.
-    func testUncompiledPlayerReturnsEmpty() {
-        let player = ScenePlayer()
+    func testUncompiledPlayerReturnsEmpty() async {
+        await MainActor.run {
+            let player = ScenePlayer()
 
-        let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 0)
-        XCTAssertTrue(previewCommands.isEmpty, "Uncompiled player should return empty for preview")
+            let previewCommands = player.renderCommands(mode: .preview, sceneFrameIndex: 0)
+            XCTAssertTrue(previewCommands.isEmpty, "Uncompiled player should return empty for preview")
 
-        let editCommands = player.renderCommands(mode: .edit)
-        XCTAssertTrue(editCommands.isEmpty, "Uncompiled player should return empty for edit")
+            let editCommands = player.renderCommands(mode: .edit)
+            XCTAssertTrue(editCommands.isEmpty, "Uncompiled player should return empty for edit")
+        }
     }
 }

@@ -539,6 +539,11 @@ public final class MetalRenderer {
     /// Uses a single command buffer with multiple encode passes for efficiency.
     /// Does NOT block UI — completion is called asynchronously when GPU finishes.
     ///
+    /// - Warning: **DEPRECATED (PR-A)** — This method is not used in Model A (main-thread) preview.
+    ///   Calling warmRender concurrently with draw() on a shared MetalRenderer instance causes
+    ///   contention and may block main thread. Do NOT use in runtime paths.
+    ///   If shader cache priming is needed, consider a separate renderer instance or prewarm pipelines.
+    ///
     /// - Parameters:
     ///   - commandQueue: Metal command queue for issuing render commands
     ///   - targetSizePx: Target texture size in pixels (typically canvas size)

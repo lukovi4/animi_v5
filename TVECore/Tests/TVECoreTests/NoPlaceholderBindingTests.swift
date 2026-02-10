@@ -159,110 +159,122 @@ final class NoPlaceholderBindingTests: XCTestCase {
 
     // MARK: - SceneRenderPlan level: userMediaPresent
 
-    func testSceneRenderPlan_userMediaPresentTrue_showsBinding() throws {
+    func testSceneRenderPlan_userMediaPresentTrue_showsBinding() async throws {
         let (package, animations) = try makeSingleBlockPackage()
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        let commands = SceneRenderPlan.renderCommands(
-            for: compiled.runtime,
-            sceneFrameIndex: 0,
-            userMediaPresent: ["block-1": true]
-        )
+            let commands = SceneRenderPlan.renderCommands(
+                for: compiled.runtime,
+                sceneFrameIndex: 0,
+                userMediaPresent: ["block-1": true]
+            )
 
-        let assetIds = drawImageAssetIds(from: commands)
-        XCTAssertTrue(assetIds.contains("test-anim|image_0"),
-            "userMediaPresent=true should show binding layer")
-        XCTAssertTrue(commands.isBalanced())
+            let assetIds = drawImageAssetIds(from: commands)
+            XCTAssertTrue(assetIds.contains("test-anim|image_0"),
+                "userMediaPresent=true should show binding layer")
+            XCTAssertTrue(commands.isBalanced())
+        }
     }
 
-    func testSceneRenderPlan_userMediaPresentFalse_hidesBinding() throws {
+    func testSceneRenderPlan_userMediaPresentFalse_hidesBinding() async throws {
         let (package, animations) = try makeSingleBlockPackage()
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        let commands = SceneRenderPlan.renderCommands(
-            for: compiled.runtime,
-            sceneFrameIndex: 0,
-            userMediaPresent: ["block-1": false]
-        )
+            let commands = SceneRenderPlan.renderCommands(
+                for: compiled.runtime,
+                sceneFrameIndex: 0,
+                userMediaPresent: ["block-1": false]
+            )
 
-        let assetIds = drawImageAssetIds(from: commands)
-        XCTAssertFalse(assetIds.contains("test-anim|image_0"),
-            "userMediaPresent=false should hide binding layer. Got: \(assetIds)")
-        XCTAssertTrue(commands.isBalanced())
+            let assetIds = drawImageAssetIds(from: commands)
+            XCTAssertFalse(assetIds.contains("test-anim|image_0"),
+                "userMediaPresent=false should hide binding layer. Got: \(assetIds)")
+            XCTAssertTrue(commands.isBalanced())
+        }
     }
 
-    func testSceneRenderPlan_missingKey_defaultsFalse() throws {
+    func testSceneRenderPlan_missingKey_defaultsFalse() async throws {
         let (package, animations) = try makeSingleBlockPackage()
-        let player = ScenePlayer()
-        let compiled = try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            let compiled = try player.compile(package: package, loadedAnimations: animations)
 
-        // Empty dict — block-1 not present → defaults to false
-        let commands = SceneRenderPlan.renderCommands(
-            for: compiled.runtime,
-            sceneFrameIndex: 0,
-            userMediaPresent: [:]
-        )
+            // Empty dict — block-1 not present → defaults to false
+            let commands = SceneRenderPlan.renderCommands(
+                for: compiled.runtime,
+                sceneFrameIndex: 0,
+                userMediaPresent: [:]
+            )
 
-        let assetIds = drawImageAssetIds(from: commands)
-        XCTAssertFalse(assetIds.contains("test-anim|image_0"),
-            "Missing key should default to false (binding hidden)")
+            let assetIds = drawImageAssetIds(from: commands)
+            XCTAssertFalse(assetIds.contains("test-anim|image_0"),
+                "Missing key should default to false (binding hidden)")
+        }
     }
 
     // MARK: - ScenePlayer level: setUserMediaPresent API
 
-    func testScenePlayer_setUserMediaPresent_controlsBinding() throws {
+    func testScenePlayer_setUserMediaPresent_controlsBinding() async throws {
         let (package, animations) = try makeSingleBlockPackage()
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        // Initially no media — binding hidden
-        let cmdsHidden = player.renderCommands(sceneFrameIndex: 0)
-        let hiddenAssets = drawImageAssetIds(from: cmdsHidden)
-        XCTAssertFalse(hiddenAssets.contains("test-anim|image_0"),
-            "Before setUserMediaPresent, binding should be hidden")
+            // Initially no media — binding hidden
+            let cmdsHidden = player.renderCommands(sceneFrameIndex: 0)
+            let hiddenAssets = drawImageAssetIds(from: cmdsHidden)
+            XCTAssertFalse(hiddenAssets.contains("test-anim|image_0"),
+                "Before setUserMediaPresent, binding should be hidden")
 
-        // Set media present
-        player.setUserMediaPresent(blockId: "block-1", present: true)
-        let cmdsVisible = player.renderCommands(sceneFrameIndex: 0)
-        let visibleAssets = drawImageAssetIds(from: cmdsVisible)
-        XCTAssertTrue(visibleAssets.contains("test-anim|image_0"),
-            "After setUserMediaPresent(true), binding should render")
+            // Set media present
+            player.setUserMediaPresent(blockId: "block-1", present: true)
+            let cmdsVisible = player.renderCommands(sceneFrameIndex: 0)
+            let visibleAssets = drawImageAssetIds(from: cmdsVisible)
+            XCTAssertTrue(visibleAssets.contains("test-anim|image_0"),
+                "After setUserMediaPresent(true), binding should render")
 
-        // Remove media
-        player.setUserMediaPresent(blockId: "block-1", present: false)
-        let cmdsHiddenAgain = player.renderCommands(sceneFrameIndex: 0)
-        let hiddenAgainAssets = drawImageAssetIds(from: cmdsHiddenAgain)
-        XCTAssertFalse(hiddenAgainAssets.contains("test-anim|image_0"),
-            "After setUserMediaPresent(false), binding should be hidden again")
+            // Remove media
+            player.setUserMediaPresent(blockId: "block-1", present: false)
+            let cmdsHiddenAgain = player.renderCommands(sceneFrameIndex: 0)
+            let hiddenAgainAssets = drawImageAssetIds(from: cmdsHiddenAgain)
+            XCTAssertFalse(hiddenAgainAssets.contains("test-anim|image_0"),
+                "After setUserMediaPresent(false), binding should be hidden again")
+        }
     }
 
-    func testScenePlayer_isUserMediaPresent_queryAPI() throws {
+    func testScenePlayer_isUserMediaPresent_queryAPI() async throws {
         let (package, animations) = try makeSingleBlockPackage()
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        XCTAssertFalse(player.isUserMediaPresent(blockId: "block-1"),
-            "Default should be false")
+            XCTAssertFalse(player.isUserMediaPresent(blockId: "block-1"),
+                "Default should be false")
 
-        player.setUserMediaPresent(blockId: "block-1", present: true)
-        XCTAssertTrue(player.isUserMediaPresent(blockId: "block-1"))
+            player.setUserMediaPresent(blockId: "block-1", present: true)
+            XCTAssertTrue(player.isUserMediaPresent(blockId: "block-1"))
 
-        player.setUserMediaPresent(blockId: "block-1", present: false)
-        XCTAssertFalse(player.isUserMediaPresent(blockId: "block-1"))
+            player.setUserMediaPresent(blockId: "block-1", present: false)
+            XCTAssertFalse(player.isUserMediaPresent(blockId: "block-1"))
+        }
     }
 
-    func testScenePlayer_nonBindingLayersAlwaysRender() throws {
+    func testScenePlayer_nonBindingLayersAlwaysRender() async throws {
         let (package, animations) = try makeSingleBlockPackage()
-        let player = ScenePlayer()
-        try player.compile(package: package, loadedAnimations: animations)
+        try await MainActor.run {
+            let player = ScenePlayer()
+            try player.compile(package: package, loadedAnimations: animations)
 
-        // Without media — decoration layer still renders
-        let cmds = player.renderCommands(sceneFrameIndex: 0)
-        let assetIds = drawImageAssetIds(from: cmds)
-        XCTAssertTrue(assetIds.contains("test-anim|image_1"),
-            "Non-binding decoration layer must always render regardless of userMediaPresent")
+            // Without media — decoration layer still renders
+            let cmds = player.renderCommands(sceneFrameIndex: 0)
+            let assetIds = drawImageAssetIds(from: cmds)
+            XCTAssertTrue(assetIds.contains("test-anim|image_1"),
+                "Non-binding decoration layer must always render regardless of userMediaPresent")
+        }
     }
 
     // MARK: - Balance & determinism
