@@ -251,8 +251,8 @@ extension AnimIR {
         context: RenderContext,
         commands: inout [RenderCommand]
     ) {
-        // Process layers in order (as they appear in JSON)
-        for layer in composition.layers {
+        // AE/Lottie: layers earlier in array are on top → render reversed to respect stacking.
+        for layer in composition.layers.reversed() {
             renderLayer(layer, context: context, commands: &commands)
         }
     }
