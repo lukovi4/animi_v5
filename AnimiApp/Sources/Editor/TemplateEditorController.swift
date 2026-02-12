@@ -21,6 +21,9 @@ struct TemplateEditorState {
 /// PR-19 canonical contract:
 /// - Edit mode: time frozen at `editFrameIndex`, hit-test + gestures active, overlay visible.
 /// - Preview mode: scrubber + playback, overlay hidden, selection nil.
+///
+/// Model A contract: All UI/editor operations happen on main thread.
+@MainActor
 final class TemplateEditorController {
 
     // MARK: - State
@@ -232,6 +235,31 @@ final class TemplateEditorController {
     private func applyTransform(_ transform: Matrix2D, for blockId: String) {
         player?.setUserTransform(blockId: blockId, transform: transform)
         requestDisplay()
+    }
+
+    // MARK: - Layer Toggles (PR-30)
+
+    /// Returns available toggles for the currently selected block, or empty.
+    func selectedBlockToggles() -> [LayerToggle] {
+        guard let player = player,
+              let blockId = state.selectedBlockId else { return [] }
+        return player.availableToggles(blockId: blockId)
+    }
+
+    /// Returns whether a toggle is currently enabled for the selected block.
+    func isToggleEnabled(toggleId: String) -> Bool? {
+        guard let player = player,
+              let blockId = state.selectedBlockId else { return nil }
+        return player.isLayerToggleEnabled(blockId: blockId, toggleId: toggleId)
+    }
+
+    /// Sets the enabled state for a toggle on the selected block.
+    func setToggle(toggleId: String, enabled: Bool) {
+        guard let player = player,
+              let blockId = state.selectedBlockId else { return }
+        player.setLayerToggle(blockId: blockId, toggleId: toggleId, enabled: enabled)
+        requestDisplay()
+        onStateChanged?(state)
     }
 
     // MARK: - Variant Selection (PR-20)

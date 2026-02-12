@@ -65,17 +65,24 @@ public final class InMemoryTextureProvider: MutableTextureProvider {
     }
 
     /// Returns the registered texture for the given asset ID.
+    ///
+    /// Model A contract: texture access happens only on main during playback/render.
     public func texture(for assetId: String) -> MTLTexture? {
-        textures[assetId]
+        dispatchPrecondition(condition: .onQueue(.main))
+        return textures[assetId]
     }
 
     // MARK: - MutableTextureProvider
 
+    /// Model A contract: texture mutations happen only on main during playback/render.
     public func setTexture(_ texture: MTLTexture, for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
         textures[assetId] = texture
     }
 
+    /// Model A contract: texture mutations happen only on main during playback/render.
     public func removeTexture(for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
         textures.removeValue(forKey: assetId)
     }
 }

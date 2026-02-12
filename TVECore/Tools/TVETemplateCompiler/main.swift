@@ -25,6 +25,7 @@ struct TVETemplateCompiler {
 
         var inputURL: URL?
         var outputURL: URL?
+        var sharedURL: URL?
 
         var i = 1
         while i < args.count {
@@ -43,6 +44,13 @@ struct TVETemplateCompiler {
                     exit(1)
                 }
                 outputURL = URL(fileURLWithPath: args[i])
+            case "--shared", "-s":
+                i += 1
+                guard i < args.count else {
+                    printError("Missing value for --shared")
+                    exit(1)
+                }
+                sharedURL = URL(fileURLWithPath: args[i])
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -67,22 +75,24 @@ struct TVETemplateCompiler {
             exit(1)
         }
 
-        try compile(from: input, to: output)
+        try compile(from: input, to: output, sharedAssetsURL: sharedURL)
     }
 
     static func printUsage() {
         print("""
         TVE Template Compiler v\(TVECore.version)
 
-        Usage: tve-template-compiler --input <ScenePackageFolder> --output <OutputFolder>
+        Usage: tve-template-compiler --input <ScenePackageFolder> --output <OutputFolder> [--shared <SharedAssetsFolder>]
 
         Options:
           -i, --input   Path to ScenePackage folder containing scene.json and anim-*.json
           -o, --output  Path to output folder where compiled.tve will be written
+          -s, --shared  Path to SharedAssets folder (optional, defaults to <input>/shared)
           -h, --help    Show this help message
 
         Example:
           tve-template-compiler --input ./templates/my_template --output ./compiled
+          tve-template-compiler -i ./templates/polaroid -o ./compiled -s ./SharedAssets
         """)
     }
 
@@ -90,10 +100,13 @@ struct TVETemplateCompiler {
         FileHandle.standardError.write(Data("\(message)\n".utf8))
     }
 
-    static func compile(from inputURL: URL, to outputURL: URL) throws {
+    static func compile(from inputURL: URL, to outputURL: URL, sharedAssetsURL: URL? = nil) throws {
         print("TVE Template Compiler v\(TVECore.version)")
         print("Input:  \(inputURL.path)")
         print("Output: \(outputURL.path)")
+        if let shared = sharedAssetsURL {
+            print("Shared: \(shared.path)")
+        }
         print("")
 
         // 1. Load package
@@ -134,12 +147,19 @@ struct TVETemplateCompiler {
         // 4. Validate animations
         print("[4/6] Validating animations...")
         let localAssets = try LocalAssetsIndex(imagesRootURL: inputURL.appendingPathComponent("images"))
-        let sharedURL = inputURL.appendingPathComponent("shared")
+
+        // Resolve shared assets: use explicit --shared path, or fallback to <input>/shared
         let sharedAssets: SharedAssetsIndex
-        if FileManager.default.fileExists(atPath: sharedURL.path) {
-            sharedAssets = try SharedAssetsIndex(rootURL: sharedURL)
+        if let explicitSharedURL = sharedAssetsURL {
+            sharedAssets = try SharedAssetsIndex(rootURL: explicitSharedURL)
+            print("       Using shared assets from: \(explicitSharedURL.path)")
         } else {
-            sharedAssets = .empty
+            let defaultSharedURL = inputURL.appendingPathComponent("shared")
+            if FileManager.default.fileExists(atPath: defaultSharedURL.path) {
+                sharedAssets = try SharedAssetsIndex(rootURL: defaultSharedURL)
+            } else {
+                sharedAssets = .empty
+            }
         }
         let resolver = CompositeAssetResolver(localIndex: localAssets, sharedIndex: sharedAssets)
 

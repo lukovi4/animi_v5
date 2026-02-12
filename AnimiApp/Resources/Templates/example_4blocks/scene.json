@@ -1,0 +1,180 @@
+{
+  "schemaVersion": "0.1",
+  "sceneId": "scene_test_2x2_4blocks",
+  "canvas": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "durationFrames": 300
+  },
+  "mediaBlocks": [
+    {
+      "blockId": "block_01",
+      "zIndex": 0,
+      "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 300 },
+      "input": {
+        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_01/no-anim.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "v1",
+          "animRef": "block_01/anim-1.1.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "v2",
+          "animRef": "block_01/anim-1.2.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "v3",
+          "animRef": "block_01/anim-1.3.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "v4",
+          "animRef": "block_01/anim-1.4.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "blockId": "block_02",
+      "zIndex": 1,
+      "rect": { "x": 540.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 300 },
+      "input": {
+        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_02/no-anim.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "v1",
+          "animRef": "block_02/anim-2.1.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "blockId": "block_03",
+      "zIndex": 2,
+      "rect": { "x": 0.0, "y": 960.0, "width": 540.0, "height": 960.0 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 300 },
+      "input": {
+        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_03/no-anim.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "v1",
+          "animRef": "block_03/anim-3.1.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ]
+    },
+    {
+      "blockId": "block_04",
+      "zIndex": 3,
+      "rect": { "x": 540.0, "y": 960.0, "width": 540.0, "height": 960.0 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 300 },
+      "input": {
+        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_04/no-anim.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "v1",
+          "animRef": "block_04/anim-4.1.json",
+          "defaultDurationFrames": 300,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ]
+    }
+  ]
+}

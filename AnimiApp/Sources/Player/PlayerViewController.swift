@@ -67,6 +67,37 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - UI Components
 
+    private lazy var scrollView: UIScrollView = {
+        let sv = UIScrollView()
+        sv.translatesAutoresizingMaskIntoConstraints = false
+        sv.showsVerticalScrollIndicator = true
+        sv.showsHorizontalScrollIndicator = false
+        sv.alwaysBounceVertical = true
+        return sv
+    }()
+
+    private lazy var contentView: UIView = {
+        let v = UIView()
+        v.translatesAutoresizingMaskIntoConstraints = false
+        return v
+    }()
+
+    /// Available templates for selection
+    private let availableTemplates: [(name: String, displayName: String)] = [
+        ("example_4blocks", "4 Blocks"),
+        ("polaroid_shared_demo", "Polaroid")
+    ]
+
+    /// Template selector (available in both Debug and Release)
+    private lazy var templateSelector: UISegmentedControl = {
+        let items = availableTemplates.map(\.displayName)
+        let control = UISegmentedControl(items: items)
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.selectedSegmentIndex = 0
+        control.addTarget(self, action: #selector(templateSelectorChanged), for: .valueChanged)
+        return control
+    }()
+
     #if DEBUG
     private lazy var sceneSelector: UISegmentedControl = {
         let control = UISegmentedControl(items: ["4 Blocks", "Alpha Matte", "Variant Demo", "Shared Decor"])
@@ -155,7 +186,6 @@ final class PlayerViewController: UIViewController {
         let control = UISegmentedControl()
         control.translatesAutoresizingMaskIntoConstraints = false
         control.addTarget(self, action: #selector(variantPickerChanged), for: .valueChanged)
-        control.isHidden = true
         return control
     }()
 
@@ -166,7 +196,6 @@ final class PlayerViewController: UIViewController {
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.textColor = .secondaryLabel
         label.text = ""
-        label.isHidden = true
         return label
     }()
 
@@ -194,7 +223,6 @@ final class PlayerViewController: UIViewController {
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.textColor = .secondaryLabel
         label.text = "Layer Toggles"
-        label.isHidden = true
         return label
     }()
 
@@ -204,7 +232,6 @@ final class PlayerViewController: UIViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .vertical
         stack.spacing = 8
-        stack.isHidden = true
         return stack
     }()
 
@@ -220,7 +247,6 @@ final class PlayerViewController: UIViewController {
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.textColor = .secondaryLabel
         label.text = "User Media"
-        label.isHidden = true
         return label
     }()
 
@@ -231,7 +257,6 @@ final class PlayerViewController: UIViewController {
         stack.axis = .horizontal
         stack.spacing = 8
         stack.distribution = .fillEqually
-        stack.isHidden = true
         return stack
     }()
 
@@ -285,7 +310,6 @@ final class PlayerViewController: UIViewController {
         label.textColor = .tertiaryLabel
         label.textAlignment = .center
         label.text = "No media"
-        label.isHidden = true
         return label
     }()
 
@@ -406,123 +430,192 @@ final class PlayerViewController: UIViewController {
         editorController.refreshOverlayIfNeeded()
     }
 
+    /// Main vertical stack for all controls below metalView
+    private lazy var mainControlsStack: UIStackView = {
+        let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 8
+        stack.alignment = .fill
+        return stack
+    }()
+
+    /// Container for variant controls (label + picker)
+    private lazy var variantContainer: UIStackView = {
+        let stack = UIStackView(arrangedSubviews: [variantLabel, variantPicker])
+        stack.axis = .vertical
+        stack.spacing = 4
+        return stack
+    }()
+
+    /// Container for toggle controls (label + stack)
+    private lazy var toggleContainer: UIStackView = {
+        let stack = UIStackView(arrangedSubviews: [toggleLabel, toggleStack])
+        stack.axis = .vertical
+        stack.spacing = 4
+        return stack
+    }()
+
+    /// Container for user media controls (label + buttons + status)
+    private lazy var userMediaContainer: UIStackView = {
+        let stack = UIStackView(arrangedSubviews: [userMediaLabel, userMediaStack, userMediaStatusLabel])
+        stack.axis = .vertical
+        stack.spacing = 4
+        return stack
+    }()
+
+    /// Container for playback controls (play/pause + slider + frame label)
+    private lazy var playbackContainer: UIStackView = {
+        let stack = UIStackView(arrangedSubviews: [controlsStack, frameLabel])
+        stack.axis = .vertical
+        stack.spacing = 4
+        return stack
+    }()
+
     private func setupUI() {
         view.backgroundColor = .systemBackground
+
+        // Setup scroll view hierarchy
+        view.addSubview(scrollView)
+        scrollView.addSubview(contentView)
+
+        // Add header elements to contentView
         #if DEBUG
-        [sceneSelector, loadButton, modeToggle, presetPicker, metalView, overlayView, preparingOverlay, variantLabel, variantPicker, toggleLabel, toggleStack, userMediaLabel, userMediaStack, userMediaStatusLabel, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
-        #else
-        [modeToggle, presetPicker, metalView, overlayView, preparingOverlay, variantLabel, variantPicker, toggleLabel, toggleStack, userMediaLabel, userMediaStack, userMediaStatusLabel, controlsStack, frameLabel, logTextView].forEach { view.addSubview($0) }
+        [sceneSelector, loadButton].forEach { contentView.addSubview($0) }
         #endif
+        [templateSelector, modeToggle, presetPicker, metalView, overlayView, preparingOverlay, mainControlsStack, logTextView].forEach { contentView.addSubview($0) }
+
+        // Setup mainControlsStack with all control containers
+        [variantContainer, toggleContainer, userMediaContainer, playbackContainer].forEach {
+            mainControlsStack.addArrangedSubview($0)
+        }
+
+        // Initially hide edit-mode containers (shown when block selected)
+        variantContainer.isHidden = true
+        toggleContainer.isHidden = true
+        userMediaContainer.isHidden = true
+
         // PR-32: Add user media buttons to stack
         [addPhotoButton, addVideoButton, clearMediaButton].forEach { userMediaStack.addArrangedSubview($0) }
         overlayView.translatesAutoresizingMaskIntoConstraints = false
         preparingOverlay.translatesAutoresizingMaskIntoConstraints = false
 
-        // MetalView constraints for normal mode
-        // PR-20: metalView top anchors to presetPicker (which follows modeToggle)
-        metalViewTopToLoadButtonConstraint = metalView.topAnchor.constraint(equalTo: presetPicker.bottomAnchor, constant: 8)
-        metalViewTopToSafeAreaConstraint = metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12)
-        metalViewTopToSafeAreaConstraint?.isActive = false
+        // ScrollView fills the entire view
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
 
-        // Height constraint with aspect ratio (default 16:9, will be updated when scene loads)
+        // ContentView fills scrollView width, height determined by content
+        NSLayoutConstraint.activate([
+            contentView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            contentView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
+        ])
+
+        // MetalView constraints - full width, aspect ratio height
         metalViewHeightConstraint = metalView.heightAnchor.constraint(equalTo: metalView.widthAnchor, multiplier: 9.0 / 16.0)
         metalViewHeightConstraint?.priority = .defaultHigh
 
-        // Bottom constraint for fullscreen mode
-        metalViewBottomConstraint = metalView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12)
+        // Fullscreen mode constraints (applied to view, not contentView)
+        metalViewTopToSafeAreaConstraint = metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        metalViewTopToSafeAreaConstraint?.isActive = false
+        metalViewBottomConstraint = metalView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         metalViewBottomConstraint?.isActive = false
 
-        // Leading/trailing constraints (need references for fullscreen toggle)
-        metalViewLeadingConstraint = metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16)
-        metalViewTrailingConstraint = metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
-
         #if DEBUG
+        // DEBUG: sceneSelector and loadButton at top (for test packages)
         NSLayoutConstraint.activate([
-            sceneSelector.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            sceneSelector.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            sceneSelector.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            sceneSelector.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            sceneSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            sceneSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
             loadButton.topAnchor.constraint(equalTo: sceneSelector.bottomAnchor, constant: 8),
-            loadButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            loadButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            loadButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            loadButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             loadButton.heightAnchor.constraint(equalToConstant: 44),
-            // PR-19: modeToggle between loadButton and metalView
-            modeToggle.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 8),
-            modeToggle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            modeToggle.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            templateSelector.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 8),
+            templateSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            templateSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
+            modeToggle.topAnchor.constraint(equalTo: templateSelector.bottomAnchor, constant: 8),
+            modeToggle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            modeToggle.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
         ])
         #else
+        // RELEASE: templateSelector at top, then modeToggle
         NSLayoutConstraint.activate([
-            // Release: modeToggle at top (no sceneSelector/loadButton)
-            modeToggle.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            modeToggle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            modeToggle.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            templateSelector.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            templateSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            templateSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
+            modeToggle.topAnchor.constraint(equalTo: templateSelector.bottomAnchor, constant: 8),
+            modeToggle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            modeToggle.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
         ])
         #endif
 
+        // Store metalView top constraint for normal mode
+        metalViewTopToLoadButtonConstraint = metalView.topAnchor.constraint(equalTo: presetPicker.bottomAnchor, constant: 8)
+
         NSLayoutConstraint.activate([
-            // PR-20: presetPicker between modeToggle and metalView
+            // presetPicker between modeToggle and metalView
             presetPicker.topAnchor.constraint(equalTo: modeToggle.bottomAnchor, constant: 6),
-            presetPicker.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            presetPicker.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            presetPicker.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            presetPicker.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
+            // MetalView - full width (no padding), aspect ratio height
             metalViewTopToLoadButtonConstraint!,
-            metalViewLeadingConstraint!,
-            metalViewTrailingConstraint!,
+            metalView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            metalView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             metalViewHeightConstraint!,
-            // PR-19: overlayView pins to metalView (non-interactive, CAShapeLayer overlay)
+
+            // overlayView pins to metalView
             overlayView.topAnchor.constraint(equalTo: metalView.topAnchor),
             overlayView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             overlayView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             overlayView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-            // PR-D: preparingOverlay pins to metalView (shown during template loading)
+
+            // preparingOverlay pins to metalView
             preparingOverlay.topAnchor.constraint(equalTo: metalView.topAnchor),
             preparingOverlay.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             preparingOverlay.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             preparingOverlay.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-            // PR-20: variant picker below metalView (edit mode only)
-            variantLabel.topAnchor.constraint(equalTo: metalView.bottomAnchor, constant: 8),
-            variantLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            variantLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            variantPicker.topAnchor.constraint(equalTo: variantLabel.bottomAnchor, constant: 4),
-            variantPicker.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            variantPicker.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            // PR-30: Toggle section below variant picker
-            toggleLabel.topAnchor.constraint(equalTo: variantPicker.bottomAnchor, constant: 8),
-            toggleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            toggleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            toggleStack.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: 4),
-            toggleStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            toggleStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            // PR-32: User media section below toggles
-            userMediaLabel.topAnchor.constraint(equalTo: toggleStack.bottomAnchor, constant: 8),
-            userMediaLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            userMediaLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            userMediaStack.topAnchor.constraint(equalTo: userMediaLabel.bottomAnchor, constant: 4),
-            userMediaStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            userMediaStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            // Main controls stack below metalView
+            mainControlsStack.topAnchor.constraint(equalTo: metalView.bottomAnchor, constant: 12),
+            mainControlsStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            mainControlsStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
+            // User media stack height
             userMediaStack.heightAnchor.constraint(equalToConstant: 36),
-            userMediaStatusLabel.topAnchor.constraint(equalTo: userMediaStack.bottomAnchor, constant: 4),
-            userMediaStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            userMediaStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            controlsStack.topAnchor.constraint(equalTo: userMediaStatusLabel.bottomAnchor, constant: 8),
-            controlsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            controlsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             playPauseButton.widthAnchor.constraint(equalToConstant: 80),
-            frameLabel.topAnchor.constraint(equalTo: controlsStack.bottomAnchor, constant: 4),
-            frameLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            frameLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            logTextView.topAnchor.constraint(equalTo: frameLabel.bottomAnchor, constant: 12),
-            logTextView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            logTextView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            logTextView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16)
+
+            // logTextView with fixed height (scrollable content ends here)
+            logTextView.topAnchor.constraint(equalTo: mainControlsStack.bottomAnchor, constant: 12),
+            logTextView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            logTextView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            logTextView.heightAnchor.constraint(equalToConstant: 150),
+            logTextView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
         ])
 
-        // PR-19: All gestures on metalView (lead fix #1 — overlay is non-interactive)
+        // Remove corner radius from metalView (full-width, no rounding)
+        metalView.layer.cornerRadius = 0
+        metalView.clipsToBounds = false
+
+        // PR-19: All gestures on metalView
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(metalViewTapped))
         metalView.addGestureRecognizer(tapGesture)
 
         let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan))
         let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
         let rotationGesture = UIRotationGestureRecognizer(target: self, action: #selector(handleRotation))
+        panGesture.delegate = self
         pinchGesture.delegate = self
         rotationGesture.delegate = self
         metalView.addGestureRecognizer(panGesture)
@@ -636,6 +729,13 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    @objc private func templateSelectorChanged() {
+        let idx = templateSelector.selectedSegmentIndex
+        guard idx >= 0, idx < availableTemplates.count else { return }
+        let templateName = availableTemplates[idx].name
+        loadCompiledTemplateFromBundle(templateName: templateName)
+    }
+
     // MARK: - Variant Switching Actions (PR-20)
 
     @objc private func variantPickerChanged() {
@@ -662,53 +762,89 @@ final class PlayerViewController: UIViewController {
     private func toggleFullscreen() {
         isFullscreen.toggle()
 
-        UIView.animate(withDuration: 0.3) { [self] in
-            // Hide/show UI elements
-            let hidden = isFullscreen
-            #if DEBUG
-            sceneSelector.alpha = hidden ? 0 : 1
-            loadButton.alpha = hidden ? 0 : 1
-            #endif
-            modeToggle.alpha = hidden ? 0 : 1
-            presetPicker.alpha = hidden ? 0 : 1
-            variantLabel.alpha = hidden ? 0 : 1
-            variantPicker.alpha = hidden ? 0 : 1
-            toggleLabel.alpha = hidden ? 0 : 1
-            toggleStack.alpha = hidden ? 0 : 1
-            userMediaLabel.alpha = hidden ? 0 : 1
-            userMediaStack.alpha = hidden ? 0 : 1
-            userMediaStatusLabel.alpha = hidden ? 0 : 1
-            controlsStack.alpha = hidden ? 0 : 1
-            frameLabel.alpha = hidden ? 0 : 1
-            logTextView.alpha = hidden ? 0 : 1
+        if isFullscreen {
+            // Move metalView and overlays to main view for fullscreen
+            metalView.removeFromSuperview()
+            overlayView.removeFromSuperview()
+            preparingOverlay.removeFromSuperview()
+            view.addSubview(metalView)
+            view.addSubview(overlayView)
+            view.addSubview(preparingOverlay)
 
-            // Toggle top constraint
-            metalViewTopToLoadButtonConstraint?.isActive = !isFullscreen
-            metalViewTopToSafeAreaConstraint?.isActive = isFullscreen
+            // Deactivate contentView constraints
+            metalViewTopToLoadButtonConstraint?.isActive = false
+            metalViewHeightConstraint?.isActive = false
 
-            // Toggle bottom constraint for fullscreen
-            metalViewBottomConstraint?.isActive = isFullscreen
+            // Activate fullscreen constraints
+            metalViewTopToSafeAreaConstraint?.isActive = true
+            metalViewBottomConstraint?.isActive = true
+            metalViewLeadingConstraint = metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor)
+            metalViewTrailingConstraint = metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+            metalViewLeadingConstraint?.isActive = true
+            metalViewTrailingConstraint?.isActive = true
 
-            // Update corner radius
-            metalView.layer.cornerRadius = isFullscreen ? 0 : 8
+            // Re-pin overlays to metalView
+            NSLayoutConstraint.activate([
+                overlayView.topAnchor.constraint(equalTo: metalView.topAnchor),
+                overlayView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
+                overlayView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
+                overlayView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
+                preparingOverlay.topAnchor.constraint(equalTo: metalView.topAnchor),
+                preparingOverlay.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
+                preparingOverlay.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
+                preparingOverlay.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
+            ])
 
-            // Update leading/trailing margins
-            metalViewLeadingConstraint?.constant = isFullscreen ? 0 : 16
-            metalViewTrailingConstraint?.constant = isFullscreen ? 0 : -16
+            scrollView.isHidden = true
+        } else {
+            // Deactivate fullscreen constraints
+            metalViewTopToSafeAreaConstraint?.isActive = false
+            metalViewBottomConstraint?.isActive = false
+            metalViewLeadingConstraint?.isActive = false
+            metalViewTrailingConstraint?.isActive = false
 
-            view.layoutIfNeeded()
+            // Move metalView and overlays back to contentView
+            metalView.removeFromSuperview()
+            overlayView.removeFromSuperview()
+            preparingOverlay.removeFromSuperview()
+            contentView.addSubview(metalView)
+            contentView.addSubview(overlayView)
+            contentView.addSubview(preparingOverlay)
+
+            // Re-activate contentView constraints
+            metalViewTopToLoadButtonConstraint?.isActive = true
+            metalViewHeightConstraint?.isActive = true
+
+            // Re-pin metalView to contentView (full width)
+            NSLayoutConstraint.activate([
+                metalView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                metalView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                overlayView.topAnchor.constraint(equalTo: metalView.topAnchor),
+                overlayView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
+                overlayView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
+                overlayView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
+                preparingOverlay.topAnchor.constraint(equalTo: metalView.topAnchor),
+                preparingOverlay.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
+                preparingOverlay.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
+                preparingOverlay.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
+            ])
+
+            scrollView.isHidden = false
         }
 
-        // Update status bar
+        UIView.animate(withDuration: 0.3) {
+            self.view.layoutIfNeeded()
+        }
+
         setNeedsStatusBarAppearanceUpdate()
     }
 
     /// Syncs UI controls with editor state (called from controller's onStateChanged callback).
     private func syncUIWithState(_ state: TemplateEditorState) {
         let isPreview = state.mode == .preview
-        playPauseButton.isHidden = !isPreview
-        frameSlider.isHidden = !isPreview
-        frameLabel.isHidden = !isPreview
+
+        // Playback controls visible only in preview mode
+        playbackContainer.isHidden = !isPreview
 
         frameLabel.text = "Frame: \(state.currentPreviewFrame) / \(totalFrames)"
         frameSlider.value = Float(state.currentPreviewFrame)
@@ -732,8 +868,8 @@ final class PlayerViewController: UIViewController {
             && state.selectedBlockId != nil
             && variants.count > 1
 
-        variantLabel.isHidden = !showPicker
-        variantPicker.isHidden = !showPicker
+        // Hide entire container (UIStackView auto-collapses)
+        variantContainer.isHidden = !showPicker
 
         guard showPicker else { return }
 
@@ -766,8 +902,8 @@ final class PlayerViewController: UIViewController {
             && state.selectedBlockId != nil
             && !toggles.isEmpty
 
-        toggleLabel.isHidden = !showToggles
-        toggleStack.isHidden = !showToggles
+        // Hide entire container (UIStackView auto-collapses)
+        toggleContainer.isHidden = !showToggles
 
         guard showToggles else { return }
 
@@ -830,9 +966,8 @@ final class PlayerViewController: UIViewController {
         }
         let showUserMedia = state.mode == .edit && hasBinding
 
-        userMediaLabel.isHidden = !showUserMedia
-        userMediaStack.isHidden = !showUserMedia
-        userMediaStatusLabel.isHidden = !showUserMedia
+        // Hide entire container (UIStackView auto-collapses)
+        userMediaContainer.isHidden = !showUserMedia
 
         guard showUserMedia else { return }
 
@@ -1638,12 +1773,32 @@ extension PlayerViewController: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
-        // Allow pinch + rotation simultaneously
+        // Allow pinch + rotation simultaneously (for edit mode transforms)
         let isPinchOrRotation = gestureRecognizer is UIPinchGestureRecognizer ||
                                 gestureRecognizer is UIRotationGestureRecognizer
         let otherIsPinchOrRotation = otherGestureRecognizer is UIPinchGestureRecognizer ||
                                      otherGestureRecognizer is UIRotationGestureRecognizer
-        return isPinchOrRotation && otherIsPinchOrRotation
+        if isPinchOrRotation && otherIsPinchOrRotation {
+            return true
+        }
+
+        // Allow scroll view gestures to work simultaneously
+        if otherGestureRecognizer.view is UIScrollView {
+            return true
+        }
+
+        return false
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Pan/pinch/rotation only work in edit mode WITH a selected block
+        if gestureRecognizer is UIPanGestureRecognizer ||
+           gestureRecognizer is UIPinchGestureRecognizer ||
+           gestureRecognizer is UIRotationGestureRecognizer {
+            // Only enable if in edit mode AND block is selected
+            return editorController.state.mode == .edit && editorController.state.selectedBlockId != nil
+        }
+        return true
     }
 }
 

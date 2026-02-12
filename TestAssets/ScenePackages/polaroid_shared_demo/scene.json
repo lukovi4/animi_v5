@@ -37,6 +37,13 @@
           "ifAnimationLonger": "cut",
           "loop": false
         }
+      ],
+      "layerToggles": [
+        {
+          "id": "frame",
+          "title": "Polaroid Frame",
+          "defaultOn": true
+        }
       ]
     }
   ]

@@ -1,271 +1,124 @@
-# PR-29 — Implicit `tp` Matte Sources + Matte Chains (Release Canonical Spec)
-
-## 0) Контекст и причина
-
-В production-шаблонах (пример: `polaroid_full.json`) встречается валидная топология, где `tp` у matte consumer указывает на слой, который **не помечен `td=1`**, но должен выступать matte source (implicit). Сейчас после PR-27 такой кейс падает в компиляторе с `matteTargetNotSource`. 
-
-Конкретно в `comp_0`:
-
-* `mask` (ind=2) — explicit matte source (`td=1`)
-* `plastik` (ind=3) — consumer (`tt=1`, `tp=2`)
-* `media` (ind=4) — consumer (`tt=1`, `tp=2`)
-* `mediaInput` (ind=5) — consumer (`tt=1`, `tp=3`), но `tp=3` указывает на `plastik`, у которого нет `td=1` 
-
-Это **должно поддерживаться** как “matte chain” и “implicit source by tp”.
+Ниже — **релизное, универсальное** решение, которое **гарантирует правильный z-order для любых шаблонов**, и при этом **не ломает matte/mask** (по текущей реализации движка). Всё — **только на основе реального кода snapshot**.
 
 ---
 
-## 1) Goal
+# Почему “просто развернуть массив” — это правильный уровень фикса
 
-Поддержать matte-связи вида `tp → targetLayer(ind)` даже если target:
+## Факт 1: z-order сейчас определяется **порядком эмиссии RenderCommand**
 
-* не имеет `td=1`
-* сам является matte consumer другого matte (цепочка)
+`MetalRenderer.drawInternal` исполняет команды **последовательно**, “что нарисовали позже — лежит сверху”.
+**Anchor:** `TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift: while index < commands.count { ... renderSegment(... commands in: range) }` (команды идут по индексу, без сортировок).
 
-При этом:
+## Факт 2: команды сейчас генерируются обходом `composition.layers` **в прямом порядке**
 
-* tp-based остаётся приоритетом
-* порядок (source раньше consumer по array index) остаётся строгим
-* отсутствие target по `tp` остаётся ошибкой
-* визуальная семантика: слой-источник, используемый как matte source (explicit или implicit), **не должен рисоваться в основном проходе**, но **должен** рисоваться внутри matte scope.
+Это и есть причина инверсии z-order.
+**Anchor:** `TVECore/Sources/TVECore/AnimIR/AnimIR.swift` → `renderComposition`:
 
----
+```swift
+// Process layers in order (as they appear in JSON)
+for layer in composition.layers {
+    renderLayer(layer, context: context, commands: &commands)
+}
+```
 
-## 2) Definitions
+## Факт 3: matte не зависит от “сначала/потом в массиве”, потому что matte source рендерится **по ссылке layerId**
 
-* **Explicit matte source**: слой с `td=1`
-* **Implicit matte source**: слой, на который кто-то ссылается через `tp` (target of tp), даже если `td != 1`
-* **Matte consumer**: слой с `tt != nil`
-* **Matte chain**: matte source сам может быть consumer другого matte (например, `plastik` consumer от `mask`, но одновременно source для `mediaInput`) 
+`emitMatteScope` всегда рендерит `matte.sourceLayerId` через `context.layerById[...]`, а не надеется на порядок итерации.
+**Anchor:** `TVECore/Sources/TVECore/AnimIR/AnimIR.swift` → `emitMatteScope`:
 
----
+```swift
+commands.append(.beginGroup(name: "matteSource"))
+emitLayerForMatteSource(layerId: matte.sourceLayerId, ...)
+...
+commands.append(.beginGroup(name: "matteConsumer"))
+emitRegularLayerCommands(consumer, ...)
+```
 
-## 3) Canonical Runtime/Compiler Semantics
-
-### 3.1 Matte binding (tp-based)
-
-Для каждого consumer слоя `L` с `tt != nil`:
-
-1. Если `tp != nil`:
-
-   * резолвим target по `ind` в пределах текущей composition
-   * проверяем `targetArrayIndex < consumerArrayIndex` (строго)
-   * устанавливаем `MatteInfo(sourceLayerId: targetLayerId, mode: ...)`
-   * помечаем target как **implicit matte source** (если не explicit)
-
-2. Если `tp == nil`:
-
-   * legacy adjacency fallback (как PR-27): предыдущий слой `td=1` → source
-
-### 3.2 Ошибки (tp-ветка)
-
-* `tp` не резолвится в ind → **error** `MATTE_TARGET_NOT_FOUND` (fatal)
-* порядок неверный (`targetArrayIndex >= consumerArrayIndex`) → **error** `MATTE_TARGET_INVALID_ORDER` (fatal)
-* **НЕ** проверяем `td==1` как обязательное условие для `tp` (больше нет fatal `MATTE_TARGET_NOT_SOURCE` в tp-ветке)
-
-### 3.3 Рендеринг matte sources
-
-Любой слой, который является matte source (explicit `td=1` или implicit `tp-target`), **не рисуется в основном проходе** (draw list), чтобы избежать “двойного” отображения.
-
-Но внутри matte scope слой **обязан** рендериться как источник matte-маски.
-
-### 3.4 Matte chains
-
-Если matte source слой сам является consumer другого matte, при рендере matte scope должны применяться его собственные matte-пары (цепочка должна работать). На примере `polaroid_full.json`: `mediaInput` использует `plastik` как source, а `plastik` сам заматчен `mask`. 
+➡️ Поэтому **правильный и универсальный фикс**: **рендерить слои композиции снизу-вверх**, то есть **итерация в обратном порядке**.
 
 ---
 
-## 4) Validator Semantics (Release)
+# Релизное решение (универсальное)
 
-Валидатор должен:
+## 1) Изменить порядок обхода слоёв во всех композициях: bottom→top
 
-* для `tp`-ветки проверять только:
+### Единственная точка правки: `AnimIR.renderComposition`
 
-  * existence target
-  * order
-* не требовать `td==1` у target для `tp`
+**До:**
 
-Опционально: добавить **warning/info** код (не error) “implicit matte source used” для диагностики пайплайна.
+```swift
+// Process layers in order (as they appear in JSON)
+for layer in composition.layers {
+    renderLayer(layer, context: context, commands: &commands)
+}
+```
 
----
+### После (релизный вариант, без лишних аллокаций, с ясной семантикой AE):
 
-## 5) Acceptance Criteria
+```swift
+// AE/Lottie stacking: earlier in layers[] is visually on top.
+// Therefore we must render from bottom to top (reverse array order).
+for layer in composition.layers.reversed() {
+    renderLayer(layer, context: context, commands: &commands)
+}
+```
 
-1. `polaroid_full.json` компилируется без `matteTargetNotSource` и без ошибок matte-валидации (кроме unrelated, например bm=3). 
-2. Маттинг цепочки работает корректно:
-
-   * `mediaInput` consumer получает matte source = `plastik` (ind=3)
-   * `plastik` корректно использует matte source = `mask` (ind=2)
-3. Любой `tp`-target слой не рисуется в main pass (если он является implicit/explicit matte source), но рисуется в matte scope.
-4. Ошибки `MATTE_TARGET_NOT_FOUND` и `MATTE_TARGET_INVALID_ORDER` продолжают быть fatal.
-
----
-
-# Diff-plan по файлам (PR-29)
-
-## A) Production code
-
-### A1) `TVECore/Sources/TVECore/AnimIR/AnimIRCompiler.swift`
-
-**Изменения:**
-
-1. В tp-ветке first pass (где строится `matteSourceForConsumer`):
-
-* удалить проверку `td==1` как условие ошибки `matteTargetNotSource`
-* сохранить проверки:
-
-  * `tp` найден по ind
-  * порядок array index
-
-2. Собрать `implicitMatteSourceLayerIds`:
-
-* `implicitMatteSourceLayerIds.insert(sourceLayerId)` для каждого `tp`-target
-
-3. Прокинуть в IR признак matte-source-any:
-
-* вариант (рекомендуемый): добавить в LayerIR флаг `isMatteSourceAny` или два флага explicit/implicit (см. A2)
-* при сборке слоя выставлять:
-
-  * `isMatteSourceExplicit = (td==1)`
-  * `isMatteSourceImplicit = implicitSet.contains(layerId)`
-  * `isMatteSourceAny = explicit || implicit`
-
-4. Обновить/удалить error case:
-
-* `AnimIRCompilerError.matteTargetNotSource` больше не должен триггериться для tp-ветки.
-* Можно оставить case для обратной совместимости, но он становится “unused” и должен быть удалён/помечен TODO (лучше удалить, чтобы не было мёртвого кода).
+**Почему это универсально:** применяется **ко всем композициям, включая precomp**, потому что `renderLayerContent(.precomp)` внутри вызывает `renderComposition(precomp, ...)` тем же кодом.
 
 ---
 
-### A2) `TVECore/Sources/TVECore/AnimIR/AnimIRTypes.swift` (или файл с Layer/LayerIR)
+## 2) Обязательная регрессия тестом на реальном `polaroid_full` (чтобы это больше никогда не сломали)
 
-**Добавить поля в Layer representation**, чтобы рендер мог различать:
+У вас уже есть golden fixture `Resources/polaroid_full/data.json` и компиляция в тестах (`ImplicitMatteSourceTests`). На базе этого добавляем новый тест, который проверяет **порядок `drawImage`**:
 
-* `isMatteSourceExplicit: Bool`
-* `isMatteSourceImplicit: Bool`
-  или минимум:
-* `isMatteSource: Bool` (расширить семантику: explicit || implicit)
+### Что проверяем
 
-**Рекомендация TL:** два флага (explicit/implicit) полезны для диагностики, но можно 1 флаг если хотите минимальный diff.
+В `comp_0` порядок layers в JSON такой:
 
----
+* `image_0` (рамка polaroid) стоит **раньше** → должна быть **сверху**
+* `image_2` (media placeholder / user media) стоит позже → должна быть **под рамкой**
 
-### A3) `TVECore/Sources/TVECore/AnimIR/AnimIR.swift`
+Значит в render commands:
 
-**Цель:** корректно рендерить implicit sources: не рисовать в main pass, но рендерить в matte scope.
+* `drawImage(image_2)` должен идти **раньше**
+* `drawImage(image_0)` должен идти **позже** (и перекрывать)
 
-1. В main pass (`renderLayer` или эквивалент):
+### Тест (идея, 1:1 к вашему текущему стеку тестов)
 
-* текущий guard `guard !layer.isMatteSource else { return }` должен считаться истинным и для implicit sources
+Создать `LayerOrderTests.swift`:
 
-  * если внедрили `isMatteSourceAny` → использовать его
+* загрузить `Resources/polaroid_full/data.json`
+* `compiler.compile(...)` (как в `ImplicitMatteSourceTests`)
+* `ir.renderCommandsWithIssues(frameIndex: 0, ...)`
+* найти индексы первой встречи `.drawImage(assetId: "image_2")` и `.drawImage(assetId: "image_0")`
+* assert: `idxMedia < idxFrame`
 
-2. В matte scope (`emitMatteScope` / рендер источника matte):
-
-* убедиться, что вызов рендера source-слоя **не скипается** тем же guard’ом
-* при необходимости: разделить рендер на два пути:
-
-  * `renderLayerMainPass(...)` (скипает matte sources)
-  * `renderLayerForMatte(...)` (НЕ скипает matte sources)
-
-3. Поддержать matte chain:
-
-* рендер source-слоя в matte scope должен идти через тот же pipeline, который применяет matte к source-слою, если он consumer другого matte (как `plastik`). 
+Это **релизный** тест, потому что проверяет финальный контракт движка: “команды генерятся в корректном порядке”.
 
 ---
 
-### A4) `TVECore/Sources/TVECore/AnimValidator/AnimValidator.swift`
+## 3) Обновить комментарии/контракт в коде (чтобы не вернулись к прямому обходу)
 
-**Изменения:**
-
-1. В `validateMattePairs` tp-ветке:
-
-* убрать “target must be td==1” как error
-* оставить:
-
-  * `MATTE_TARGET_NOT_FOUND`
-  * `MATTE_TARGET_INVALID_ORDER`
-
-2. `MATTE_TARGET_NOT_SOURCE`:
-
-* больше не эмитить в tp-ветке
-* можно оставить для legacy adjacency (если там вообще требуется), но если не используется — удалить.
+* В `renderComposition` заменить текущий misleading-комментарий (“as they appear in JSON”) на точный:
+  **“AE/Lottie: layers earlier in array are on top → render reversed to respect stacking.”**
 
 ---
 
-### A5) `TVECore/Sources/TVECore/AnimValidator/AnimValidationCode.swift`
+# Почему это решение “максимально правильное”
 
-**Изменения:**
-
-* `MATTE_TARGET_NOT_SOURCE`:
-
-  * либо оставить (но не использовать для tp)
-  * либо удалить
-* (опционально) добавить warning:
-
-  * `MATTE_TARGET_IMPLICIT_SOURCE` (severity warning/info)
-
-TL-рекомендация: добавить warning полезно для пайплайна, но не обязательно для релиза.
+1. **Минимальный change surface**: 1 точка генерации команд (`renderComposition`), без расползания по компилятору/рендереру.
+2. **Универсально**: работает для любых типов слоёв (image/shape/precomp), любых вложенностей, любых шаблонов.
+3. **Не ломает matte**: matte source рендерится через `layerId`, а не через “порядок итерации”, и matte-source слои всё равно “не рисуются напрямую” в основном потоке (`guard !layer.isMatteSource else { return }`).
+4. **Защищено тестом на реальном шаблоне**: `polaroid_full` станет “вечным” регресс-фикстуром.
 
 ---
 
-## B) Tests
+# Готов дать точный diff
 
-### B1) Новый test fixture
+Если скажешь “да”, я пришлю **точный `diff`**:
 
-Добавить `polaroid_full.json` как golden fixture в тестовые ресурсы (уже у вас есть файл). 
+* 1 правка в `AnimIR.swift`
+* 1 новый файл теста `LayerOrderTests.swift`
+* (по желанию) мини-правку комментария в `AnimIR.swift`
 
-### B2) Новые тесты (обязательно)
-
-Новый файл: `TVECore/Tests/TVECoreTests/ImplicitMatteSourcesTests.swift`
-
-Тесты:
-
-1. `testCompiler_tpTargetWithoutTd_isAccepted_andBecomesImplicitSource`
-
-   * синтетика: tp → target без td
-   * assert: consumer.matte.sourceLayerId == targetId
-   * assert: targetLayer.isMatteSourceImplicit == true (или isMatteSource == true)
-
-2. `testCompiler_matteChain_tpTargetIsConsumer_itself_compiles`
-
-   * синтетика: A consumer of mask, and B uses A as tp source
-
-3. `testGoldenFixture_polaroidFull_compilesMatteChain`
-
-   * компилируем `polaroid_full.json`
-   * assert: нет ошибки `matteTargetNotSource`
-   * assert: у `mediaInput` matte source = `plastik`
-   * assert: у `plastik` matte source = `mask`
-
-4. `testValidator_tpTargetWithoutTd_noError`
-
-   * валидатор не выдаёт `MATTE_TARGET_NOT_SOURCE` для tp
-
-5. Негативные тесты (сохранить строгие ошибки):
-
-   * `tp target not found` → error
-   * `tp invalid order` → error
-
----
-
-## C) Migration notes (для PR description)
-
-* Контракт PR-27 “tp target должен быть td=1” отменён как несовместимый с production экспорта.
-* Новая политика: `tp` допускает implicit sources.
-* Это расширение не ломает старые сцены (explicit td=1 продолжает работать).
-
----
-
-# Дополнительная заметка (не часть PR-29, но важно)
-
-В `polaroid_full.json` присутствует `bm=3` (blend mode Screen) на `plastik`. Валидатор сейчас считает blend mode ≠ 0 ошибкой, значит для запуска в AnimiApp нужно либо:
-
-* временно выставить `bm=0` в тестовом пакете, либо
-* отдельно делать PR на поддержку/понижение severity blend modes.
-
-Это **не относится** к PR-29 и не должно смешиваться со scope matte. 
-
----
-
-Если нужно, я могу сразу оформить короткий “PR-29 GitHub description” (Motivation / Changes / Tests / Risk) на базе этого ТЗ.
+Без “переписывания всего”, но **релизно и навсегда**.

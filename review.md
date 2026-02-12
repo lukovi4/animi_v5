@@ -1,73 +1,105 @@
-Принял обновлённый diff — теперь PR-29 выглядит **полностью канонично и “релизно”**, особенно после добавления **runtime cycle-guard** и явного `RenderIssue` кода `MATTE_CHAIN_CYCLE`. Это закрывает мой прошлый must-check на “future-proof”.
+## 100% причина: движок рендерит слои **в прямом порядке массива**, а в `polaroid_demo` (и вообще в Lottie/AE) верхний слой находится **раньше в массиве**, из-за чего z-order получается инвертирован
 
-Вот финальный TL review (коротко, по делу) — что ✅, что надо только проверить при мерже.
-
----
-
-## ✅ TL approve: всё ключевое покрыто
-
-### 1) Compiler
-
-* Убрали `matteTargetNotSource` и td==1 guard в tp-ветке — это ровно то, что нужно для production `polaroid_full`.
-* `implicitMatteSourceIds = Set(matteSourceForConsumer.values)` — корректно (покрывает все tp-target и adjacency sources).
-* `isMatteSource = td==1 || implicitSet.contains(layerId)` — правильная единая семантика.
-
-### 2) Renderer (главное)
-
-* `emitLayerForMatteSource` с рекурсией через `emitMatteScope` при `layer.matte != nil` — правильно реализует matte chain.
-* Cycle guard через `visited` + `assertionFailure` + `RenderIssue` — супер. Это именно тот “defensive layer”, который нужен для релиза.
-
-### 3) Validator
-
-* td==1 check в tp-ветке убран — must.
-* `unsupportedMatteSourceHasConsumer` убран — соответствует новому контракту chains.
-
-### 4) Validation codes
-
-Удаление `matteTargetNotSource` и `unsupportedMatteSourceHasConsumer` — логично, если нигде больше не используются.
-
-### 5) Tests
-
-Набор тестов закрывает:
-
-* implicit source без td
-* chain
-* nested matte scopes в renderer
-* golden fixture на реальном json
-* негативы not found / invalid order
+Ниже — **строго доказуемая цепочка по коду + данным шаблона**.
 
 ---
 
-## 🔍 Единственные 2 вещи, которые надо быстро проверить перед merge (не как “доделать”, а как “не сломали”)
+# 1) Точка, где создаётся z-order: `AnimIR.renderComposition` обходит `composition.layers` **в прямом порядке**
 
-### A) Не сломали ли public API / сборку из-за `RenderIssue.swift`
+**Code anchor**
 
-Ты добавил новый code:
+* `TVECore/Sources/TVECore/AnimIR/AnimIR.swift`
+* `renderComposition(_:context:commands:)`
+* ~строки 236–255
 
 ```swift
-public static let codeMatteChainCycle = "MATTE_CHAIN_CYCLE"
+/// Renders a composition recursively
+private mutating func renderComposition(
+    _ composition: Composition,
+    context: RenderContext,
+    commands: inout [RenderCommand]
+) {
+    // Process layers in order (as they appear in JSON)
+    for layer in composition.layers {
+        renderLayer(layer, context: context, commands: &commands)
+    }
+}
 ```
 
-Проверь, что:
+Это означает: команды рисования добавляются в массив **в том же порядке**, что и `composition.layers`.
 
-* `RenderIssue` действительно публичный тип/структура там, где ты это добавил
-* и что `lastRenderIssues.append(...)` доступен в `AnimIR.swift` (то есть `lastRenderIssues` существует в этом скоупе и потокобезопасен по текущей архитектуре).
+---
 
-Если `RenderIssue`/`lastRenderIssues` был internal/в другом модуле — могут быть мелкие компиляционные конфликты, но ты пишешь что тесты зелёные, значит скорее всего ок.
+# 2) `composition.layers` приходит из компилятора **в том же порядке**, что и `lottie.layers` (никакого reverse на этапе компиляции нет)
 
-### B) Не появилось ли “лишних” скрытых слоёв в main pass
+**Code anchor**
 
-Так как `implicitMatteSourceIds` включает все `matteSourceForConsumer.values`, проверь на одном шаблоне:
+* `TVECore/Sources/TVECompilerCore/AnimIRCompiler.swift`
+* `compileLayers(_:compId:animRef:fallbackOp:pathRegistry:)`
+* ~строки 245–305
 
-* любой слой, который служит source (явно или имплицитно), не рисуется в обычном проходе (ожидаемо),
-* но при этом “декор” слой, который не является source, продолжает рисоваться.
+```swift
+// Second pass: compile all layers with matte info
+var layers: [Layer] = []
 
-По тестам (`testRenderer_implicitSource_skippedInMainPass`) уже похоже, что всё ок.
+for (index, lottieLayer) in lottieLayers.enumerated() {
+    ...
+    let layer = try compileLayer(
+        lottie: lottieLayer,
+        index: index,
+        compId: compId,
+        animRef: animRef,
+        fallbackOp: fallbackOp,
+        matteInfo: matteInfo,
+        implicitMatteSourceIds: implicitMatteSourceIds,
+        pathRegistry: &pathRegistry
+    )
+    layers.append(layer)
+}
+
+return layers
+```
+
+Т.е. порядок **Lottie JSON → AnimIR Composition.layers** сохраняется 1:1.
+
+---
+
+# 3) Доказательство на конкретном `polaroid_demo`: в JSON у блока `mediaBlock` слой рамки (`polaroid.png`) стоит **раньше**, чем слой `media`
+
+В snapshot есть `polaroid/polaroid_full.json`, где `assets[id="comp_0"].layers` идут так (индексы массива):
+
+**Data anchor (из файла)**
+
+* `polaroid/polaroid_full.json`
+* `assets[id="comp_0"].layers[0..4]` (порядок слоёв массива)
+
+Экстракт (по факту содержимого файла, порядок сохранён):
+
+* `[0] nm: "polaroid.png"  ty:2`  ← рамка/картинка полароида
+* `[1] nm: "mask"         ty:4`
+* `[2] nm: "plastik.png"  ty:2 (hd=true)`
+* `[3] nm: "media"        ty:2`  ← медиа-плейсхолдер
+* `[4] nm: "mediaInput"   ty:4`  ← форма inputClip
+
+(Это видно прямо в начале файла — JSON one-line, но порядок элементов однозначен.)
+
+---
+
+# 4) Почему именно это даёт наблюдаемый симптом “media поверх рамки”
+
+Факт по коду: движок рисует **в порядке массива**, значит в `comp_0` он нарисует:
+
+1. `polaroid.png` (рамку)
+   …
+2. `media` (позже) → **перекроет** всё, что было нарисовано раньше, включая рамку.
+
+Это ровно и объясняет симптом: “в preview/edit mediaInput (пользовательское фото/видео) сверху рамки”.
 
 ---
 
 ## Итог
 
-✅ **Approved.** Это финальная релизная реализация поддержки production matte-цепочек.
+**Причина на 100% в коде:**
+`AnimIR.renderComposition` формирует render-команды, обходя `composition.layers` **в прямом порядке**; компилятор сохраняет порядок `lottie.layers` без инверсии; в `polaroid_demo` рамка стоит раньше слоя `media`, поэтому `media` рисуется позже и оказывается сверху.
 
-Следующая задача по спеке после PR-29 (если двигаемся дальше): **Layer Toggles** (toggle:<id> + strict sync с scene.json + persistence).
+Если хочешь — следующим шагом я дам **точный diff-текст** для фикса в стиле “минимальная правка + code anchors”, но ты просил сейчас именно причину, без решения.
