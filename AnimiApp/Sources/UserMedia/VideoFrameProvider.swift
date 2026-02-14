@@ -32,6 +32,7 @@ public final class VideoFrameProvider {
     // MARK: - Properties
 
     private let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
     private let textureFactory: UserMediaTextureFactory
     private let player: AVPlayer
     private let playerItem: AVPlayerItem
@@ -113,12 +114,14 @@ public final class VideoFrameProvider {
     ///
     /// - Parameters:
     ///   - device: Metal device for texture creation
+    ///   - commandQueue: Command queue for texture blit operations
     ///   - url: URL of the video file
     ///   - sceneFPS: Scene frames per second for time mapping
-    public init(device: MTLDevice, url: URL, sceneFPS: Double = 30.0) {
+    public init(device: MTLDevice, commandQueue: MTLCommandQueue, url: URL, sceneFPS: Double = 30.0) {
         self.device = device
+        self.commandQueue = commandQueue
         self.sceneFPS = sceneFPS
-        self.textureFactory = UserMediaTextureFactory(device: device)
+        self.textureFactory = UserMediaTextureFactory(device: device, commandQueue: commandQueue)
 
         // Configure video output for pixel buffer access
         let outputSettings: [String: Any] = [

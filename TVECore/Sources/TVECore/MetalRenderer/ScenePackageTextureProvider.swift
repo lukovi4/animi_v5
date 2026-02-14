@@ -52,7 +52,7 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
     /// Only these IDs may be skipped during preload; all others are treated as errors.
     private let bindingAssetIds: Set<String>
 
-    /// PR-B: Last preload statistics (available after preloadAll() call).
+    /// PR-B: Last preload statistics (available after preloadAll(commandQueue:) call).
     private(set) public var lastPreloadStats: PreloadStats?
 
     // MARK: - Initialization
@@ -86,7 +86,7 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
     ///
     /// **PR-B: IO-free runtime** — This method performs O(1) cache lookup only.
     /// No file IO or texture decoding happens here. All textures must be preloaded
-    /// via `preloadAll()` before rendering begins.
+    /// via `preloadAll(commandQueue:)` before rendering begins.
     ///
     /// Externally injected textures (via `setTexture`) are returned from cache directly.
     ///
@@ -107,7 +107,7 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
         // PR-B: Cache miss in runtime = preload contract violation
         // In DEBUG: signal developer about missing preload
         // In Release: assertionFailure is stripped, just return nil
-        assertionFailure("[TextureProvider] Asset not preloaded: '\(assetId)' — call preloadAll() before rendering")
+        assertionFailure("[TextureProvider] Asset not preloaded: '\(assetId)' — call preloadAll(commandQueue:) before rendering")
         missingAssets.insert(assetId)
         return nil
     }
@@ -143,17 +143,23 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
 
     // MARK: - Preloading
 
-    /// Preloads all resolvable textures from the asset index.
+    /// Preloads all resolvable textures from the asset index with premultiplied alpha.
     ///
     /// **PR-B: Must be called before any rendering.** After this call, `texture(for:)`
     /// becomes a pure O(1) cache lookup with no IO.
+    ///
+    /// **Alpha Fix:** All textures are loaded with premultiplied alpha via
+    /// `PremultipliedTextureLoader` for correct compositing with the renderer's
+    /// premultiplied blending mode (src.rgb + dst.rgb * (1 - src.a)).
     ///
     /// Binding assets (identified by `bindingAssetIds`) are expected to have no file on disk
     /// and are skipped with a debug log. All other non-resolvable assets are logged as errors
     /// and added to `missingAssets` — this indicates a corrupted template.
     ///
     /// Statistics are stored in `lastPreloadStats` after completion.
-    public func preloadAll() {
+    ///
+    /// - Parameter commandQueue: Metal command queue for staging → private texture blit
+    public func preloadAll(commandQueue: MTLCommandQueue) {
         let startTime = CFAbsoluteTimeGetCurrent()
         var loadedCount = 0
         var skippedBindingCount = 0
@@ -178,7 +184,7 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
                 continue
             }
 
-            if let texture = loadTexture(from: textureURL, assetId: assetId) {
+            if let texture = loadTexture(from: textureURL, assetId: assetId, commandQueue: commandQueue) {
                 cache[assetId] = texture
                 loadedCount += 1
             }
@@ -203,23 +209,47 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
 
     // MARK: - Private
 
-    private func loadTexture(from url: URL, assetId: String) -> MTLTexture? {
-        // Load with options for premultiplied alpha
-        // PR1: Use .private storage — textures are GPU-only (shaderRead), no CPU access needed
-        let options: [MTKTextureLoader.Option: Any] = [
-            .SRGB: false, // Linear color space for correct blending
-            .generateMipmaps: false,
-            .textureUsage: MTLTextureUsage.shaderRead.rawValue,
-            .textureStorageMode: MTLStorageMode.private.rawValue
-        ]
-
+    /// Loads texture with premultiplied alpha conversion.
+    ///
+    /// Uses `PremultipliedTextureLoader` for correct alpha compositing.
+    /// Falls back to `MTKTextureLoader` if CGImageSource fails (rare, e.g. unsupported format).
+    ///
+    /// - Parameters:
+    ///   - url: File URL of the image
+    ///   - assetId: Asset identifier for logging
+    ///   - commandQueue: Command queue for staging → private blit
+    /// - Returns: Metal texture with premultiplied alpha, or nil on failure
+    private func loadTexture(from url: URL, assetId: String, commandQueue: MTLCommandQueue) -> MTLTexture? {
+        // Primary path: PremultipliedTextureLoader for correct alpha compositing
         do {
-            return try loader.newTexture(URL: url, options: options)
+            return try PremultipliedTextureLoader.loadTexture(
+                from: url,
+                device: device,
+                commandQueue: commandQueue
+            )
         } catch {
-            // PR-B.1: Mark as missing so we don't retry and missingCount is accurate
-            missingAssets.insert(assetId)
-            logger?("[TextureProvider] Failed to load '\(assetId)' at \(url.lastPathComponent): \(error.localizedDescription)")
-            return nil
+            // Fallback: MTKTextureLoader for unsupported formats (rare)
+            // WARNING: Fallback may produce straight-alpha textures
+            // Nice 2: Enhanced telemetry-friendly logging
+            let fileExtension = url.pathExtension.lowercased()
+            logger?("[TextureProvider] FALLBACK: PremultipliedLoader failed for '\(assetId)' [\(fileExtension)]: \(error.localizedDescription)")
+
+            let options: [MTKTextureLoader.Option: Any] = [
+                .SRGB: false,
+                .generateMipmaps: false,
+                .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+                .textureStorageMode: MTLStorageMode.private.rawValue
+            ]
+
+            do {
+                let texture = try loader.newTexture(URL: url, options: options)
+                logger?("[TextureProvider] WARNING: Fallback loaded '\(assetId)' [\(fileExtension)] — may have straight alpha (potential compositing issue)")
+                return texture
+            } catch let fallbackError {
+                missingAssets.insert(assetId)
+                logger?("[TextureProvider] ERROR: Both loaders failed for '\(assetId)' [\(fileExtension)] at \(url.lastPathComponent): \(fallbackError.localizedDescription)")
+                return nil
+            }
         }
     }
 }

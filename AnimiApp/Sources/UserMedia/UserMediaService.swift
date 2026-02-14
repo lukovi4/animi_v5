@@ -143,7 +143,7 @@ public struct VideoBudgetPolicy {
 ///
 /// Usage:
 /// ```swift
-/// let service = UserMediaService(device: device, scenePlayer: player, textureProvider: provider)
+/// let service = UserMediaService(device: device, commandQueue: queue, scenePlayer: player, textureProvider: provider)
 /// service.setPhoto(blockId: "block_01", image: userSelectedImage)
 /// // Later...
 /// service.clear(blockId: "block_01")
@@ -159,6 +159,7 @@ public final class UserMediaService {
     // MARK: - Properties
 
     private let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
     private weak var scenePlayer: ScenePlayer?
     private let textureProvider: MutableTextureProvider
     private let textureFactory: UserMediaTextureFactory
@@ -208,17 +209,20 @@ public final class UserMediaService {
     ///
     /// - Parameters:
     ///   - device: Metal device for texture creation
+    ///   - commandQueue: Command queue for texture blit operations (premultiplied alpha)
     ///   - scenePlayer: Scene player for accessing binding asset IDs and media state
     ///   - textureProvider: Mutable texture provider for texture injection
     public init(
         device: MTLDevice,
+        commandQueue: MTLCommandQueue,
         scenePlayer: ScenePlayer,
         textureProvider: MutableTextureProvider
     ) {
         self.device = device
+        self.commandQueue = commandQueue
         self.scenePlayer = scenePlayer
         self.textureProvider = textureProvider
-        self.textureFactory = UserMediaTextureFactory(device: device)
+        self.textureFactory = UserMediaTextureFactory(device: device, commandQueue: commandQueue)
     }
 
     // MARK: - Configuration
@@ -302,7 +306,7 @@ public final class UserMediaService {
         tempVideoURLByBlockId[blockId] = tempURL
 
         // Create video frame provider with scene FPS
-        let provider = VideoFrameProvider(device: device, url: tempURL, sceneFPS: sceneFPS)
+        let provider = VideoFrameProvider(device: device, commandQueue: commandQueue, url: tempURL, sceneFPS: sceneFPS)
         videoProviders[blockId] = provider
 
         // PR1: Store state immediately but userMediaPresent = false (poster gating)

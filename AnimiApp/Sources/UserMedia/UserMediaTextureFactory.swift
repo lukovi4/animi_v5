@@ -2,6 +2,7 @@ import UIKit
 import Metal
 import MetalKit
 import CoreVideo
+import TVECore
 
 // MARK: - User Media Texture Factory
 
@@ -11,9 +12,12 @@ import CoreVideo
 /// - UIImage → MTLTexture (for photos)
 /// - CVPixelBuffer → MTLTexture (for video frames, via CVMetalTextureCache)
 ///
+/// **Alpha Fix:** Images with alpha channel are loaded via `PremultipliedTextureLoader`
+/// for correct compositing with the renderer's premultiplied blending mode.
+///
 /// Usage:
 /// ```swift
-/// let factory = UserMediaTextureFactory(device: device)
+/// let factory = UserMediaTextureFactory(device: device, commandQueue: queue)
 /// let texture = factory.makeTexture(from: userImage)
 /// ```
 public final class UserMediaTextureFactory {
@@ -21,6 +25,7 @@ public final class UserMediaTextureFactory {
     // MARK: - Properties
 
     private let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
     private let textureLoader: MTKTextureLoader
     private var textureCache: CVMetalTextureCache?
 
@@ -31,9 +36,12 @@ public final class UserMediaTextureFactory {
 
     /// Creates a new texture factory.
     ///
-    /// - Parameter device: Metal device for texture creation
-    public init(device: MTLDevice) {
+    /// - Parameters:
+    ///   - device: Metal device for texture creation
+    ///   - commandQueue: Command queue for staging → private blit (for alpha images)
+    public init(device: MTLDevice, commandQueue: MTLCommandQueue) {
         self.device = device
+        self.commandQueue = commandQueue
         self.textureLoader = MTKTextureLoader(device: device)
 
         // Create CVMetalTextureCache for video frame conversion
@@ -58,9 +66,10 @@ public final class UserMediaTextureFactory {
     /// - Image orientation correction
     /// - Size limiting for memory safety
     /// - Proper color space (sRGB)
+    /// - **Premultiplied alpha** for images with transparency (correct compositing)
     ///
     /// - Parameter image: Source image
-    /// - Returns: Metal texture, or `nil` if creation failed
+    /// - Returns: Metal texture with `.private` storage, or `nil` if creation failed
     public func makeTexture(from image: UIImage) -> MTLTexture? {
         // Normalize orientation and limit size
         guard let normalizedImage = normalizeImage(image) else {
@@ -71,19 +80,34 @@ public final class UserMediaTextureFactory {
             return nil
         }
 
-        // Load texture with appropriate options
-        let options: [MTKTextureLoader.Option: Any] = [
-            .textureUsage: MTLTextureUsage.shaderRead.rawValue,
-            .textureStorageMode: MTLStorageMode.shared.rawValue,
-            .SRGB: false,  // Linear color space for correct blending
-            .generateMipmaps: false
-        ]
+        // Check if image has alpha channel
+        if PremultipliedTextureLoader.hasAlpha(cgImage) {
+            // Alpha images: use PremultipliedTextureLoader for correct compositing
+            do {
+                return try PremultipliedTextureLoader.loadTexture(
+                    from: cgImage,
+                    device: device,
+                    commandQueue: commandQueue
+                )
+            } catch {
+                print("[UserMediaTextureFactory] Failed to create premult texture: \(error)")
+                return nil
+            }
+        } else {
+            // No alpha: fast path via MTKTextureLoader (no premultiply needed)
+            let options: [MTKTextureLoader.Option: Any] = [
+                .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+                .textureStorageMode: MTLStorageMode.private.rawValue,
+                .SRGB: false,  // Linear color space for correct blending
+                .generateMipmaps: false
+            ]
 
-        do {
-            return try textureLoader.newTexture(cgImage: cgImage, options: options)
-        } catch {
-            print("[UserMediaTextureFactory] Failed to create texture from image: \(error)")
-            return nil
+            do {
+                return try textureLoader.newTexture(cgImage: cgImage, options: options)
+            } catch {
+                print("[UserMediaTextureFactory] Failed to create texture from image: \(error)")
+                return nil
+            }
         }
     }
 

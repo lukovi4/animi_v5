@@ -1,105 +1,77 @@
-## 100% причина: движок рендерит слои **в прямом порядке массива**, а в `polaroid_demo` (и вообще в Lottie/AE) верхний слой находится **раньше в массиве**, из-за чего z-order получается инвертирован
+Понял. Это **не “premult” сломал**, а **координатная система**: вы добавили “top-left origin flip” в `PremultipliedTextureLoader`, но в вашем движке **этот flip уже сделан где-то выше (в UV/вершинных данных/плейн-шейдере/пайплайне)**. В итоге получился **double-flip по Y** *в комбинации с существующим X-flip/трансформом* → визуально выглядит как **поворот на 180°** для картинок типа `plastik.png`/`polaroid.png`.
 
-Ниже — **строго доказуемая цепочка по коду + данным шаблона**.
+### Почему это почти наверняка так
+
+До фикса `MTKTextureLoader` грузил текстуру и **в движке уже был “правильный” (под него) маппинг UV**.
+Когда вы начали рисовать `CGImage` в bitmap context и **добавили `translate+scale`**, вы **изменили конвенцию origin** относительно того, что ожидал существующий UV.
 
 ---
 
-# 1) Точка, где создаётся z-order: `AnimIR.renderComposition` обходит `composition.layers` **в прямом порядке**
+# ✅ Канонический релизный фикс (быстрый и правильный)
 
-**Code anchor**
+**Уберите вертикальный flip из `PremultipliedTextureLoader.renderToPremultipliedBGRA`**.
 
-* `TVECore/Sources/TVECore/AnimIR/AnimIR.swift`
-* `renderComposition(_:context:commands:)`
-* ~строки 236–255
+То есть вот это нужно удалить/закомментить:
 
 ```swift
-/// Renders a composition recursively
-private mutating func renderComposition(
-    _ composition: Composition,
-    context: RenderContext,
-    commands: inout [RenderCommand]
-) {
-    // Process layers in order (as they appear in JSON)
-    for layer in composition.layers {
-        renderLayer(layer, context: context, commands: &commands)
-    }
-}
+context.translateBy(x: 0, y: CGFloat(height))
+context.scaleBy(x: 1, y: -1)
 ```
 
-Это означает: команды рисования добавляются в массив **в том же порядке**, что и `composition.layers`.
-
----
-
-# 2) `composition.layers` приходит из компилятора **в том же порядке**, что и `lottie.layers` (никакого reverse на этапе компиляции нет)
-
-**Code anchor**
-
-* `TVECore/Sources/TVECompilerCore/AnimIRCompiler.swift`
-* `compileLayers(_:compId:animRef:fallbackOp:pathRegistry:)`
-* ~строки 245–305
+И оставить просто:
 
 ```swift
-// Second pass: compile all layers with matte info
-var layers: [Layer] = []
-
-for (index, lottieLayer) in lottieLayers.enumerated() {
-    ...
-    let layer = try compileLayer(
-        lottie: lottieLayer,
-        index: index,
-        compId: compId,
-        animRef: animRef,
-        fallbackOp: fallbackOp,
-        matteInfo: matteInfo,
-        implicitMatteSourceIds: implicitMatteSourceIds,
-        pathRegistry: &pathRegistry
-    )
-    layers.append(layer)
-}
-
-return layers
+context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 ```
 
-Т.е. порядок **Lottie JSON → AnimIR Composition.layers** сохраняется 1:1.
+### Что оставить как есть
+
+* **EXIF orientation fix через thumbnail + transform** — это правильно и нужно.
+* premult через CGContext — правильно.
+* staging → `.private` blit — правильно.
 
 ---
 
-# 3) Доказательство на конкретном `polaroid_demo`: в JSON у блока `mediaBlock` слой рамки (`polaroid.png`) стоит **раньше**, чем слой `media`
+# Чтобы это было “железно” и не повторилось
 
-В snapshot есть `polaroid/polaroid_full.json`, где `assets[id="comp_0"].layers` идут так (индексы массива):
+Сделайте **одно из двух** (оба релизные):
 
-**Data anchor (из файла)**
+## Вариант A (лучший): зафиксировать конвенцию тестом “сравнение с MTKTextureLoader”
 
-* `polaroid/polaroid_full.json`
-* `assets[id="comp_0"].layers[0..4]` (порядок слоёв массива)
+Добавьте integration test (у вас уже есть `MetalRendererBaselineTests.swift` с `readPixel`):
 
-Экстракт (по факту содержимого файла, порядок сохранён):
+1. загрузить одну и ту же картинку:
 
-* `[0] nm: "polaroid.png"  ty:2`  ← рамка/картинка полароида
-* `[1] nm: "mask"         ty:4`
-* `[2] nm: "plastik.png"  ty:2 (hd=true)`
-* `[3] nm: "media"        ty:2`  ← медиа-плейсхолдер
-* `[4] nm: "mediaInput"   ty:4`  ← форма inputClip
+   * путь 1: `MTKTextureLoader.newTexture(URL:)`
+   * путь 2: `PremultipliedTextureLoader.loadTexture(URL:)`
+2. скопировать обе текстуры в CPU (у вас уже есть паттерн `readPixel`)
+3. сравнить 2–3 пикселя (например, (0,0), (w-1,0), (0,h-1)) — **должны совпасть по ориентации**
+   (в идеале — совпадение по цвету тоже, но premult может отличаться; тогда сравнивайте именно “какой угол где”, выбрав PNG без альфы, чтобы исключить premult-математику).
 
-(Это видно прямо в начале файла — JSON one-line, но порядок элементов однозначен.)
+Это 100% зацементирует orientation-конвенцию.
+
+## Вариант B: сделать flip опциональным и задокументировать, что в вашем движке flip уже делается UV-ами
+
+Например:
+
+```swift
+func renderToPremultipliedBGRA(cgImage: CGImage, flipY: Bool) throws -> [UInt8]
+```
+
+и **везде передавать `flipY: false`**, пока не будет другого потребителя.
+
+Но честно: если цель — “универсально для всех слоёв” в рамках вашего движка, **A лучше** (закрепляет контракт).
 
 ---
 
-# 4) Почему именно это даёт наблюдаемый симптом “media поверх рамки”
+# Что делать прямо сейчас (минимальный патч)
 
-Факт по коду: движок рисует **в порядке массива**, значит в `comp_0` он нарисует:
+1. Удалить `translateBy/scaleBy` из loader-а.
+2. Быстро проверить `polaroid_shared_demo`:
 
-1. `polaroid.png` (рамку)
-   …
-2. `media` (позже) → **перекроет** всё, что было нарисовано раньше, включая рамку.
-
-Это ровно и объясняет симптом: “в preview/edit mediaInput (пользовательское фото/видео) сверху рамки”.
+   * `plastik.png` и `polaroid.png` больше не перевёрнуты
+   * прозрачность корректная
 
 ---
 
-## Итог
-
-**Причина на 100% в коде:**
-`AnimIR.renderComposition` формирует render-команды, обходя `composition.layers` **в прямом порядке**; компилятор сохраняет порядок `lottie.layers` без инверсии; в `polaroid_demo` рамка стоит раньше слоя `media`, поэтому `media` рисуется позже и оказывается сверху.
-
-Если хочешь — следующим шагом я дам **точный diff-текст** для фикса в стиле “минимальная правка + code anchors”, но ты просил сейчас именно причину, без решения.
+Если хочешь — я могу **точечно назвать**, где именно в вашем рендере уже происходит flip (обычно это либо генерация `texCoord` в quad-вершинах, либо нормализация UV для Metal). Но даже без этого: **удаление flip-а из CGContext — правильное действие**, потому что именно оно вернёт поведение к “как было с MTKTextureLoader”, сохранив premult.

@@ -1122,16 +1122,20 @@ final class PlayerViewController: UIViewController {
         textureProvider = provider
 
         // PR-B: Preload all textures before any draw/play (IO-free runtime invariant)
-        provider.preloadAll()
+        // Alpha Fix: Use commandQueue for premultiplied alpha texture loading
+        if let queue = commandQueue {
+            provider.preloadAll(commandQueue: queue)
+        }
         if let stats = provider.lastPreloadStats {
             log(String(format: "[Preload] loaded: %d, missing: %d, skipped: %d, duration: %.1fms",
                        stats.loadedCount, stats.missingCount, stats.skippedBindingCount, stats.durationMs))
         }
 
         // PR-32: Create UserMediaService for photo/video injection
-        if let tp = textureProvider {
+        if let tp = textureProvider, let queue = commandQueue {
             userMediaService = UserMediaService(
                 device: device,
+                commandQueue: queue,
                 scenePlayer: player,
                 textureProvider: tp
             )
@@ -1341,8 +1345,9 @@ final class PlayerViewController: UIViewController {
                     self.preparingOverlay.setStatus("Loading textures...")
                 }
 
-                let provider: ScenePackageTextureProvider = await MainActor.run {
-                    SceneTextureProviderFactory.create(
+                // Capture commandQueue on main before background preload
+                let (provider, queue): (ScenePackageTextureProvider, MTLCommandQueue?) = await MainActor.run {
+                    let p = SceneTextureProviderFactory.create(
                         device: device,
                         mergedAssetIndex: sceneSetupResult.compiled.mergedAssetIndex,
                         resolver: result.resolver,
@@ -1351,13 +1356,17 @@ final class PlayerViewController: UIViewController {
                             Task { @MainActor in self?.log(msg) }
                         }
                     )
+                    return (p, self.commandQueue)
                 }
 
                 // Preload on background (PR-D: safe because draw not running)
                 // PR-D.1: Use child Task so cancellation propagates
+                // Alpha Fix: Use commandQueue for premultiplied alpha texture loading
                 try await Task(priority: .userInitiated) {
                     try Task.checkCancellation()
-                    provider.preloadAll()
+                    if let q = queue {
+                        provider.preloadAll(commandQueue: q)
+                    }
                 }.value
 
                 // Check cancellation after preload
@@ -1424,9 +1433,10 @@ final class PlayerViewController: UIViewController {
         mergedAssetSizes = compiled.mergedAssetIndex.sizeById
 
         // Create UserMediaService
-        if let tp = textureProvider {
+        if let tp = textureProvider, let queue = commandQueue {
             userMediaService = UserMediaService(
                 device: metalView.device!,
+                commandQueue: queue,
                 scenePlayer: player,
                 textureProvider: tp
             )
