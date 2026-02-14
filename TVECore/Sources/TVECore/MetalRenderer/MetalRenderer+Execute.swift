@@ -55,10 +55,22 @@ struct MatteScopeContext {
     let pathRegistry: PathRegistry
 }
 
+/// Groups parameters for isolated group scope rendering.
+struct IsolatedGroupScopeContext {
+    let target: RenderTarget
+    let textureProvider: TextureProvider
+    let commandBuffer: MTLCommandBuffer
+    let animToViewport: Matrix2D
+    let viewportToNDC: Matrix2D
+    let assetSizes: [String: AssetSize]
+    let pathRegistry: PathRegistry
+}
+
 /// Type of scope encountered during command processing.
 private enum ScopeType {
     case mask
     case matte
+    case isolatedGroup
 }
 
 // MARK: - Execution State
@@ -70,6 +82,7 @@ struct ExecutionState {
     var groupDepth: Int = 0
     var maskDepth: Int = 0
     var matteDepth: Int = 0
+    var isolatedGroupDepth: Int = 0
 
     var currentTransform: Matrix2D { transformStack.last ?? .identity }
     var currentScissor: MTLScissorRect? { clipStack.last }
@@ -200,6 +213,9 @@ extension MetalRenderer {
                 case .beginMatte:
                     segmentEnd = idx
                     foundScopeType = .matte
+                case .beginIsolatedGroup:
+                    segmentEnd = idx
+                    foundScopeType = .isolatedGroup
                 default:
                     continue
                 }
@@ -226,6 +242,18 @@ extension MetalRenderer {
             }
 
             index = segmentEnd
+
+            // CRITICAL FIX: Ensure target is cleared when scope is first command.
+            // If no segment was rendered (segmentStart == segmentEnd) and this is first pass,
+            // we must clear the target before processing the scope. Otherwise, the scope
+            // composites over stale content (magenta debug color, previous frame trails).
+            if isFirstPass && segmentStart == segmentEnd && foundScopeType != nil {
+                guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+                    throw MetalRendererError.failedToCreateRenderEncoder
+                }
+                encoder.endEncoding()
+                isFirstPass = false
+            }
 
             // Process scope if found
             switch foundScopeType {
@@ -302,6 +330,21 @@ extension MetalRenderer {
                 #endif
                 isFirstPass = false
 
+            case .isolatedGroup:
+                let isolatedScope = try extractIsolatedGroupScope(from: commands, startIndex: index)
+                let scopeCtx = IsolatedGroupScopeContext(
+                    target: target,
+                    textureProvider: textureProvider,
+                    commandBuffer: commandBuffer,
+                    animToViewport: animToViewport,
+                    viewportToNDC: viewportToNDC,
+                    assetSizes: assetSizes,
+                    pathRegistry: pathRegistry
+                )
+                try renderIsolatedGroupScope(commands: commands, scope: isolatedScope, ctx: scopeCtx, inheritedState: state)
+                index = isolatedScope.endIndex + 1
+                isFirstPass = false
+
             case .none:
                 break
             }
@@ -363,6 +406,9 @@ extension MetalRenderer {
                 case .beginMatte:
                     segmentEnd = idx
                     foundScopeType = .matte
+                case .beginIsolatedGroup:
+                    segmentEnd = idx
+                    foundScopeType = .isolatedGroup
                 default:
                     continue
                 }
@@ -388,6 +434,18 @@ extension MetalRenderer {
             }
 
             index = segmentEnd
+
+            // CRITICAL FIX: Ensure target is cleared when scope is first command.
+            // If no segment was rendered (segmentStart == segmentEnd) and this is first pass,
+            // we must clear the target before processing the scope. Otherwise, the scope
+            // composites over stale content (magenta debug color, previous frame trails).
+            if isFirstPass && segmentStart == segmentEnd && foundScopeType != nil {
+                guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+                    throw MetalRendererError.failedToCreateRenderEncoder
+                }
+                encoder.endEncoding()
+                isFirstPass = false
+            }
 
             // Process scope if found
             switch foundScopeType {
@@ -456,6 +514,21 @@ extension MetalRenderer {
                 #if DEBUG
                 perf?.endPhase(.executeMattesTotal)
                 #endif
+                isFirstPass = false
+
+            case .isolatedGroup:
+                let isolatedScope = try extractIsolatedGroupScope(from: commands, startIndex: index)
+                let scopeCtx = IsolatedGroupScopeContext(
+                    target: target,
+                    textureProvider: textureProvider,
+                    commandBuffer: commandBuffer,
+                    animToViewport: animToViewport,
+                    viewportToNDC: viewportToNDC,
+                    assetSizes: assetSizes,
+                    pathRegistry: pathRegistry
+                )
+                try renderIsolatedGroupScope(commands: commands, scope: isolatedScope, ctx: scopeCtx, inheritedState: state)
+                index = isolatedScope.endIndex + 1
                 isFirstPass = false
 
             case .none:
@@ -1262,6 +1335,11 @@ extension MetalRenderer {
                 reason: "Unbalanced mattes: expected \(baseline.matteDepth), got \(state.matteDepth)"
             )
         }
+        if state.isolatedGroupDepth != baseline.isolatedGroupDepth {
+            throw MetalRendererError.invalidCommandStack(
+                reason: "Unbalanced isolatedGroups: expected \(baseline.isolatedGroupDepth), got \(state.isolatedGroupDepth)"
+            )
+        }
     }
 }
 
@@ -1288,6 +1366,17 @@ struct MatteScope {
     let mode: RenderMatteMode
     let sourceRange: Range<Int>
     let consumerRange: Range<Int>
+}
+
+// MARK: - Isolated Group Scope
+
+/// Result of extracting an isolated group scope from command list.
+/// Isolated groups render children to offscreen, then composite with opacity.
+struct IsolatedGroupScope {
+    let startIndex: Int
+    let endIndex: Int
+    let opacity: Double
+    let innerRange: Range<Int>
 }
 
 extension MetalRenderer {
@@ -1745,6 +1834,13 @@ extension MetalRenderer {
             guard state.matteDepth >= 0 else {
                 throw MetalRendererError.invalidCommandStack(reason: "EndMatte without BeginMatte")
             }
+        case .beginIsolatedGroup:
+            state.isolatedGroupDepth += 1
+        case .endIsolatedGroup:
+            state.isolatedGroupDepth -= 1
+            guard state.isolatedGroupDepth >= 0 else {
+                throw MetalRendererError.invalidCommandStack(reason: "EndIsolatedGroup without BeginIsolatedGroup")
+            }
         }
     }
 
@@ -1993,5 +2089,163 @@ extension RenderMatteMode {
         case .luma: return 2
         case .lumaInverted: return 3
         }
+    }
+}
+
+// MARK: - Isolated Group Scope Extraction and Rendering
+
+extension MetalRenderer {
+
+    /// Extracts an isolated group scope starting at the given index.
+    /// Handles nested isolated groups by counting begin/end pairs.
+    func extractIsolatedGroupScope(from commands: [RenderCommand], startIndex: Int) throws -> IsolatedGroupScope {
+        guard startIndex < commands.count,
+              case .beginIsolatedGroup(let opacity) = commands[startIndex] else {
+            throw MetalRendererError.invalidCommandStack(reason: "Expected beginIsolatedGroup at index \(startIndex)")
+        }
+
+        // Find matching endIsolatedGroup
+        var depth = 1
+        var endIndex = startIndex + 1
+        while endIndex < commands.count && depth > 0 {
+            switch commands[endIndex] {
+            case .beginIsolatedGroup:
+                depth += 1
+            case .endIsolatedGroup:
+                depth -= 1
+            default:
+                break
+            }
+            if depth > 0 {
+                endIndex += 1
+            }
+        }
+
+        guard depth == 0, endIndex < commands.count else {
+            let msg = "Missing endIsolatedGroup for beginIsolatedGroup at index \(startIndex)"
+            throw MetalRendererError.invalidCommandStack(reason: msg)
+        }
+
+        // Inner range (between begin and end)
+        let innerRange = (startIndex + 1)..<endIndex
+
+        return IsolatedGroupScope(
+            startIndex: startIndex,
+            endIndex: endIndex,
+            opacity: opacity,
+            innerRange: innerRange
+        )
+    }
+
+    /// Renders isolated group scope: children to offscreen, then composite with opacity.
+    ///
+    /// Uses full-frame offscreen texture (no bbox optimization).
+    /// This ensures correct compositing for precomp opacity.
+    func renderIsolatedGroupScope(
+        commands: [RenderCommand],
+        scope: IsolatedGroupScope,
+        ctx: IsolatedGroupScopeContext,
+        inheritedState: ExecutionState
+    ) throws {
+        let targetSize = ctx.target.sizePx
+        let currentScissor = inheritedState.currentScissor
+
+        // Step 1: Acquire offscreen texture
+        guard let offscreenTex = texturePool.acquireColorTexture(size: targetSize) else {
+            return
+        }
+        defer { texturePool.release(offscreenTex) }
+
+        // Step 2: Render inner commands to offscreen texture
+        var stateWithScissor = inheritedState
+        if let scissor = currentScissor {
+            stateWithScissor.clipStack.append(scissor)
+        }
+
+        let offscreenTarget = RenderTarget(
+            texture: offscreenTex,
+            drawableScale: ctx.target.drawableScale,
+            animSize: ctx.target.animSize
+        )
+
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = offscreenTex
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+        try drawInternal(
+            commands: commands,
+            in: scope.innerRange,
+            renderPassDescriptor: descriptor,
+            target: offscreenTarget,
+            textureProvider: ctx.textureProvider,
+            commandBuffer: ctx.commandBuffer,
+            assetSizes: ctx.assetSizes,
+            pathRegistry: ctx.pathRegistry,
+            initialState: stateWithScissor
+        )
+
+        // Step 3: Composite offscreen texture to target with opacity
+        try compositeTextureWithOpacity(
+            texture: offscreenTex,
+            opacity: scope.opacity,
+            target: ctx.target,
+            viewportToNDC: ctx.viewportToNDC,
+            commandBuffer: ctx.commandBuffer,
+            scissor: currentScissor
+        )
+    }
+
+    /// Composites a texture to target with opacity using the quad pipeline.
+    ///
+    /// This draws the texture as a full-screen quad with the specified opacity,
+    /// using premultiplied alpha blending (src.rgb + dst.rgb * (1 - src.a)).
+    // swiftlint:disable:next function_parameter_count
+    private func compositeTextureWithOpacity(
+        texture: MTLTexture,
+        opacity: Double,
+        target: RenderTarget,
+        viewportToNDC: Matrix2D,
+        commandBuffer: MTLCommandBuffer,
+        scissor: MTLScissorRect?
+    ) throws {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target.texture
+        descriptor.colorAttachments[0].loadAction = .load
+        descriptor.colorAttachments[0].storeAction = .store
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+        defer { encoder.endEncoding() }
+
+        if let scissor = scissor {
+            encoder.setScissorRect(scissor)
+        }
+
+        // Create quad covering entire texture size
+        guard let vertexBuffer = resources.makeQuadVertexBuffer(
+            device: device,
+            width: Float(texture.width),
+            height: Float(texture.height)
+        ) else { return }
+
+        // MVP is identity in viewport space (texture covers full viewport)
+        let mvp = viewportToNDC.toFloat4x4()
+        var uniforms = QuadUniforms(mvp: mvp, opacity: Float(opacity))
+
+        encoder.setRenderPipelineState(resources.pipelineState)
+        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)
+        encoder.setFragmentTexture(texture, index: 0)
+        encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+        encoder.drawIndexedPrimitives(
+            type: .triangle,
+            indexCount: resources.quadIndexCount,
+            indexType: .uint16,
+            indexBuffer: resources.quadIndexBuffer,
+            indexBufferOffset: 0
+        )
     }
 }

@@ -50,6 +50,9 @@ public enum MetalRendererError: Error, Sendable, Equatable {
 
     /// Path resource for the given PathID was not found in registry
     case missingPathResource(pathId: PathID)
+
+    /// Failed to create render encoder for frame clear
+    case failedToCreateRenderEncoder
 }
 
 extension MetalRendererError: LocalizedError {
@@ -65,6 +68,8 @@ extension MetalRendererError: LocalizedError {
             return "Invalid command stack: \(reason)"
         case .missingPathResource(let pathId):
             return "No path resource found for pathId: \(pathId)"
+        case .failedToCreateRenderEncoder:
+            return "Failed to create render encoder for frame clear"
         }
     }
 }

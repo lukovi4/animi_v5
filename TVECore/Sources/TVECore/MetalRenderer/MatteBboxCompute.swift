@@ -231,6 +231,11 @@ private func computeRangeBBox(
             // Per review.md #6: process nested scopes linearly
             // Just continue iterating, bounds inside will be accumulated
             break
+
+        case .beginIsolatedGroup, .endIsolatedGroup:
+            // Process nested isolated groups linearly
+            // Bounds inside will be accumulated
+            break
         }
     }
 

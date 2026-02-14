@@ -107,6 +107,18 @@ public enum RenderCommand: Sendable, Equatable {
 
     /// End the current track matte scope
     case endMatte
+
+    // MARK: - Isolated Group (Precomp Opacity)
+
+    /// Begin an isolated group scope for precomp opacity compositing.
+    /// Commands inside are rendered to offscreen, then composited with opacity.
+    /// This ensures precomp children are composited at full opacity internally,
+    /// with the container's opacity applied once to the final result.
+    /// - Parameter opacity: Container opacity (0.0 to 1.0)
+    case beginIsolatedGroup(opacity: Double)
+
+    /// End the current isolated group scope
+    case endIsolatedGroup
 }
 
 // MARK: - Command Validation
@@ -115,7 +127,7 @@ extension RenderCommand {
     /// Returns true if this is a "begin" command that requires a matching "end"
     public var isBeginCommand: Bool {
         switch self {
-        case .beginGroup, .pushTransform, .pushClipRect, .beginMask, .beginMatte:
+        case .beginGroup, .pushTransform, .pushClipRect, .beginMask, .beginMatte, .beginIsolatedGroup:
             return true
         default:
             return false
@@ -125,7 +137,7 @@ extension RenderCommand {
     /// Returns true if this is an "end" command
     public var isEndCommand: Bool {
         switch self {
-        case .endGroup, .popTransform, .popClipRect, .endMask, .endMatte:
+        case .endGroup, .popTransform, .popClipRect, .endMask, .endMatte, .endIsolatedGroup:
             return true
         default:
             return false
@@ -145,6 +157,8 @@ extension RenderCommand {
             return .endMask
         case .beginMatte:
             return .endMatte
+        case .beginIsolatedGroup:
+            return .endIsolatedGroup
         default:
             return nil
         }
@@ -185,6 +199,10 @@ extension RenderCommand: CustomDebugStringConvertible {
             return "BeginMatte(\(mode))"
         case .endMatte:
             return "EndMatte"
+        case .beginIsolatedGroup(let opacity):
+            return "BeginIsolatedGroup(opacity:\(opacity))"
+        case .endIsolatedGroup:
+            return "EndIsolatedGroup"
         }
     }
 }
@@ -210,9 +228,10 @@ private struct BalanceStacks {
     var clip = 0
     var mask = 0
     var matte = 0
+    var isolatedGroup = 0
 
     var allZero: Bool {
-        group == 0 && transform == 0 && clip == 0 && mask == 0 && matte == 0
+        group == 0 && transform == 0 && clip == 0 && mask == 0 && matte == 0 && isolatedGroup == 0
     }
 
     mutating func increment(_ command: RenderCommand) {
@@ -222,6 +241,7 @@ private struct BalanceStacks {
         case .pushClipRect: clip += 1
         case .beginMask: mask += 1
         case .beginMatte: matte += 1
+        case .beginIsolatedGroup: isolatedGroup += 1
         default: break
         }
     }
@@ -233,6 +253,7 @@ private struct BalanceStacks {
         case .popClipRect: clip -= 1; return clip >= 0
         case .endMask: mask -= 1; return mask >= 0
         case .endMatte: matte -= 1; return matte >= 0
+        case .endIsolatedGroup: isolatedGroup -= 1; return isolatedGroup >= 0
         default: return true
         }
     }
@@ -265,6 +286,8 @@ extension Array where Element == RenderCommand {
             case .endMask: key = "endMask"
             case .beginMatte: key = "beginMatte"
             case .endMatte: key = "endMatte"
+            case .beginIsolatedGroup: key = "beginIsolatedGroup"
+            case .endIsolatedGroup: key = "endIsolatedGroup"
             }
             counts[key, default: 0] += 1
         }

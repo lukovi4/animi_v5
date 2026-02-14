@@ -124,6 +124,36 @@ enum RenderCommandValidator {
                     errors.append(ValidationError(index: i, message: "endMatte without matching beginMatte"))
                 }
 
+            // --- Isolated group scope ---
+            case .beginIsolatedGroup:
+                scopeStack.append(("isolatedGroup", transformDepth, clipDepth, i))
+            case .endIsolatedGroup:
+                if let scope = scopeStack.last, scope.kind == "isolatedGroup" {
+                    if transformDepth != scope.transformDepth {
+                        let err = ValidationError(
+                            index: i,
+                            message: "Cross-boundary transforms in isolatedGroup scope: began at [\(scope.index)] depth=\(scope.transformDepth), endIsolatedGroup depth=\(transformDepth)"
+                        )
+                        errors.append(err)
+                        #if DEBUG
+                        printDiagnosticWindow(commands, around: i, error: err)
+                        #endif
+                    }
+                    if clipDepth != scope.clipDepth {
+                        let err = ValidationError(
+                            index: i,
+                            message: "Cross-boundary clips in isolatedGroup scope: began at [\(scope.index)] depth=\(scope.clipDepth), endIsolatedGroup depth=\(clipDepth)"
+                        )
+                        errors.append(err)
+                        #if DEBUG
+                        printDiagnosticWindow(commands, around: i, error: err)
+                        #endif
+                    }
+                    scopeStack.removeLast()
+                } else {
+                    errors.append(ValidationError(index: i, message: "endIsolatedGroup without matching beginIsolatedGroup"))
+                }
+
             default:
                 break
             }

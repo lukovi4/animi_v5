@@ -907,16 +907,31 @@ extension AnimIR {
             var childVisited = context.visitedComps
             childVisited.insert(compId)
 
+            // Isolated Group: compute local opacity for this precomp container
+            let localOpacity = Self.computeOpacity(transform: layer.transform, at: context.frame)
+            let needsIsolatedGroup = abs(localOpacity - 1.0) >= 1e-4
+
             // IMPORTANT: parentWorld = .identity because container transform is already
             // on the command stack via pushTransform(resolved.worldMatrix) above.
             // Children compute relative transforms within their composition.
             // Effective matrix = stack * childLocal (applied automatically by executor).
-            // Opacity has no stack, so we pass it as a number.
+            //
+            // Isolated Group semantics:
+            // - When localOpacity != 1.0, we render children to offscreen at full internal opacity,
+            //   then composite the result with localOpacity applied once.
+            // - Children inherit context.parentOpacity (ancestor opacity), NOT worldOpacity.
+            // - This preserves AE/Lottie semantics: "precomp opacity applies to the result, not each child"
+            let childParentOpacity = needsIsolatedGroup ? context.parentOpacity : resolved.worldOpacity
+
+            if needsIsolatedGroup {
+                commands.append(.beginIsolatedGroup(opacity: localOpacity))
+            }
+
             let childContext = RenderContext(
                 frame: childFrame,
                 frameIndex: context.frameIndex,
                 parentWorld: .identity,
-                parentOpacity: resolved.worldOpacity,
+                parentOpacity: childParentOpacity,
                 layerById: childLayerById,
                 visitedComps: childVisited,
                 bindingLayerId: context.bindingLayerId,
@@ -929,6 +944,10 @@ extension AnimIR {
                 disabledToggleIds: context.disabledToggleIds
             )
             renderComposition(precomp, context: childContext, commands: &commands)
+
+            if needsIsolatedGroup {
+                commands.append(.endIsolatedGroup)
+            }
 
         case .shapes(let shapeGroup):
             // Render shape as filled path (used for matte sources)

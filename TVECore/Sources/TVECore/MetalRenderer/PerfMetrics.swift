@@ -338,6 +338,8 @@ final class PerfMetrics {
         case .endMask: break
         case .beginMatte: break // counted separately
         case .endMatte: break
+        case .beginIsolatedGroup: break // handled as scope
+        case .endIsolatedGroup: break
         }
     }
 
