@@ -119,8 +119,11 @@ public struct GroupTransform: Sendable, Equatable, Codable {
         let scaleY = scl.y / 100.0
 
         // Build matrix: T(position) * R(rotation) * S(scale) * T(-anchor)
+        // Lottie/AE: Y-down, positive rotation is clockwise.
+        // Matrix2D: math rotation convention.
+        // Negate to convert Lottie degrees -> Matrix2D degrees.
         return Matrix2D.translation(x: pos.x, y: pos.y)
-            .concatenating(.rotationDegrees(rot))
+            .concatenating(.rotationDegrees(-rot))
             .concatenating(.scale(x: scaleX, y: scaleY))
             .concatenating(.translation(x: -anc.x, y: -anc.y))
     }

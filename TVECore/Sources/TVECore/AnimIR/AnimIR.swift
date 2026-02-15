@@ -101,8 +101,11 @@ extension AnimIR {
         let scaleY = scale.y / 100.0
 
         // Build matrix: T(position) * R(rotation) * S(scale) * T(-anchor)
+        // Lottie/AE: Y-down, positive rotation is clockwise.
+        // Matrix2D: math rotation convention.
+        // Negate to convert Lottie degrees -> Matrix2D degrees.
         return Matrix2D.translation(x: position.x, y: position.y)
-            .concatenating(.rotationDegrees(rotation))
+            .concatenating(.rotationDegrees(-rotation))
             .concatenating(.scale(x: scaleX, y: scaleY))
             .concatenating(.translation(x: -anchor.x, y: -anchor.y))
     }

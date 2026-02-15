@@ -113,15 +113,16 @@ final class NestedPrecompPropagationTests: XCTestCase {
 
         // Compute expected matrix manually:
         // M_root = T(100,200) * R(15°) * S(0.8,0.8) * T(-0,-0)
+        // Using lottieRotationDegrees() to match Lottie convention (Y-down, CW positive)
         let mRoot = Matrix2D.translation(x: 100, y: 200)
-            .concatenating(.rotationDegrees(15))
+            .concatenating(lottieRotationDegrees(15))
             .concatenating(.scale(x: 0.8, y: 0.8))
 
         // M_outer = T(10,0) * R(0) * S(1,1) * T(-0,-0) = T(10,0)
         let mOuter = Matrix2D.translation(x: 10, y: 0)
 
         // M_image = T(0,0) * R(45°) * S(1,1) * T(-50,-50)
-        let mImage = Matrix2D.rotationDegrees(45)
+        let mImage = lottieRotationDegrees(45)
             .concatenating(.translation(x: -50, y: -50))
 
         // Expected = M_root * M_outer * M_image (each layer's transform applied once)

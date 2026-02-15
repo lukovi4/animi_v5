@@ -246,13 +246,60 @@ final class AnimIRTransformTests: XCTestCase {
         // When
         let matrix = AnimIR.computeLocalMatrix(transform: transform, at: 0)
 
-        // Then: point (10,0) rotates 90° clockwise (Lottie/screen coords) to (0,-10)
-        // In screen coordinates (Y-down), positive rotation is clockwise
+        // Then: point (10,0) rotates 90° clockwise (Lottie Y-down convention) to (0,10)
+        // In Y-down coordinates, positive rotation is clockwise, so point moves DOWN (+Y)
         let testPoint = Vec2D(x: 10, y: 0)
         let result = matrix.apply(to: testPoint)
 
         XCTAssertEqual(result.x, 0, accuracy: 0.001)
-        XCTAssertEqual(result.y, -10, accuracy: 0.001)
+        XCTAssertEqual(result.y, 10, accuracy: 0.001)
+    }
+
+    // MARK: - Lottie Rotation Direction Tests (PR-rotation-sign)
+
+    /// Verifies that Lottie rotation convention is correctly applied:
+    /// - Lottie/AE: Y-down, positive rotation = clockwise
+    /// - Point (1, 0) with +10° should move DOWN (y' > 0)
+    func testLottieRotationDirection_positiveIsClockwise() {
+        // Given: rotation = +10° (should be clockwise in Lottie Y-down)
+        let transform = TransformTrack(
+            position: .static(Vec2D(x: 0, y: 0)),
+            scale: .static(Vec2D(x: 100, y: 100)),
+            rotation: .static(10),
+            opacity: .static(100),
+            anchor: .static(Vec2D(x: 0, y: 0))
+        )
+
+        // When
+        let matrix = AnimIR.computeLocalMatrix(transform: transform, at: 0)
+        let testPoint = Vec2D(x: 1, y: 0)
+        let result = matrix.apply(to: testPoint)
+
+        // Then: clockwise rotation in Y-down moves point DOWN, so y' > 0
+        XCTAssertGreaterThan(result.y, 0,
+            "Positive Lottie rotation (+10°) should move point (1,0) DOWN (y > 0) in Y-down coords")
+    }
+
+    /// Verifies that negative Lottie rotation is counter-clockwise:
+    /// - Point (1, 0) with -10° should move UP (y' < 0)
+    func testLottieRotationDirection_negativeIsCounterClockwise() {
+        // Given: rotation = -10° (should be counter-clockwise in Lottie Y-down)
+        let transform = TransformTrack(
+            position: .static(Vec2D(x: 0, y: 0)),
+            scale: .static(Vec2D(x: 100, y: 100)),
+            rotation: .static(-10),
+            opacity: .static(100),
+            anchor: .static(Vec2D(x: 0, y: 0))
+        )
+
+        // When
+        let matrix = AnimIR.computeLocalMatrix(transform: transform, at: 0)
+        let testPoint = Vec2D(x: 1, y: 0)
+        let result = matrix.apply(to: testPoint)
+
+        // Then: counter-clockwise rotation in Y-down moves point UP, so y' < 0
+        XCTAssertLessThan(result.y, 0,
+            "Negative Lottie rotation (-10°) should move point (1,0) UP (y < 0) in Y-down coords")
     }
 
     func testComputeLocalMatrix_withPositionOffset() {
@@ -562,8 +609,8 @@ final class AnimIRTransformTests: XCTestCase {
 
     func testParenting_withParentRotation() {
         // Given: parent rotated 90°, child at local position (10, 0)
-        // In screen coordinates (Y-down), 90° rotation is clockwise
-        // So child at (10, 0) rotated 90° clockwise becomes (0, -10)
+        // In Y-down coordinates (Lottie convention), 90° rotation is clockwise
+        // So child at (10, 0) rotated 90° clockwise becomes (0, 10) - moves DOWN
         let parentTransform = TransformTrack(
             position: .static(Vec2D(x: 0, y: 0)),
             scale: .static(Vec2D(x: 100, y: 100)),
@@ -585,12 +632,13 @@ final class AnimIRTransformTests: XCTestCase {
         let childLocal = AnimIR.computeLocalMatrix(transform: childTransform, at: 0)
         let childWorld = parentLocal.concatenating(childLocal)
 
-        // Then: origin of child content should be at (0, -10) due to clockwise rotation
+        // Then: origin of child content should be at (0, 10) due to clockwise rotation
+        // In Y-down, clockwise moves point DOWN (+Y)
         let origin = Vec2D(x: 0, y: 0)
         let worldPos = childWorld.apply(to: origin)
 
         XCTAssertEqual(worldPos.x, 0, accuracy: 0.001)
-        XCTAssertEqual(worldPos.y, -10, accuracy: 0.001)
+        XCTAssertEqual(worldPos.y, 10, accuracy: 0.001)
     }
 
     // MARK: - Local Frame Index Tests
