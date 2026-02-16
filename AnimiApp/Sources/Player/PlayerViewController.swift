@@ -109,6 +109,24 @@ final class PlayerViewController: UIViewController {
     private lazy var loadButton: UIButton = {
         makeButton(title: "Load Scene", action: #selector(loadTestPackageTapped))
     }()
+
+    private lazy var exportButton: UIButton = {
+        makeButton(title: "Export", color: .systemTeal, action: #selector(exportTapped))
+    }()
+
+    private lazy var exportProgressLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
+        label.textAlignment = .center
+        label.textColor = .systemTeal
+        label.text = ""
+        label.isHidden = true
+        return label
+    }()
+
+    private var isExporting = false
+    private var videoExporter: VideoExporter?
     #endif
 
     private lazy var playPauseButton: UIButton = {
@@ -481,7 +499,7 @@ final class PlayerViewController: UIViewController {
 
         // Add header elements to contentView
         #if DEBUG
-        [sceneSelector, loadButton].forEach { contentView.addSubview($0) }
+        [sceneSelector, loadButton, exportButton, exportProgressLabel].forEach { contentView.addSubview($0) }
         #endif
         [templateSelector, modeToggle, presetPicker, metalView, overlayView, preparingOverlay, mainControlsStack, logTextView].forEach { contentView.addSubview($0) }
 
@@ -539,7 +557,16 @@ final class PlayerViewController: UIViewController {
             loadButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             loadButton.heightAnchor.constraint(equalToConstant: 44),
 
-            templateSelector.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 8),
+            exportButton.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 8),
+            exportButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            exportButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            exportButton.heightAnchor.constraint(equalToConstant: 44),
+
+            exportProgressLabel.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 4),
+            exportProgressLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            exportProgressLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
+            templateSelector.topAnchor.constraint(equalTo: exportProgressLabel.bottomAnchor, constant: 8),
             templateSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             templateSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
 
@@ -674,6 +701,125 @@ final class PlayerViewController: UIViewController {
             isSceneValid = false
             isAnimValid = false
         }
+    }
+
+    @objc private func exportTapped() {
+        guard !isExporting else {
+            log("[Export] Export already in progress")
+            return
+        }
+        startExport()
+    }
+
+    private func startExport() {
+        // 1. Guard dependencies
+        guard let renderer = renderer,
+              let compiled = compiledScene,
+              let player = scenePlayer,
+              let mainTextureProvider = textureProvider,
+              let resolver = currentResolver else {
+            log("[Export] ERROR: Missing dependencies")
+            return
+        }
+
+        guard loadingState == .ready else {
+            log("[Export] ERROR: Template not ready")
+            return
+        }
+
+        // 2. Create ExportTextureProvider
+        let device = renderer.commandQueue.device
+        let exportTP = ExportTextureProvider(
+            device: device,
+            assetIndex: compiled.mergedAssetIndex,
+            resolver: resolver,
+            bindingAssetIds: compiled.bindingAssetIds
+        )
+
+        // Preload package assets
+        exportTP.preloadAll(commandQueue: renderer.commandQueue)
+
+        // Inject user media textures from main provider
+        exportTP.injectTextures(from: mainTextureProvider, for: compiled.bindingAssetIds)
+
+        // 3. Configure VideoExportSettings
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("export_\(Date().timeIntervalSince1970).mp4")
+        let runtime = compiled.runtime
+        let canvasSize = runtime.canvasSize
+
+        // Calculate bitrate based on resolution (12-20 Mbps for 1080p, scale proportionally)
+        let pixels = Int(canvasSize.width) * Int(canvasSize.height)
+        let baseBitrate = 15_000_000  // 15 Mbps for 1080p (1920x1080 = 2073600 pixels)
+        let bitrate = max(5_000_000, min(25_000_000, baseBitrate * pixels / 2_073_600))
+
+        let settings = VideoExportSettings(
+            outputURL: outputURL,
+            sizePx: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
+            fps: runtime.fps,
+            bitrate: bitrate,
+            clearColor: .opaqueBlack,
+            audio: nil  // First test: no audio
+        )
+
+        // 4. Update UI state
+        isExporting = true
+        exportButton.isEnabled = false
+        exportProgressLabel.isHidden = false
+        exportProgressLabel.text = "Export: 0%"
+
+        log("[Export] Starting export...")
+        log("[Export] Output: \(outputURL.lastPathComponent)")
+        log("[Export] Size: \(Int(canvasSize.width))x\(Int(canvasSize.height)) @ \(runtime.fps)fps")
+        log("[Export] Duration: \(runtime.durationFrames) frames")
+
+        // 5. Start export
+        let exporter = VideoExporter()
+        videoExporter = exporter
+
+        exporter.exportVideo(
+            compiledScene: compiled,
+            scenePlayer: player,
+            renderer: renderer,
+            textureProvider: exportTP,
+            pathRegistry: compiled.pathRegistry,
+            assetSizes: compiled.mergedAssetIndex.sizeById,
+            userMediaService: userMediaService,
+            settings: settings,
+            progress: { [weak self] progress in
+                let pct = Int(progress * 100)
+                self?.exportProgressLabel.text = "Export: \(pct)%"
+                print("[Export] Progress: \(pct)%")
+            },
+            completion: { [weak self] result in
+                guard let self = self else { return }
+
+                self.isExporting = false
+                self.exportButton.isEnabled = true
+                self.videoExporter = nil
+
+                switch result {
+                case .success(let url):
+                    self.exportProgressLabel.text = "Export: Done!"
+                    self.log("[Export] SUCCESS: \(url.lastPathComponent)")
+                    self.presentShareSheet(for: url)
+
+                case .failure(let error):
+                    self.exportProgressLabel.text = "Export: Failed"
+                    self.log("[Export] ERROR: \(error.localizedDescription)")
+                }
+
+                // Hide progress label after 3 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    self?.exportProgressLabel.isHidden = true
+                }
+            }
+        )
+    }
+
+    private func presentShareSheet(for url: URL) {
+        let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        activityVC.popoverPresentationController?.sourceView = exportButton
+        present(activityVC, animated: true)
     }
     #endif
 

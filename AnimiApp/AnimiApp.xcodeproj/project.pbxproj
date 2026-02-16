@@ -24,6 +24,12 @@
 		C5D500A921DF5C5F4217977C /* SharedAssets in Resources */ = {isa = PBXBuildFile; fileRef = 9FA23A16733352E76F88080F /* SharedAssets */; };
 		CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9681217003171DED246CF7A /* AppDelegate.swift */; };
 		PR4TEMPLATES0001 /* Templates in Resources */ = {isa = PBXBuildFile; fileRef = PR4TEMPLATES0002 /* Templates */; };
+		PRE4EXP0001 /* AudioCompositionBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0011 /* AudioCompositionBuilder.swift */; };
+		PRE4EXP0002 /* AudioWriterPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0012 /* AudioWriterPump.swift */; };
+		PRE4EXP0003 /* ExportTextureProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0013 /* ExportTextureProvider.swift */; };
+		PRE4EXP0004 /* ExportVideoFrameProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0014 /* ExportVideoFrameProvider.swift */; };
+		PRE4EXP0005 /* ExportVideoSlotsCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0015 /* ExportVideoSlotsCoordinator.swift */; };
+		PRE4EXP0006 /* VideoExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0016 /* VideoExporter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -45,6 +51,12 @@
 		FC49A46FA18BE025E45C3184 /* UserMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaService.swift; sourceTree = "<group>"; };
 		PERF1234567890ABCDEF0002 /* PerfLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerfLogger.swift; sourceTree = "<group>"; };
 		PR4TEMPLATES0002 /* Templates */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Templates; sourceTree = "<group>"; };
+		PRE4EXP0011 /* AudioCompositionBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCompositionBuilder.swift; sourceTree = "<group>"; };
+		PRE4EXP0012 /* AudioWriterPump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWriterPump.swift; sourceTree = "<group>"; };
+		PRE4EXP0013 /* ExportTextureProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportTextureProvider.swift; sourceTree = "<group>"; };
+		PRE4EXP0014 /* ExportVideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProvider.swift; sourceTree = "<group>"; };
+		PRE4EXP0015 /* ExportVideoSlotsCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoSlotsCoordinator.swift; sourceTree = "<group>"; };
+		PRE4EXP0016 /* VideoExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,10 +97,24 @@
 			children = (
 				E5ECE540AAD3F6F6FE110D7F /* App */,
 				AB885C05AC47A6617B0FB4FE /* Editor */,
+				PRE4EXP0020 /* Export */,
 				0C30BD67F1694F5E87D23958 /* Player */,
 				CD4563A8559BB859E46BEC71 /* UserMedia */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		PRE4EXP0020 /* Export */ = {
+			isa = PBXGroup;
+			children = (
+				PRE4EXP0011 /* AudioCompositionBuilder.swift */,
+				PRE4EXP0012 /* AudioWriterPump.swift */,
+				PRE4EXP0013 /* ExportTextureProvider.swift */,
+				PRE4EXP0014 /* ExportVideoFrameProvider.swift */,
+				PRE4EXP0015 /* ExportVideoSlotsCoordinator.swift */,
+				PRE4EXP0016 /* VideoExporter.swift */,
+			);
+			path = Export;
 			sourceTree = "<group>";
 		};
 		8405B0FB569F6CFAD1EB74CF /* Products */ = {
@@ -250,13 +276,19 @@
 			buildActionMask = 2147483647;
 			files = (
 				CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */,
+				PRE4EXP0001 /* AudioCompositionBuilder.swift in Sources */,
+				PRE4EXP0002 /* AudioWriterPump.swift in Sources */,
 				912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */,
+				PRE4EXP0003 /* ExportTextureProvider.swift in Sources */,
+				PRE4EXP0004 /* ExportVideoFrameProvider.swift in Sources */,
+				PRE4EXP0005 /* ExportVideoSlotsCoordinator.swift in Sources */,
 				404981E927E535F603698579 /* PlayerViewController.swift in Sources */,
 				PRD0000000001 /* PreparingOverlayView.swift in Sources */,
 				6D8ECBA9A63E3BBE961807B1 /* SceneDelegate.swift in Sources */,
 				2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */,
 				8C5D68D2752FF42C00D0F093 /* UserMediaService.swift in Sources */,
 				26C0F8F6AB35CD9093B0E789 /* UserMediaTextureFactory.swift in Sources */,
+				PRE4EXP0006 /* VideoExporter.swift in Sources */,
 				634873BF88B7C4366E03297A /* VideoFrameProvider.swift in Sources */,
 				PERF1234567890ABCDEF0001 /* PerfLogger.swift in Sources */,
 			);

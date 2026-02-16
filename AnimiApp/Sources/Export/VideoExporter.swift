@@ -596,6 +596,7 @@ public final class VideoExporter {
         let semaphore = DispatchSemaphore(value: maxInFlight)
         let videoGroup = DispatchGroup()
         let audioGroup = DispatchGroup()
+        let backpressureTimeout = settings.backpressureTimeoutSeconds
 
         // 9. PR-E4: Start audio pump in parallel (if configured)
         if let pipeline = audioPipeline,
@@ -618,7 +619,6 @@ public final class VideoExporter {
         // 10. Video export loop
         let totalFrames = runtime.durationFrames
         let canvasSize = runtime.canvasSize
-        let backpressureTimeout = settings.backpressureTimeoutSeconds
 
         for frameIndex in 0..<totalFrames {
             // Check cancellation
