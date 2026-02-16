@@ -3,6 +3,74 @@ import CoreVideo
 import Metal
 import TVECore
 
+// MARK: - Audio Track Config (PR-E4)
+
+/// Configuration for a single audio track (music or voiceover).
+public struct AudioTrackConfig: Sendable {
+    /// Audio file URL
+    public let url: URL
+
+    /// Start time on project timeline in seconds
+    public let startTimeSeconds: Double
+
+    /// Volume (0...1)
+    public let volume: Float
+
+    /// Optional trim start in source audio (seconds)
+    public let trimStartSeconds: Double?
+
+    /// Optional trim end in source audio (seconds)
+    public let trimEndSeconds: Double?
+
+    /// Whether to loop audio to fill project duration (v1: false)
+    public let loopToFit: Bool
+
+    public init(
+        url: URL,
+        startTimeSeconds: Double = 0,
+        volume: Float = 1.0,
+        trimStartSeconds: Double? = nil,
+        trimEndSeconds: Double? = nil,
+        loopToFit: Bool = false
+    ) {
+        self.url = url
+        self.startTimeSeconds = startTimeSeconds
+        self.volume = volume
+        self.trimStartSeconds = trimStartSeconds
+        self.trimEndSeconds = trimEndSeconds
+        self.loopToFit = loopToFit
+    }
+}
+
+// MARK: - Audio Export Config (PR-E4)
+
+/// Configuration for audio export.
+public struct AudioExportConfig: Sendable {
+    /// Background music track (optional)
+    public let music: AudioTrackConfig?
+
+    /// Voiceover track (optional)
+    public let voiceover: AudioTrackConfig?
+
+    /// Whether to include original audio from video slots
+    public let includeOriginalFromVideoSlots: Bool
+
+    /// Default volume for original audio if not specified in VideoSelection
+    public let originalDefaultVolume: Float
+
+    public init(
+        music: AudioTrackConfig? = nil,
+        voiceover: AudioTrackConfig? = nil,
+        includeOriginalFromVideoSlots: Bool = true,
+        originalDefaultVolume: Float = 1.0
+    ) {
+        self.music = music
+        self.voiceover = voiceover
+        self.includeOriginalFromVideoSlots = includeOriginalFromVideoSlots
+        self.originalDefaultVolume = originalDefaultVolume
+    }
+}
+
 // MARK: - Video Export Settings
 
 /// Configuration for video export (PR-E2).
@@ -30,6 +98,9 @@ public struct VideoExportSettings: Sendable {
     /// Timeout for writer backpressure wait in seconds (default: 3.0)
     public let backpressureTimeoutSeconds: Double
 
+    /// Audio export configuration (PR-E4). nil = video-only export.
+    public let audio: AudioExportConfig?
+
     public init(
         outputURL: URL,
         sizePx: (width: Int, height: Int),
@@ -37,7 +108,8 @@ public struct VideoExportSettings: Sendable {
         bitrate: Int = 10_000_000,
         gopSeconds: Int = 2,
         clearColor: ClearColor = .opaqueBlack,
-        backpressureTimeoutSeconds: Double = 3.0
+        backpressureTimeoutSeconds: Double = 3.0,
+        audio: AudioExportConfig? = nil
     ) {
         self.outputURL = outputURL
         self.sizePx = sizePx
@@ -46,6 +118,7 @@ public struct VideoExportSettings: Sendable {
         self.gopSeconds = gopSeconds
         self.clearColor = clearColor
         self.backpressureTimeoutSeconds = backpressureTimeoutSeconds
+        self.audio = audio
     }
 }
 
@@ -97,6 +170,26 @@ public enum VideoExportError: Error, Sendable {
 
     /// Failed to create command buffer
     case failedToCreateCommandBuffer
+
+    // MARK: - Audio Errors (PR-E4)
+
+    /// Cannot add audio input to writer
+    case cannotAddAudioInput
+
+    /// Audio reader failed to start
+    case audioReaderStartFailed(Error?)
+
+    /// Audio append failed
+    case audioAppendFailed(Error?)
+
+    /// Audio backpressure timeout
+    case audioBackpressureTimeout
+
+    /// Missing audio track in source file
+    case missingAudioTrack(URL)
+
+    /// Failed to build audio pipeline
+    case failedToBuildAudioPipeline(Error)
 }
 
 extension VideoExportError: LocalizedError {
@@ -132,6 +225,18 @@ extension VideoExportError: LocalizedError {
             return "Render error: \(error.localizedDescription)"
         case .failedToCreateCommandBuffer:
             return "Failed to create Metal command buffer"
+        case .cannotAddAudioInput:
+            return "Cannot add audio input to writer"
+        case .audioReaderStartFailed(let error):
+            return "Audio reader failed to start: \(error?.localizedDescription ?? "unknown")"
+        case .audioAppendFailed(let error):
+            return "Audio append failed: \(error?.localizedDescription ?? "unknown")"
+        case .audioBackpressureTimeout:
+            return "Audio backpressure timeout - input not ready"
+        case .missingAudioTrack(let url):
+            return "Missing audio track in: \(url.lastPathComponent)"
+        case .failedToBuildAudioPipeline(let error):
+            return "Failed to build audio pipeline: \(error.localizedDescription)"
         }
     }
 }
@@ -386,7 +491,55 @@ public final class VideoExporter {
             sourcePixelBufferAttributes: pixelBufferAttributes
         )
 
-        // 4. Start writing
+        // 4. PR-E4: Build audio pipeline (if configured)
+        var audioPipeline: BuiltAudioPipeline?
+        var audioInput: AVAssetWriterInput?
+        var audioPump: AudioWriterPump?
+
+        if let audioConfig = settings.audio {
+            // Build audio composition
+            let builder = AudioCompositionBuilder()
+            do {
+                audioPipeline = try builder.build(
+                    runtime: runtime,
+                    fps: settings.fps,
+                    videoSelectionsByBlockId: videoSelections,
+                    config: audioConfig
+                )
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(VideoExportError.failedToBuildAudioPipeline(error)))
+                }
+                return
+            }
+
+            // Check if composition has audio tracks
+            if let pipeline = audioPipeline,
+               !pipeline.composition.tracks(withMediaType: .audio).isEmpty {
+                // Create audio input
+                let aacSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: 44100,
+                    AVNumberOfChannelsKey: 2,
+                    AVEncoderBitRateKey: 128000
+                ]
+
+                let input = AVAssetWriterInput(mediaType: .audio, outputSettings: aacSettings)
+                input.expectsMediaDataInRealTime = false
+
+                guard writer.canAdd(input) else {
+                    DispatchQueue.main.async {
+                        completion(.failure(VideoExportError.cannotAddAudioInput))
+                    }
+                    return
+                }
+                writer.add(input)
+                audioInput = input
+                audioPump = AudioWriterPump()
+            }
+        }
+
+        // 5. Start writing
         guard writer.startWriting() else {
             DispatchQueue.main.async {
                 completion(.failure(VideoExportError.writerStartFailed(writer.error)))
@@ -395,7 +548,7 @@ public final class VideoExporter {
         }
         writer.startSession(atSourceTime: .zero)
 
-        // 5. Create CVMetalTextureCache using commandQueue.device
+        // 6. Create CVMetalTextureCache using commandQueue.device
         let metalDevice = renderer.commandQueue.device
         var textureCache: CVMetalTextureCache?
         let cacheStatus = CVMetalTextureCacheCreate(
@@ -414,7 +567,7 @@ public final class VideoExporter {
             return
         }
 
-        // 6. PR-E3: Setup video slots coordinator
+        // 7. PR-E3: Setup video slots coordinator
         var videoSlotsCoordinator: ExportVideoSlotsCoordinator?
         if !videoSelections.isEmpty {
             let coordinator = ExportVideoSlotsCoordinator(
@@ -441,9 +594,28 @@ public final class VideoExporter {
         // 8. Setup synchronization primitives
         let maxInFlight = renderer.maxFramesInFlight
         let semaphore = DispatchSemaphore(value: maxInFlight)
-        let group = DispatchGroup()
+        let videoGroup = DispatchGroup()
+        let audioGroup = DispatchGroup()
 
-        // 9. Export loop
+        // 9. PR-E4: Start audio pump in parallel (if configured)
+        if let pipeline = audioPipeline,
+           let input = audioInput,
+           let pump = audioPump {
+            audioGroup.enter()
+            pump.start(
+                composition: pipeline.composition,
+                audioMix: pipeline.audioMix,
+                audioInput: input,
+                writerQueue: writerQueue,
+                backpressureTimeout: backpressureTimeout,
+                cancelCheck: { [weak self] in self?.isCancelled() ?? true },
+                errorCheck: { [weak self] in self?.exportError() },
+                setExportErrorOnce: { [weak self] in self?.setExportErrorOnce($0) },
+                completion: { audioGroup.leave() }
+            )
+        }
+
+        // 10. Video export loop
         let totalFrames = runtime.durationFrames
         let canvasSize = runtime.canvasSize
         let backpressureTimeout = settings.backpressureTimeoutSeconds
@@ -457,13 +629,13 @@ public final class VideoExporter {
 
             // Wait for in-flight slot (GPU backpressure)
             semaphore.wait()
-            group.enter()
+            videoGroup.enter()
 
             autoreleasepool {
                 // Get pixel buffer from pool
                 guard let pool = adaptor.pixelBufferPool else {
                     setExportErrorOnce(VideoExportError.noPixelBufferPool)
-                    group.leave()
+                    videoGroup.leave()
                     semaphore.signal()
                     return
                 }
@@ -477,7 +649,7 @@ public final class VideoExporter {
 
                 guard pbStatus == kCVReturnSuccess, let pixelBuffer else {
                     setExportErrorOnce(VideoExportError.failedToCreatePixelBuffer(pbStatus))
-                    group.leave()
+                    videoGroup.leave()
                     semaphore.signal()
                     return
                 }
@@ -500,7 +672,7 @@ public final class VideoExporter {
                       let cvMetalTexture,
                       let targetTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
                     setExportErrorOnce(VideoExportError.failedToCreateMetalTexture(texStatus))
-                    group.leave()
+                    videoGroup.leave()
                     semaphore.signal()
                     return
                 }
@@ -511,7 +683,7 @@ public final class VideoExporter {
                 // P0 #2: Check for video slot provider errors
                 if let error = videoSlotsCoordinator?.providerError {
                     setExportErrorOnce(error)
-                    group.leave()
+                    videoGroup.leave()
                     semaphore.signal()
                     return
                 }
@@ -537,7 +709,7 @@ public final class VideoExporter {
                 // Create command buffer
                 guard let commandBuffer = renderer.commandQueue.makeCommandBuffer() else {
                     setExportErrorOnce(VideoExportError.failedToCreateCommandBuffer)
-                    group.leave()
+                    videoGroup.leave()
                     semaphore.signal()
                     return
                 }
@@ -563,7 +735,7 @@ public final class VideoExporter {
                     )
                 } catch {
                     setExportErrorOnce(VideoExportError.renderError(error))
-                    group.leave()
+                    videoGroup.leave()
                     semaphore.signal()
                     return
                 }
@@ -571,14 +743,14 @@ public final class VideoExporter {
                 // Add completion handler - append on writerQueue after GPU completion
                 commandBuffer.addCompletedHandler { [weak self] _ in
                     guard let self else {
-                        group.leave()
+                        videoGroup.leave()
                         semaphore.signal()
                         return
                     }
 
                     self.writerQueue.async {
                         defer {
-                            group.leave()
+                            videoGroup.leave()
                             semaphore.signal()
                         }
 
@@ -629,12 +801,16 @@ public final class VideoExporter {
             }
         }
 
-        // 10. Wait for all frames to complete (appends done)
-        group.wait()
+        // 11. Wait for all video frames to complete
+        videoGroup.wait()
 
-        // 11. Finalization on writerQueue
+        // 12. Wait for audio pump to complete (if running)
+        audioGroup.wait()
+
+        // 13. Finalization on writerQueue
         writerQueue.async { [weak self] in
             guard let self else {
+                audioPump?.cancel()
                 videoSlotsCoordinator?.cancel()
                 DispatchQueue.main.async {
                     completion(.failure(VideoExportError.cancelled))
@@ -644,6 +820,7 @@ public final class VideoExporter {
 
             // Check cancellation
             if self.isCancelled() {
+                audioPump?.cancel()
                 videoSlotsCoordinator?.cancel()
                 writer.cancelWriting()
                 try? FileManager.default.removeItem(at: settings.outputURL)
@@ -655,6 +832,7 @@ public final class VideoExporter {
 
             // Check for export errors
             if let error = self.exportError() {
+                audioPump?.cancel()
                 videoSlotsCoordinator?.cancel()
                 writer.cancelWriting()
                 try? FileManager.default.removeItem(at: settings.outputURL)
@@ -667,8 +845,10 @@ public final class VideoExporter {
             // PR-E3: Finish video slots coordinator
             videoSlotsCoordinator?.finish()
 
-            // Finalize writer
+            // Finalize writer - mark both inputs as finished
             videoInput.markAsFinished()
+            // Note: audioInput.markAsFinished() is called in AudioWriterPump on completion
+
             writer.finishWriting {
                 if writer.status == .completed {
                     DispatchQueue.main.async {
