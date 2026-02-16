@@ -256,9 +256,10 @@ public final class VideoExporter {
     ///   - compiledScene: Scene to export (runtime + assets)
     ///   - scenePlayer: ScenePlayer instance (MainActor) for state snapshot
     ///   - renderer: MetalRenderer for GPU rendering
-    ///   - textureProvider: Thread-safe texture provider (use ExportTextureProvider)
+    ///   - textureProvider: Thread-safe mutable texture provider (use ExportTextureProvider)
     ///   - pathRegistry: Path registry from compiled scene
     ///   - assetSizes: Asset sizes from mergedAssetIndex.sizeById
+    ///   - userMediaService: UserMediaService for video selections snapshot (PR-E3)
     ///   - settings: Export configuration
     ///   - progress: Progress callback (0.0 - 1.0), called on main queue
     ///   - completion: Completion callback, called on main queue
@@ -267,9 +268,10 @@ public final class VideoExporter {
         compiledScene: CompiledScene,
         scenePlayer: ScenePlayer,
         renderer: MetalRenderer,
-        textureProvider: TextureProvider,
+        textureProvider: MutableTextureProvider,
         pathRegistry: PathRegistry,
         assetSizes: [String: AssetSize],
+        userMediaService: UserMediaService?,
         settings: VideoExportSettings,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
@@ -286,6 +288,9 @@ public final class VideoExporter {
         // Capture state snapshot on MainActor (deep copy)
         let snapshot = scenePlayer.exportStateSnapshot()
         let runtime = compiledScene.runtime
+
+        // PR-E3: Capture video selections snapshot on MainActor
+        let videoSelections = userMediaService?.exportVideoSelectionsSnapshot() ?? [:]
 
         // Reset state
         resetState()
@@ -306,6 +311,7 @@ public final class VideoExporter {
                 textureProvider: textureProvider,
                 pathRegistry: pathRegistry,
                 assetSizes: assetSizes,
+                videoSelections: videoSelections,
                 settings: settings,
                 progress: progress,
                 completion: completion
@@ -319,9 +325,10 @@ public final class VideoExporter {
         runtime: SceneRuntime,
         snapshot: SceneRenderStateSnapshot,
         renderer: MetalRenderer,
-        textureProvider: TextureProvider,
+        textureProvider: MutableTextureProvider,
         pathRegistry: PathRegistry,
         assetSizes: [String: AssetSize],
+        videoSelections: [String: VideoSelection],
         settings: VideoExportSettings,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
@@ -407,12 +414,36 @@ public final class VideoExporter {
             return
         }
 
-        // 6. Setup synchronization primitives
+        // 6. PR-E3: Setup video slots coordinator
+        var videoSlotsCoordinator: ExportVideoSlotsCoordinator?
+        if !videoSelections.isEmpty {
+            let coordinator = ExportVideoSlotsCoordinator(
+                device: metalDevice,
+                textureCache: textureCache,
+                runtime: runtime,
+                sceneFPS: Double(runtime.fps),
+                exportTextureProvider: textureProvider
+            )
+            coordinator.configure(videoSelectionsByBlockId: videoSelections)
+
+            do {
+                try coordinator.prepareAll()
+                videoSlotsCoordinator = coordinator
+            } catch {
+                writer.cancelWriting()
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+                return
+            }
+        }
+
+        // 8. Setup synchronization primitives
         let maxInFlight = renderer.maxFramesInFlight
         let semaphore = DispatchSemaphore(value: maxInFlight)
         let group = DispatchGroup()
 
-        // 7. Export loop
+        // 9. Export loop
         let totalFrames = runtime.durationFrames
         let canvasSize = runtime.canvasSize
         let backpressureTimeout = settings.backpressureTimeoutSeconds
@@ -469,6 +500,17 @@ public final class VideoExporter {
                       let cvMetalTexture,
                       let targetTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
                     setExportErrorOnce(VideoExportError.failedToCreateMetalTexture(texStatus))
+                    group.leave()
+                    semaphore.signal()
+                    return
+                }
+
+                // PR-E3: Update video textures before render
+                videoSlotsCoordinator?.updateTextures(forSceneFrameIndex: frameIndex)
+
+                // P0 #2: Check for video slot provider errors
+                if let error = videoSlotsCoordinator?.providerError {
+                    setExportErrorOnce(error)
                     group.leave()
                     semaphore.signal()
                     return
@@ -587,12 +629,13 @@ public final class VideoExporter {
             }
         }
 
-        // 8. Wait for all frames to complete (appends done)
+        // 10. Wait for all frames to complete (appends done)
         group.wait()
 
-        // 9. Finalization on writerQueue
+        // 11. Finalization on writerQueue
         writerQueue.async { [weak self] in
             guard let self else {
+                videoSlotsCoordinator?.cancel()
                 DispatchQueue.main.async {
                     completion(.failure(VideoExportError.cancelled))
                 }
@@ -601,6 +644,7 @@ public final class VideoExporter {
 
             // Check cancellation
             if self.isCancelled() {
+                videoSlotsCoordinator?.cancel()
                 writer.cancelWriting()
                 try? FileManager.default.removeItem(at: settings.outputURL)
                 DispatchQueue.main.async {
@@ -611,6 +655,7 @@ public final class VideoExporter {
 
             // Check for export errors
             if let error = self.exportError() {
+                videoSlotsCoordinator?.cancel()
                 writer.cancelWriting()
                 try? FileManager.default.removeItem(at: settings.outputURL)
                 DispatchQueue.main.async {
@@ -618,6 +663,9 @@ public final class VideoExporter {
                 }
                 return
             }
+
+            // PR-E3: Finish video slots coordinator
+            videoSlotsCoordinator?.finish()
 
             // Finalize writer
             videoInput.markAsFinished()

@@ -12,7 +12,7 @@ import TVECore
 /// - `winEnd = trimEnd + offset`
 ///
 /// Audio parameters are stored but not applied in PR1 (preview is always muted).
-public struct VideoSelection: Equatable {
+public struct VideoSelection: Equatable, Sendable {
     /// Source video URL (copied to temp directory by UserMediaService)
     public let url: URL
 
@@ -796,5 +796,23 @@ public final class UserMediaService {
             if case .video = kind { return blockId }
             return nil
         }
+    }
+
+    // MARK: - Export Snapshot (PR-E3)
+
+    /// Returns a snapshot of video selections for export.
+    ///
+    /// PR-E3: Captures the current state of all video selections (blockId → VideoSelection).
+    /// This snapshot is "frozen" and can be safely used on export queue without actor isolation.
+    ///
+    /// - Returns: Dictionary mapping blockId to VideoSelection for all video media blocks.
+    public func exportVideoSelectionsSnapshot() -> [String: VideoSelection] {
+        var result: [String: VideoSelection] = [:]
+        for (blockId, kind) in mediaState {
+            if case .video(let selection) = kind {
+                result[blockId] = selection
+            }
+        }
+        return result
     }
 }
