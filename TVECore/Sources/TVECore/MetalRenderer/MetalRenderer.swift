@@ -431,6 +431,98 @@ public final class MetalRenderer {
         #endif
     }
 
+    /// Renders commands to an existing texture with explicit clear color (PR-E1).
+    ///
+    /// Designed for export pipeline where:
+    /// - Target texture is CVPixelBuffer-backed (from AVAssetWriterInputPixelBufferAdaptor)
+    /// - Command buffer is managed externally (no waitUntilCompleted inside)
+    /// - Clear color is specified per-frame (typically opaqueBlack for H.264 export)
+    ///
+    /// Usage:
+    /// ```swift
+    /// // Export loop
+    /// let target = RenderTarget(texture: pixelBufferTexture, drawableScale: 1.0, animSize: canvasSize)
+    /// try renderer.draw(
+    ///     commands: commands,
+    ///     target: target,
+    ///     clearColor: .opaqueBlack,
+    ///     textureProvider: exportTextureProvider,
+    ///     commandBuffer: cmdBuf,
+    ///     assetSizes: assetSizes,
+    ///     pathRegistry: pathRegistry
+    /// )
+    /// // Caller manages commandBuffer commit/completion
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - commands: Render commands from SceneRenderPlan
+    ///   - target: Render target (texture + animSize for contain mapping)
+    ///   - clearColor: Clear color for this frame (use .opaqueBlack for H.264 export)
+    ///   - textureProvider: Provider for asset textures (must be thread-safe for export)
+    ///   - commandBuffer: Metal command buffer (caller manages lifecycle)
+    ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
+    ///   - pathRegistry: Registry of path resources for GPU rendering
+    /// - Throws: MetalRendererError if rendering fails
+    public func draw(
+        commands: [RenderCommand],
+        target: RenderTarget,
+        clearColor: ClearColor,
+        textureProvider: TextureProvider,
+        commandBuffer: MTLCommandBuffer,
+        assetSizes: [String: AssetSize] = [:],
+        pathRegistry: PathRegistry
+    ) throws {
+        // PR-C3: Rotate to next buffer in ring for in-flight frame safety
+        vertexUploadPool.beginFrame()
+        // PR-14B: Clear per-frame path sampling memo (LRU preserved across frames)
+        pathSamplingCache.beginFrame()
+
+        #if DEBUG
+        perf?.beginFrame(index: perfFrameIndex)
+        perf?.beginPhase(.frameTotal)
+        perfFrameIndex += 1
+        #endif
+
+        // PR-22: Validate command structure in DEBUG before execution.
+        #if DEBUG
+        let validationErrors = RenderCommandValidator.validateScopeBalance(commands)
+        if !validationErrors.isEmpty {
+            for err in validationErrors {
+                print("[TVECore] \u{274c} RenderCommandValidator: \(err)")
+            }
+            if RenderCommandValidator.assertOnFailure {
+                assertionFailure("[TVECore] RenderCommand structural validation failed (\(validationErrors.count) error(s))")
+            }
+        }
+        #endif
+
+        let renderPassDescriptor = MTLRenderPassDescriptor()
+        renderPassDescriptor.colorAttachments[0].texture = target.texture
+        renderPassDescriptor.colorAttachments[0].loadAction = .clear
+        renderPassDescriptor.colorAttachments[0].storeAction = .store
+        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(
+            red: clearColor.red,
+            green: clearColor.green,
+            blue: clearColor.blue,
+            alpha: clearColor.alpha
+        )
+
+        try drawInternal(
+            commands: commands,
+            renderPassDescriptor: renderPassDescriptor,
+            target: target,
+            textureProvider: textureProvider,
+            commandBuffer: commandBuffer,
+            assetSizes: assetSizes,
+            pathRegistry: pathRegistry
+        )
+
+        #if DEBUG
+        perf?.endPhase(.frameTotal)
+        perf?.endFrame()
+        #endif
+    }
+
     /// Renders commands to an offscreen texture.
     /// - Parameters:
     ///   - commands: Render commands from AnimIR

@@ -290,3 +290,56 @@ public struct VariantRuntime: Sendable, Codable {
         self.bindingKey = bindingKey
     }
 }
+
+// MARK: - Scene Render State Snapshot (PR-E1)
+
+/// Snapshot of ScenePlayer mutable state for export.
+///
+/// Contains all state needed to generate render commands via `SceneRenderPlan.renderCommands()`.
+/// Captured once on MainActor before export begins, then used on export queue without
+/// actor isolation.
+///
+/// Usage:
+/// ```swift
+/// // On MainActor (before export)
+/// let snapshot = scenePlayer.exportStateSnapshot()
+///
+/// // On export queue (no MainActor)
+/// let commands = SceneRenderPlan.renderCommands(
+///     for: compiledScene.runtime,
+///     sceneFrameIndex: frameIndex,
+///     userTransforms: snapshot.userTransforms,
+///     variantOverrides: snapshot.variantOverrides,
+///     userMediaPresent: snapshot.userMediaPresent,
+///     layerToggleState: snapshot.layerToggleState
+/// )
+/// ```
+public struct SceneRenderStateSnapshot: Sendable {
+    /// Per-block user transforms (pan/zoom/rotate from editor UI).
+    /// Key: blockId. Value: Matrix2D.
+    public let userTransforms: [String: Matrix2D]
+
+    /// Per-block variant overrides.
+    /// Key: blockId. Value: variantId chosen by user.
+    public let variantOverrides: [String: String]
+
+    /// Per-block user media presence flags.
+    /// Key: blockId. Value: true if user has selected media for this block.
+    public let userMediaPresent: [String: Bool]
+
+    /// Per-block layer toggle state.
+    /// Key: blockId. Value: dictionary of (toggleId -> enabled).
+    public let layerToggleState: [String: [String: Bool]]
+
+    public init(
+        userTransforms: [String: Matrix2D],
+        variantOverrides: [String: String],
+        userMediaPresent: [String: Bool],
+        layerToggleState: [String: [String: Bool]]
+    ) {
+        self.userTransforms = userTransforms
+        self.variantOverrides = variantOverrides
+        self.userMediaPresent = userMediaPresent
+        self.layerToggleState = layerToggleState
+    }
+}

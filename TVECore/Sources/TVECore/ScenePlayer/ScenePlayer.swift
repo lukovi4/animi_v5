@@ -652,4 +652,35 @@ public final class ScenePlayer {
             layerToggleState: layerToggleState
         )
     }
+
+    // MARK: - Export State Snapshot (PR-E1)
+
+    /// Creates a snapshot of current mutable state for export.
+    ///
+    /// Returns deep copies of all state dictionaries needed by `SceneRenderPlan.renderCommands()`.
+    /// Call this once on MainActor before starting export, then use the snapshot
+    /// on the export queue without actor isolation.
+    ///
+    /// Deep copy is required to avoid data races: Swift Dictionary uses copy-on-write,
+    /// so passing the dictionary directly would share storage. If ScenePlayer mutates
+    /// the original during export, concurrent read/write on shared storage causes undefined behavior.
+    ///
+    /// - Returns: Snapshot containing deep copies of userTransforms, variantOverrides, userMediaPresent, layerToggleState
+    public func exportStateSnapshot() -> SceneRenderStateSnapshot {
+        // Deep copy each dictionary to ensure isolated storage (no COW sharing)
+        let userTransformsCopy = Dictionary(uniqueKeysWithValues: userTransforms.map { ($0.key, $0.value) })
+        let variantOverridesCopy = Dictionary(uniqueKeysWithValues: variantOverrides.map { ($0.key, $0.value) })
+        let userMediaPresentCopy = Dictionary(uniqueKeysWithValues: userMediaPresent.map { ($0.key, $0.value) })
+        // Two-level deep copy for nested dictionary
+        let layerToggleStateCopy = Dictionary(uniqueKeysWithValues: layerToggleState.map { (blockId, toggles) in
+            (blockId, Dictionary(uniqueKeysWithValues: toggles.map { ($0.key, $0.value) }))
+        })
+
+        return SceneRenderStateSnapshot(
+            userTransforms: userTransformsCopy,
+            variantOverrides: variantOverridesCopy,
+            userMediaPresent: userMediaPresentCopy,
+            layerToggleState: layerToggleStateCopy
+        )
+    }
 }
