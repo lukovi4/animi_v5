@@ -53,6 +53,9 @@ public enum MetalRendererError: Error, Sendable, Equatable {
 
     /// Failed to create render encoder for frame clear
     case failedToCreateRenderEncoder
+
+    /// Failed to create Metal command queue
+    case failedToCreateCommandQueue
 }
 
 extension MetalRendererError: LocalizedError {
@@ -70,6 +73,8 @@ extension MetalRendererError: LocalizedError {
             return "No path resource found for pathId: \(pathId)"
         case .failedToCreateRenderEncoder:
             return "Failed to create render encoder for frame clear"
+        case .failedToCreateCommandQueue:
+            return "Failed to create Metal command queue"
         }
     }
 }
@@ -160,6 +165,16 @@ public final class MetalRenderer {
     let shapeCache: ShapeCache
     private let logger: TVELogger?
 
+    /// Command queue for creating command buffers (PR-E2).
+    /// Created once at init; used by export pipeline.
+    public let commandQueue: MTLCommandQueue
+
+    /// Maximum number of frames that can be in-flight simultaneously (PR-E2).
+    /// Use this value for export pipeline semaphore count.
+    public var maxFramesInFlight: Int {
+        options.maxFramesInFlight
+    }
+
     // PR-C3: GPU buffer caching for mask rendering
     let vertexUploadPool: VertexUploadPool
     let pathIndexBufferCache: PathIndexBufferCache
@@ -198,6 +213,12 @@ public final class MetalRenderer {
         self.vertexUploadPool = VertexUploadPool(device: device, buffersInFlight: options.maxFramesInFlight)
         self.pathIndexBufferCache = PathIndexBufferCache(device: device)
         self.pathSamplingCache = PathSamplingCache()
+
+        // PR-E2: Create command queue once for export pipeline
+        guard let queue = device.makeCommandQueue() else {
+            throw MetalRendererError.failedToCreateCommandQueue
+        }
+        self.commandQueue = queue
 
         #if DEBUG
         self.perf = options.enablePerfMetrics ? PerfMetrics() : nil
