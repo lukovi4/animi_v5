@@ -85,7 +85,8 @@ final class PlayerViewController: UIViewController {
     /// Available templates for selection
     private let availableTemplates: [(name: String, displayName: String)] = [
         ("example_4blocks", "4 Blocks"),
-        ("polaroid_shared_demo", "Polaroid")
+        ("polaroid_shared_demo", "Polaroid"),
+        ("polaroid_2", "Polaroid 2")
     ]
 
     /// Template selector (available in both Debug and Release)
