@@ -71,6 +71,58 @@ public struct AudioExportConfig: Sendable {
     }
 }
 
+// MARK: - Video Quality Preset (B2)
+
+/// Preset quality levels for video export.
+///
+/// Maps to target bitrate based on canvas resolution.
+/// Use `.custom(bitrate:)` for explicit bitrate control.
+public enum VideoQualityPreset: Sendable {
+    /// Low quality: ~4 Mbps for 1080p (scaled by resolution)
+    case low
+
+    /// Medium quality: ~10 Mbps for 1080p (scaled by resolution)
+    case medium
+
+    /// High quality: ~15 Mbps for 1080p (scaled by resolution)
+    case high
+
+    /// Maximum quality: ~25 Mbps for 1080p (scaled by resolution)
+    case max
+
+    /// Custom bitrate (explicit override)
+    case custom(bitrate: Int)
+
+    /// Calculates bitrate for the given canvas size.
+    ///
+    /// Bitrate is scaled proportionally to pixel count relative to 1080p (1920x1080).
+    ///
+    /// - Parameter canvasSize: Canvas size in pixels
+    /// - Returns: Target bitrate in bits per second
+    public func bitrate(for canvasSize: (width: Int, height: Int)) -> Int {
+        let pixels = canvasSize.width * canvasSize.height
+        let referencePixels = 1920 * 1080  // 1080p baseline
+
+        let baseBitrate: Int
+        switch self {
+        case .low:
+            baseBitrate = 4_000_000      // 4 Mbps for 1080p
+        case .medium:
+            baseBitrate = 10_000_000     // 10 Mbps for 1080p
+        case .high:
+            baseBitrate = 15_000_000     // 15 Mbps for 1080p
+        case .max:
+            baseBitrate = 25_000_000     // 25 Mbps for 1080p
+        case .custom(let bitrate):
+            return bitrate
+        }
+
+        // Scale by pixel count, clamp to reasonable range
+        let scaledBitrate = baseBitrate * pixels / referencePixels
+        return Swift.max(2_000_000, Swift.min(50_000_000, scaledBitrate))
+    }
+}
+
 // MARK: - Video Export Settings
 
 /// Configuration for video export (PR-E2).

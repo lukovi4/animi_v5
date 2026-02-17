@@ -98,6 +98,16 @@ final class PlayerViewController: UIViewController {
         return control
     }()
 
+    // MARK: - Export UI (Release)
+
+    private lazy var exportButton: UIButton = {
+        makeButton(title: "Export", color: .systemTeal, action: #selector(exportTapped))
+    }()
+
+    private var isExporting = false
+    private var videoExporter: VideoExporter?
+    private var exportProgressVC: ExportProgressViewController?
+
     #if DEBUG
     private lazy var sceneSelector: UISegmentedControl = {
         let control = UISegmentedControl(items: ["4 Blocks", "Alpha Matte", "Variant Demo", "Shared Decor"])
@@ -110,23 +120,46 @@ final class PlayerViewController: UIViewController {
         makeButton(title: "Load Scene", action: #selector(loadTestPackageTapped))
     }()
 
-    private lazy var exportButton: UIButton = {
-        makeButton(title: "Export", color: .systemTeal, action: #selector(exportTapped))
+    private lazy var smokeTestButton: UIButton = {
+        makeButton(title: "Run Export Smoke Tests", color: .systemOrange, action: #selector(smokeTestTapped))
     }()
 
-    private lazy var exportProgressLabel: UILabel = {
+    private lazy var smokeTestStatusLabel: UILabel = {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         label.textAlignment = .center
-        label.textColor = .systemTeal
+        label.textColor = .systemOrange
+        label.numberOfLines = 0
         label.text = ""
         label.isHidden = true
         return label
     }()
 
-    private var isExporting = false
-    private var videoExporter: VideoExporter?
+    private var isSmokeTestRunning = false
+
+    /// Result status for smoke tests (pass/fail/skip)
+    private enum SmokeTestResult {
+        case pass
+        case fail
+        case skip
+    }
+    private var smokeTestResults: [(name: String, result: SmokeTestResult)] = []
+
+    // Export audio configuration (DEBUG toggles)
+    private var exportIncludeOriginalAudio = true
+    private var exportIncludeMusic = false
+    private var exportIncludeVoiceover = false
+
+    /// Returns test music URL from bundle (ExportTestAssets/music.m4a)
+    private var testMusicURL: URL? {
+        Bundle.main.url(forResource: "music", withExtension: "m4a", subdirectory: "ExportTestAssets")
+    }
+
+    /// Returns test voiceover URL from bundle (ExportTestAssets/voiceover.m4a)
+    private var testVoiceoverURL: URL? {
+        Bundle.main.url(forResource: "voiceover", withExtension: "m4a", subdirectory: "ExportTestAssets")
+    }
     #endif
 
     private lazy var playPauseButton: UIButton = {
@@ -498,8 +531,10 @@ final class PlayerViewController: UIViewController {
         scrollView.addSubview(contentView)
 
         // Add header elements to contentView
+        // Export button is available in both DEBUG and Release
+        contentView.addSubview(exportButton)
         #if DEBUG
-        [sceneSelector, loadButton, exportButton, exportProgressLabel].forEach { contentView.addSubview($0) }
+        [sceneSelector, loadButton, smokeTestButton, smokeTestStatusLabel].forEach { contentView.addSubview($0) }
         #endif
         [templateSelector, modeToggle, presetPicker, metalView, overlayView, preparingOverlay, mainControlsStack, logTextView].forEach { contentView.addSubview($0) }
 
@@ -545,6 +580,13 @@ final class PlayerViewController: UIViewController {
         metalViewBottomConstraint = metalView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         metalViewBottomConstraint?.isActive = false
 
+        // Export button constraints (common for DEBUG and Release)
+        NSLayoutConstraint.activate([
+            exportButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            exportButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            exportButton.heightAnchor.constraint(equalToConstant: 44),
+        ])
+
         #if DEBUG
         // DEBUG: sceneSelector and loadButton at top (for test packages)
         NSLayoutConstraint.activate([
@@ -557,16 +599,19 @@ final class PlayerViewController: UIViewController {
             loadButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             loadButton.heightAnchor.constraint(equalToConstant: 44),
 
+            // Export button below loadButton in DEBUG
             exportButton.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 8),
-            exportButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            exportButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            exportButton.heightAnchor.constraint(equalToConstant: 44),
 
-            exportProgressLabel.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 4),
-            exportProgressLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            exportProgressLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            smokeTestButton.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 8),
+            smokeTestButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            smokeTestButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            smokeTestButton.heightAnchor.constraint(equalToConstant: 44),
 
-            templateSelector.topAnchor.constraint(equalTo: exportProgressLabel.bottomAnchor, constant: 8),
+            smokeTestStatusLabel.topAnchor.constraint(equalTo: smokeTestButton.bottomAnchor, constant: 4),
+            smokeTestStatusLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            smokeTestStatusLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+
+            templateSelector.topAnchor.constraint(equalTo: smokeTestStatusLabel.bottomAnchor, constant: 8),
             templateSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             templateSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
 
@@ -575,13 +620,16 @@ final class PlayerViewController: UIViewController {
             modeToggle.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
         ])
         #else
-        // RELEASE: templateSelector at top, then modeToggle
+        // RELEASE: templateSelector at top, exportButton, then modeToggle
         NSLayoutConstraint.activate([
             templateSelector.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
             templateSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             templateSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
 
-            modeToggle.topAnchor.constraint(equalTo: templateSelector.bottomAnchor, constant: 8),
+            // Export button below templateSelector in Release
+            exportButton.topAnchor.constraint(equalTo: templateSelector.bottomAnchor, constant: 8),
+
+            modeToggle.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 8),
             modeToggle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             modeToggle.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
         ])
@@ -703,13 +751,221 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    #endif
+
+    // MARK: - Export (Release + DEBUG)
+
     @objc private func exportTapped() {
         guard !isExporting else {
             log("[Export] Export already in progress")
             return
         }
+        guard loadingState == .ready else {
+            log("[Export] ERROR: Template not ready")
+            return
+        }
         startExport()
     }
+
+    #if DEBUG
+    // MARK: - Smoke Tests (A3)
+
+    @objc private func smokeTestTapped() {
+        guard !isSmokeTestRunning else {
+            log("[SmokeTest] Tests already running")
+            return
+        }
+        guard loadingState == .ready else {
+            log("[SmokeTest] ERROR: Template not ready")
+            return
+        }
+        runSmokeTests()
+    }
+
+    /// Runs 4 sequential export smoke tests on current scene.
+    private func runSmokeTests() {
+        isSmokeTestRunning = true
+        smokeTestResults = []
+        smokeTestButton.isEnabled = false
+        smokeTestStatusLabel.isHidden = false
+        smokeTestStatusLabel.text = "Starting smoke tests..."
+        log("[SmokeTest] === Starting Smoke Tests ===")
+
+        // Define test configurations
+        let tests: [(name: String, config: AudioExportConfig?)] = [
+            ("video-only", nil),
+            ("original-audio-only", AudioExportConfig(
+                music: nil,
+                voiceover: nil,
+                includeOriginalFromVideoSlots: true,
+                originalDefaultVolume: 1.0
+            )),
+            ("music-only", testMusicURL.map { AudioExportConfig(
+                music: AudioTrackConfig(url: $0, startTimeSeconds: 0, volume: 0.7),
+                voiceover: nil,
+                includeOriginalFromVideoSlots: false,
+                originalDefaultVolume: 1.0
+            ) }),
+            ("voiceover+music", {
+                guard let musicURL = testMusicURL, let voiceURL = testVoiceoverURL else { return nil }
+                return AudioExportConfig(
+                    music: AudioTrackConfig(url: musicURL, startTimeSeconds: 0, volume: 0.5),
+                    voiceover: AudioTrackConfig(url: voiceURL, startTimeSeconds: 0, volume: 1.0),
+                    includeOriginalFromVideoSlots: false,
+                    originalDefaultVolume: 1.0
+                )
+            }())
+        ]
+
+        runNextSmokeTest(tests: tests, index: 0)
+    }
+
+    private func runNextSmokeTest(tests: [(name: String, config: AudioExportConfig?)], index: Int) {
+        guard index < tests.count else {
+            // All tests complete
+            finishSmokeTests()
+            return
+        }
+
+        let test = tests[index]
+        smokeTestStatusLabel.text = "Test \(index + 1)/\(tests.count): \(test.name)"
+        log("[SmokeTest] Running test \(index + 1)/\(tests.count): \(test.name)")
+
+        // Skip test if audio config is expected but missing test files
+        if index > 0 && test.config == nil && test.name != "video-only" {
+            log("[SmokeTest] SKIP: \(test.name) - missing test audio files")
+            smokeTestResults.append((name: test.name, result: .skip))
+            runNextSmokeTest(tests: tests, index: index + 1)
+            return
+        }
+
+        runSingleSmokeTest(name: test.name, audioConfig: test.config) { [weak self] success in
+            guard let self = self else { return }
+            self.smokeTestResults.append((name: test.name, result: success ? .pass : .fail))
+            self.log("[SmokeTest] \(test.name): \(success ? "PASS" : "FAIL")")
+
+            // Run next test after short delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.runNextSmokeTest(tests: tests, index: index + 1)
+            }
+        }
+    }
+
+    private func runSingleSmokeTest(name: String, audioConfig: AudioExportConfig?, completion: @escaping (Bool) -> Void) {
+        guard let renderer = renderer,
+              let compiled = compiledScene,
+              let player = scenePlayer,
+              let mainTextureProvider = textureProvider,
+              let resolver = currentResolver else {
+            completion(false)
+            return
+        }
+
+        let device = renderer.commandQueue.device
+        let exportTP = ExportTextureProvider(
+            device: device,
+            assetIndex: compiled.mergedAssetIndex,
+            resolver: resolver,
+            bindingAssetIds: compiled.bindingAssetIds
+        )
+        exportTP.preloadAll(commandQueue: renderer.commandQueue)
+        exportTP.injectTextures(from: mainTextureProvider, for: compiled.bindingAssetIds)
+
+        let runtime = compiled.runtime
+        let canvasSize = runtime.canvasSize
+
+        // Unique filename for this test
+        let sceneId = runtime.scene.sceneId ?? "scene"
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        let timestamp = dateFormatter.string(from: Date())
+        let filename = "smoke_\(name)_\(sceneId)_\(timestamp).mp4"
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+
+        let pixels = Int(canvasSize.width) * Int(canvasSize.height)
+        let bitrate = max(5_000_000, min(25_000_000, 15_000_000 * pixels / 2_073_600))
+
+        let settings = VideoExportSettings(
+            outputURL: outputURL,
+            sizePx: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
+            fps: runtime.fps,
+            bitrate: bitrate,
+            clearColor: .opaqueBlack,
+            audio: audioConfig
+        )
+
+        isExporting = true
+        let exporter = VideoExporter()
+        videoExporter = exporter
+
+        exporter.exportVideo(
+            compiledScene: compiled,
+            scenePlayer: player,
+            renderer: renderer,
+            textureProvider: exportTP,
+            pathRegistry: compiled.pathRegistry,
+            assetSizes: compiled.mergedAssetIndex.sizeById,
+            userMediaService: userMediaService,
+            settings: settings,
+            progress: { [weak self] progress in
+                let pct = Int(progress * 100)
+                self?.smokeTestStatusLabel.text = "\(name): \(pct)%"
+            },
+            completion: { [weak self] result in
+                self?.isExporting = false
+                self?.videoExporter = nil
+
+                switch result {
+                case .success(let url):
+                    // Clean up temp file
+                    try? FileManager.default.removeItem(at: url)
+                    completion(true)
+                case .failure(let error):
+                    self?.log("[SmokeTest] \(name) error: \(error.localizedDescription)")
+                    completion(false)
+                }
+            }
+        )
+    }
+
+    private func finishSmokeTests() {
+        isSmokeTestRunning = false
+        smokeTestButton.isEnabled = true
+
+        let passed = smokeTestResults.filter { $0.result == .pass }.count
+        let failed = smokeTestResults.filter { $0.result == .fail }.count
+        let skipped = smokeTestResults.filter { $0.result == .skip }.count
+        let allPassed = failed == 0
+
+        if skipped > 0 {
+            smokeTestStatusLabel.text = "Smoke Tests: \(passed) PASSED, \(skipped) SKIPPED"
+        } else {
+            smokeTestStatusLabel.text = "Smoke Tests: \(passed)/\(smokeTestResults.count) PASSED"
+        }
+        smokeTestStatusLabel.textColor = allPassed ? .systemGreen : .systemRed
+
+        log("[SmokeTest] === Results ===")
+        for result in smokeTestResults {
+            let statusStr: String
+            switch result.result {
+            case .pass: statusStr = "PASS"
+            case .fail: statusStr = "FAIL"
+            case .skip: statusStr = "SKIP"
+            }
+            log("[SmokeTest] \(result.name): \(statusStr)")
+        }
+        log("[SmokeTest] Total: \(passed) PASSED, \(failed) FAILED, \(skipped) SKIPPED")
+
+        // Hide status after 5 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.smokeTestStatusLabel.isHidden = true
+            self?.smokeTestStatusLabel.textColor = .systemOrange
+        }
+    }
+
+    #endif
+
+    // MARK: - Export Implementation
 
     private func startExport() {
         // 1. Guard dependencies
@@ -719,11 +975,6 @@ final class PlayerViewController: UIViewController {
               let mainTextureProvider = textureProvider,
               let resolver = currentResolver else {
             log("[Export] ERROR: Missing dependencies")
-            return
-        }
-
-        guard loadingState == .ready else {
-            log("[Export] ERROR: Template not ready")
             return
         }
 
@@ -743,14 +994,28 @@ final class PlayerViewController: UIViewController {
         exportTP.injectTextures(from: mainTextureProvider, for: compiled.bindingAssetIds)
 
         // 3. Configure VideoExportSettings
-        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("export_\(Date().timeIntervalSince1970).mp4")
         let runtime = compiled.runtime
         let canvasSize = runtime.canvasSize
 
-        // Calculate bitrate based on resolution (12-20 Mbps for 1080p, scale proportionally)
-        let pixels = Int(canvasSize.width) * Int(canvasSize.height)
-        let baseBitrate = 15_000_000  // 15 Mbps for 1080p (1920x1080 = 2073600 pixels)
-        let bitrate = max(5_000_000, min(25_000_000, baseBitrate * pixels / 2_073_600))
+        // Unique filename format: export_<sceneId>_<timestamp>_<uuid>.mp4
+        let sceneId = runtime.scene.sceneId ?? "scene"
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        let timestamp = dateFormatter.string(from: Date())
+        let uuid8 = UUID().uuidString.prefix(8)
+        let filename = "export_\(sceneId)_\(timestamp)_\(uuid8).mp4"
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+
+        // Use .high quality preset
+        let bitrate = VideoQualityPreset.high.bitrate(for: (width: Int(canvasSize.width), height: Int(canvasSize.height)))
+
+        // Release audio config: only original audio from video slots
+        let audioConfig = AudioExportConfig(
+            music: nil,
+            voiceover: nil,
+            includeOriginalFromVideoSlots: true,
+            originalDefaultVolume: 1.0
+        )
 
         let settings = VideoExportSettings(
             outputURL: outputURL,
@@ -758,62 +1023,95 @@ final class PlayerViewController: UIViewController {
             fps: runtime.fps,
             bitrate: bitrate,
             clearColor: .opaqueBlack,
-            audio: nil  // First test: no audio
+            audio: audioConfig
         )
 
-        // 4. Update UI state
-        isExporting = true
-        exportButton.isEnabled = false
-        exportProgressLabel.isHidden = false
-        exportProgressLabel.text = "Export: 0%"
+        // 4. Present progress modal
+        let progressVC = ExportProgressViewController()
+        progressVC.modalPresentationStyle = .overFullScreen
+        progressVC.modalTransitionStyle = .crossDissolve
 
-        log("[Export] Starting export...")
-        log("[Export] Output: \(outputURL.lastPathComponent)")
-        log("[Export] Size: \(Int(canvasSize.width))x\(Int(canvasSize.height)) @ \(runtime.fps)fps")
-        log("[Export] Duration: \(runtime.durationFrames) frames")
-
-        // 5. Start export
         let exporter = VideoExporter()
         videoExporter = exporter
+        exportProgressVC = progressVC
 
-        exporter.exportVideo(
-            compiledScene: compiled,
-            scenePlayer: player,
-            renderer: renderer,
-            textureProvider: exportTP,
-            pathRegistry: compiled.pathRegistry,
-            assetSizes: compiled.mergedAssetIndex.sizeById,
-            userMediaService: userMediaService,
-            settings: settings,
-            progress: { [weak self] progress in
-                let pct = Int(progress * 100)
-                self?.exportProgressLabel.text = "Export: \(pct)%"
-                print("[Export] Progress: \(pct)%")
-            },
-            completion: { [weak self] result in
-                guard let self = self else { return }
+        // Fix 2: Track cancellation to ignore late completion callbacks
+        var wasCancelled = false
 
-                self.isExporting = false
-                self.exportButton.isEnabled = true
-                self.videoExporter = nil
+        progressVC.onCancel = { [weak self, weak exporter] in
+            wasCancelled = true
+            exporter?.cancel()
+            // Fix 1: Restore UI state on cancel
+            self?.isExporting = false
+            self?.exportButton.isEnabled = true
+            self?.videoExporter = nil
+            self?.dismiss(animated: true)
+        }
 
-                switch result {
-                case .success(let url):
-                    self.exportProgressLabel.text = "Export: Done!"
-                    self.log("[Export] SUCCESS: \(url.lastPathComponent)")
-                    self.presentShareSheet(for: url)
-
-                case .failure(let error):
-                    self.exportProgressLabel.text = "Export: Failed"
-                    self.log("[Export] ERROR: \(error.localizedDescription)")
-                }
-
-                // Hide progress label after 3 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                    self?.exportProgressLabel.isHidden = true
-                }
+        progressVC.onCompleted = { [weak self] url in
+            self?.dismiss(animated: true) {
+                self?.presentShareSheet(for: url)
             }
-        )
+        }
+
+        progressVC.onFailed = { [weak self] error in
+            self?.dismiss(animated: true) {
+                self?.presentExportError(error)
+            }
+        }
+
+        isExporting = true
+        exportButton.isEnabled = false
+
+        present(progressVC, animated: true) { [weak self] in
+            guard let self = self else { return }
+
+            self.log("[Export] Starting export...")
+            self.log("[Export] Output: \(outputURL.lastPathComponent)")
+            self.log("[Export] Size: \(Int(canvasSize.width))x\(Int(canvasSize.height)) @ \(runtime.fps)fps")
+            self.log("[Export] Duration: \(runtime.durationFrames) frames")
+
+            progressVC.updateState(.preparing)
+
+            exporter.exportVideo(
+                compiledScene: compiled,
+                scenePlayer: player,
+                renderer: renderer,
+                textureProvider: exportTP,
+                pathRegistry: compiled.pathRegistry,
+                assetSizes: compiled.mergedAssetIndex.sizeById,
+                userMediaService: self.userMediaService,
+                settings: settings,
+                progress: { progress in
+                    // Fix 2: Ignore progress updates after cancel
+                    guard !wasCancelled else { return }
+                    progressVC.updateState(.rendering(progress: progress))
+                },
+                completion: { [weak self] result in
+                    guard let self = self else { return }
+
+                    // Fix 2: Ignore completion after cancel (UI already restored in onCancel)
+                    guard !wasCancelled else {
+                        self.log("[Export] Completion ignored (was cancelled)")
+                        return
+                    }
+
+                    self.isExporting = false
+                    self.exportButton.isEnabled = true
+                    self.videoExporter = nil
+
+                    switch result {
+                    case .success(let url):
+                        self.log("[Export] SUCCESS: \(url.lastPathComponent)")
+                        progressVC.updateState(.completed(url))
+
+                    case .failure(let error):
+                        self.log("[Export] ERROR: \(error.localizedDescription)")
+                        progressVC.updateState(.failed(error))
+                    }
+                }
+            )
+        }
     }
 
     private func presentShareSheet(for url: URL) {
@@ -821,7 +1119,19 @@ final class PlayerViewController: UIViewController {
         activityVC.popoverPresentationController?.sourceView = exportButton
         present(activityVC, animated: true)
     }
-    #endif
+
+    private func presentExportError(_ error: Error) {
+        let alert = UIAlertController(
+            title: "Export Failed",
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        alert.addAction(UIAlertAction(title: "Copy Error Details", style: .default) { _ in
+            UIPasteboard.general.string = error.localizedDescription
+        })
+        present(alert, animated: true)
+    }
 
     @objc private func playPauseTapped() {
         if isPlaying {

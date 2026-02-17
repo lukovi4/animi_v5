@@ -30,6 +30,7 @@
 		PRE4EXP0004 /* ExportVideoFrameProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0014 /* ExportVideoFrameProvider.swift */; };
 		PRE4EXP0005 /* ExportVideoSlotsCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0015 /* ExportVideoSlotsCoordinator.swift */; };
 		PRE4EXP0006 /* VideoExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0016 /* VideoExporter.swift */; };
+		PRE4EXP0007 /* ExportProgressViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0017 /* ExportProgressViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -57,6 +58,7 @@
 		PRE4EXP0014 /* ExportVideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProvider.swift; sourceTree = "<group>"; };
 		PRE4EXP0015 /* ExportVideoSlotsCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoSlotsCoordinator.swift; sourceTree = "<group>"; };
 		PRE4EXP0016 /* VideoExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporter.swift; sourceTree = "<group>"; };
+		PRE4EXP0017 /* ExportProgressViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportProgressViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -109,6 +111,7 @@
 			children = (
 				PRE4EXP0011 /* AudioCompositionBuilder.swift */,
 				PRE4EXP0012 /* AudioWriterPump.swift */,
+				PRE4EXP0017 /* ExportProgressViewController.swift */,
 				PRE4EXP0013 /* ExportTextureProvider.swift */,
 				PRE4EXP0014 /* ExportVideoFrameProvider.swift */,
 				PRE4EXP0015 /* ExportVideoSlotsCoordinator.swift */,
@@ -289,6 +292,7 @@
 				8C5D68D2752FF42C00D0F093 /* UserMediaService.swift in Sources */,
 				26C0F8F6AB35CD9093B0E789 /* UserMediaTextureFactory.swift in Sources */,
 				PRE4EXP0006 /* VideoExporter.swift in Sources */,
+				PRE4EXP0007 /* ExportProgressViewController.swift in Sources */,
 				634873BF88B7C4366E03297A /* VideoFrameProvider.swift in Sources */,
 				PERF1234567890ABCDEF0001 /* PerfLogger.swift in Sources */,
 			);

@@ -224,8 +224,11 @@ public final class AudioCompositionBuilder {
     ) throws -> AVMutableAudioMixInputParameters? {
         let asset = AVURLAsset(url: selection.url)
 
-        // Get audio track (video might not have audio - skip silently)
+        // Get audio track (video might not have audio - skip with DEBUG warning)
         guard let sourceTrack = asset.tracks(withMediaType: .audio).first else {
+            #if DEBUG
+            print("[AudioCompositionBuilder] WARNING: blockId=\(block.blockId), file=\(selection.url.lastPathComponent) - no audio track, skipping original audio")
+            #endif
             return nil
         }
 
