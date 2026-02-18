@@ -1,0 +1,48 @@
+{
+  "categories": [
+    {
+      "id": "featured",
+      "title": "Featured",
+      "titleKey": "category_featured",
+      "order": 0
+    },
+    {
+      "id": "polaroid",
+      "title": "Polaroid",
+      "titleKey": "category_polaroid",
+      "order": 1
+    }
+  ],
+  "templates": [
+    {
+      "id": "example_4blocks",
+      "categoryId": "featured",
+      "order": 0,
+      "title": "4 Blocks Demo",
+      "titleKey": "template_4blocks",
+      "compiledPath": "Templates/example_4blocks/compiled.tve",
+      "previewVideoPath": "Templates/example_4blocks/preview.mp4",
+      "openBehavior": "previewFirst"
+    },
+    {
+      "id": "polaroid_shared_demo",
+      "categoryId": "polaroid",
+      "order": 0,
+      "title": "Polaroid Classic",
+      "titleKey": "template_polaroid_classic",
+      "compiledPath": "Templates/polaroid_shared_demo/compiled.tve",
+      "previewVideoPath": "Templates/polaroid_shared_demo/preview.mp4",
+      "openBehavior": "previewFirst"
+    },
+    {
+      "id": "polaroid_2",
+      "categoryId": "polaroid",
+      "order": 1,
+      "title": "Polaroid Style 2",
+      "titleKey": "template_polaroid_2",
+      "compiledPath": "Templates/polaroid_2/compiled.tve",
+      "previewVideoPath": "Templates/polaroid_2/preview.mp4",
+      "openBehavior": "previewFirst"
+    }
+  ]
+}

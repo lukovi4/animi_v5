@@ -2,6 +2,46 @@
 
 This file is generated during audit from the snapshot to provide evidence for regex-based inventories (counts and per-file hit lists).
 
+**Last updated:** 2026-02-17
+
+---
+
+## New Files Since Last Audit (2026-02-11)
+
+### Export Pipeline (PR-E1..E4, Release Export)
+
+| File | Description |
+|------|-------------|
+| `AnimiApp/Sources/Export/VideoExporter.swift` | GPU-only video exporter with AVAssetWriter |
+| `AnimiApp/Sources/Export/ExportProgressViewController.swift` | Modal progress UI for export |
+| `AnimiApp/Sources/Export/ExportTextureProvider.swift` | Thread-safe texture provider for export |
+| `AnimiApp/Sources/Export/ExportVideoSlotsCoordinator.swift` | Video slot coordination with visibility gating |
+| `AnimiApp/Sources/Export/ExportVideoFrameProvider.swift` | Video frame extraction for export |
+| `AnimiApp/Sources/Export/AudioCompositionBuilder.swift` | Audio timeline composition builder |
+| `AnimiApp/Sources/Export/AudioWriterPump.swift` | AVAssetWriter audio input pump |
+
+### Templates
+
+| File | Description |
+|------|-------------|
+| `AnimiApp/Resources/Templates/polaroid_2/` | New polaroid_2 template (folder reference) |
+
+### Templates Catalog (PR-Templates, 2026-02-18)
+
+| File | Description |
+|------|-------------|
+| `AnimiApp/Sources/TemplatesCatalog/TemplateCatalog.swift` | Singleton catalog with async load + caching |
+| `AnimiApp/Sources/TemplatesCatalog/BundleTemplateCatalogLoader.swift` | Bundle manifest loader + URL resolution |
+| `AnimiApp/Sources/TemplatesCatalog/TemplateDescriptor.swift` | Template model (id, title, category, paths) |
+| `AnimiApp/Sources/TemplatesCatalog/CatalogManifest.swift` | JSON manifest model (categories + templates) |
+| `AnimiApp/Sources/TemplatesUI/TemplatesHomeViewController.swift` | Home screen with category sliders |
+| `AnimiApp/Sources/TemplatesUI/TemplatesSeeAllViewController.swift` | Grid view for category templates |
+| `AnimiApp/Sources/TemplatesUI/TemplateDetailsViewController.swift` | Full-screen preview + Use template |
+| `AnimiApp/Sources/TemplatesUI/TemplatePreviewCell.swift` | Collection view cell with video preview |
+| `AnimiApp/Sources/TemplatesUI/PreviewVideoView.swift` | AVPlayer wrapper with background handling |
+
+---
+
 ## Pattern inventories
 
 ### force_unwrap
@@ -102,3 +142,34 @@ Matches:
 - Networking/analytics/remote config keywords — full snapshot: total matches 0
 - Matched files:
   - (none)
+
+---
+
+## Export Pipeline Files (added 2026-02-17)
+
+### Export Source Files
+| File ID | Path | Lines |
+|---------|------|-------|
+| F-EXP-001 | `AnimiApp/Sources/Export/VideoExporter.swift` | ~919 |
+| F-EXP-002 | `AnimiApp/Sources/Export/ExportProgressViewController.swift` | ~214 |
+| F-EXP-003 | `AnimiApp/Sources/Export/ExportTextureProvider.swift` | ~202 |
+| F-EXP-004 | `AnimiApp/Sources/Export/ExportVideoSlotsCoordinator.swift` | ~244 |
+| F-EXP-005 | `AnimiApp/Sources/Export/ExportVideoFrameProvider.swift` | ~250 (est) |
+| F-EXP-006 | `AnimiApp/Sources/Export/AudioCompositionBuilder.swift` | ~278 |
+| F-EXP-007 | `AnimiApp/Sources/Export/AudioWriterPump.swift` | ~150 (est) |
+
+### Key Types Introduced
+- `VideoExporter` — GPU-only video export orchestrator
+- `VideoExportSettings` — Export configuration (H.264, bitrate, fps)
+- `VideoExportError` — Comprehensive error enum for export failures
+- `VideoQualityPreset` — Quality levels (low/medium/high/max/custom)
+- `AudioExportConfig` — Audio export configuration
+- `AudioTrackConfig` — Single audio track config (music/voiceover)
+- `BuiltAudioPipeline` — Result of audio composition building
+- `ExportProgressViewController` — Modal progress UI
+- `ExportProgressState` — UI state enum (preparing/rendering/finishing/completed/failed/cancelled)
+- `ExportTextureProvider` — Thread-safe MutableTextureProvider
+- `ExportVideoSlotsCoordinator` — Video slot coordination with visibility gating
+- `ExportVideoFrameProvider` — Video frame extraction with block timing
+- `AudioCompositionBuilder` — AVMutableComposition builder
+- `AudioWriterPump` — Async audio writing pump

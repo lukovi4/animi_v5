@@ -1,6 +1,7 @@
 # CODE AUDIT DEEP DIVE — Section-by-section (evidence-based)
 
 Snapshot date: **2026-02-11**
+**Last updated:** 2026-02-17 (added S11 Export Pipeline)
 
 ## 1. Scope & method
 
@@ -13,13 +14,13 @@ Deep dive performed by subsystems (S1..S10). Evidence sources:
 ## S1) App entry & dependency wiring
 
 ### Overview (PROVEN)
-- UIKit app: root view controller is `PlayerViewController` created in `SceneDelegate`.
+- UIKit app: root is `UINavigationController` with `TemplatesHomeViewController` as root VC (Release) or `PlayerViewController` directly (Debug dev mode).
 
-### Proven reachable call graph
+### Proven reachable call graph (Release — Templates Home)
 
 **Code anchor**
 - `AnimiApp/Sources/App/SceneDelegate.swift`
-- `scene(_:willConnectTo:)`
+- `scene(_:willConnectTo:)` — UINavigationController with TemplatesHomeViewController
 ```swift
     func scene(
         _ scene: UIScene,
@@ -29,15 +30,25 @@ Deep dive performed by subsystems (S1..S10). Evidence sources:
         guard let windowScene = scene as? UIWindowScene else { return }
 
         let window = UIWindow(windowScene: windowScene)
-        let playerViewController = PlayerViewController()
-        window.rootViewController = playerViewController
+
+        // Release: Templates Home as root
+        let homeVC = TemplatesHomeViewController()
+        let navController = UINavigationController(rootViewController: homeVC)
+        navController.isNavigationBarHidden = true  // Home has custom header
+        window.rootViewController = navController
         window.makeKeyAndVisible()
 
         self.window = window
     }
 ```
 
-→ `PlayerViewController.viewDidLoad()`
+→ `TemplatesHomeViewController.viewDidLoad()` → (user flow) → `TemplateDetailsViewController` → `PlayerViewController(.editor)`
+
+### Navigation Flow (Release)
+1. **Home** (`TemplatesHomeViewController`): Category sliders, "See all" links
+2. **See All** (`TemplatesSeeAllViewController`): Grid view of category templates
+3. **Details** (`TemplateDetailsViewController`): Full-screen preview, "Use template" CTA
+4. **Editor** (`PlayerViewController(.editor)`): Template editing with system Back button
 
 **Code anchor**
 - `AnimiApp/Sources/Player/PlayerViewController.swift`
@@ -735,3 +746,411 @@ final class CompiledTemplateTests: XCTestCase {
 - P2 downgraded: **P1-001 → P2** (Debug-only; Release path fixed via PR-D async pipeline)
 - P3 downgraded: **P1-002 → P3** (unreachable crash path — `holeIndices` never passed)
 - P2 nice-to-fix: **P2-001..P2-005**
+
+---
+
+## S11) Export Pipeline (added 2026-02-17)
+
+### Overview (PROVEN)
+- GPU-only video export implemented via `VideoExporter` + AVAssetWriter.
+- Uses CVPixelBufferPool → CVMetalTextureCache → MTLTexture for zero-copy GPU rendering.
+- In-flight pipelining with `maxFramesInFlight` semaphore control.
+- Audio export via `AudioCompositionBuilder` + `AudioWriterPump`.
+- Release Export UI via `ExportProgressViewController` modal.
+
+### Proven reachable call graph (Release Export)
+
+**Code anchor**
+- `AnimiApp/Sources/Player/PlayerViewController.swift`
+- `exportTapped() — starts Release Export`
+```swift
+    @objc private func exportTapped() {
+        guard !isExporting else { return }
+        startExport()
+    }
+```
+
+**Code anchor**
+- `AnimiApp/Sources/Player/PlayerViewController.swift`
+- `startExport() — creates ExportProgressViewController + VideoExporter`
+```swift
+    private func startExport() {
+        // ... setup ExportProgressViewController ...
+        let exporter = VideoExporter()
+        self.videoExporter = exporter
+
+        // Create export texture provider (thread-safe)
+        let exportProvider = ExportTextureProvider(
+            device: device,
+            assetIndex: compiled.mergedAssetIndex,
+            resolver: currentResolver!,
+            bindingAssetIds: compiled.bindingAssetIds
+        )
+
+        // Preload + inject user media textures
+        ExportTextureProvider.preloadAll(...)
+        exportProvider.injectTextures(from: currentMutableTextureProvider, ...)
+
+        // Start export
+        exporter.exportVideo(
+            compiledScene: compiled,
+            scenePlayer: scenePlayer!,
+            renderer: renderer!,
+            textureProvider: exportProvider,
+            ...
+        )
+    }
+```
+
+**Code anchor**
+- `AnimiApp/Sources/Export/VideoExporter.swift`
+- `exportVideo() — MainActor entry point + background dispatch`
+```swift
+    @MainActor
+    public func exportVideo(
+        compiledScene: CompiledScene,
+        scenePlayer: ScenePlayer,
+        renderer: MetalRenderer,
+        textureProvider: MutableTextureProvider,
+        ...
+    ) {
+        // Capture state snapshot on MainActor (deep copy)
+        let snapshot = scenePlayer.exportStateSnapshot()
+        let videoSelections = userMediaService?.exportVideoSelectionsSnapshot() ?? [:]
+
+        // Run export on background queue
+        exportQueue.async { [weak self] in
+            self.runExportLoop(...)
+        }
+    }
+```
+
+**Code anchor**
+- `AnimiApp/Sources/Export/VideoExporter.swift`
+- `runExportLoop() — main export loop with in-flight pipelining`
+```swift
+    private func runExportLoop(...) {
+        // 1. Create AVAssetWriter
+        // 2. Configure video input + pixel buffer adaptor
+        // 3. PR-E4: Build audio pipeline (if configured)
+        // 4. Start writing
+        // 5. Create CVMetalTextureCache
+        // 6. PR-E3: Setup video slots coordinator
+        // 7. Video export loop with semaphore
+        for frameIndex in 0..<totalFrames {
+            semaphore.wait()
+            videoGroup.enter()
+
+            // Get pixel buffer from pool → create Metal texture → render → append
+            commandBuffer.addCompletedHandler { [weak self] _ in
+                self.writerQueue.async {
+                    adaptor.append(inFlightFrame.pixelBuffer, ...)
+                    videoGroup.leave()
+                    semaphore.signal()
+                }
+            }
+            commandBuffer.commit()
+        }
+
+        // Wait for all frames + finalize
+        videoGroup.wait()
+        audioGroup.wait()
+        writer.finishWriting { ... }
+    }
+```
+
+### Key Components
+
+#### VideoQualityPreset (B2)
+```swift
+public enum VideoQualityPreset: Sendable {
+    case low      // ~4 Mbps for 1080p
+    case medium   // ~10 Mbps for 1080p
+    case high     // ~15 Mbps for 1080p
+    case max      // ~25 Mbps for 1080p
+    case custom(bitrate: Int)
+
+    public func bitrate(for canvasSize: (width: Int, height: Int)) -> Int {
+        // Scales by pixel count relative to 1080p
+    }
+}
+```
+
+#### ExportVideoSlotsCoordinator (B1: Visibility Gating)
+```swift
+/// B1: Prefetch margin in seconds for visibility gating.
+private let visibilityPrefetchMarginSeconds: Double = 1.0
+
+public func updateTextures(forSceneFrameIndex sceneFrameIndex: Int) {
+    let prefetchFrames = Int(visibilityPrefetchMarginSeconds * sceneFPS)
+
+    for (_, slot) in slots {
+        // B1: Visibility gating — skip slots that are not visible
+        let visibilityStart = max(0, slot.startFrame - prefetchFrames)
+        guard sceneFrameIndex >= visibilityStart && sceneFrameIndex < slot.endFrame else {
+            continue
+        }
+        // ... decode and inject texture
+    }
+}
+```
+
+#### ExportProgressViewController (Release Export UI)
+```swift
+enum ExportProgressState {
+    case preparing
+    case rendering(progress: Double)
+    case finishing
+    case completed(URL)
+    case failed(Error)
+    case cancelled
+}
+
+final class ExportProgressViewController: UIViewController {
+    var onCancel: (() -> Void)?
+    var onCompleted: ((URL) -> Void)?
+    var onFailed: ((Error) -> Void)?
+
+    func updateState(_ state: ExportProgressState) { ... }
+}
+```
+
+#### Cancel Flow (P0 Fix)
+```swift
+// In PlayerViewController.startExport():
+var wasCancelled = false
+
+progressVC.onCancel = { [weak self, weak exporter] in
+    wasCancelled = true
+    exporter?.cancel()
+    self?.isExporting = false
+    self?.exportButton.isEnabled = true  // Fix 1: restore button
+    self?.videoExporter = nil
+    self?.dismiss(animated: true)
+}
+
+// In completion handler:
+guard !wasCancelled else {
+    self.log("[Export] Completion ignored (was cancelled)")
+    return
+}
+```
+
+### Ownership & Lifecycle Map (PROVEN)
+- `PlayerViewController` owns `videoExporter: VideoExporter?` and `exportProgressVC: ExportProgressViewController?`
+- `VideoExporter` owns background queues (`exportQueue`, `writerQueue`) and AVAssetWriter lifecycle
+- `ExportVideoSlotsCoordinator` owns per-block `ExportVideoFrameProvider` instances
+- `AudioWriterPump` runs independently with `audioGroup` synchronization
+
+### Findings
+- P0 cancel-flow issue RESOLVED (button state + wasCancelled flag)
+- Thread-safe texture provider (`ExportTextureProvider`) with NSLock
+- Visibility gating with 1.0s prefetch margin for video slots
+- In-flight pipelining matches `maxFramesInFlight` semaphore
+
+---
+
+## S12) Templates (added 2026-02-17)
+
+### Overview (PROVEN)
+- Templates are folder references in Xcode project
+- Available templates registered in `PlayerViewController.availableTemplates`
+
+### Current Templates
+
+| Template Name | Display Name | Status |
+|---------------|--------------|--------|
+| `example_4blocks` | 4 Blocks | ✅ Active |
+| `polaroid_shared_demo` | Polaroid | ✅ Active |
+| `polaroid_2` | Polaroid 2 | ✅ Active (added 2026-02-17) |
+
+**Code anchor**
+- `AnimiApp/Sources/Player/PlayerViewController.swift`
+- `availableTemplates array`
+```swift
+    private let availableTemplates: [(name: String, displayName: String)] = [
+        ("example_4blocks", "4 Blocks"),
+        ("polaroid_shared_demo", "Polaroid"),
+        ("polaroid_2", "Polaroid 2")
+    ]
+```
+
+### Findings
+- `polaroid_2` was added to `availableTemplates` (was missing despite folder existing)
+
+---
+
+## S13) Templates Catalog (added 2026-02-18)
+
+### Overview (PROVEN)
+- Templates Catalog provides discovery UI for browsing and selecting templates.
+- Catalog loads from `manifest.json` via `Task.detached` (background IO, no UI freeze).
+- Navigation: Home → See All → Details → Editor (PlayerViewController in `.editor` mode).
+- Video previews use `AVPlayer` with background/foreground lifecycle handling.
+
+### Architecture
+
+```
+TemplateCatalog (singleton)
+    └── BundleTemplateCatalogLoader
+            └── manifest.json → TemplateCatalogSnapshot
+                    ├── categories: [CategoryDescriptor]
+                    └── templates: [TemplateDescriptor]
+
+TemplatesHomeViewController
+    ├── templatesByCategory: [CategoryID: [TemplateDescriptor]] (cached)
+    ├── UICollectionView (horizontal sliders per category)
+    └── TemplatePreviewCell → PreviewVideoView (AVPlayer)
+
+TemplatesSeeAllViewController
+    └── UICollectionView (grid layout)
+
+TemplateDetailsViewController
+    ├── Full-screen PreviewVideoView
+    ├── Close → popToRootViewController
+    └── Use template → PlayerViewController(.editor)
+
+PlayerViewController
+    ├── presentationMode: .dev | .editor
+    ├── .editor: nav bar visible (system Back), template selector hidden
+    └── viewWillAppear: setNavigationBarHidden(false) for .editor
+```
+
+### Proven reachable call graph
+
+**Code anchor**
+- `AnimiApp/Sources/TemplatesCatalog/TemplateCatalog.swift`
+- `load() — Task.detached for background IO`
+```swift
+    func load() async -> Result<TemplateCatalogSnapshot, Error> {
+        if let snapshot = snapshot { return .success(snapshot) }
+        if let existingTask = loadTask { return await existingTask.value }
+
+        let loader = self.loader
+        loadTask = Task<Result<TemplateCatalogSnapshot, Error>, Never> {
+            do {
+                let loaded = try await Task.detached(priority: .userInitiated) {
+                    try loader.loadManifest()
+                }.value
+                return .success(loaded)
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        let result = await loadTask!.value
+        if case .success(let loaded) = result { snapshot = loaded }
+        loadTask = nil
+        return result
+    }
+```
+
+**Code anchor**
+- `AnimiApp/Sources/TemplatesCatalog/BundleTemplateCatalogLoader.swift`
+- `resolveURL(for:) — NSString path parsing + folder URL for compiled.tve`
+```swift
+    private func resolveURL(for relativePath: String) -> URL? {
+        let nsPath = relativePath as NSString
+        let directory = nsPath.deletingLastPathComponent
+        let filenameWithExt = nsPath.lastPathComponent as NSString
+        let filename = filenameWithExt.deletingPathExtension
+        let ext = nsPath.pathExtension
+
+        // For compiled.tve, return template folder URL (PlayerViewController expects folder, not file)
+        if filename == "compiled" && ext == "tve" {
+            let templateFolder = (directory as NSString).lastPathComponent
+            if let folderURL = bundle.url(forResource: templateFolder, withExtension: nil, subdirectory: "Templates") {
+                return folderURL
+            }
+            return nil
+        }
+
+        // Direct file lookup for other files (preview.mp4, etc.)
+        if let directURL = bundle.url(forResource: filename, withExtension: ext.isEmpty ? nil : ext, subdirectory: directory) {
+            return directURL
+        }
+        return nil
+    }
+```
+
+**Code anchor**
+- `AnimiApp/Sources/TemplatesUI/TemplatesHomeViewController.swift`
+- `loadCatalog() — caches templatesByCategory`
+```swift
+    private func loadCatalog() {
+        Task {
+            let result = await TemplateCatalog.shared.load()
+            switch result {
+            case .success(let snapshot):
+                categories = snapshot.categories
+                // Cache templates by category (avoids filter/sort on every cellForItemAt)
+                templatesByCategory = Dictionary(grouping: snapshot.templates, by: \.categoryId)
+                    .mapValues { $0.sorted { $0.order < $1.order } }
+                collectionView.reloadData()
+            case .failure(let error):
+                print("[Home] Catalog load failed: \(error)")
+            }
+        }
+    }
+```
+
+**Code anchor**
+- `AnimiApp/Sources/TemplatesUI/PreviewVideoView.swift`
+- `Background/foreground notification handling`
+```swift
+    private func setupObservers() {
+        resignActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.player?.pause()
+        }
+
+        becomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.isVisible else { return }
+            self.player?.play()
+        }
+    }
+```
+
+**Code anchor**
+- `AnimiApp/Sources/Player/PlayerViewController.swift`
+- `viewWillAppear — nav bar for editor mode`
+```swift
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Show navigation bar in editor mode (system Back button)
+        if case .editor = presentationMode {
+            navigationController?.setNavigationBarHidden(false, animated: animated)
+        }
+    }
+```
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| `Task.detached` for catalog load | Prevents MainActor blocking; no `loadTask` polling |
+| NSString path parsing | Avoids leading "/" issue from `URL(fileURLWithPath:)` |
+| `compiled.tve` → folder URL | PlayerViewController expects template folder, not `.tve` file |
+| `templatesByCategory` cache | Avoids filter/sort on every `cellForItemAt` |
+| Background/foreground observers | Pause video when app goes to background, resume if visible |
+| `viewWillAppear` nav bar restore | Details hides nav bar; Editor must restore it for Back button |
+| Constraint switching for `.editor` | `isHidden=true` doesn't collapse layout; explicit constraint activation |
+
+### Ownership & Lifecycle Map (PROVEN)
+- `TemplateCatalog.shared` — singleton, owns `snapshot` and `loadTask`
+- `TemplatesHomeViewController` owns `templatesByCategory` cache
+- `PreviewVideoView` owns `AVPlayer`, observers cleaned in `deinit`
+- `PlayerViewController` owns presentation mode constraints
+
+### Findings
+- P0 nav bar issue RESOLVED (viewWillAppear restores bar in editor mode)
+- P1 sync IO on MainActor RESOLVED (Task.detached for catalog load)
+- P1 busy-wait polling RESOLVED (single loadTask pattern)
+- P1 filter/sort every cellForItemAt RESOLVED (templatesByCategory cache)
+- P2 background handling RESOLVED (notification observers in PreviewVideoView)
+- P2 AutoLayout warning in editor mode — minor, logTextView constraint deactivation may log ambiguous height (non-blocking)

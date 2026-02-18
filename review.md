@@ -1,77 +1,67 @@
-Понял. Это **не “premult” сломал**, а **координатная система**: вы добавили “top-left origin flip” в `PremultipliedTextureLoader`, но в вашем движке **этот flip уже сделан где-то выше (в UV/вершинных данных/плейн-шейдере/пайплайне)**. В итоге получился **double-flip по Y** *в комбинации с существующим X-flip/трансформом* → визуально выглядит как **поворот на 180°** для картинок типа `plastik.png`/`polaroid.png`.
+Я распаковал `PR_Templates_FINAL_V3.zip` и **прошёлся по всем 11 файлам** (каталог/loader/models/UI/Player/SceneDelegate/manifest) **строго по коду из архива**.
 
-### Почему это почти наверняка так
+## Вердикт техлида
 
-До фикса `MTKTextureLoader` грузил текстуру и **в движке уже был “правильный” (под него) маппинг UV**.
-Когда вы начали рисовать `CGImage` в bitmap context и **добавили `translate+scale`**, вы **изменили конвенцию origin** относительно того, что ожидал существующий UV.
+✅ **Да, принимаю как 100% корректное и релизно-готовое решение по заявленному объёму PR.**
+Критических (P0/P1) проблем в текущей версии не осталось: каталог грузится без блокировок UI, пути резолвятся корректно (и для `compiled.tve` возвращается folder URL), навигация и режимы соответствуют ТЗ, preview/video lifecycle управляется правильно, а **Editor после Details теперь гарантированно получает системную кнопку Back**.
 
 ---
 
-# ✅ Канонический релизный фикс (быстрый и правильный)
+## Подтверждение P0 фикса (Back button после Details → Use template)
 
-**Уберите вертикальный flip из `PremultipliedTextureLoader.renderToPremultipliedBGRA`**.
-
-То есть вот это нужно удалить/закомментить:
+**`AnimiApp/Sources/Player/PlayerViewController.swift`** — добавлено:
 
 ```swift
-context.translateBy(x: 0, y: CGFloat(height))
-context.scaleBy(x: 1, y: -1)
+override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    // Show navigation bar in editor mode (system Back button)
+    if case .editor = presentationMode {
+        navigationController?.setNavigationBarHidden(false, animated: animated)
+    }
+}
 ```
 
-И оставить просто:
+Это корректно компенсирует то, что:
+
+**`AnimiApp/Sources/TemplatesUI/TemplateDetailsViewController.swift`**
 
 ```swift
-context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+navigationController?.setNavigationBarHidden(true, animated: animated)
 ```
 
-### Что оставить как есть
-
-* **EXIF orientation fix через thumbnail + transform** — это правильно и нужно.
-* premult через CGContext — правильно.
-* staging → `.private` blit — правильно.
+И сценарий **Home → Details → Use template → Editor** теперь реально возвращает nav bar (а значит Back) — ✅.
 
 ---
 
-# Чтобы это было “железно” и не повторилось
+## Что ещё проверено и ок
 
-Сделайте **одно из двух** (оба релизные):
+### Catalog / Loader
 
-## Вариант A (лучший): зафиксировать конвенцию тестом “сравнение с MTKTextureLoader”
+* `TemplateCatalog.load()` делает IO+decode через `Task.detached` (UI не фризится) + `loadTask` без polling — ✅
+* `BundleTemplateCatalogLoader.resolveURL(for:)`:
 
-Добавьте integration test (у вас уже есть `MetalRendererBaselineTests.swift` с `readPixel`):
+  * пути парсятся через `NSString` (без leading `/`) — ✅
+  * **`compiled.tve` всегда → folder URL** (ранний return), `preview.mp4` → file URL — ✅
+  * `print` только под `#if DEBUG` — ✅
+  * templates с `compiledURL == nil` пропускаются — ✅
 
-1. загрузить одну и ту же картинку:
+### UI
 
-   * путь 1: `MTKTextureLoader.newTexture(URL:)`
-   * путь 2: `PremultipliedTextureLoader.loadTexture(URL:)`
-2. скопировать обе текстуры в CPU (у вас уже есть паттерн `readPixel`)
-3. сравнить 2–3 пикселя (например, (0,0), (w-1,0), (0,h-1)) — **должны совпасть по ориентации**
-   (в идеале — совпадение по цвету тоже, но premult может отличаться; тогда сравнивайте именно “какой угол где”, выбрав PNG без альфы, чтобы исключить premult-математику).
-
-Это 100% зацементирует orientation-конвенцию.
-
-## Вариант B: сделать flip опциональным и задокументировать, что в вашем движке flip уже делается UV-ами
-
-Например:
-
-```swift
-func renderToPremultipliedBGRA(cgImage: CGImage, flipY: Bool) throws -> [UInt8]
-```
-
-и **везде передавать `flipY: false`**, пока не будет другого потребителя.
-
-Но честно: если цель — “универсально для всех слоёв” в рамках вашего движка, **A лучше** (закрепляет контракт).
+* Home: кеширует `templatesByCategory` при загрузке; горизонтальные слайдеры; “See all”; autoplay только видимых через willDisplay/didEndDisplaying — ✅
+* See all: грузит один раз массив templates и не делает filter/sort в dataSource — ✅
+* Details: full-screen preview + Close→popToRoot + Use template→push editor; play/pause на appear/disappear — ✅
+* `TemplatePreviewCell`: корректно вызывает `PreviewVideoView.configure/play/pause` + `prepareForReuse()` — ✅
+* `PreviewVideoView`: mute + loop + placeholder при nil/нет файла + пауза при background и возобновление при foreground (если visible) — ✅
 
 ---
 
-# Что делать прямо сейчас (минимальный патч)
+## Единственное замечание (P2, не блокер, можно оставить)
 
-1. Удалить `translateBy/scaleBy` из loader-а.
-2. Быстро проверить `polaroid_shared_demo`:
-
-   * `plastik.png` и `polaroid.png` больше не перевёрнуты
-   * прозрачность корректная
+В editor-mode у `logTextView` деактивируется height/bottom constraint, при этом top/leading/trailing остаются. Поскольку view скрыт, это **не ломает UI**, но потенциально может дать AutoLayout warning (“ambiguous height”) в логах на некоторых конфигурациях. Это не влияет на релизность функционала и не требует сейчас вмешательства, просто фикс на будущее: вместо деактивации можно ставить `heightConstraint.constant = 0`.
 
 ---
 
-Если хочешь — я могу **точечно назвать**, где именно в вашем рендере уже происходит flip (обычно это либо генерация `texCoord` в quad-вершинах, либо нормализация UV для Metal). Но даже без этого: **удаление flip-а из CGContext — правильное действие**, потому что именно оно вернёт поведение к “как было с MTKTextureLoader”, сохранив premult.
+## Итог
+
+По текущему архиву **PR_Templates_FINAL_V3.zip**:
+✅ **Approve / можно мерджить как релизный базовый UI.**

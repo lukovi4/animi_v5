@@ -1,240 +1,370 @@
-Ниже — **глубокий трассинг** “от `plastik.png` в Lottie → до Metal blending” + **каноническое релизное ТЗ** на универсальный фикс, который будет корректно работать для **всех** будущих слоёв/шаблонов (Local/Shared assets + потенциально пользовательские PNG с альфой).
+Ниже — **финальное каноническое ТЗ** на “Главную” и “Внутреннюю страницу шаблона”, **строго опираясь на реальный snapshot-код** и на **утверждённые нами решения** (manifest в bundle, IDs строковые, mp4 previews, autoplay только видимых, loop, звук off, openBehavior per-template, See all grid 2 колонки, details full-screen + Close + Use template).
 
 ---
 
-# 1) Трассинг: как `plastik.png` попадает в рендер
+# Техническое задание PR: Templates Home + Template Details (UIKit, bundle catalog)
 
-## 1.1. В шаблоне `polaroid_shared_demo` `plastik.png` — это обычный image-asset с альфой
+## 0) Scope (что делаем в этом PR)
 
-Файл: `AnimiApp/Resources/Templates/polaroid_shared_demo/anim-1.json`
-Якорь (фрагмент):
+### Нужно сделать
 
-```json
-{"id":"image_1","u":"images/","p":"plastik.png","e":0}
-...
-{"ty":2,"nm":"plastik.png","refId":"image_1", ... "bm":0}
-```
+1. **Главная страница TemplatesHome**:
 
-Это означает: Lottie ожидает, что PNG из `images/` будет отрисован как обычная текстура (без специальных blend modes — `bm:0`).
+   * Категории (вертикальный список секций)
+   * В каждой секции: заголовок категории + кнопка **See all** справа
+   * Под заголовком: **горизонтальный слайдер** карточек шаблонов, где на экране **видно ровно 2 карточки**; остальные уходят вправо (20+ шт. ок)
+   * Карточка = **только preview.mp4** (без title на home v1), **1080×1920 пропорции**, видео **loop + autoplay**, **звук off**
+   * Autoplay **только для видимых** карточек, стоп на скролле/уходе с экрана
+   * Экран поддерживает состояния: `loading / empty / error / content`
 
-## 1.2. Физически `plastik.png` лежит в SharedAssets, и резолвится по basename
+2. **Экран Category “See all”**:
 
-Файл: `SharedAssets/decor/plastik.png` (basename = `plastik`).
+   * Показывает все шаблоны категории в **grid 2 колонки**
+   * Карточка = preview.mp4 (loop+autoplay, звук off) + те же правила “только видимые”
+   * Состояния: `loading / empty / error / content` (empty — если в категории 0; но пустые категории на Home не показываем)
 
-Почему это важно: в проекте используется **resolver по basename** (без папок), который сканирует SharedAssets рекурсивно.
+3. **Экран Template Details (full-screen preview)**:
 
-### SharedAssetsIndex индексирует все файлы в `SharedAssets/` по basename
+   * Full-screen preview видео (тот же preview.mp4) **loop + autoplay**, звук off
+   * Кнопка **Close**: возвращает на главную (поп/close)
+   * Кнопка **Use template**: открывает редактор (TemplateEditor flow)
+   * Экран поддерживает состояния: `loading / error` (контент появится после загрузки template descriptor)
 
-`TVECore/Sources/TVECore/Assets/SharedAssetsIndex.swift`
+4. **Навигация UIKit**
+
+   * Root приложения должен стать `UINavigationController`
+   * Стартовый экран: TemplatesHomeViewController
+   * Переходы:
+
+     * Home → See all
+     * Home/See all → Details (или напрямую в Editor, если openBehavior=directToEditor)
+     * Details → Use template → Editor
+
+### Не делаем в этом PR
+
+* Стили/дизайн-система (в конце проекта подключим отдельно)
+* Фильтры/поиск (только архитектурная готовность)
+* Remote catalog (только архитектурная готовность)
+* Реальный рендер шаблонов для превью (используем готовые `preview.mp4`)
+
+---
+
+## 1) Обоснование по реальному коду snapshot (code anchors)
+
+### 1.1 Текущий app entrypoint — UIKit root VC
+
+Сейчас root задаётся напрямую `PlayerViewController()` без навигации:
+
+**`AnimiApp/Sources/App/SceneDelegate.swift`**
 
 ```swift
-let basename = (fileURL.lastPathComponent as NSString).deletingPathExtension
-result[basename] = fileURL
+let window = UIWindow(windowScene: windowScene)
+let playerViewController = PlayerViewController()
+window.rootViewController = playerViewController
+window.makeKeyAndVisible()
 ```
 
-### CompositeAssetResolver ищет сначала Local(images/), затем SharedAssets
+➡️ Требуемое изменение: вместо `PlayerViewController()` поставить `UINavigationController(rootViewController: TemplatesHomeViewController())`.
 
-`TVECore/Sources/TVECore/Assets/CompositeAssetResolver.swift`
+---
+
+### 1.2 Реальный шаблонный контент сейчас лежит в bundle subdirectory "Templates"
+
+Загрузка compiled templates уже реализована через `Bundle.main.url(..., subdirectory: "Templates")`:
+
+**`AnimiApp/Sources/Player/PlayerViewController.swift` (loadCompiledTemplateFromBundle)**
 
 ```swift
-if let url = localIndex.url(forKey: key) { return url }
-if let url = sharedIndex.url(forKey: key) { return url }
-throw AssetResolutionError.assetNotFound(...)
+guard let templateURL = Bundle.main.url(
+  forResource: templateName, withExtension: nil, subdirectory: "Templates"
+) else { ... }
+let compiledLoader = CompiledScenePackageLoader(engineVersion: TVECore.version)
+let compiledPackage = try compiledLoader.load(from: templateURL)
 ```
 
-## 1.3. ScenePackageTextureProvider грузит текстуры **через MTKTextureLoader(URL)** без premultiply
+➡️ Это задаёт каноничный подход для **bundle-based каталога**: и compiled.tve, и preview.mp4 должны быть доступны по предсказуемым относительным путям из bundle.
 
-`TVECore/Sources/TVECore/MetalRenderer/ScenePackageTextureProvider.swift` → `loadTexture(from:assetId:)`
+---
+
+### 1.3 Редактор уже существует и ожидает ScenePlayer/CanvasSize
+
+Контроллер редактора уже в проекте (UIKit/TVECore), и его контракт зафиксирован:
+
+**`AnimiApp/Sources/Editor/TemplateEditorController.swift`**
 
 ```swift
-let options: [MTKTextureLoader.Option: Any] = [
-    .SRGB: false,
-    .generateMipmaps: false,
-    .textureUsage: MTLTextureUsage.shaderRead.rawValue,
-    .textureStorageMode: MTLStorageMode.private.rawValue
-]
-return try loader.newTexture(URL: url, options: options)
+@MainActor final class TemplateEditorController {
+  func setPlayer(_ player: ScenePlayer) { ... }
+  var canvasSize: SizeD = .zero
+  func currentRenderCommands() -> [RenderCommand]? { ... }
+}
 ```
 
-> Ключевой факт: тут **нет** шага “перевести PNG в premultiplied-alpha”. Комментарий “Load with options for premultiplied alpha” — но фактически это не делает premultiply.
+➡️ Наши новые экраны должны **не ломать** существующий editor flow: “Use template” будет создавать/открывать editor, который дальше использует `ScenePlayer` и compiled template.
 
-## 1.4. Рендер-пайплайн настроен на **premultiplied alpha blending**
+---
 
-`TVECore/Sources/TVECore/MetalRenderer/MetalRendererResources.swift` → `configureBlending()`
+## 2) Bundle Catalog: структура ресурсов (канонично)
 
-```swift
-attachment.sourceRGBBlendFactor = .one
-attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
-attachment.sourceAlphaBlendFactor = .one
-attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+### 2.1 Новая структура ресурсов в bundle
+
+Добавить в `AnimiApp/Resources`:
+
+```
+Resources/Templates/
+  Catalog/
+    manifest.json
+  Items/
+    <templateId>/
+      compiled.tve
+      preview.mp4
+      (опционально) meta.json
 ```
 
-Это формула **premultiplied “over”**:
-
-* `out.rgb = src.rgb + dst.rgb * (1 - src.a)`
-* корректно только если `src.rgb` уже **умножен на src.a**.
-
-## 1.5. Фрагмент-шейдер quad НЕ делает premultiply
-
-`TVECore/Sources/TVECore/MetalRenderer/Shaders/QuadShaders.metal` → `quad_fragment`
-
-```metal
-float4 color = tex.sample(samp, in.texCoord);
-// Premultiplied alpha: multiply all channels by opacity
-return color * in.opacity;
-```
-
-Он лишь умножает на opacity, но не делает `color.rgb *= color.a`.
+> Примечание: сейчас в snapshot уже есть `Resources/Templates/<templateId>/compiled.tve` и scene.json и т.п.
+> В этом PR допускается:
+>
+> * либо **переложить** в `Templates/Items/<id>/...`
+> * либо оставить существующие папки, но manifest должен указывать корректные relative paths.
+>   (предпочтительно привести к `Catalog/` + `Items/` ради релизной структуры)
 
 ---
 
-# 2) Корневая причина (строго по коду)
+## 3) Manifest contract (расширяемый)
 
-**Renderer ожидает premultiplied-alpha текстуры (см. blending factors), но PNG-ассеты грузятся как straight alpha и подаются в quad_fragment без конверсии.**
+### 3.1 JSON schema (v1)
 
-Именно поэтому слой “пластик/плёнка” визуально становится “залитым” — при малой альфе RGB остаётся ярким и добавляется почти целиком из-за `.one` в `sourceRGBBlendFactor`.
+`manifest.json` содержит:
 
----
+* массив категорий (контролируемый порядок)
+* массив шаблонов (контролируемый порядок, привязка к категории)
 
-# 3) Каноническое ТЗ на релизный универсальный фикс
+Обязательные поля:
 
-## 3.1. Цель
+**Category**
 
-Сделать так, чтобы **все image-текстуры с альфой**, используемые в рендеринге (Local assets + SharedAssets + потенциально пользовательские PNG), имели **одну каноническую альфа-конвенцию**: **premultiplied alpha**.
+* `id: String` (CategoryID)
+* `title: String` (fallback для v1)
+* `titleKey: String?` (для будущей локализации)
+* `order: Int`
 
-Это должно быть:
+**Template**
 
-* универсально (не “фикс для plastik.png”)
-* безопасно (не ломает случаи без альфы)
-* предсказуемо для будущих blend modes / экспортов
-* “release-quality” по производительности (особенно с `.private` текстурами и preloadAll)
+* `id: String` (TemplateID, напр. `"polaroid_shared_demo"`)
+* `categoryId: String`
+* `order: Int`
+* `title: String` (храним на будущее, не показываем на home v1)
+* `titleKey: String?` (будущая локализация)
+* `compiledPath: String` (relative path, напр. `"Templates/Items/polaroid_shared_demo/compiled.tve"`)
+* `previewVideoPath: String` (relative path, напр. `"Templates/Items/polaroid_shared_demo/preview.mp4"`)
+* `openBehavior: String` enum
 
-## 3.2. Каноническое решение (рекомендовано)
+  * `"previewFirst"` (тап открывает Details)
+  * `"directToEditor"` (тап сразу открывает Editor)
 
-**Переводить PNG/JPEG/WebP → premultiplied RGBA/BGRA на этапе загрузки** в едином месте (Texture Provider / Texture Factory), а не в шейдерах.
+### 3.2 Правила расширения
 
-Почему:
-
-* blending уже premult во всём движке (см. `configureBlending`)
-* конверсия в шейдере рискованна: можно “double premultiply” если где-то источник уже premult
-* единый CPU/Decode слой проще тестировать и гарантировать поведение
-
----
-
-# 4) Конкретные задачи для программиста
-
-## A) Добавить единый “PremultipliedTextureLoader” (новый модуль/файл в TVECore)
-
-**Новый файл:** `TVECore/Sources/TVECore/Assets/PremultipliedTextureLoader.swift` (или `MetalRenderer/` — на ваше усмотрение, но лучше рядом с Assets/Texture loading)
-
-### Требования к API
-
-* Вход: `URL`, `device`, `commandQueue`
-* Выход: `MTLTexture` **в premultiplied BGRA/RGBA** (канонично: `.bgra8Unorm`)
-* Должен поддерживать:
-
-  * PNG с альфой (главный кейс)
-  * PNG без альфы (просто работает)
-  * JPG (альфы нет)
-  * WebP (если iOS декодер отдаёт CGImage — ок; если нет, то fallback на MTKTextureLoader как сейчас)
-
-### Алгоритм (канонический)
-
-1. Декодировать `CGImage` через `CGImageSourceCreateWithURL`
-2. Создать `CGContext` с:
-
-   * `CGColorSpaceCreateDeviceRGB()`
-   * `bitmapInfo = byteOrder32Little + premultipliedFirst` (это BGRA premult)
-3. Нарисовать CGImage в этот контекст (тем самым получить **premultiplied** пиксели)
-4. Создать **staging buffer** (`MTLBuffer`, `.storageModeShared`) и залить туда bytes
-5. Создать итоговую `MTLTexture` **storageMode `.private`**, usage `.shaderRead`
-6. Blit-copy из buffer → private texture через `commandQueue.makeCommandBuffer() + blitEncoder.copy(...)`
-7. `commandBuffer.commit()` + `waitUntilCompleted()` (preload синхронный — контракт уже такой)
-
-**Важно:** это сохранит текущий perf-интент `.private` из `ScenePackageTextureProvider`.
+* Новые поля добавляем **без ломания** существующих (JSON decoding с default)
+* Нельзя менять семантику `id/categoryId/order/paths` без миграции (в будущем, если будет remote)
 
 ---
 
-## B) Внедрить этот loader в `ScenePackageTextureProvider`
+## 4) Data layer: TemplateCatalog (единый источник правды)
 
-Файл: `TVECore/Sources/TVECore/MetalRenderer/ScenePackageTextureProvider.swift`
+### 4.1 Новые файлы (AnimiApp/Sources/TemplatesCatalog/*)
 
-### Изменения
+Создать модульный слой (без лишних абстракций, но релизно):
 
-1. В `init` добавить зависимость `commandQueue: MTLCommandQueue` (или передавать его в `preloadAll(commandQueue:)` — второй вариант лучше, если не хотите хранить queue в провайдере)
+**Models**
 
-2. Заменить:
+* `TemplateID = String`
+* `CategoryID = String`
+* `TemplateOpenBehavior` enum
+* `TemplateDescriptor`
+* `TemplateCategory`
+* `TemplateCatalogSnapshot` (categories + templates)
 
-```swift
-return try loader.newTexture(URL: url, options: options)
-```
+**Loader**
 
-на:
+* `BundleTemplateCatalogLoader`
 
-* попытку загрузить через новый premult-loader
-* fallback на MTKTextureLoader только если CGImageSource не смог (например webp/неподдерживаемые случаи)
+  * `func loadManifest() throws -> TemplateCatalogSnapshot`
+  * грузит `Bundle.main.url(forResource: "manifest", withExtension: "json", subdirectory: "Templates/Catalog")`
+  * резолвит `compiledURL`/`previewURL` через `Bundle.main.url(forResource:..., subdirectory: ...)` либо через `bundle.url(forResource:)` + `URL(fileURLWithPath:)` (на выбор исполнителя), но результатом должны быть **валидные URL на файлы в bundle**
 
-### Почему нужен commandQueue именно здесь
+**Repository (внутренний)**
 
-Потому что сейчас вы создаёте `.private` текстуры. В `.private` нельзя безопасно `replaceRegion` с CPU, поэтому нужен staging+blit.
+* `TemplateCatalog`
 
----
+  * хранит in-memory snapshot
+  * API:
 
-## C) (Рекомендовано) Привести `UserMediaTextureFactory` к той же конвенции для PNG с альфой
+    * `load() async` (возвращает snapshot)
+    * `categoriesInOrder()`
+    * `templatesForCategory(_:)`
+    * `template(by id: TemplateID)`
 
-Файл: `AnimiApp/Sources/UserMedia/UserMediaTextureFactory.swift`
+### 4.2 Состояния загрузки
 
-Сейчас `makeTexture(from image: UIImage)` делает:
+Слой UI должен иметь state-машину:
 
-```swift
-return try textureLoader.newTexture(cgImage: cgImage, options: options)
-```
+`enum LoadState<T> { case loading, content(T), empty, error(String) }`
 
-Это может быть “иногда норм”, но для универсальности (стикеры/PNG-оверлеи пользователя с альфой) лучше:
+Правила:
 
-* прогонять `cgImage` через тот же premult контекст
-* заливать в `.private` (или оставить `.shared`, если UI-слой требует CPU-доступ, но тогда это нужно явно задокументировать)
-
-Видео (`CVPixelBuffer`) — обычно без альфы, можно оставить как есть.
-
----
-
-# 5) Acceptance Criteria (обязательные проверки)
-
-## 5.1. Функциональные
-
-1. `polaroid_shared_demo` слой `plastik.png` в edit/preview отображается **полупрозрачным**, как в исходном дизайне.
-2. Любой PNG с альфой в **SharedAssets** и **Local images/** ведёт себя корректно.
-3. Никакие PNG без альфы / JPG не ломаются.
-
-## 5.2. Технические/архитектурные
-
-1. Весь рендер остаётся на **premultiplied blending** (не менять `configureBlending`).
-2. Конверсия straight→premult происходит **один раз** на этапе загрузки.
-3. Все ассеты в `ScenePackageTextureProvider.preloadAll()` после фикса по-прежнему грузятся в `.private` (как сейчас).
-4. В runtime `texture(for:)` остаётся IO-free cache lookup (не меняем контракт).
-
-## 5.3. Тест (очень желательно, чтобы это было “релизно”)
-
-Добавить простой тест/смоук:
-
-* грузим PNG с альфа-градиентом
-* рендерим на фоне (шахматка или цвет)
-* проверяем, что пиксели соответствуют ожидаемому premult поведению (хотя бы 2–3 sample точки)
+* `empty` только если после фильтрации/валидации итоговый список категорий пуст
+* Пустые категории **не включать** в content для Home
 
 ---
 
-# 6) Минимальный план изменений по файлам
+## 5) UI: экраны и поведение
 
-1. **NEW** `TVECore/Sources/TVECore/Assets/PremultipliedTextureLoader.swift`
-2. **MOD** `TVECore/Sources/TVECore/MetalRenderer/ScenePackageTextureProvider.swift`
+## 5.1 TemplatesHomeViewController
 
-   * добавить commandQueue dependency
-   * заменить внутренний loadTexture
-3. **MOD (желательно)** `AnimiApp/Sources/UserMedia/UserMediaTextureFactory.swift`
+**Секция категории**
 
-   * унифицировать поведение для PNG с альфой
+* Заголовок (UILabel) + кнопка `See all`
+* Ниже: горизонтальный collection view (или embedded collection внутри table/collection секций)
+
+**Карточка шаблона (Home)**
+
+* Только video preview
+* Aspect ratio 1080:1920, **вписать** (не растягивать)
+* Автоплей/луп/звук off
+
+**Навигация**
+
+* Tap по карточке:
+
+  * если template.openBehavior == `directToEditor` → open editor
+  * если `previewFirst` → push TemplateDetailsViewController(templateId)
+
+**Состояния**
+
+* loading: системный индикатор/плейсхолдер
+* error: заглушка + кнопка Retry (опционально)
+* empty: заглушка “No templates”
 
 ---
 
-Если хочешь, я могу прямо следующим сообщением оформить это как **готовый PR-документ** для программиста (в стиле вашего проекта: “контракт/инварианты/код-якоря/риски/план миграции/чеклист”), чтобы его можно было без редактирования закинуть в GitHub как описание задачи.
+## 5.2 CategoryTemplatesViewController (See all)
+
+* Заголовок = category title/titleKey
+* Grid 2 колонки (UICollectionViewFlowLayout)
+* Те же карточки preview.mp4
+* Tap behavior: как на Home (per-template openBehavior)
+
+---
+
+## 5.3 TemplateDetailsViewController
+
+* Full-screen video preview (preview.mp4)
+* Loop + autoplay, звук off
+* **Close**: возвращает на Home (navigationController?.popViewController или dismiss — зависит от способа показа; в v1 используем push → значит pop)
+* **Use template**: открывает editor (push)
+
+---
+
+## 6) Video preview implementation (релизные правила)
+
+### 6.1 Требования
+
+* Звук всегда off
+* Loop всегда on
+* Autoplay только когда карточка **видима**
+* Stop/pause при:
+
+  * уходе карточки с экрана
+  * уходе экрана (viewWillDisappear)
+  * быстрый скролл
+
+### 6.2 Реализация (без оверинжиниринга)
+
+Создать `PreviewVideoView` или `PreviewVideoPlayer`:
+
+* внутри `AVPlayer` + `AVPlayerLayer`
+* методы:
+
+  * `configure(url:)`
+  * `play() / pause()`
+  * `setMuted(true)`
+  * loop через `NotificationCenter` (AVPlayerItemDidPlayToEndTime → seek(to: .zero) + play) **только если view still visible**
+
+Для коллекции:
+
+* `willDisplay cell` → play
+* `didEndDisplaying cell` → pause + optionally nil out playerItem
+* при `scrollViewDidEndDecelerating` / `scrollViewDidEndDragging` можно “доподжать” play для видимых
+
+---
+
+## 7) Навигация и интеграция с существующим кодом
+
+### 7.1 Обязательное изменение
+
+**`AnimiApp/Sources/App/SceneDelegate.swift`**
+
+* заменить root на `UINavigationController`
+* стартовый VC: `TemplatesHomeViewController`
+
+Это строго следует текущей UIKit-архитектуре snapshot (см. anchor 1.1).
+
+### 7.2 Переиспользование PlayerViewController
+
+`PlayerViewController` сейчас — debug/engine playground и имеет свою UI-обвязку (segmented control, export, etc.).
+В этом PR:
+
+* **не использовать PlayerViewController как Home/Details**
+* Editor остаётся как отдельный flow (уже есть `TemplateEditorController`)
+
+---
+
+## 8) Acceptance Criteria (что считается “готово”)
+
+1. Приложение стартует в Home (TemplatesHome) внутри UINavigationController.
+2. Home показывает категории в порядке `order`, пустые категории скрыты.
+3. В каждой категории горизонтальный слайдер:
+
+   * на экране видно ровно 2 карточки
+   * можно скроллить вправо
+4. Видео в карточках:
+
+   * autoplay + loop
+   * mute
+   * играет только у видимых карточек; уехала — остановилась
+5. See all открывается из кнопки и показывает grid 2 колонки для выбранной категории.
+6. Tap по карточке работает per-template:
+
+   * directToEditor → сразу editor
+   * previewFirst → details
+7. Details:
+
+   * full-screen preview (loop/autoplay/mute)
+   * Close возвращает на Home
+   * Use template открывает editor
+8. Поддержаны состояния loading/empty/error на всех 3 экранах (Home/SeeAll/Details), источником правды является Catalog load.
+
+---
+
+## 9) Изменения/добавления файлов (конкретно)
+
+### Изменить
+
+* `AnimiApp/Sources/App/SceneDelegate.swift` — root navigation + Home
+
+### Добавить (примерная структура)
+
+* `AnimiApp/Sources/TemplatesCatalog/TemplateModels.swift`
+* `AnimiApp/Sources/TemplatesCatalog/BundleTemplateCatalogLoader.swift`
+* `AnimiApp/Sources/TemplatesCatalog/TemplateCatalog.swift`
+* `AnimiApp/Sources/TemplatesUI/TemplatesHomeViewController.swift`
+* `AnimiApp/Sources/TemplatesUI/CategoryTemplatesViewController.swift`
+* `AnimiApp/Sources/TemplatesUI/TemplateDetailsViewController.swift`
+* `AnimiApp/Sources/TemplatesUI/PreviewVideoView.swift`
+* `AnimiApp/Sources/TemplatesUI/Cells/TemplatePreviewCell.swift`
+* `AnimiApp/Resources/Templates/Catalog/manifest.json`
+* * `preview.mp4` файлы в `Resources/Templates/Items/<id>/preview.mp4`
+
+---
+
+Если хочешь, следующим сообщением я сразу дам **готовый `manifest.json` шаблон (пример)** + точную разметку размеров для “ровно 2 карточки на экране” (формулы для itemSize/sectionInsets/spacing), но это уже будет сверх ТЗ.

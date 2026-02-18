@@ -46,6 +46,16 @@ struct SceneVariantPreset {
     let mapping: [String: String]  // blockId -> variantId
 }
 
+// MARK: - Player Presentation Mode (PR-Templates)
+
+/// Defines how PlayerViewController is presented and what UI is shown.
+enum PlayerPresentationMode {
+    /// Development mode - full debug UI (default when no mode specified)
+    case dev
+    /// Editor mode from Templates catalog - hides dev UI, auto-loads template
+    case editor(templateId: String)
+}
+
 // MARK: - PR-D: Async Loading Helper Structs
 
 /// Result from background phase of template loading.
@@ -64,6 +74,30 @@ private struct SceneSetupResult {
 /// Main player view controller with Metal rendering surface and debug log.
 /// Supports full scene playback with multiple media blocks.
 final class PlayerViewController: UIViewController {
+
+    // MARK: - Presentation Mode (PR-Templates)
+
+    /// Current presentation mode (dev vs editor from catalog)
+    private var presentationMode: PlayerPresentationMode = .dev
+
+    // MARK: - Initializers
+
+    /// Initializer with specific presentation mode
+    init(mode: PlayerPresentationMode) {
+        self.presentationMode = mode
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    /// Default initializer for dev mode
+    override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
+        self.presentationMode = .dev
+        super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
+    }
+
+    required init?(coder: NSCoder) {
+        self.presentationMode = .dev
+        super.init(coder: coder)
+    }
 
     // MARK: - UI Components
 
@@ -442,6 +476,13 @@ final class PlayerViewController: UIViewController {
     private var metalViewLeadingConstraint: NSLayoutConstraint?
     private var metalViewTrailingConstraint: NSLayoutConstraint?
 
+    // Editor mode layout constraints (PR-Templates)
+    private var exportButtonTopToTemplateSelectorConstraint: NSLayoutConstraint?
+    private var exportButtonTopToContentViewConstraint: NSLayoutConstraint?
+    private var logTextViewHeightConstraint: NSLayoutConstraint?
+    private var logTextViewBottomConstraint: NSLayoutConstraint?
+    private var mainControlsStackBottomConstraint: NSLayoutConstraint?
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -449,15 +490,62 @@ final class PlayerViewController: UIViewController {
         setupUI()
         setupRenderer()
         wireEditorController()
+        applyPresentationMode()
         let deviceName = metalView.device?.name ?? "N/A"
         log("AnimiApp initialized, TVECore: \(TVECore.version), Metal: \(deviceName)")
 
-        // PR4: Auto-load default template on startup
-        // In Release builds, load pre-compiled template automatically
-        // In Debug builds, user can select and load via Load Scene button
-        #if !DEBUG
-        loadCompiledTemplateFromBundle(templateName: "example_4blocks")
-        #endif
+        // PR-Templates: Handle auto-load based on presentation mode
+        switch presentationMode {
+        case .dev:
+            // PR4: Auto-load default template on startup
+            // In Release builds, load pre-compiled template automatically
+            // In Debug builds, user can select and load via Load Scene button
+            #if !DEBUG
+            loadCompiledTemplateFromBundle(templateName: "example_4blocks")
+            #endif
+        case .editor(let templateId):
+            // Auto-load the selected template from catalog
+            loadCompiledTemplateFromBundle(templateName: templateId)
+        }
+    }
+
+    /// Applies UI changes based on presentation mode (PR-Templates)
+    private func applyPresentationMode() {
+        switch presentationMode {
+        case .dev:
+            // Show all dev UI
+            templateSelector.isHidden = false
+            logTextView.isHidden = false
+
+            // Restore dev mode constraints
+            exportButtonTopToContentViewConstraint?.isActive = false
+            exportButtonTopToTemplateSelectorConstraint?.isActive = true
+
+            mainControlsStackBottomConstraint?.isActive = false
+            logTextViewHeightConstraint?.isActive = true
+            logTextViewBottomConstraint?.isActive = true
+
+        case .editor:
+            // Hide dev-only UI in editor mode
+            templateSelector.isHidden = true
+            logTextView.isHidden = true
+
+            // Collapse layout: switch constraints so hidden views don't take space
+            exportButtonTopToTemplateSelectorConstraint?.isActive = false
+            exportButtonTopToContentViewConstraint?.isActive = true
+
+            logTextViewHeightConstraint?.isActive = false
+            logTextViewBottomConstraint?.isActive = false
+            mainControlsStackBottomConstraint?.isActive = true
+        }
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Show navigation bar in editor mode (system Back button)
+        if case .editor = presentationMode {
+            navigationController?.setNavigationBarHidden(false, animated: animated)
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -622,13 +710,17 @@ final class PlayerViewController: UIViewController {
         ])
         #else
         // RELEASE: templateSelector at top, exportButton, then modeToggle
+        // Store switchable constraints for editor mode (PR-Templates)
+        exportButtonTopToTemplateSelectorConstraint = exportButton.topAnchor.constraint(equalTo: templateSelector.bottomAnchor, constant: 8)
+        exportButtonTopToContentViewConstraint = exportButton.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
+
         NSLayoutConstraint.activate([
             templateSelector.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
             templateSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             templateSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
 
-            // Export button below templateSelector in Release
-            exportButton.topAnchor.constraint(equalTo: templateSelector.bottomAnchor, constant: 8),
+            // Export button below templateSelector in Release (default, switched in editor mode)
+            exportButtonTopToTemplateSelectorConstraint!,
 
             modeToggle.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 8),
             modeToggle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
@@ -676,9 +768,16 @@ final class PlayerViewController: UIViewController {
             logTextView.topAnchor.constraint(equalTo: mainControlsStack.bottomAnchor, constant: 12),
             logTextView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             logTextView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            logTextView.heightAnchor.constraint(equalToConstant: 150),
-            logTextView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
         ])
+
+        // Store switchable constraints for editor mode (PR-Templates)
+        logTextViewHeightConstraint = logTextView.heightAnchor.constraint(equalToConstant: 150)
+        logTextViewBottomConstraint = logTextView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16)
+        mainControlsStackBottomConstraint = mainControlsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16)
+
+        // Activate default constraints (dev mode)
+        logTextViewHeightConstraint?.isActive = true
+        logTextViewBottomConstraint?.isActive = true
 
         // Remove corner radius from metalView (full-width, no rounding)
         metalView.layer.cornerRadius = 0

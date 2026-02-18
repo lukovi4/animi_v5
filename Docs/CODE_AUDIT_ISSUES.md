@@ -1,7 +1,9 @@
 # CODE AUDIT ISSUES — Full Issue Register
 
-Snapshot date (issue list generated): 2026-02-11  
-Evidence policy: **Every issue includes 1..N code anchors (5–15 lines each).**  
+Snapshot date (issue list generated): 2026-02-11
+**Last updated:** 2026-02-18 (added Templates Catalog section)
+
+Evidence policy: **Every issue includes 1..N code anchors (5–15 lines each).**
 No fixes proposed here — only risks/problems provable from snapshot.
 
 ---
@@ -652,7 +654,8 @@ fi
 
 ## Aggregated counts (from this register)
 
-- **By severity:** P0 = 0, P1 = 0, P2 = 6, P3 = 1
+- **By severity:** P0 = 0, P1 = 0, P2 = 7, P3 = 1
+- **Resolved issues:** P0 = 2 (EXP-001, TPL-001), P1 = 3 (TPL-001..003), P2 = 1 (TPL-001)
 - **By category:**
   - Performance / File I/O: 1 (P2 — Debug-only)
   - Bug / Crash potential: 2 (P2)
@@ -661,3 +664,317 @@ fi
   - UX-tech: 1
   - Architecture / Testing: 1
   - Tooling / Process Risk: 1
+  - Layout / AutoLayout: 1 (P2-TPL-002 — Templates Catalog)
+
+---
+
+## Export Pipeline Issues (added 2026-02-17)
+
+### ID: P0-EXP-001 (RESOLVED)
+- **Severity:** P0 → RESOLVED
+- **Category:** UX / Cancel Flow
+- **Scope:** Export cancel flow could leave Export button disabled and late callbacks could cause UI glitches
+- **Impact:** User would be unable to export again without restarting app; possible double dismiss/alert
+- **Status:** RESOLVED (2026-02-17)
+- **Resolution:**
+  1. Added `exportButton.isEnabled = true` in `onCancel` handler
+  2. Added `wasCancelled` flag to ignore late completion callbacks
+
+**Code anchor (fix)**
+- `AnimiApp/Sources/Player/PlayerViewController.swift`
+- `startExport() — cancel flow with wasCancelled flag`
+```swift
+var wasCancelled = false
+
+progressVC.onCancel = { [weak self, weak exporter] in
+    wasCancelled = true
+    exporter?.cancel()
+    self?.isExporting = false
+    self?.exportButton.isEnabled = true  // Fix 1: restore button
+    self?.videoExporter = nil
+    self?.dismiss(animated: true)
+}
+
+// In completion:
+guard !wasCancelled else {
+    self.log("[Export] Completion ignored (was cancelled)")
+    return
+}
+```
+
+---
+
+### ID: P2-EXP-001
+- **Severity:** P2 (nice to fix)
+- **Category:** Concurrency / Type Safety
+- **Scope:** `InFlightFrame` is `@unchecked Sendable`
+- **Impact:** Bypasses compiler enforcement for sendability. However, the class is immutable after init and only passed from export queue to writer queue.
+- **Status (snapshot):** CONFIRMED — acceptable due to immutable design
+- **Evidence:**
+
+**Code anchor**
+- `AnimiApp/Sources/Export/VideoExporter.swift`
+- `InFlightFrame @unchecked Sendable`
+```swift
+final class InFlightFrame: @unchecked Sendable {
+    let pixelBuffer: CVPixelBuffer
+    let cvMetalTexture: CVMetalTexture
+    let mtlTexture: MTLTexture
+    let presentationTime: CMTime
+
+    init(
+        pixelBuffer: CVPixelBuffer,
+        cvMetalTexture: CVMetalTexture,
+        mtlTexture: MTLTexture,
+        presentationTime: CMTime
+    ) { ... }
+}
+```
+
+- **Notes:** All properties are `let` (immutable). Safe in practice but could be improved.
+
+---
+
+### ID: P2-EXP-002
+- **Severity:** P2 (nice to fix)
+- **Category:** Performance
+- **Scope:** `ExportTextureProvider.preloadAll()` uses NSLock for each asset
+- **Impact:** Lock contention possible during preload phase with many assets
+- **Status (snapshot):** CONFIRMED — acceptable for current asset counts
+- **Evidence:**
+
+**Code anchor**
+- `AnimiApp/Sources/Export/ExportTextureProvider.swift`
+- `preloadAll() with per-asset locking`
+```swift
+public func preloadAll(commandQueue: MTLCommandQueue) {
+    for (assetId, basename) in assetIndex.basenameById {
+        // Skip already cached
+        lock.lock()
+        let alreadyCached = cache[assetId] != nil
+        lock.unlock()
+
+        if alreadyCached { continue }
+        // ... load texture ...
+
+        lock.lock()
+        cache[assetId] = texture
+        lock.unlock()
+    }
+}
+```
+
+- **Notes:** Could be optimized with batch locking, but current performance is acceptable.
+
+---
+
+## Export Pipeline Design Notes
+
+### Thread Safety Model
+
+| Component | Thread | Synchronization |
+|-----------|--------|-----------------|
+| `VideoExporter.exportVideo()` | MainActor | Entry point captures snapshots |
+| `VideoExporter.runExportLoop()` | exportQueue | Background frame stepping |
+| `VideoExporter` append | writerQueue | Serial queue for AVAssetWriter |
+| `ExportTextureProvider` | Any | NSLock for cache access |
+| `ExportVideoSlotsCoordinator` | exportQueue | Single-threaded access |
+| `AudioWriterPump` | writerQueue | Shares queue with video appends |
+
+### In-Flight Pipelining
+
+- `maxFramesInFlight` semaphore controls GPU backpressure
+- `videoGroup` DispatchGroup ensures all frames complete before finalization
+- `commandBuffer.addCompletedHandler` moves append to writerQueue after GPU completion
+
+### Cancel Flow
+
+1. `VideoExporter.cancel()` sets `_isCancelled` flag (thread-safe via NSLock)
+2. Export loop checks `isCancelled()` before each frame
+3. `onCancel` handler in PlayerViewController sets `wasCancelled` local flag
+4. Late completion callbacks check `wasCancelled` and exit early
+5. Export button is re-enabled in `onCancel`
+
+### Error Propagation
+
+- `setExportErrorOnce()` captures first error (thread-safe)
+- Export loop checks `exportError()` before each frame
+- `ExportVideoSlotsCoordinator.providerError` propagates video decode errors
+
+---
+
+## Templates Catalog Issues (added 2026-02-18)
+
+### ID: P0-TPL-001 (RESOLVED)
+- **Severity:** P0 → RESOLVED
+- **Category:** UX / Navigation
+- **Scope:** Navigation bar hidden after Details → Editor flow
+- **Impact:** User would have no Back button in editor mode, unable to return to catalog
+- **Status:** RESOLVED (2026-02-18)
+- **Resolution:** Added `viewWillAppear` in `PlayerViewController` to restore nav bar for `.editor` mode
+
+**Code anchor (fix)**
+- `AnimiApp/Sources/Player/PlayerViewController.swift`
+- `viewWillAppear — restore nav bar for editor mode`
+```swift
+override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    // Show navigation bar in editor mode (system Back button)
+    if case .editor = presentationMode {
+        navigationController?.setNavigationBarHidden(false, animated: animated)
+    }
+}
+```
+
+---
+
+### ID: P1-TPL-001 (RESOLVED)
+- **Severity:** P1 → RESOLVED
+- **Category:** Performance / File I/O
+- **Scope:** Synchronous IO on MainActor in `TemplateCatalog.load()`
+- **Impact:** UI freeze while loading manifest.json and resolving URLs
+- **Status:** RESOLVED (2026-02-18)
+- **Resolution:** Used `Task.detached` for background IO in `TemplateCatalog.load()`
+
+**Code anchor (fix)**
+- `AnimiApp/Sources/TemplatesCatalog/TemplateCatalog.swift`
+- `load() — Task.detached for background IO`
+```swift
+let loaded = try await Task.detached(priority: .userInitiated) {
+    try loader.loadManifest()
+}.value
+```
+
+---
+
+### ID: P1-TPL-002 (RESOLVED)
+- **Severity:** P1 → RESOLVED
+- **Category:** Performance / Concurrency
+- **Scope:** Busy-wait polling with `while/sleep` for catalog loading
+- **Impact:** CPU spinning while waiting for catalog load
+- **Status:** RESOLVED (2026-02-18)
+- **Resolution:** Replaced polling with single `loadTask: Task<Result<...>, Never>?` pattern
+
+**Code anchor (fix)**
+- `AnimiApp/Sources/TemplatesCatalog/TemplateCatalog.swift`
+- `loadTask pattern — no polling`
+```swift
+private var loadTask: Task<Result<TemplateCatalogSnapshot, Error>, Never>?
+
+func load() async -> Result<TemplateCatalogSnapshot, Error> {
+    if let snapshot = snapshot { return .success(snapshot) }
+    if let existingTask = loadTask { return await existingTask.value }
+    // ... create loadTask ...
+}
+```
+
+---
+
+### ID: P1-TPL-003 (RESOLVED)
+- **Severity:** P1 → RESOLVED
+- **Category:** Performance
+- **Scope:** Filter/sort on every `cellForItemAt` in TemplatesHomeViewController
+- **Impact:** O(n) filter + O(n log n) sort on every cell dequeue
+- **Status:** RESOLVED (2026-02-18)
+- **Resolution:** Cache `templatesByCategory: [CategoryID: [TemplateDescriptor]]` on load
+
+**Code anchor (fix)**
+- `AnimiApp/Sources/TemplatesUI/TemplatesHomeViewController.swift`
+- `templatesByCategory cache`
+```swift
+private var templatesByCategory: [CategoryID: [TemplateDescriptor]] = [:]
+
+// In loadCatalog:
+templatesByCategory = Dictionary(grouping: snapshot.templates, by: \.categoryId)
+    .mapValues { $0.sorted { $0.order < $1.order } }
+```
+
+---
+
+### ID: P2-TPL-001 (RESOLVED)
+- **Severity:** P2 → RESOLVED
+- **Category:** UX / Background Handling
+- **Scope:** PreviewVideoView no background/foreground handling
+- **Impact:** Video continues playing in background; doesn't resume on return
+- **Status:** RESOLVED (2026-02-18)
+- **Resolution:** Added notification observers for `willResignActive`/`didBecomeActive`
+
+**Code anchor (fix)**
+- `AnimiApp/Sources/TemplatesUI/PreviewVideoView.swift`
+- `Background/foreground observers`
+```swift
+resignActiveObserver = NotificationCenter.default.addObserver(
+    forName: UIApplication.willResignActiveNotification,
+    object: nil, queue: .main
+) { [weak self] _ in self?.player?.pause() }
+
+becomeActiveObserver = NotificationCenter.default.addObserver(
+    forName: UIApplication.didBecomeActiveNotification,
+    object: nil, queue: .main
+) { [weak self] _ in
+    guard let self = self, self.isVisible else { return }
+    self.player?.play()
+}
+```
+
+---
+
+### ID: P2-TPL-002
+- **Severity:** P2 (nice to fix)
+- **Category:** Layout / AutoLayout
+- **Scope:** In `.editor` mode, `logTextView` constraint deactivation may cause ambiguous height warning
+- **Impact:** Console warning only; UI displays correctly
+- **Status (snapshot):** CONFIRMED — non-blocking
+- **Potential fix:** Use `heightConstraint.constant = 0` instead of `isActive = false`
+
+**Code anchor**
+- `AnimiApp/Sources/Player/PlayerViewController.swift`
+- `applyPresentationMode() — editor mode constraints`
+```swift
+case .editor:
+    templateSelector.isHidden = true
+    logTextView.isHidden = true
+    exportButtonTopToTemplateSelectorConstraint?.isActive = false
+    exportButtonTopToContentViewConstraint?.isActive = true
+    logTextViewHeightConstraint?.isActive = false  // May cause ambiguous height warning
+    logTextViewBottomConstraint?.isActive = false
+    mainControlsStackBottomConstraint?.isActive = true
+```
+
+- **Notes:** View is hidden, so warning is cosmetic. Fix deferred to future cleanup.
+
+---
+
+## Templates Catalog Design Notes
+
+### URL Resolution
+
+| Path Type | Resolution |
+|-----------|------------|
+| `compiled.tve` | Returns **folder URL** (not file) — PlayerViewController expects folder |
+| `preview.mp4` | Returns **file URL** via `Bundle.url(forResource:...)` |
+| Other assets | Direct file lookup with NSString path parsing |
+
+### NSString Path Parsing
+
+Using `NSString` methods (`deletingLastPathComponent`, `lastPathComponent`, `pathExtension`) instead of `URL(fileURLWithPath:)` to avoid leading "/" issue:
+
+```swift
+// WRONG: URL(fileURLWithPath:) adds leading "/"
+URL(fileURLWithPath: "Templates/foo/compiled.tve").deletingLastPathComponent().path
+// → "/Templates/foo"  ← breaks Bundle.url(subdirectory:)
+
+// CORRECT: NSString preserves relative path
+(relativePath as NSString).deletingLastPathComponent
+// → "Templates/foo"  ← works with Bundle.url(subdirectory:)
+```
+
+### Navigation Stack
+
+```
+UINavigationController
+    └── TemplatesHomeViewController (root, nav bar hidden)
+            └── TemplatesSeeAllViewController (pushed, nav bar visible)
+            └── TemplateDetailsViewController (pushed, nav bar hidden)
+                    └── PlayerViewController(.editor) (pushed, nav bar visible via viewWillAppear)
+```

@@ -11,11 +11,16 @@
 		26C0F8F6AB35CD9093B0E789 /* UserMediaTextureFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */; };
 		2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88357A08E23A0E79039FC032 /* TemplateEditorController.swift */; };
 		404981E927E535F603698579 /* PlayerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 309F76627D024207657CC40A /* PlayerViewController.swift */; };
-		PRD0000000001 /* PreparingOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRD0000000002 /* PreparingOverlayView.swift */; };
 		5730DA4CA9AA56F5D0794FD6 /* TVECore in Frameworks */ = {isa = PBXBuildFile; productRef = C660994DFEAC165D15AE3107 /* TVECore */; };
-		PR4COMPILER0001 /* TVECompilerCore in Frameworks */ = {isa = PBXBuildFile; productRef = PR4COMPILER0002 /* TVECompilerCore */; };
+		5C03F11F2F457D20000936EA /* TemplateCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C03F11C2F457D20000936EA /* TemplateCatalog.swift */; };
+		5C03F1202F457D20000936EA /* TemplateModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C03F11D2F457D20000936EA /* TemplateModels.swift */; };
+		5C03F1212F457D20000936EA /* BundleTemplateCatalogLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C03F11B2F457D20000936EA /* BundleTemplateCatalogLoader.swift */; };
+		5C03F1282F457D3C000936EA /* TemplateDetailsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C03F1242F457D3C000936EA /* TemplateDetailsViewController.swift */; };
+		5C03F1292F457D3C000936EA /* TemplatesHomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C03F1262F457D3C000936EA /* TemplatesHomeViewController.swift */; };
+		5C03F12A2F457D3C000936EA /* TemplatePreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C03F1252F457D3C000936EA /* TemplatePreviewCell.swift */; };
+		5C03F12B2F457D3C000936EA /* PreviewVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C03F1232F457D3C000936EA /* PreviewVideoView.swift */; };
+		5C03F12C2F457D3C000936EA /* CategoryTemplatesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C03F1222F457D3C000936EA /* CategoryTemplatesViewController.swift */; };
 		634873BF88B7C4366E03297A /* VideoFrameProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19F78E6B097B29EDF323138 /* VideoFrameProvider.swift */; };
-		PERF1234567890ABCDEF0001 /* PerfLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = PERF1234567890ABCDEF0002 /* PerfLogger.swift */; };
 		6D8ECBA9A63E3BBE961807B1 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D531F2B70470609DAAEC0E92 /* SceneDelegate.swift */; };
 		70F7C5CF6D0F9A28D9BF27D3 /* TestAssets in Resources */ = {isa = PBXBuildFile; fileRef = 2BF0652B3DD5E20359F327E7 /* TestAssets */; };
 		8417606871FCEA18666AF617 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2CFCF74F9E5906B8855CBA71 /* Assets.xcassets */; };
@@ -23,7 +28,10 @@
 		912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945142E5769BD54EFED06588 /* EditorOverlayView.swift */; };
 		C5D500A921DF5C5F4217977C /* SharedAssets in Resources */ = {isa = PBXBuildFile; fileRef = 9FA23A16733352E76F88080F /* SharedAssets */; };
 		CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9681217003171DED246CF7A /* AppDelegate.swift */; };
+		PERF1234567890ABCDEF0001 /* PerfLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = PERF1234567890ABCDEF0002 /* PerfLogger.swift */; };
+		PR4COMPILER0001 /* TVECompilerCore in Frameworks */ = {isa = PBXBuildFile; productRef = PR4COMPILER0002 /* TVECompilerCore */; };
 		PR4TEMPLATES0001 /* Templates in Resources */ = {isa = PBXBuildFile; fileRef = PR4TEMPLATES0002 /* Templates */; };
+		PRD0000000001 /* PreparingOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRD0000000002 /* PreparingOverlayView.swift */; };
 		PRE4EXP0001 /* AudioCompositionBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0011 /* AudioCompositionBuilder.swift */; };
 		PRE4EXP0002 /* AudioWriterPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0012 /* AudioWriterPump.swift */; };
 		PRE4EXP0003 /* ExportTextureProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = PRE4EXP0013 /* ExportTextureProvider.swift */; };
@@ -38,7 +46,14 @@
 		2BF0652B3DD5E20359F327E7 /* TestAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TestAssets; path = ../TestAssets; sourceTree = SOURCE_ROOT; };
 		2CFCF74F9E5906B8855CBA71 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		309F76627D024207657CC40A /* PlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViewController.swift; sourceTree = "<group>"; };
-		PRD0000000002 /* PreparingOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparingOverlayView.swift; sourceTree = "<group>"; };
+		5C03F11B2F457D20000936EA /* BundleTemplateCatalogLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleTemplateCatalogLoader.swift; sourceTree = "<group>"; };
+		5C03F11C2F457D20000936EA /* TemplateCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateCatalog.swift; sourceTree = "<group>"; };
+		5C03F11D2F457D20000936EA /* TemplateModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateModels.swift; sourceTree = "<group>"; };
+		5C03F1222F457D3C000936EA /* CategoryTemplatesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryTemplatesViewController.swift; sourceTree = "<group>"; };
+		5C03F1232F457D3C000936EA /* PreviewVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewVideoView.swift; sourceTree = "<group>"; };
+		5C03F1242F457D3C000936EA /* TemplateDetailsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateDetailsViewController.swift; sourceTree = "<group>"; };
+		5C03F1252F457D3C000936EA /* TemplatePreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplatePreviewCell.swift; sourceTree = "<group>"; };
+		5C03F1262F457D3C000936EA /* TemplatesHomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplatesHomeViewController.swift; sourceTree = "<group>"; };
 		6A04D252BCD74F091A0FA0C8 /* TVECore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TVECore; path = ../TVECore; sourceTree = SOURCE_ROOT; };
 		7AEA66CBE6EB5B30975CB68C /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		88357A08E23A0E79039FC032 /* TemplateEditorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateEditorController.swift; sourceTree = "<group>"; };
@@ -52,6 +67,7 @@
 		FC49A46FA18BE025E45C3184 /* UserMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaService.swift; sourceTree = "<group>"; };
 		PERF1234567890ABCDEF0002 /* PerfLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerfLogger.swift; sourceTree = "<group>"; };
 		PR4TEMPLATES0002 /* Templates */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Templates; sourceTree = "<group>"; };
+		PRD0000000002 /* PreparingOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparingOverlayView.swift; sourceTree = "<group>"; };
 		PRE4EXP0011 /* AudioCompositionBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCompositionBuilder.swift; sourceTree = "<group>"; };
 		PRE4EXP0012 /* AudioWriterPump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWriterPump.swift; sourceTree = "<group>"; };
 		PRE4EXP0013 /* ExportTextureProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportTextureProvider.swift; sourceTree = "<group>"; };
@@ -94,9 +110,33 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		5C03F11E2F457D20000936EA /* TemplatesCatalog */ = {
+			isa = PBXGroup;
+			children = (
+				5C03F11B2F457D20000936EA /* BundleTemplateCatalogLoader.swift */,
+				5C03F11C2F457D20000936EA /* TemplateCatalog.swift */,
+				5C03F11D2F457D20000936EA /* TemplateModels.swift */,
+			);
+			path = TemplatesCatalog;
+			sourceTree = "<group>";
+		};
+		5C03F1272F457D3C000936EA /* TemplatesUI */ = {
+			isa = PBXGroup;
+			children = (
+				5C03F1222F457D3C000936EA /* CategoryTemplatesViewController.swift */,
+				5C03F1232F457D3C000936EA /* PreviewVideoView.swift */,
+				5C03F1242F457D3C000936EA /* TemplateDetailsViewController.swift */,
+				5C03F1252F457D3C000936EA /* TemplatePreviewCell.swift */,
+				5C03F1262F457D3C000936EA /* TemplatesHomeViewController.swift */,
+			);
+			path = TemplatesUI;
+			sourceTree = "<group>";
+		};
 		6CA488A52B38F2680625E762 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				5C03F1272F457D3C000936EA /* TemplatesUI */,
+				5C03F11E2F457D20000936EA /* TemplatesCatalog */,
 				E5ECE540AAD3F6F6FE110D7F /* App */,
 				AB885C05AC47A6617B0FB4FE /* Editor */,
 				PRE4EXP0020 /* Export */,
@@ -104,20 +144,6 @@
 				CD4563A8559BB859E46BEC71 /* UserMedia */,
 			);
 			path = Sources;
-			sourceTree = "<group>";
-		};
-		PRE4EXP0020 /* Export */ = {
-			isa = PBXGroup;
-			children = (
-				PRE4EXP0011 /* AudioCompositionBuilder.swift */,
-				PRE4EXP0012 /* AudioWriterPump.swift */,
-				PRE4EXP0017 /* ExportProgressViewController.swift */,
-				PRE4EXP0013 /* ExportTextureProvider.swift */,
-				PRE4EXP0014 /* ExportVideoFrameProvider.swift */,
-				PRE4EXP0015 /* ExportVideoSlotsCoordinator.swift */,
-				PRE4EXP0016 /* VideoExporter.swift */,
-			);
-			path = Export;
 			sourceTree = "<group>";
 		};
 		8405B0FB569F6CFAD1EB74CF /* Products */ = {
@@ -177,6 +203,20 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		PRE4EXP0020 /* Export */ = {
+			isa = PBXGroup;
+			children = (
+				PRE4EXP0011 /* AudioCompositionBuilder.swift */,
+				PRE4EXP0012 /* AudioWriterPump.swift */,
+				PRE4EXP0017 /* ExportProgressViewController.swift */,
+				PRE4EXP0013 /* ExportTextureProvider.swift */,
+				PRE4EXP0014 /* ExportVideoFrameProvider.swift */,
+				PRE4EXP0015 /* ExportVideoSlotsCoordinator.swift */,
+				PRE4EXP0016 /* VideoExporter.swift */,
+			);
+			path = Export;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -203,27 +243,6 @@
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		PR4SCRIPT000001 /* Verify Release Templates */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Verify Release Templates";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/bash;
-			shellScript = "# PR4: Clean Release bundle - only runs in Release configuration\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n    echo \"Cleaning Release template bundle...\"\n    BUNDLE_PATH=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\n    \n    # Remove source animation JSON files from bundle\n    find \"$BUNDLE_PATH\" \\( -name \"anim-*.json\" -o -name \"no-anim.json\" \\) -delete 2>/dev/null\n    echo \"Removed source animation files from bundle\"\n    \n    # Remove scene.json from bundle (only compiled.tve needed)\n    find \"$BUNDLE_PATH\" -name \"scene.json\" -delete 2>/dev/null\n    echo \"Removed scene.json files from bundle\"\n    \n    # Verify compiled.tve exists for all templates\n    TEMPLATES_DIR=\"$BUNDLE_PATH/Templates\"\n    if [ -d \"$TEMPLATES_DIR\" ]; then\n        for template_dir in \"$TEMPLATES_DIR\"/*/; do\n            if [ ! -f \"$template_dir/compiled.tve\" ]; then\n                echo \"error: Template $(basename \"$template_dir\") is missing compiled.tve\"\n                echo \"Run Scripts/compile_templates.sh before building Release\"\n                exit 1\n            fi\n        done\n    fi\n    \n    echo \"Release bundle cleanup complete\"\nfi\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXProject section */
 		D4035B6B9A7CD4FEDF854712 /* Project object */ = {
@@ -273,11 +292,40 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		PR4SCRIPT000001 /* Verify Release Templates */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Verify Release Templates";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "# PR4: Clean Release bundle - only runs in Release configuration\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n    echo \"Cleaning Release template bundle...\"\n    BUNDLE_PATH=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\n    \n    # Remove source animation JSON files from bundle\n    find \"$BUNDLE_PATH\" \\( -name \"anim-*.json\" -o -name \"no-anim.json\" \\) -delete 2>/dev/null\n    echo \"Removed source animation files from bundle\"\n    \n    # Remove scene.json from bundle (only compiled.tve needed)\n    find \"$BUNDLE_PATH\" -name \"scene.json\" -delete 2>/dev/null\n    echo \"Removed scene.json files from bundle\"\n    \n    # Verify compiled.tve exists for all templates\n    TEMPLATES_DIR=\"$BUNDLE_PATH/Templates\"\n    if [ -d \"$TEMPLATES_DIR\" ]; then\n        for template_dir in \"$TEMPLATES_DIR\"/*/; do\n            # Skip Catalog directory (contains manifest.json, not a template)\n            if [ \"$(basename \"$template_dir\")\" = \"Catalog\" ]; then\n                continue\n            fi\n            if [ ! -f \"$template_dir/compiled.tve\" ]; then\n                echo \"error: Template $(basename \"$template_dir\") is missing compiled.tve\"\n                echo \"Run Scripts/compile_templates.sh before building Release\"\n                exit 1\n            fi\n        done\n    fi\n    \n    echo \"Release bundle cleanup complete\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		9C218C7383C3B91BD8E2DF1D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5C03F11F2F457D20000936EA /* TemplateCatalog.swift in Sources */,
+				5C03F1202F457D20000936EA /* TemplateModels.swift in Sources */,
+				5C03F1282F457D3C000936EA /* TemplateDetailsViewController.swift in Sources */,
+				5C03F1292F457D3C000936EA /* TemplatesHomeViewController.swift in Sources */,
+				5C03F12A2F457D3C000936EA /* TemplatePreviewCell.swift in Sources */,
+				5C03F12B2F457D3C000936EA /* PreviewVideoView.swift in Sources */,
+				5C03F12C2F457D3C000936EA /* CategoryTemplatesViewController.swift in Sources */,
+				5C03F1212F457D20000936EA /* BundleTemplateCatalogLoader.swift in Sources */,
 				CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */,
 				PRE4EXP0001 /* AudioCompositionBuilder.swift in Sources */,
 				PRE4EXP0002 /* AudioWriterPump.swift in Sources */,

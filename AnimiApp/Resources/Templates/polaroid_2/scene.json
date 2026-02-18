@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "0.1",
+  "sceneId": "polaroid_2",
+  "canvas": { "width": 1080, "height": 1920, "fps": 30, "durationFrames": 150 },
+  "mediaBlocks": [
+    {
+      "blockId": "block_01",
+      "zIndex": 0,
+      "rect": { "x": 0, "y": 0, "width": 1080, "height": 1920 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 150 },
+      "input": {
+        "rect": { "x": 0, "y": 0, "width": 1080, "height": 1920 },
+        "bindingKey": "media_1",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_01_no_anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "anim",
+          "animRef": "block_01_anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ],
+      "layerToggles": []
+    },
+    {
+      "blockId": "block_02",
+      "zIndex": 1,
+      "rect": { "x": 0, "y": 0, "width": 1080, "height": 1920 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 150 },
+      "input": {
+        "rect": { "x": 0, "y": 0, "width": 1080, "height": 1920 },
+        "bindingKey": "media_2",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_02_no_anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        },
+        {
+          "variantId": "anim",
+          "animRef": "block_02_anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ],
+      "layerToggles": []
+    }
+  ]
+}

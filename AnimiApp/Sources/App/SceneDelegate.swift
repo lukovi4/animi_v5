@@ -12,8 +12,12 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         let window = UIWindow(windowScene: windowScene)
-        let playerViewController = PlayerViewController()
-        window.rootViewController = playerViewController
+
+        // PR-Templates: Start with Templates Home inside Navigation Controller
+        let homeViewController = TemplatesHomeViewController()
+        let navigationController = UINavigationController(rootViewController: homeViewController)
+        window.rootViewController = navigationController
+
         window.makeKeyAndVisible()
 
         self.window = window
