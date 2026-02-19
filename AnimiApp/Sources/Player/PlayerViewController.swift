@@ -139,6 +139,11 @@ final class PlayerViewController: UIViewController {
         makeButton(title: "Export", color: .systemTeal, action: #selector(exportTapped))
     }()
 
+    // PR3: Background Editor button
+    private lazy var backgroundButton: UIButton = {
+        makeButton(title: "Background", color: .systemIndigo, action: #selector(backgroundTapped))
+    }()
+
     private var isExporting = false
     private var videoExporter: VideoExporter?
     private var exportProgressVC: ExportProgressViewController?
@@ -440,6 +445,15 @@ final class PlayerViewController: UIViewController {
     // MARK: - User Media (PR-32)
     private var userMediaService: UserMediaService?
     private lazy var overlayView = EditorOverlayView()
+
+    // MARK: - Background (PR3)
+    private var backgroundTextureService: BackgroundTextureService?
+    private var effectiveBackgroundState: EffectiveBackgroundState?
+    private var currentProjectId: UUID?
+    private var projectBackgroundOverride: ProjectBackgroundOverride?
+    private var currentTemplateId: String?
+    private var pendingBackgroundRegionId: String?
+    private var lastBackgroundPresetId: String?
     private lazy var modeToggle: UISegmentedControl = {
         let control = UISegmentedControl(items: ["Preview", "Edit"])
         control.translatesAutoresizingMaskIntoConstraints = false
@@ -622,6 +636,7 @@ final class PlayerViewController: UIViewController {
         // Add header elements to contentView
         // Export button is available in both DEBUG and Release
         contentView.addSubview(exportButton)
+        contentView.addSubview(backgroundButton)  // PR3
         #if DEBUG
         [sceneSelector, loadButton, smokeTestButton, smokeTestStatusLabel].forEach { contentView.addSubview($0) }
         #endif
@@ -669,11 +684,18 @@ final class PlayerViewController: UIViewController {
         metalViewBottomConstraint = metalView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         metalViewBottomConstraint?.isActive = false
 
-        // Export button constraints (common for DEBUG and Release)
+        // Export and Background button constraints (common for DEBUG and Release)
         NSLayoutConstraint.activate([
+            // Export button - left half
             exportButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            exportButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             exportButton.heightAnchor.constraint(equalToConstant: 44),
+
+            // Background button - right half (PR3)
+            backgroundButton.leadingAnchor.constraint(equalTo: exportButton.trailingAnchor, constant: 8),
+            backgroundButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            backgroundButton.heightAnchor.constraint(equalToConstant: 44),
+            backgroundButton.widthAnchor.constraint(equalTo: exportButton.widthAnchor),
+            backgroundButton.centerYAnchor.constraint(equalTo: exportButton.centerYAnchor),
         ])
 
         #if DEBUG
@@ -865,6 +887,98 @@ final class PlayerViewController: UIViewController {
             return
         }
         startExport()
+    }
+
+    // MARK: - Background Editor (PR3)
+
+    @objc private func backgroundTapped() {
+        guard loadingState == .ready else {
+            log("[Background] Template not ready")
+            return
+        }
+
+        let templateBackground = compiledScene?.runtime.scene.background
+        let editor = BackgroundEditorViewController(
+            presetLibrary: BackgroundPresetLibrary.shared,
+            templateBackground: templateBackground,
+            currentOverride: projectBackgroundOverride ?? .empty
+        )
+        editor.delegate = self
+
+        let nav = UINavigationController(rootViewController: editor)
+        present(nav, animated: true)
+    }
+
+    /// Handles background image selection from PHPicker.
+    private func handleBackgroundImagePicked(result: PHPickerResult, regionId: String) {
+        guard result.itemProvider.canLoadObject(ofClass: UIImage.self) else {
+            log("[Background] Selected item is not an image")
+            return
+        }
+
+        result.itemProvider.loadObject(ofClass: UIImage.self) { [weak self] object, error in
+            guard let self = self,
+                  let image = object as? UIImage else {
+                if let error = error {
+                    DispatchQueue.main.async {
+                        self?.log("[Background] Failed to load image: \(error)")
+                    }
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.saveAndSetBackgroundImage(image, for: regionId)
+            }
+        }
+    }
+
+    /// Saves background image to project and updates editor.
+    private func saveAndSetBackgroundImage(_ image: UIImage, for regionId: String) {
+        guard let service = backgroundTextureService,
+              let state = effectiveBackgroundState else {
+            log("[Background] Service or state not available")
+            return
+        }
+
+        // P1-3: Get old mediaRef before replacing (for cleanup after successful inject)
+        let oldMediaRef = projectBackgroundOverride?.regions[regionId]?.imageMediaRef
+
+        do {
+            // Save image to project store
+            let mediaRef = try service.saveImage(image)
+            log("[Background] Saved image: \(mediaRef.id)")
+
+            // Load texture
+            let slotKey = EffectiveBackgroundBuilder.makeSlotKey(
+                presetId: state.preset.presetId,
+                regionId: regionId
+            )
+
+            Task {
+                do {
+                    try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef)
+
+                    // Update editor if visible
+                    if let nav = presentedViewController as? UINavigationController,
+                       let editor = nav.viewControllers.first as? BackgroundEditorViewController {
+                        editor.setImage(for: regionId, mediaRef: mediaRef, image: image)
+                    }
+
+                    // P1-3: Delete old file after successful inject
+                    if let oldRef = oldMediaRef, oldRef != mediaRef {
+                        service.deleteMediaFile(oldRef)
+                        log("[Background] Deleted old media file: \(oldRef.id)")
+                    }
+
+                    metalView.setNeedsDisplay()
+                } catch {
+                    log("[Background] Failed to load texture: \(error.localizedDescription)")
+                }
+            }
+        } catch {
+            log("[Background] Failed to save image: \(error.localizedDescription)")
+        }
     }
 
     #if DEBUG
@@ -1819,6 +1933,7 @@ final class PlayerViewController: UIViewController {
     private func loadCompiledTemplateFromBundle(templateName: String) {
         stopPlayback()
         renderErrorLogged = false
+        currentTemplateId = templateName  // PR3: Store for ProjectStore
         log("---\nLoading compiled template '\(templateName)'...")
 
         guard let device = metalView.device else {
@@ -2003,6 +2118,9 @@ final class PlayerViewController: UIViewController {
             log("UserMediaService initialized")
         }
 
+        // PR3: Setup background state
+        setupBackgroundState(compiled: compiled)
+
         // Log results
         let runtime = compiled.runtime
         let canvasSizeStr = "\(Int(canvasSize.width))x\(Int(canvasSize.height))"
@@ -2025,6 +2143,66 @@ final class PlayerViewController: UIViewController {
 
         log("Ready for playback!")
         metalView.setNeedsDisplay()
+    }
+
+    // MARK: - Background Setup (PR3)
+
+    /// Sets up background state from template and project override.
+    private func setupBackgroundState(compiled: CompiledScene) {
+        guard let templateId = currentTemplateId,
+              let tp = textureProvider,
+              let device = metalView.device,
+              let queue = commandQueue else {
+            log("[Background] Skipped: missing dependencies")
+            return
+        }
+
+        // Create BackgroundTextureService
+        backgroundTextureService = BackgroundTextureService(
+            textureProvider: tp,
+            device: device,
+            commandQueue: queue
+        )
+
+        // Load or create project
+        do {
+            currentProjectId = try ProjectStore.shared.createOrLoadProjectId(for: templateId)
+            if let projectId = currentProjectId {
+                projectBackgroundOverride = try ProjectStore.shared.loadBackgroundOverride(projectId: projectId)
+            }
+        } catch {
+            log("[Background] ProjectStore error: \(error.localizedDescription)")
+            currentProjectId = nil
+            projectBackgroundOverride = nil
+        }
+
+        // Build effective state
+        let templateBackground = compiled.runtime.scene.background
+        effectiveBackgroundState = EffectiveBackgroundBuilder.build(
+            templateBackground: templateBackground,
+            projectOverride: projectBackgroundOverride,
+            presetLibrary: BackgroundPresetLibrary.shared
+        )
+
+        if let state = effectiveBackgroundState {
+            log("[Background] Loaded preset '\(state.preset.presetId)' with \(state.regionStates.count) regions")
+
+            // Preload image textures asynchronously
+            if let override = projectBackgroundOverride {
+                Task {
+                    let loadedKeys = await backgroundTextureService?.preloadTextures(
+                        from: override,
+                        presetId: state.preset.presetId
+                    )
+                    if let keys = loadedKeys, !keys.isEmpty {
+                        log("[Background] Preloaded \(keys.count) textures")
+                    }
+                    metalView.setNeedsDisplay()
+                }
+            }
+        } else {
+            log("[Background] No effective state (preset not found)")
+        }
     }
 
     // MARK: - Playback
@@ -2296,7 +2474,8 @@ extension PlayerViewController: MTKViewDelegate {
                     textureProvider: provider,
                     commandBuffer: cmdBuf,
                     assetSizes: assetSizes,
-                    pathRegistry: pathRegistry
+                    pathRegistry: pathRegistry,
+                    backgroundState: effectiveBackgroundState  // PR3
                 )
                 // PR1.5: Split timing - encode done
                 #if DEBUG
@@ -2374,8 +2553,17 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
 
-        guard let result = results.first,
-              let blockId = state.selectedBlockId else { return }
+        guard let result = results.first else { return }
+
+        // PR3: Check if this is a background image picker
+        if picker.view.tag == 999, let regionId = pendingBackgroundRegionId {
+            pendingBackgroundRegionId = nil
+            handleBackgroundImagePicked(result: result, regionId: regionId)
+            return
+        }
+
+        // User media picker
+        guard let blockId = state.selectedBlockId else { return }
 
         // Check if it's an image or video
         if result.itemProvider.canLoadObject(ofClass: UIImage.self) {
@@ -2443,6 +2631,101 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
                 }
             }
         }
+    }
+}
+
+// MARK: - BackgroundEditorDelegate (PR3)
+
+extension PlayerViewController: BackgroundEditorDelegate {
+
+    func backgroundEditorDidUpdateState(_ state: EffectiveBackgroundState) {
+        effectiveBackgroundState = state
+        metalView.setNeedsDisplay()
+    }
+
+    func backgroundEditorDidRequestImagePicker(for regionId: String) {
+        // Store regionId for callback
+        pendingBackgroundRegionId = regionId
+
+        var config = PHPickerConfiguration()
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = self
+        // Use a tag to differentiate from user media picker
+        picker.view.tag = 999  // Background image picker tag
+
+        // Present from the editor if visible
+        if let presented = presentedViewController {
+            presented.present(picker, animated: true)
+        } else {
+            present(picker, animated: true)
+        }
+    }
+
+    func backgroundEditorDidChangePreset(oldPresetId: String, newPresetId: String) {
+        // P0-2: Cleanup textures for the old preset immediately on change
+        backgroundTextureService?.clearTextures(prefix: "bg/\(oldPresetId)/")
+        log("[Background] Cleared textures for preset: \(oldPresetId)")
+
+        // Update tracking
+        lastBackgroundPresetId = newPresetId
+
+        metalView.setNeedsDisplay()
+    }
+
+    func backgroundEditorWillDismiss(override: ProjectBackgroundOverride, presetId: String) {
+        // Save to ProjectStore
+        guard let projectId = currentProjectId else { return }
+
+        do {
+            try ProjectStore.shared.saveBackgroundOverride(projectId: projectId, override: override)
+            log("[Background] Saved override for project \(projectId)")
+        } catch {
+            log("[Background] Failed to save: \(error.localizedDescription)")
+        }
+
+        // P0-2: Check if preset changed and cleanup old textures
+        let presetChanged = lastBackgroundPresetId != nil && lastBackgroundPresetId != presetId
+        if presetChanged, let oldPresetId = lastBackgroundPresetId {
+            backgroundTextureService?.clearTextures(prefix: "bg/\(oldPresetId)/")
+            log("[Background] Cleared textures for old preset: \(oldPresetId)")
+        }
+        lastBackgroundPresetId = presetId
+
+        // Update local state
+        projectBackgroundOverride = override
+
+        // Rebuild effective state
+        let templateBackground = compiledScene?.runtime.scene.background
+        effectiveBackgroundState = EffectiveBackgroundBuilder.build(
+            templateBackground: templateBackground,
+            projectOverride: override,
+            presetLibrary: BackgroundPresetLibrary.shared
+        )
+
+        // P0-2: Preload textures for regions with image source
+        if let service = backgroundTextureService, let state = effectiveBackgroundState {
+            Task { @MainActor in
+                for region in state.regions {
+                    if case .image(let imageSource) = region.source,
+                       let mediaRef = self.projectBackgroundOverride?.regions[region.regionId]?.imageMediaRef {
+                        do {
+                            try await service.loadTexture(
+                                slotKey: imageSource.slotKey,
+                                mediaRef: mediaRef
+                            )
+                            self.log("[Background] Preloaded texture for \(region.regionId)")
+                        } catch {
+                            self.log("[Background] Failed to preload texture: \(error.localizedDescription)")
+                        }
+                    }
+                }
+                self.metalView.setNeedsDisplay()
+            }
+        }
+
+        metalView.setNeedsDisplay()
     }
 }
 
