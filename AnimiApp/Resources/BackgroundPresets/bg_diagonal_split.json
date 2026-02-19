@@ -1,0 +1,35 @@
+{
+  "presetId": "diagonal_split",
+  "title": "Diagonal Split",
+  "canvasSize": [1080, 1920],
+  "regions": [
+    {
+      "regionId": "top_left",
+      "displayName": "Top Left",
+      "mask": {
+        "type": "polygon",
+        "vertices": [
+          {"x": -20, "y": -20},
+          {"x": 1100, "y": -20},
+          {"x": -20, "y": 1940}
+        ],
+        "closed": true
+      },
+      "uvMapping": "bbox"
+    },
+    {
+      "regionId": "bottom_right",
+      "displayName": "Bottom Right",
+      "mask": {
+        "type": "polygon",
+        "vertices": [
+          {"x": 1100, "y": -20},
+          {"x": 1100, "y": 1940},
+          {"x": -20, "y": 1940}
+        ],
+        "closed": true
+      },
+      "uvMapping": "bbox"
+    }
+  ]
+}

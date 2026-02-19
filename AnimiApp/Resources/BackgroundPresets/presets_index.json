@@ -1,0 +1,8 @@
+{
+  "presetIds": [
+    "solid_fullscreen",
+    "horizontal_split",
+    "wave_split",
+    "diagonal_split"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "presetId": "solid_fullscreen",
+  "title": "Solid Color",
+  "canvasSize": [1080, 1920],
+  "regions": [
+    {
+      "regionId": "full",
+      "displayName": "Background",
+      "mask": {
+        "type": "polygon",
+        "vertices": [
+          {"x": -20, "y": -20},
+          {"x": 1100, "y": -20},
+          {"x": 1100, "y": 1940},
+          {"x": -20, "y": 1940}
+        ],
+        "closed": true
+      },
+      "uvMapping": "bbox"
+    }
+  ]
+}
