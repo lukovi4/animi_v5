@@ -371,4 +371,158 @@ final class BackgroundPresetTests: XCTestCase {
         XCTAssertEqual(path.vertices[2], Vec2D(x: 1100, y: 1940))
         XCTAssertEqual(path.vertices[3], Vec2D(x: -20, y: 1940))
     }
+
+    // MARK: - PR2: BackgroundRegionState Tests
+
+    func testSolidConfigCreation() {
+        let color = ClearColor(red: 1.0, green: 0.5, blue: 0.0, alpha: 1.0)
+        let config = SolidConfig(color: color)
+        let source = RegionSource.solid(config)
+        let state = BackgroundRegionState(regionId: "test", source: source)
+
+        XCTAssertEqual(state.regionId, "test")
+        if case .solid(let c) = state.source {
+            XCTAssertEqual(c.color.red, 1.0)
+            XCTAssertEqual(c.color.green, 0.5)
+            XCTAssertEqual(c.color.blue, 0.0)
+            XCTAssertEqual(c.color.alpha, 1.0)
+        } else {
+            XCTFail("Expected solid source")
+        }
+    }
+
+    func testGradientConfigValidation() throws {
+        // Valid gradient with exactly 2 stops
+        let validConfig = GradientConfig(
+            stops: [
+                BackgroundGradientStop(t: 0.0, color: ClearColor(red: 1, green: 0, blue: 0, alpha: 1)),
+                BackgroundGradientStop(t: 1.0, color: ClearColor(red: 0, green: 0, blue: 1, alpha: 1))
+            ],
+            p0: Vec2D(x: 0, y: 0),
+            p1: Vec2D(x: 0, y: 1920)
+        )
+
+        XCTAssertNoThrow(try validConfig.validate())
+    }
+
+    func testGradientConfigValidationFailsTooFewStops() {
+        let invalidConfig = GradientConfig(
+            stops: [
+                BackgroundGradientStop(t: 0.0, color: ClearColor(red: 1, green: 0, blue: 0, alpha: 1))
+            ],
+            p0: Vec2D(x: 0, y: 0),
+            p1: Vec2D(x: 0, y: 1920)
+        )
+
+        XCTAssertThrowsError(try invalidConfig.validate()) { error in
+            guard case BackgroundRendererError.invalidGradientStops(let expected, let actual) = error else {
+                XCTFail("Expected invalidGradientStops error")
+                return
+            }
+            XCTAssertEqual(expected, 2)
+            XCTAssertEqual(actual, 1)
+        }
+    }
+
+    func testGradientConfigValidationFailsTooManyStops() {
+        let invalidConfig = GradientConfig(
+            stops: [
+                BackgroundGradientStop(t: 0.0, color: ClearColor(red: 1, green: 0, blue: 0, alpha: 1)),
+                BackgroundGradientStop(t: 0.5, color: ClearColor(red: 0, green: 1, blue: 0, alpha: 1)),
+                BackgroundGradientStop(t: 1.0, color: ClearColor(red: 0, green: 0, blue: 1, alpha: 1))
+            ],
+            p0: Vec2D(x: 0, y: 0),
+            p1: Vec2D(x: 0, y: 1920)
+        )
+
+        XCTAssertThrowsError(try invalidConfig.validate()) { error in
+            guard case BackgroundRendererError.invalidGradientStops(let expected, let actual) = error else {
+                XCTFail("Expected invalidGradientStops error")
+                return
+            }
+            XCTAssertEqual(expected, 2)
+            XCTAssertEqual(actual, 3)
+        }
+    }
+
+    func testImageConfigCreation() {
+        let transform = ImageTransform(
+            pan: Vec2D(x: 0.1, y: 0.2),
+            zoom: 1.5,
+            rotationRadians: 0.0,
+            flipX: false,
+            flipY: true,
+            fitMode: .fill
+        )
+        let config = ImageConfig(slotKey: "bg/test/region", transform: transform)
+        let source = RegionSource.image(config)
+        let state = BackgroundRegionState(regionId: "region", source: source)
+
+        if case .image(let c) = state.source {
+            XCTAssertEqual(c.slotKey, "bg/test/region")
+            XCTAssertEqual(c.transform.pan.x, 0.1)
+            XCTAssertEqual(c.transform.pan.y, 0.2)
+            XCTAssertEqual(c.transform.zoom, 1.5)
+            XCTAssertFalse(c.transform.flipX)
+            XCTAssertTrue(c.transform.flipY)
+            XCTAssertEqual(c.transform.fitMode, .fill)
+        } else {
+            XCTFail("Expected image source")
+        }
+    }
+
+    func testImageTransformIdentity() {
+        let identity = ImageTransform.identity
+
+        XCTAssertEqual(identity.pan, .zero)
+        XCTAssertEqual(identity.zoom, 1.0)
+        XCTAssertEqual(identity.rotationRadians, 0.0)
+        XCTAssertFalse(identity.flipX)
+        XCTAssertFalse(identity.flipY)
+        XCTAssertEqual(identity.fitMode, .fill)
+    }
+
+    func testEffectiveBackgroundState() {
+        let preset = BackgroundPreset(
+            presetId: "test",
+            title: "Test",
+            canvasSize: [1080, 1920],
+            regions: []
+        )
+
+        let solidState = BackgroundRegionState(
+            regionId: "region1",
+            source: .solid(SolidConfig(color: ClearColor(red: 1, green: 0, blue: 0, alpha: 1)))
+        )
+
+        let effectiveState = EffectiveBackgroundState(
+            preset: preset,
+            regionStates: ["region1": solidState]
+        )
+
+        XCTAssertEqual(effectiveState.preset.presetId, "test")
+        XCTAssertNotNil(effectiveState.state(for: "region1"))
+        XCTAssertNil(effectiveState.state(for: "nonexistent"))
+    }
+
+    func testBackgroundFitModeEncode() throws {
+        let fill = BackgroundFitMode.fill
+        let fit = BackgroundFitMode.fit
+
+        let encoder = JSONEncoder()
+        let fillData = try encoder.encode(fill)
+        let fitData = try encoder.encode(fit)
+
+        XCTAssertEqual(String(data: fillData, encoding: .utf8), "\"fill\"")
+        XCTAssertEqual(String(data: fitData, encoding: .utf8), "\"fit\"")
+    }
+
+    func testBackgroundFitModeDecode() throws {
+        let decoder = JSONDecoder()
+        let fill = try decoder.decode(BackgroundFitMode.self, from: "\"fill\"".data(using: .utf8)!)
+        let fit = try decoder.decode(BackgroundFitMode.self, from: "\"fit\"".data(using: .utf8)!)
+
+        XCTAssertEqual(fill, .fill)
+        XCTAssertEqual(fit, .fit)
+    }
 }

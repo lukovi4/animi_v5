@@ -179,7 +179,8 @@ extension MetalRenderer {
         assetSizes: [String: AssetSize] = [:],
         pathRegistry: PathRegistry,
         initialState: ExecutionState? = nil,
-        overrideAnimToViewport: Matrix2D? = nil
+        overrideAnimToViewport: Matrix2D? = nil,
+        backgroundState: EffectiveBackgroundState? = nil
     ) throws {
         let baseline = initialState ?? makeInitialState(target: target)
         var state = baseline
@@ -194,6 +195,23 @@ extension MetalRenderer {
         // Process commands in segments separated by mask/matte scopes
         var index = 0
         var isFirstPass = true
+
+        // PR2: Render background before scene commands (if provided)
+        if let bgState = backgroundState {
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+                throw MetalRendererError.failedToCreateRenderEncoder
+            }
+            backgroundRenderer.render(
+                state: bgState,
+                encoder: encoder,
+                target: target,
+                textureProvider: textureProvider,
+                animToViewport: animToViewport,
+                viewportToNDC: viewportToNDC
+            )
+            encoder.endEncoding()
+            isFirstPass = false // Background render already cleared the target
+        }
 
         #if DEBUG
         perf?.beginPhase(.executeCommandsTotal)
@@ -370,7 +388,8 @@ extension MetalRenderer {
         assetSizes: [String: AssetSize] = [:],
         pathRegistry: PathRegistry,
         initialState: ExecutionState? = nil,
-        overrideAnimToViewport: Matrix2D? = nil
+        overrideAnimToViewport: Matrix2D? = nil,
+        backgroundState: EffectiveBackgroundState? = nil
     ) throws {
         guard !range.isEmpty else { return }
 

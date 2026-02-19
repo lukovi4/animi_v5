@@ -182,6 +182,9 @@ public final class MetalRenderer {
     // PR-14B: Two-level path sampling cache (frame memo + LRU)
     let pathSamplingCache: PathSamplingCache
 
+    // PR2: Background renderer for background presets
+    let backgroundRenderer: BackgroundRenderer
+
     // PR-14C: Performance metrics (DEBUG-only, opt-in via options.enablePerfMetrics)
     #if DEBUG
     private(set) var perf: PerfMetrics?
@@ -213,6 +216,13 @@ public final class MetalRenderer {
         self.vertexUploadPool = VertexUploadPool(device: device, buffersInFlight: options.maxFramesInFlight)
         self.pathIndexBufferCache = PathIndexBufferCache(device: device)
         self.pathSamplingCache = PathSamplingCache()
+
+        // PR2: Create background renderer
+        self.backgroundRenderer = try BackgroundRenderer(
+            device: device,
+            shapeCache: shapeCache,
+            colorPixelFormat: colorPixelFormat
+        )
 
         // PR-E2: Create command queue once for export pipeline
         guard let queue = device.makeCommandQueue() else {
@@ -391,6 +401,7 @@ public final class MetalRenderer {
     ///   - commandBuffer: Metal command buffer to use
     ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
     ///   - pathRegistry: Registry of path resources for GPU rendering
+    ///   - backgroundState: Optional background state for background preset rendering (PR2)
     /// - Throws: MetalRendererError if rendering fails
     public func draw(
         commands: [RenderCommand],
@@ -398,7 +409,8 @@ public final class MetalRenderer {
         textureProvider: TextureProvider,
         commandBuffer: MTLCommandBuffer,
         assetSizes: [String: AssetSize] = [:],
-        pathRegistry: PathRegistry
+        pathRegistry: PathRegistry,
+        backgroundState: EffectiveBackgroundState? = nil
     ) throws {
         // PR-C3: Rotate to next buffer in ring for in-flight frame safety
         vertexUploadPool.beginFrame()
@@ -443,7 +455,8 @@ public final class MetalRenderer {
             textureProvider: textureProvider,
             commandBuffer: commandBuffer,
             assetSizes: assetSizes,
-            pathRegistry: pathRegistry
+            pathRegistry: pathRegistry,
+            backgroundState: backgroundState
         )
 
         #if DEBUG
@@ -483,6 +496,7 @@ public final class MetalRenderer {
     ///   - commandBuffer: Metal command buffer (caller manages lifecycle)
     ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
     ///   - pathRegistry: Registry of path resources for GPU rendering
+    ///   - backgroundState: Optional background state for background preset rendering (PR2)
     /// - Throws: MetalRendererError if rendering fails
     public func draw(
         commands: [RenderCommand],
@@ -491,7 +505,8 @@ public final class MetalRenderer {
         textureProvider: TextureProvider,
         commandBuffer: MTLCommandBuffer,
         assetSizes: [String: AssetSize] = [:],
-        pathRegistry: PathRegistry
+        pathRegistry: PathRegistry,
+        backgroundState: EffectiveBackgroundState? = nil
     ) throws {
         // PR-C3: Rotate to next buffer in ring for in-flight frame safety
         vertexUploadPool.beginFrame()
@@ -535,7 +550,8 @@ public final class MetalRenderer {
             textureProvider: textureProvider,
             commandBuffer: commandBuffer,
             assetSizes: assetSizes,
-            pathRegistry: pathRegistry
+            pathRegistry: pathRegistry,
+            backgroundState: backgroundState
         )
 
         #if DEBUG
@@ -553,6 +569,7 @@ public final class MetalRenderer {
     ///   - textureProvider: Provider for asset textures
     ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
     ///   - pathRegistry: Registry of path resources for GPU rendering
+    ///   - backgroundState: Optional background state for background preset rendering (PR2)
     /// - Returns: Rendered texture
     /// - Throws: MetalRendererError if rendering fails
     public func drawOffscreen(
@@ -562,7 +579,8 @@ public final class MetalRenderer {
         animSize: SizeD,
         textureProvider: TextureProvider,
         assetSizes: [String: AssetSize] = [:],
-        pathRegistry: PathRegistry
+        pathRegistry: PathRegistry,
+        backgroundState: EffectiveBackgroundState? = nil
     ) throws -> MTLTexture {
         // PR-C3: Rotate to next buffer in ring for in-flight frame safety
         vertexUploadPool.beginFrame()
@@ -635,7 +653,8 @@ public final class MetalRenderer {
             textureProvider: textureProvider,
             commandBuffer: commandBuffer,
             assetSizes: assetSizes,
-            pathRegistry: pathRegistry
+            pathRegistry: pathRegistry,
+            backgroundState: backgroundState
         )
 
         #if DEBUG

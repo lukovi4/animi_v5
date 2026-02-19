@@ -255,3 +255,145 @@ kernel void mask_combine_kernel(
 
     accumOutTex.write(float4(result, 0.0, 0.0, 0.0), gid);
 }
+
+// MARK: - Background Region Shaders
+
+/// Vertex uniforms for background shaders (shared by all)
+struct BgVertexUniforms {
+    float4x4 mvp;
+    float4x4 animToViewport;  // Transform from canvas to viewport coordinates
+    float2 targetSize;         // Target/viewport size in pixels for mask UV
+    float2 _padding;           // Alignment padding
+};
+
+/// Uniforms for background solid color shader
+struct BgSolidUniforms {
+    float4x4 mvp;
+    float4x4 animToViewport;
+    float2 targetSize;
+    float2 _padding;
+    float4 color;       // Solid color (RGBA, straight alpha)
+};
+
+/// Uniforms for background gradient shader
+struct BgGradientUniforms {
+    float4x4 mvp;
+    float4x4 animToViewport;
+    float2 targetSize;
+    float2 _padding;
+    float4 color0;      // Start color (RGBA, straight alpha)
+    float4 color1;      // End color (RGBA, straight alpha)
+    float2 p0;          // Gradient start point in canvas space
+    float2 p1;          // Gradient end point in canvas space
+};
+
+/// Uniforms for background image shader
+struct BgImageUniforms {
+    float4x4 mvp;
+    float4x4 animToViewport;
+    float2 targetSize;
+    float2 _padding;
+    float4x4 uvTransform;   // Combined UV transform (fitMode + user transform)
+};
+
+/// Vertex output for background shaders
+struct BgVertexOut {
+    float4 position [[position]];
+    float2 texCoord;    // Region-local UV (0..1) for image mapping
+    float2 maskUV;      // Viewport-space UV for mask sampling
+    float2 canvasPos;   // Position in canvas space for gradient calculation
+};
+
+/// Background vertex shader - passes canvas position and mask UV
+vertex BgVertexOut bg_vertex(
+    QuadVertexIn in [[stage_in]],
+    constant BgVertexUniforms& uniforms [[buffer(1)]]
+) {
+    BgVertexOut out;
+    out.position = uniforms.mvp * float4(in.position, 0.0, 1.0);
+    out.texCoord = in.texCoord;
+    out.canvasPos = in.position;  // Position is already in canvas space
+    // Transform canvas position to viewport coordinates, then normalize by target size
+    float4 viewportPos = uniforms.animToViewport * float4(in.position, 0.0, 1.0);
+    out.maskUV = viewportPos.xy / uniforms.targetSize;
+    return out;
+}
+
+/// Background solid color fragment shader
+/// Fills region with solid color, masked by region shape.
+fragment float4 bg_solid_fragment(
+    BgVertexOut in [[stage_in]],
+    texture2d<float> maskTex [[texture(0)]],
+    sampler samp [[sampler(0)]],
+    constant BgSolidUniforms& uniforms [[buffer(1)]]
+) {
+    // Sample mask alpha using canvas-space UV
+    float maskAlpha = maskTex.sample(samp, in.maskUV).a;
+
+    // Get solid color and apply mask
+    float4 color = uniforms.color;
+
+    // Convert to premultiplied alpha and apply mask
+    float finalAlpha = color.a * maskAlpha;
+    return float4(color.rgb * finalAlpha, finalAlpha);
+}
+
+/// Background linear gradient fragment shader
+/// Fills region with 2-stop linear gradient, masked by region shape.
+fragment float4 bg_gradient_fragment(
+    BgVertexOut in [[stage_in]],
+    texture2d<float> maskTex [[texture(0)]],
+    sampler samp [[sampler(0)]],
+    constant BgGradientUniforms& uniforms [[buffer(1)]]
+) {
+    // Sample mask alpha using canvas-space UV
+    float maskAlpha = maskTex.sample(samp, in.maskUV).a;
+
+    // Calculate gradient t value in canvas space
+    float2 dir = uniforms.p1 - uniforms.p0;
+    float lenSq = dot(dir, dir);
+
+    float t;
+    if (lenSq < 0.0001) {
+        t = 0.0;
+    } else {
+        t = dot(in.canvasPos - uniforms.p0, dir) / lenSq;
+    }
+    t = saturate(t);
+
+    // Lerp between colors
+    float4 color = mix(uniforms.color0, uniforms.color1, t);
+
+    // Convert to premultiplied alpha and apply mask
+    float finalAlpha = color.a * maskAlpha;
+    return float4(color.rgb * finalAlpha, finalAlpha);
+}
+
+/// Background image fragment shader
+/// Fills region with image texture, masked by region shape.
+/// UV transform includes fitMode and user transforms (flip, zoom, rotate, pan).
+fragment float4 bg_image_fragment(
+    BgVertexOut in [[stage_in]],
+    texture2d<float> maskTex [[texture(0)]],
+    texture2d<float> imageTex [[texture(1)]],
+    sampler samp [[sampler(0)]],
+    constant BgImageUniforms& uniforms [[buffer(1)]]
+) {
+    // Sample mask alpha using canvas-space UV
+    float maskAlpha = maskTex.sample(samp, in.maskUV).a;
+
+    // Apply UV transform (includes fitMode + user transforms)
+    float4 transformedUV = uniforms.uvTransform * float4(in.texCoord, 0.0, 1.0);
+    float2 imageUV = transformedUV.xy;
+
+    // Sample image (assumed premultiplied alpha)
+    float4 imageColor = imageTex.sample(samp, imageUV);
+
+    // Check if UV is out of bounds (for fit mode with transparent areas)
+    if (imageUV.x < 0.0 || imageUV.x > 1.0 || imageUV.y < 0.0 || imageUV.y > 1.0) {
+        return float4(0.0);
+    }
+
+    // Apply mask to premultiplied image color
+    return imageColor * maskAlpha;
+}
