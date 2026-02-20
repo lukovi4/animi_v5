@@ -418,6 +418,7 @@ public final class VideoExporter {
     ///   - assetSizes: Asset sizes from mergedAssetIndex.sizeById
     ///   - userMediaService: UserMediaService for video selections snapshot (PR-E3)
     ///   - settings: Export configuration
+    ///   - backgroundState: Background state for rendering (PR5)
     ///   - progress: Progress callback (0.0 - 1.0), called on main queue
     ///   - completion: Completion callback, called on main queue
     @MainActor
@@ -430,6 +431,7 @@ public final class VideoExporter {
         assetSizes: [String: AssetSize],
         userMediaService: UserMediaService?,
         settings: VideoExportSettings,
+        backgroundState: EffectiveBackgroundState?,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
@@ -470,6 +472,7 @@ public final class VideoExporter {
                 assetSizes: assetSizes,
                 videoSelections: videoSelections,
                 settings: settings,
+                backgroundState: backgroundState,
                 progress: progress,
                 completion: completion
             )
@@ -487,6 +490,7 @@ public final class VideoExporter {
         assetSizes: [String: AssetSize],
         videoSelections: [String: VideoSelection],
         settings: VideoExportSettings,
+        backgroundState: EffectiveBackgroundState?,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
@@ -783,7 +787,8 @@ public final class VideoExporter {
                         textureProvider: textureProvider,
                         commandBuffer: commandBuffer,
                         assetSizes: assetSizes,
-                        pathRegistry: pathRegistry
+                        pathRegistry: pathRegistry,
+                        backgroundState: backgroundState
                     )
                 } catch {
                     setExportErrorOnce(VideoExportError.renderError(error))

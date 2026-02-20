@@ -574,6 +574,9 @@ final class PlayerViewController: UIViewController {
         #if DEBUG
         perfLogger.stop()
         #endif
+
+        // PR4: Cleanup background textures when VC disappears
+        backgroundTextureService?.clearAllTrackedTextures()
     }
 
     override func viewDidLayoutSubviews() {
@@ -1112,34 +1115,41 @@ final class PlayerViewController: UIViewController {
         let exporter = VideoExporter()
         videoExporter = exporter
 
-        exporter.exportVideo(
-            compiledScene: compiled,
-            scenePlayer: player,
-            renderer: renderer,
-            textureProvider: exportTP,
-            pathRegistry: compiled.pathRegistry,
-            assetSizes: compiled.mergedAssetIndex.sizeById,
-            userMediaService: userMediaService,
-            settings: settings,
-            progress: { [weak self] progress in
-                let pct = Int(progress * 100)
-                self?.smokeTestStatusLabel.text = "\(name): \(pct)%"
-            },
-            completion: { [weak self] result in
-                self?.isExporting = false
-                self?.videoExporter = nil
+        // PR5: Wrap in Task for async preload
+        Task { @MainActor in
+            // Preload background textures into export provider
+            await self.preloadBackgroundTexturesForExport(exportTP: exportTP)
 
-                switch result {
-                case .success(let url):
-                    // Clean up temp file
-                    try? FileManager.default.removeItem(at: url)
-                    completion(true)
-                case .failure(let error):
-                    self?.log("[SmokeTest] \(name) error: \(error.localizedDescription)")
-                    completion(false)
+            exporter.exportVideo(
+                compiledScene: compiled,
+                scenePlayer: player,
+                renderer: renderer,
+                textureProvider: exportTP,
+                pathRegistry: compiled.pathRegistry,
+                assetSizes: compiled.mergedAssetIndex.sizeById,
+                userMediaService: self.userMediaService,
+                settings: settings,
+                backgroundState: self.effectiveBackgroundState,
+                progress: { [weak self] progress in
+                    let pct = Int(progress * 100)
+                    self?.smokeTestStatusLabel.text = "\(name): \(pct)%"
+                },
+                completion: { [weak self] result in
+                    self?.isExporting = false
+                    self?.videoExporter = nil
+
+                    switch result {
+                    case .success(let url):
+                        // Clean up temp file
+                        try? FileManager.default.removeItem(at: url)
+                        completion(true)
+                    case .failure(let error):
+                        self?.log("[SmokeTest] \(name) error: \(error.localizedDescription)")
+                        completion(false)
+                    }
                 }
-            }
-        )
+            )
+        }
     }
 
     private func finishSmokeTests() {
@@ -1287,44 +1297,51 @@ final class PlayerViewController: UIViewController {
 
             progressVC.updateState(.preparing)
 
-            exporter.exportVideo(
-                compiledScene: compiled,
-                scenePlayer: player,
-                renderer: renderer,
-                textureProvider: exportTP,
-                pathRegistry: compiled.pathRegistry,
-                assetSizes: compiled.mergedAssetIndex.sizeById,
-                userMediaService: self.userMediaService,
-                settings: settings,
-                progress: { progress in
-                    // Fix 2: Ignore progress updates after cancel
-                    guard !wasCancelled else { return }
-                    progressVC.updateState(.rendering(progress: progress))
-                },
-                completion: { [weak self] result in
-                    guard let self = self else { return }
+            // PR5: Wrap in Task for async preload
+            Task { @MainActor in
+                // Preload background textures into export provider
+                await self.preloadBackgroundTexturesForExport(exportTP: exportTP)
 
-                    // Fix 2: Ignore completion after cancel (UI already restored in onCancel)
-                    guard !wasCancelled else {
-                        self.log("[Export] Completion ignored (was cancelled)")
-                        return
+                exporter.exportVideo(
+                    compiledScene: compiled,
+                    scenePlayer: player,
+                    renderer: renderer,
+                    textureProvider: exportTP,
+                    pathRegistry: compiled.pathRegistry,
+                    assetSizes: compiled.mergedAssetIndex.sizeById,
+                    userMediaService: self.userMediaService,
+                    settings: settings,
+                    backgroundState: self.effectiveBackgroundState,
+                    progress: { progress in
+                        // Fix 2: Ignore progress updates after cancel
+                        guard !wasCancelled else { return }
+                        progressVC.updateState(.rendering(progress: progress))
+                    },
+                    completion: { [weak self] result in
+                        guard let self = self else { return }
+
+                        // Fix 2: Ignore completion after cancel (UI already restored in onCancel)
+                        guard !wasCancelled else {
+                            self.log("[Export] Completion ignored (was cancelled)")
+                            return
+                        }
+
+                        self.isExporting = false
+                        self.exportButton.isEnabled = true
+                        self.videoExporter = nil
+
+                        switch result {
+                        case .success(let url):
+                            self.log("[Export] SUCCESS: \(url.lastPathComponent)")
+                            progressVC.updateState(.completed(url))
+
+                        case .failure(let error):
+                            self.log("[Export] ERROR: \(error.localizedDescription)")
+                            progressVC.updateState(.failed(error))
+                        }
                     }
-
-                    self.isExporting = false
-                    self.exportButton.isEnabled = true
-                    self.videoExporter = nil
-
-                    switch result {
-                    case .success(let url):
-                        self.log("[Export] SUCCESS: \(url.lastPathComponent)")
-                        progressVC.updateState(.completed(url))
-
-                    case .failure(let error):
-                        self.log("[Export] ERROR: \(error.localizedDescription)")
-                        progressVC.updateState(.failed(error))
-                    }
-                }
-            )
+                )
+            }
         }
     }
 
@@ -2205,6 +2222,35 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    /// Preloads background image textures into the export texture provider.
+    /// PR5: Called before export to ensure background images are available.
+    @MainActor
+    private func preloadBackgroundTexturesForExport(
+        exportTP: ExportTextureProvider
+    ) async {
+        guard let override = projectBackgroundOverride,
+              let state = effectiveBackgroundState,
+              let queue = commandQueue else { return }
+
+        let presetId = state.preset.presetId
+        let device = queue.device
+        let service = BackgroundTextureService(
+            textureProvider: exportTP,
+            device: device,
+            commandQueue: queue
+        )
+
+        for (regionId, regionOverride) in override.regions {
+            guard let mediaRef = regionOverride.imageMediaRef else { continue }
+            let slotKey = EffectiveBackgroundBuilder.makeSlotKey(
+                presetId: presetId,
+                regionId: regionId
+            )
+            // missing file → log+return (PR4), so try? is acceptable
+            try? await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef)
+        }
+    }
+
     // MARK: - Playback
 
     private func startPlayback() {
@@ -2707,15 +2753,15 @@ extension PlayerViewController: BackgroundEditorDelegate {
         // P0-2: Preload textures for regions with image source
         if let service = backgroundTextureService, let state = effectiveBackgroundState {
             Task { @MainActor in
-                for region in state.regions {
-                    if case .image(let imageSource) = region.source,
-                       let mediaRef = self.projectBackgroundOverride?.regions[region.regionId]?.imageMediaRef {
+                for (regionId, regionState) in state.regionStates {
+                    if case .image(let imageSource) = regionState.source,
+                       let mediaRef = self.projectBackgroundOverride?.regions[regionId]?.imageMediaRef {
                         do {
                             try await service.loadTexture(
                                 slotKey: imageSource.slotKey,
                                 mediaRef: mediaRef
                             )
-                            self.log("[Background] Preloaded texture for \(region.regionId)")
+                            self.log("[Background] Preloaded texture for \(regionId)")
                         } catch {
                             self.log("[Background] Failed to preload texture: \(error.localizedDescription)")
                         }
