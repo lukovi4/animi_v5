@@ -31,4 +31,28 @@ public enum EditorConfig {
 
     /// Maximum number of operations in undo stack
     public static let undoStackLimit: Int = 50
+
+    // MARK: - Editor Layout (PR2)
+
+    /// Navigation bar height in points
+    public static let navBarHeight: CGFloat = 60
+
+    /// Preview menu strip height in points (overlay at bottom of preview)
+    public static let previewMenuHeight: CGFloat = 48
+
+    /// Time ruler height in points
+    public static let rulerHeight: CGFloat = 32
+
+    /// Timeline canvas height in points (fixed, internal vertical scroll for tracks)
+    public static let timelineHeight: CGFloat = 260
+
+    /// Bottom bar height in points (excludes safe area inset)
+    public static let bottomBarHeight: CGFloat = 72
+
+    // MARK: - Debug (PR2.1)
+
+    #if DEBUG
+    /// Number of extra stub tracks to add for testing vertical scroll (0 = no stubs)
+    public static let debugExtraTracksCount: Int = 0
+    #endif
 }

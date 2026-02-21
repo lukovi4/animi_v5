@@ -3,12 +3,15 @@ import TVECore
 
 // MARK: - State
 
-/// UI state machine for template editor (PR-19).
+/// UI state machine for template editor (PR-19, PR2).
 struct TemplateEditorState {
     var mode: TemplateMode = .preview
     var selectedBlockId: String?
     var currentPreviewFrame: Int = 0
     var isPlaying: Bool = false
+
+    // PR2: Timeline selection (separate from canvas block selection)
+    var timelineSelection: TimelineSelection = .none
 }
 
 // MARK: - Controller
@@ -130,6 +133,28 @@ final class TemplateEditorController {
     func setPlaying(_ playing: Bool) {
         state.isPlaying = playing
         onStateChanged?(state)
+    }
+
+    // MARK: - Timeline Selection (PR2)
+
+    /// Selects an item on the timeline. Used to switch bottom bar (GlobalActionBar vs ContextBar).
+    func selectTimeline(_ selection: TimelineSelection) {
+        state.timelineSelection = selection
+        onStateChanged?(state)
+    }
+
+    /// Clears timeline selection. Returns to GlobalActionBar.
+    func clearTimelineSelection() {
+        state.timelineSelection = .none
+        onStateChanged?(state)
+    }
+
+    /// Sets current frame directly (for timeline scrub). Works in any mode.
+    /// PR2: Added to support timeline scrubbing without mode guard.
+    func setCurrentFrame(_ frame: Int) {
+        state.currentPreviewFrame = frame
+        onStateChanged?(state)
+        requestDisplay()
     }
 
     // MARK: - Hit-Test & Selection (edit only)

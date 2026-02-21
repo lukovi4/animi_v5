@@ -442,6 +442,11 @@ final class PlayerViewController: UIViewController {
     private var scenePlayer: ScenePlayer?
     private let editorController = TemplateEditorController()
 
+    // MARK: - PR2: Visual Editor Timeline
+    private var currentProjectDraft: ProjectDraft?
+    private lazy var editorLayoutContainer = EditorLayoutContainerView()
+    private weak var fullScreenPreviewVC: FullScreenPreviewViewController?
+
     // MARK: - User Media (PR-32)
     private var userMediaService: UserMediaService?
     private lazy var overlayView = EditorOverlayView()
@@ -518,9 +523,45 @@ final class PlayerViewController: UIViewController {
             loadCompiledTemplateFromBundle(templateName: "example_4blocks")
             #endif
         case .editor(let templateId):
+            // PR2: Load or create ProjectDraft for this template
+            loadOrCreateProjectDraft(for: templateId)
             // Auto-load the selected template from catalog
             loadCompiledTemplateFromBundle(templateName: templateId)
         }
+    }
+
+    // MARK: - PR2: Project Draft Loading
+
+    /// Loads existing ProjectDraft or creates new one for the template.
+    /// Sets currentProjectDraft as the in-memory source of truth for the session.
+    private func loadOrCreateProjectDraft(for templateId: String) {
+        currentTemplateId = templateId
+
+        // Try to find existing project for this template
+        do {
+            if let projectId = try ProjectStore.shared.projectId(for: templateId) {
+                // Load existing project
+                if let draft = try ProjectStore.shared.loadProjectDraft(projectId: projectId, templateId: templateId) {
+                    currentProjectDraft = draft
+                    currentProjectId = projectId
+                    log("[PR2] Loaded existing project: \(projectId)")
+                    return
+                }
+            }
+        } catch {
+            log("[PR2] Failed to load project: \(error). Creating new.")
+        }
+
+        // No existing project or failed to load - create new draft (in-memory only for PR2)
+        createNewProjectDraft(for: templateId)
+    }
+
+    /// Creates a new in-memory ProjectDraft for the template.
+    private func createNewProjectDraft(for templateId: String) {
+        let draft = ProjectDraft.create(for: templateId)
+        currentProjectDraft = draft
+        currentProjectId = draft.id
+        log("[PR2] Created new project draft: \(draft.id)")
     }
 
     /// Applies UI changes based on presentation mode (PR-Templates)
@@ -530,6 +571,8 @@ final class PlayerViewController: UIViewController {
             // Show all dev UI
             templateSelector.isHidden = false
             logTextView.isHidden = false
+            scrollView.isHidden = false
+            editorLayoutContainer.isHidden = true
 
             // Restore dev mode constraints
             exportButtonTopToContentViewConstraint?.isActive = false
@@ -540,25 +583,155 @@ final class PlayerViewController: UIViewController {
             logTextViewBottomConstraint?.isActive = true
 
         case .editor:
+            // PR2: Use EditorLayoutContainerView instead of scrollView
+            scrollView.isHidden = true
+            editorLayoutContainer.isHidden = false
+
             // Hide dev-only UI in editor mode
             templateSelector.isHidden = true
             logTextView.isHidden = true
 
-            // Collapse layout: switch constraints so hidden views don't take space
-            exportButtonTopToTemplateSelectorConstraint?.isActive = false
-            exportButtonTopToContentViewConstraint?.isActive = true
+            // Hide system navigation bar - we have our own EditorNavBar
+            navigationController?.setNavigationBarHidden(true, animated: false)
 
-            logTextViewHeightConstraint?.isActive = false
-            logTextViewBottomConstraint?.isActive = false
-            mainControlsStackBottomConstraint?.isActive = true
+            // Setup editor layout
+            setupEditorLayout()
         }
+    }
+
+    // MARK: - PR2: Editor Layout Setup
+
+    /// Sets up the editor layout container for .editor mode
+    private func setupEditorLayout() {
+        // Add editorLayoutContainer to view if not already added
+        if editorLayoutContainer.superview == nil {
+            editorLayoutContainer.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(editorLayoutContainer)
+            NSLayoutConstraint.activate([
+                editorLayoutContainer.topAnchor.constraint(equalTo: view.topAnchor),
+                editorLayoutContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                editorLayoutContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                editorLayoutContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+        }
+
+        // Embed metalView in editor layout
+        editorLayoutContainer.embedMetalView(metalView)
+
+        // Wire callbacks
+        wireEditorLayoutCallbacks()
+    }
+
+    /// Wires callbacks from EditorLayoutContainerView
+    private func wireEditorLayoutCallbacks() {
+        editorLayoutContainer.onClose = { [weak self] in
+            self?.handleEditorClose()
+        }
+
+        editorLayoutContainer.onExport = { [weak self] in
+            self?.exportTapped()
+        }
+
+        editorLayoutContainer.onPlayPause = { [weak self] in
+            self?.playPauseTapped()
+        }
+
+        editorLayoutContainer.onFullScreenPreview = { [weak self] in
+            self?.handleFullScreenPreview()
+        }
+
+        editorLayoutContainer.onScrub = { [weak self] frame in
+            self?.handleTimelineScrub(frame)
+        }
+
+        editorLayoutContainer.onTimelineSelectionChanged = { [weak self] selection in
+            self?.handleTimelineSelectionChanged(selection)
+        }
+    }
+
+    // MARK: - PR2: Editor Callbacks
+
+    private func handleEditorClose() {
+        // Stop playback before closing
+        stopPlayback()
+
+        // Pop back to previous screen
+        navigationController?.popViewController(animated: true)
+    }
+
+    private func handleFullScreenPreview() {
+        let fullScreenVC = FullScreenPreviewViewController()
+        fullScreenVC.modalPresentationStyle = .fullScreen
+        fullScreenPreviewVC = fullScreenVC
+
+        // Configure with current state
+        fullScreenVC.configure(currentFrame: currentFrameIndex, isPlaying: isPlaying)
+
+        // Move metalView to fullscreen VC
+        metalView.removeFromSuperview()
+        fullScreenVC.embedMetalView(metalView)
+
+        // Wire callbacks
+        fullScreenVC.onClose = { [weak self] frame in
+            guard let self = self else { return }
+
+            // Clear reference
+            self.fullScreenPreviewVC = nil
+
+            // Return metalView to editor layout before dismissing
+            self.metalView.removeFromSuperview()
+            self.editorLayoutContainer.embedMetalView(self.metalView)
+
+            self.dismiss(animated: true) {
+                // Restore frame position
+                self.currentFrameIndex = frame
+                self.editorController.setCurrentFrame(frame)
+                self.editorLayoutContainer.setCurrentFrame(frame)
+                self.metalView.setNeedsDisplay()
+            }
+        }
+
+        fullScreenVC.onPlayPause = { [weak self] in
+            self?.playPauseTapped()
+        }
+
+        present(fullScreenVC, animated: true)
+    }
+
+    private func handleTimelineScrub(_ frame: Int) {
+        // Stop playback on scrub
+        if isPlaying {
+            stopPlayback()
+        }
+
+        // Update frame
+        currentFrameIndex = frame
+        editorController.setCurrentFrame(frame)
+        metalView.setNeedsDisplay()
+    }
+
+    private func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
+        editorController.selectTimeline(selection)
+        editorLayoutContainer.setTimelineSelection(selection)
+    }
+
+    /// Configures timeline after template is loaded
+    private func configureEditorTimeline() {
+        guard case .editor = presentationMode else { return }
+
+        // Get effective duration
+        let templateDuration = totalFrames
+        let effectiveDuration = currentProjectDraft?.effectiveDurationFrames(templateDefault: templateDuration) ?? templateDuration
+
+        editorLayoutContainer.configure(durationFrames: effectiveDuration, fps: Int(sceneFPS))
+        editorLayoutContainer.setCurrentFrame(0)
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        // Show navigation bar in editor mode (system Back button)
+        // PR2: Hide system navigation bar in editor mode (we use EditorNavBar)
         if case .editor = presentationMode {
-            navigationController?.setNavigationBarHidden(false, animated: animated)
+            navigationController?.setNavigationBarHidden(true, animated: animated)
         }
     }
 
@@ -1877,6 +2050,9 @@ final class PlayerViewController: UIViewController {
         modeToggle.selectedSegmentIndex = 0
         editorController.enterPreview()
 
+        // PR2: Configure timeline for editor mode
+        configureEditorTimeline()
+
         // PR-20: Setup scene presets
         setupScenePresets(for: package)
 
@@ -2158,6 +2334,9 @@ final class PlayerViewController: UIViewController {
         modeToggle.selectedSegmentIndex = 0
         editorController.enterPreview()
 
+        // PR2: Configure timeline for editor mode
+        configureEditorTimeline()
+
         log("Ready for playback!")
         metalView.setNeedsDisplay()
     }
@@ -2263,6 +2442,9 @@ final class PlayerViewController: UIViewController {
         displayLink?.add(to: .main, forMode: .common)
         // PR-33: Start video playback (AVPlayer rate=1)
         userMediaService?.startVideoPlayback(sceneFrameIndex: currentFrameIndex)
+        // PR2: Update editor layout play state
+        editorLayoutContainer.setPlaying(true)
+        fullScreenPreviewVC?.setPlaying(true)
     }
 
     private func stopPlayback() {
@@ -2273,6 +2455,9 @@ final class PlayerViewController: UIViewController {
         editorController.setPlaying(false)
         // PR-33: Stop video playback (AVPlayer rate=0)
         userMediaService?.stopVideoPlayback()
+        // PR2: Update editor layout play state
+        editorLayoutContainer.setPlaying(false)
+        fullScreenPreviewVC?.setPlaying(false)
     }
 
     private func updatePlayPauseButton() {
@@ -2286,6 +2471,12 @@ final class PlayerViewController: UIViewController {
         editorController.advanceFrame(totalFrames: totalFrames)
         // Also update VC's local frame tracking for legacy compatibility
         currentFrameIndex = editorController.state.currentPreviewFrame
+
+        // PR2: Update timeline/fullscreen position during playback
+        if case .editor = presentationMode {
+            editorLayoutContainer.setCurrentFrame(currentFrameIndex)
+            fullScreenPreviewVC?.setCurrentFrame(currentFrameIndex)
+        }
 
         // PR-33: Gated video update (playback mode, no seek per frame)
         // Only update if:
