@@ -10,7 +10,9 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
     // MARK: - Schema Version
 
     /// Current schema version for migration support.
-    public static let currentSchemaVersion: Int = 1
+    /// v1: Initial schema with projectDurationFrames
+    /// v2: Added projectDurationUs for fractional duration support
+    public static let currentSchemaVersion: Int = 2
 
     /// Schema version of this draft (for migration).
     public var schemaVersion: Int
@@ -36,9 +38,15 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
 
     // MARK: - Duration
 
-    /// Project duration in frames (nil = use template's Canvas.durationFrames).
-    /// When non-nil, represents user's explicit duration override.
+    /// Project duration in frames (LEGACY - v1 schema).
+    /// Kept for migration from v1 projects. Use `projectDurationUs` for new code.
+    /// When non-nil, represents user's explicit duration override in frames.
     public var projectDurationFrames: Int?
+
+    /// Project duration in microseconds (v2 schema - source of truth).
+    /// Supports fractional durations like 10.4 seconds.
+    /// When non-nil, represents user's explicit duration override.
+    public var projectDurationUs: Int64?
 
     // MARK: - Background
 
@@ -66,6 +74,7 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         projectDurationFrames: Int? = nil,
+        projectDurationUs: Int64? = nil,
         background: ProjectBackgroundOverride = .empty,
         timeline: Timeline? = nil,
         sceneState: SceneState = .empty
@@ -77,6 +86,7 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.projectDurationFrames = projectDurationFrames
+        self.projectDurationUs = projectDurationUs
         self.background = background
         self.timeline = timeline
         self.sceneState = sceneState
@@ -121,11 +131,49 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
 // MARK: - Effective Duration Helper
 
 public extension ProjectDraft {
-    /// Returns the effective duration in frames.
+    /// Returns the effective duration in frames (LEGACY).
     /// Uses `projectDurationFrames` if set, otherwise falls back to template default.
     /// - Parameter templateDurationFrames: Default duration from template's Canvas.durationFrames
     /// - Returns: Effective duration in frames
     func effectiveDurationFrames(templateDefault: Int) -> Int {
         projectDurationFrames ?? templateDefault
+    }
+
+    /// Returns the effective duration in microseconds.
+    /// Uses `projectDurationUs` if set, otherwise falls back to template default.
+    /// - Parameter templateDefaultUs: Default duration from template in microseconds
+    /// - Returns: Effective duration in microseconds
+    func effectiveDurationUs(templateDefaultUs: Int64) -> Int64 {
+        projectDurationUs ?? templateDefaultUs
+    }
+}
+
+// MARK: - Duration Migration (v1 → v2)
+
+public extension ProjectDraft {
+    /// Migrates legacy `projectDurationFrames` to `projectDurationUs` if needed.
+    /// Call this once when loading a v1 project with access to template FPS.
+    ///
+    /// Migration rules:
+    /// - If `projectDurationUs` is already set → no-op (returns false)
+    /// - If `projectDurationFrames` is set → convert to microseconds and store (returns true)
+    /// - If neither is set → no-op (returns false)
+    ///
+    /// - Parameter templateFPS: Template's frame rate for conversion
+    /// - Returns: `true` if migration was performed, `false` if no migration needed
+    @discardableResult
+    mutating func migrateDurationFramesToUsIfNeeded(templateFPS: Int) -> Bool {
+        // Already migrated or no legacy value
+        guard projectDurationUs == nil, let frames = projectDurationFrames, templateFPS > 0 else {
+            return false
+        }
+
+        // Convert frames to microseconds: frames * 1_000_000 / fps
+        projectDurationUs = Int64(frames) * 1_000_000 / Int64(templateFPS)
+
+        // Update schema version to indicate migration
+        schemaVersion = ProjectDraft.currentSchemaVersion
+
+        return true
     }
 }

@@ -3,11 +3,17 @@ import TVECore
 
 // MARK: - State
 
-/// UI state machine for template editor (PR-19, PR2).
+/// UI state machine for template editor (PR-19, PR2, Time Refactor).
 struct TemplateEditorState {
     var mode: TemplateMode = .preview
     var selectedBlockId: String?
+
+    /// Current preview time in microseconds (source of truth for timeline position).
+    var currentPreviewTimeUs: TimeUs = 0
+
+    /// Current preview frame (derived from currentPreviewTimeUs for render).
     var currentPreviewFrame: Int = 0
+
     var isPlaying: Bool = false
 
     // PR2: Timeline selection (separate from canvas block selection)
@@ -32,6 +38,17 @@ final class TemplateEditorController {
     // MARK: - State
 
     private(set) var state = TemplateEditorState()
+
+    // MARK: - Time Configuration (Time Refactor)
+
+    /// Template frame rate for frame quantization.
+    var templateFPS: Int = 30
+
+    /// Project duration in microseconds for clamping.
+    var durationUs: TimeUs = 0
+
+    /// Total frames available in template (for frame clamping).
+    var totalFrames: Int = 0
 
     // MARK: - Dependencies (injected)
 
@@ -114,19 +131,27 @@ final class TemplateEditorController {
     // MARK: - Playback (preview only)
 
     /// Advances frame by 1 (called from displayLink). No-op in edit mode.
-    func advanceFrame(totalFrames: Int) {
-        guard state.mode == .preview, state.isPlaying else { return }
-        state.currentPreviewFrame = (state.currentPreviewFrame + 1) % totalFrames
+    /// Time Refactor: Syncs currentPreviewTimeUs after frame advance.
+    func advanceFrame() {
+        guard state.mode == .preview, state.isPlaying, totalFrames > 0 else { return }
+
+        // Advance frame with wrap-around
+        let nextFrame = (state.currentPreviewFrame + 1) % totalFrames
+        state.currentPreviewFrame = nextFrame
+
+        // Sync time from frame (playback is frame-driven)
+        state.currentPreviewTimeUs = frameToUs(nextFrame, fps: templateFPS)
+
         onStateChanged?(state)
         requestDisplay()
     }
 
     /// Scrubs to specific frame (called from slider). No-op in edit mode.
+    /// Time Refactor: Converts frame to time and uses applyTimeUs.
     func scrub(to frame: Int) {
         guard state.mode == .preview else { return }
-        state.currentPreviewFrame = frame
-        onStateChanged?(state)
-        requestDisplay()
+        let timeUs = frameToUs(frame, fps: templateFPS)
+        applyTimeUs(timeUs, mode: .ended)
     }
 
     /// Sets playing state (VC manages the actual displayLink).
@@ -149,10 +174,36 @@ final class TemplateEditorController {
         onStateChanged?(state)
     }
 
-    /// Sets current frame directly (for timeline scrub). Works in any mode.
-    /// PR2: Added to support timeline scrubbing without mode guard.
-    func setCurrentFrame(_ frame: Int) {
-        state.currentPreviewFrame = frame
+    /// Sets current time directly (for timeline scrub). Works in any mode.
+    /// Time Refactor: Changed from frame-based to time-based.
+    /// - Parameters:
+    ///   - timeUs: Time in microseconds
+    ///   - mode: Quantize mode for frame calculation
+    func setCurrentTimeUs(_ timeUs: TimeUs, mode: QuantizeMode) {
+        applyTimeUs(timeUs, mode: mode)
+    }
+
+    // MARK: - Time Application (Time Refactor)
+
+    /// Central method for updating preview position.
+    /// Ensures time and frame are always in sync.
+    /// - Parameters:
+    ///   - timeUs: Time in microseconds
+    ///   - mode: Quantize mode for frame calculation
+    private func applyTimeUs(_ timeUs: TimeUs, mode: QuantizeMode) {
+        // 1. Clamp time to valid range
+        let clampedTimeUs = clampTimeUs(timeUs, maxUs: durationUs)
+
+        // 2. Update time state
+        state.currentPreviewTimeUs = clampedTimeUs
+
+        // 3. Quantize to frame
+        let frame = quantizeFrame(timeUs: clampedTimeUs, fps: templateFPS, mode: mode)
+
+        // 4. Clamp frame to template's available frames
+        state.currentPreviewFrame = clampFrame(frame, totalFrames: totalFrames)
+
+        // 5. Notify
         onStateChanged?(state)
         requestDisplay()
     }

@@ -9,8 +9,9 @@ final class TimeRulerView: UIView {
 
     // MARK: - Configuration
 
-    private var durationFrames: Int = 0
-    private var fps: Int = 30
+    /// Duration in microseconds (source of truth).
+    private var durationUs: TimeUs = 0
+
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
     private var contentOffsetX: CGFloat = 0
 
@@ -33,10 +34,10 @@ final class TimeRulerView: UIView {
 
     // MARK: - Configuration
 
-    /// Configures ruler with duration and FPS.
-    func configure(durationFrames: Int, fps: Int) {
-        self.durationFrames = durationFrames
-        self.fps = fps > 0 ? fps : 30
+    /// Configures ruler with duration in microseconds.
+    /// - Parameter durationUs: Duration in microseconds
+    func configure(durationUs: TimeUs) {
+        self.durationUs = durationUs
         setNeedsDisplay()
     }
 
@@ -52,74 +53,98 @@ final class TimeRulerView: UIView {
         setNeedsDisplay()
     }
 
-    // MARK: - Drawing
+    // MARK: - Drawing (PR2.4 Optimized, Time Refactor)
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        guard durationFrames > 0, fps > 0 else { return }
+        guard durationUs > 0, pxPerSecond > 0 else { return }
 
-        let durationSeconds = CGFloat(durationFrames) / CGFloat(fps)
+        let durationSeconds = CGFloat(usToSeconds(durationUs))
 
         // Playhead model: playhead is fixed at center of view.
-        // Timeline uses contentInset where padding = bounds.width/2.
-        // contentOffsetX = -padding when frame 0 is under playhead.
-        //
-        // Position of time T in ruler coordinates:
-        // x = T * pxPerSecond - contentOffsetX
-        //
-        // When contentOffsetX = -padding = -centerX:
-        //   x(T=0) = 0 - (-centerX) = centerX ✓ (time 0 at playhead)
-        let startX = -contentOffsetX // position of time 0 in ruler
+        // Position of time T in ruler coordinates: x = startX + T * pxPerSecond
+        let centerX = bounds.width / 2
+        let startX = centerX - contentOffsetX // position of time 0 in ruler
 
-        // Determine tick interval based on zoom level
+        // PR2.4 A) Calculate visible time range (with margin for smooth edges)
+        let margin = bounds.width // 1 screen margin
+        let visibleStartTime = max(0, (-margin - startX) / pxPerSecond)
+        let visibleEndTime = min(durationSeconds, (bounds.width + margin - startX) / pxPerSecond)
+
+        guard visibleStartTime < visibleEndTime else { return }
+
+        // Tick intervals
         let tickInterval = calculateTickInterval()
-        let majorTickInterval = tickInterval * 5
+        let majorInterval = calculateMajorInterval()
 
-        // Draw ticks
         context.setStrokeColor(tickColor.cgColor)
         context.setLineWidth(1)
 
-        var time: CGFloat = 0
-        while time <= durationSeconds {
-            let x = startX + time * pxPerSecond
+        // PR2.4 B) Minor ticks by index (no float accumulation)
+        let tickIndexStart = Int(floor(visibleStartTime / tickInterval))
+        let tickIndexEnd = Int(ceil(visibleEndTime / tickInterval))
 
-            // Only draw if visible
-            if x >= -20 && x <= bounds.width + 20 {
-                let isMajor = time.truncatingRemainder(dividingBy: majorTickInterval) < 0.001
-                let tickHeight: CGFloat = isMajor ? 12 : 6
+        for tickIndex in tickIndexStart...tickIndexEnd {
+            let t = CGFloat(tickIndex) * tickInterval
+            guard t >= 0 && t <= durationSeconds else { continue }
 
-                context.move(to: CGPoint(x: x, y: bounds.height))
-                context.addLine(to: CGPoint(x: x, y: bounds.height - tickHeight))
-                context.strokePath()
+            let x = startX + t * pxPerSecond
+            let tickHeight: CGFloat = 6 // minor tick height
 
-                // Draw label for major ticks
-                if isMajor {
-                    drawTimeLabel(at: x, time: time, context: context)
-                }
-            }
+            context.move(to: CGPoint(x: x, y: bounds.height))
+            context.addLine(to: CGPoint(x: x, y: bounds.height - tickHeight))
+            context.strokePath()
+        }
 
-            time += tickInterval
+        // PR2.4 C) Major ticks + labels on whole seconds only
+        let secStart = max(0, Int(ceil(visibleStartTime)))
+        let secEnd = min(Int(durationSeconds), Int(floor(visibleEndTime)))
+
+        var sec = secStart - (secStart % majorInterval) // align to majorInterval
+        if sec < secStart { sec += majorInterval }
+
+        while sec <= secEnd {
+            let t = CGFloat(sec)
+            let x = startX + t * pxPerSecond
+
+            // Draw major tick (taller)
+            let majorTickHeight: CGFloat = 12
+            context.move(to: CGPoint(x: x, y: bounds.height))
+            context.addLine(to: CGPoint(x: x, y: bounds.height - majorTickHeight))
+            context.strokePath()
+
+            // Draw label
+            drawTimeLabel(at: x, timeSeconds: sec)
+
+            sec += majorInterval
         }
     }
 
     private func calculateTickInterval() -> CGFloat {
-        // Adjust tick interval based on zoom level
-        // More zoom = more detail (smaller intervals)
-        let baseInterval: CGFloat = 1.0 // 1 second base
-
+        // Minor tick interval based on zoom level
         if pxPerSecond >= 60 {
             return 0.25 // quarter seconds
         } else if pxPerSecond >= 30 {
             return 0.5 // half seconds
         } else {
-            return baseInterval
+            return 1.0 // 1 second
         }
     }
 
-    private func drawTimeLabel(at x: CGFloat, time: CGFloat, context: CGContext) {
-        let timeInt = Int(time)
-        let minutes = timeInt / 60
-        let seconds = timeInt % 60
+    private func calculateMajorInterval() -> Int {
+        // PR2.4: Major ticks on whole seconds only
+        if pxPerSecond >= 120 {
+            return 1 // every 1 second
+        } else if pxPerSecond >= 60 {
+            return 5 // every 5 seconds
+        } else {
+            return 10 // every 10 seconds
+        }
+    }
+
+    private func drawTimeLabel(at x: CGFloat, timeSeconds: Int) {
+        let minutes = timeSeconds / 60
+        let seconds = timeSeconds % 60
         let text = String(format: "%d:%02d", minutes, seconds)
 
         let attributes: [NSAttributedString.Key: Any] = [

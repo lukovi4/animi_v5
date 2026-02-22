@@ -1,16 +1,19 @@
 import UIKit
 
-// MARK: - Scene Track View (PR2)
+// MARK: - Scene Track View (PR2.6)
 
 /// Visualizes the base scene layer on the timeline.
 /// Shows a clip from frame 0 to effectiveDurationFrames.
+/// PR2.6: Uses leftPadding to position clip at time=0.
 final class SceneTrackView: UIView {
 
     // MARK: - Configuration
 
-    private var durationFrames: Int = 0
-    private var fps: Int = 30
+    /// Duration in microseconds (source of truth).
+    private var durationUs: TimeUs = 0
+
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
+    private var leftPadding: CGFloat = 0
     private var isSelected: Bool = false
 
     // MARK: - Appearance
@@ -74,8 +77,7 @@ final class SceneTrackView: UIView {
     }
 
     private func setupConstraints() {
-        // Clip starts after left padding (half screen width in TimelineView)
-        // But for simplicity, we use leading constraint that will be updated
+        // PR2.6: Clip starts at leftPadding (where time=0 is)
         clipLeadingConstraint = clipView.leadingAnchor.constraint(equalTo: leadingAnchor)
         clipWidthConstraint = clipView.widthAnchor.constraint(equalToConstant: 200)
 
@@ -97,18 +99,24 @@ final class SceneTrackView: UIView {
 
     // MARK: - Configuration
 
-    /// Configures track with duration and FPS.
-    func configure(durationFrames: Int, fps: Int, pxPerSecond: CGFloat) {
-        self.durationFrames = durationFrames
-        self.fps = fps > 0 ? fps : 30
+    /// Configures track with duration in microseconds, pxPerSecond, and leftPadding.
+    /// PR2.6: leftPadding is the X position where time=0 starts.
+    /// - Parameters:
+    ///   - durationUs: Duration in microseconds
+    ///   - pxPerSecond: Pixels per second for width calculation
+    ///   - leftPadding: Left padding in pixels
+    func configure(durationUs: TimeUs, pxPerSecond: CGFloat, leftPadding: CGFloat) {
+        self.durationUs = durationUs
         self.pxPerSecond = pxPerSecond
-        updateClipSize()
+        self.leftPadding = leftPadding
+        updateClipLayout()
     }
 
-    /// Updates pixels per second (when timeline zooms).
-    func setPxPerSecond(_ pxPerSec: CGFloat) {
-        pxPerSecond = pxPerSec
-        updateClipSize()
+    /// Updates pixels per second and leftPadding (when timeline zooms or resizes).
+    func setPxPerSecond(_ pxPerSec: CGFloat, leftPadding: CGFloat) {
+        self.pxPerSecond = pxPerSec
+        self.leftPadding = leftPadding
+        updateClipLayout()
     }
 
     /// Sets selection state.
@@ -122,16 +130,15 @@ final class SceneTrackView: UIView {
 
     // MARK: - Private
 
-    private func updateClipSize() {
-        guard durationFrames > 0, fps > 0 else { return }
+    private func updateClipLayout() {
+        guard durationUs > 0 else { return }
 
-        let durationSeconds = CGFloat(durationFrames) / CGFloat(fps)
+        let durationSeconds = CGFloat(usToSeconds(durationUs))
         let clipWidth = durationSeconds * pxPerSecond
 
         clipWidthConstraint?.constant = clipWidth
 
-        // Clip starts at "frame 0" position which is at leading edge of content
-        // (padding is handled by TimelineView's contentView)
-        clipLeadingConstraint?.constant = 0
+        // PR2.6: Clip starts at leftPadding (where time=0 is in contentView coordinates)
+        clipLeadingConstraint?.constant = leftPadding
     }
 }

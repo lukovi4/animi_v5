@@ -1,16 +1,19 @@
 import UIKit
 
-// MARK: - Audio Track View (PR2)
+// MARK: - Audio Track View (PR2.6)
 
 /// Placeholder track for audio layer.
 /// Shows an empty track with "Audio" label (no functionality in PR2).
+/// PR2.6: Uses leftPadding to position track at time=0.
 final class AudioTrackView: UIView {
 
     // MARK: - Configuration
 
-    private var durationFrames: Int = 0
-    private var fps: Int = 30
+    /// Duration in microseconds (source of truth).
+    private var durationUs: TimeUs = 0
+
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
+    private var leftPadding: CGFloat = 0
     private var isSelected: Bool = false
 
     // MARK: - Appearance
@@ -50,6 +53,7 @@ final class AudioTrackView: UIView {
     }()
 
     private var trackWidthConstraint: NSLayoutConstraint?
+    private var trackLeadingConstraint: NSLayoutConstraint?
 
     // MARK: - Initialization
 
@@ -73,10 +77,12 @@ final class AudioTrackView: UIView {
     }
 
     private func setupConstraints() {
+        // PR2.6: Track starts at leftPadding (where time=0 is)
+        trackLeadingConstraint = trackBackground.leadingAnchor.constraint(equalTo: leadingAnchor)
         trackWidthConstraint = trackBackground.widthAnchor.constraint(equalToConstant: 200)
 
         NSLayoutConstraint.activate([
-            trackBackground.leadingAnchor.constraint(equalTo: leadingAnchor),
+            trackLeadingConstraint!,
             trackBackground.topAnchor.constraint(equalTo: topAnchor, constant: 2),
             trackBackground.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
             trackWidthConstraint!,
@@ -93,18 +99,24 @@ final class AudioTrackView: UIView {
 
     // MARK: - Configuration
 
-    /// Configures track with duration and FPS.
-    func configure(durationFrames: Int, fps: Int, pxPerSecond: CGFloat) {
-        self.durationFrames = durationFrames
-        self.fps = fps > 0 ? fps : 30
+    /// Configures track with duration in microseconds, pxPerSecond, and leftPadding.
+    /// PR2.6: leftPadding is the X position where time=0 starts.
+    /// - Parameters:
+    ///   - durationUs: Duration in microseconds
+    ///   - pxPerSecond: Pixels per second for width calculation
+    ///   - leftPadding: Left padding in pixels
+    func configure(durationUs: TimeUs, pxPerSecond: CGFloat, leftPadding: CGFloat) {
+        self.durationUs = durationUs
         self.pxPerSecond = pxPerSecond
-        updateTrackSize()
+        self.leftPadding = leftPadding
+        updateTrackLayout()
     }
 
-    /// Updates pixels per second (when timeline zooms).
-    func setPxPerSecond(_ pxPerSec: CGFloat) {
-        pxPerSecond = pxPerSec
-        updateTrackSize()
+    /// Updates pixels per second and leftPadding (when timeline zooms or resizes).
+    func setPxPerSecond(_ pxPerSec: CGFloat, leftPadding: CGFloat) {
+        self.pxPerSecond = pxPerSec
+        self.leftPadding = leftPadding
+        updateTrackLayout()
     }
 
     /// Sets selection state.
@@ -117,12 +129,15 @@ final class AudioTrackView: UIView {
 
     // MARK: - Private
 
-    private func updateTrackSize() {
-        guard durationFrames > 0, fps > 0 else { return }
+    private func updateTrackLayout() {
+        guard durationUs > 0 else { return }
 
-        let durationSeconds = CGFloat(durationFrames) / CGFloat(fps)
+        let durationSeconds = CGFloat(usToSeconds(durationUs))
         let trackWidth = durationSeconds * pxPerSecond
 
         trackWidthConstraint?.constant = trackWidth
+
+        // PR2.6: Track starts at leftPadding (where time=0 is in contentView coordinates)
+        trackLeadingConstraint?.constant = leftPadding
     }
 }

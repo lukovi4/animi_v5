@@ -1,113 +1,123 @@
 import UIKit
 
-// MARK: - Timeline View (PR2.1)
+// MARK: - Timeline View (PR2.6 Core Rewrite)
 
 /// Horizontal scrolling timeline with pinch zoom support.
-/// Contains track views (SceneTrackView, AudioTrackView placeholder).
+/// Contains track views (SceneTrackView, AudioTrackView).
 /// Supports scrubbing and selection.
 ///
-/// Playhead model: playhead is fixed at center X of the view.
-/// Content scrolls underneath. contentInset provides padding so
-/// frame 0 can be centered and last frame can be centered.
+/// PR2.6 Architecture:
+/// - Single xScrollView as the only source of truth for X position
+/// - No transform, no contentInset for time-axis math
+/// - Real padding via contentWidth = leftPad + duration*pps + rightPad
+/// - Zoom anchored under playhead (center of screen)
 ///
-/// PR2.1 Architecture:
-/// - timeScrollView: horizontal X scroll + pinch zoom + contentInset
-/// - tracksVerticalScrollView: vertical Y scroll for tracks
-/// - X sync via transform on tracksContentView
+/// Playhead model: playhead is fixed at center X of the view.
+/// Content scrolls underneath. leftPaddingPx provides space so
+/// frame 0 can be centered and last frame can be centered.
 final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
 
     // MARK: - Callbacks
 
-    /// Called when timeline is scrubbed (passes frame index under playhead)
-    var onScrub: ((Int) -> Void)?
+    /// Called when timeline is scrubbed (passes time in microseconds and quantize mode).
+    /// Time Refactor: Changed from frame-based to time-based callback.
+    var onScrub: ((TimeUs, QuantizeMode) -> Void)?
 
-    /// Called when scroll/zoom changes (for ruler sync)
-    var onScrollChanged: ((CGPoint, CGFloat) -> Void)?
+    /// Called when scroll/zoom changes (for ruler sync) - direct, no throttle
+    var onScrollChanged: ((CGFloat, CGFloat) -> Void)?
 
     /// Called when timeline selection changes
     var onSelectionChanged: ((TimelineSelection) -> Void)?
 
     // MARK: - Configuration
 
-    private var durationFrames: Int = 0
-    private var fps: Int = 30
+    /// Duration in microseconds (source of truth for timeline length).
+    private var durationUs: TimeUs = 0
+
+    /// Template FPS for frame quantization (used only for derived calculations).
+    private var templateFPS: Int = 30
+
     private var currentZoom: CGFloat = 1.0
-    private var currentFrame: Int = 0
 
-    // MARK: - Continuous Scrub State (PR2.1 P1-A)
+    /// Current time under playhead in microseconds.
+    private var currentTimeUs: TimeUs = 0
 
-    private var lastEmittedScrubFrame: Int?
+    // MARK: - Initial Positioning State
 
-    // MARK: - Ruler Throttle State (PR2.1 P1-C)
+    private var didInitialPositioning = false
+    private var stateWasRestored = false
 
-    private var displayLink: CADisplayLink?
-    private var rulerNeedsUpdate = false
-    private var pendingOffset: CGPoint = .zero
-    private var pendingPxPerSecond: CGFloat = 0
+    // MARK: - Continuous Scrub State
 
-    // MARK: - Computed
+    /// Last emitted scrub time to avoid redundant callbacks during drag.
+    private var lastEmittedScrubTimeUs: TimeUs?
+
+    // MARK: - Computed Properties
 
     private var pxPerSecond: CGFloat {
         EditorConfig.basePxPerSecond * currentZoom
     }
 
+    /// Pixels per frame (derived from pxPerSecond and templateFPS).
+    /// Used for frame-based grid drawing if needed.
     private var pxPerFrame: CGFloat {
-        guard fps > 0 else { return 1 }
-        return pxPerSecond / CGFloat(fps)
+        guard templateFPS > 0 else { return 1 }
+        return pxPerSecond / CGFloat(templateFPS)
     }
 
-    private var totalContentWidth: CGFloat {
-        guard fps > 0 else { return 0 }
-        let durationSeconds = CGFloat(durationFrames) / CGFloat(fps)
-        return durationSeconds * pxPerSecond
-    }
-
-    /// Horizontal padding (half of view width) so playhead can reach first/last frame
-    private var horizontalPadding: CGFloat {
+    /// Left padding = half of view width (so time=0 can be under playhead at center)
+    private var leftPaddingPx: CGFloat {
         bounds.width / 2
     }
 
-    /// Current content offset (for external access by ruler)
-    var contentOffset: CGPoint {
-        timeScrollView.contentOffset
+    /// Right padding = half of view width (so last frame can be under playhead)
+    private var rightPaddingPx: CGFloat {
+        bounds.width / 2
     }
 
-    // MARK: - Subviews (PR2.1 Architecture)
+    /// Duration in seconds (derived from durationUs).
+    private var durationSeconds: CGFloat {
+        CGFloat(usToSeconds(durationUs))
+    }
 
-    /// Horizontal scroll for time (X) + pinch zoom + contentInset
-    private lazy var timeScrollView: UIScrollView = {
+    /// Total content width = leftPad + duration*pxPerSecond + rightPad
+    private var totalContentWidth: CGFloat {
+        leftPaddingPx + durationSeconds * pxPerSecond + rightPaddingPx
+    }
+
+    /// Maximum valid offset (when last frame is under playhead)
+    private var maxOffsetX: CGFloat {
+        durationSeconds * pxPerSecond
+    }
+
+    /// Current content offset X (for external access)
+    var contentOffsetX: CGFloat {
+        xScrollView.contentOffset.x
+    }
+
+    // MARK: - Subviews (PR2.6 Architecture)
+
+    /// Horizontal scroll for time (X) - single source of truth
+    /// Note: tracksVerticalScrollView removed for MVP (Y scroll not needed with 2 tracks)
+    private lazy var xScrollView: UIScrollView = {
         let sv = UIScrollView()
         sv.translatesAutoresizingMaskIntoConstraints = false
         sv.showsHorizontalScrollIndicator = false
         sv.showsVerticalScrollIndicator = false
         sv.delegate = self
         sv.decelerationRate = .fast
+        sv.alwaysBounceHorizontal = false
+        // Lock to horizontal only
+        sv.alwaysBounceVertical = false
+        sv.isDirectionalLockEnabled = true
         return sv
     }()
 
-    /// Content inside timeScrollView (width = duration)
-    private lazy var timeContentView: UIView = {
+    /// Content inside xScrollView (width = leftPad + duration*pps + rightPad)
+    private lazy var contentView: UIView = {
         let v = UIView()
         v.translatesAutoresizingMaskIntoConstraints = false
         v.backgroundColor = .clear
-        return v
-    }()
-
-    /// Vertical scroll for tracks (Y)
-    private lazy var tracksVerticalScrollView: UIScrollView = {
-        let sv = UIScrollView()
-        sv.translatesAutoresizingMaskIntoConstraints = false
-        sv.showsHorizontalScrollIndicator = false
-        sv.showsVerticalScrollIndicator = true
-        sv.alwaysBounceVertical = true
-        sv.clipsToBounds = true
-        return sv
-    }()
-
-    /// Content inside tracksVerticalScrollView (transform.x synced with timeScrollView)
-    private lazy var tracksContentView: UIView = {
-        let v = UIView()
-        v.translatesAutoresizingMaskIntoConstraints = false
         return v
     }()
 
@@ -124,8 +134,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private lazy var sceneTrack = SceneTrackView()
     private lazy var audioTrack = AudioTrackView()
 
-    private var timeContentWidthConstraint: NSLayoutConstraint?
-    private var tracksContentWidthConstraint: NSLayoutConstraint?
+    private var contentWidthConstraint: NSLayoutConstraint?
 
     // MARK: - Gestures
 
@@ -147,15 +156,10 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         setupViews()
         setupConstraints()
         setupGestures()
-        setupDisplayLink()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-
-    deinit {
-        displayLink?.invalidate()
     }
 
     // MARK: - Setup
@@ -163,99 +167,53 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private func setupViews() {
         backgroundColor = .secondarySystemBackground
 
-        // Time scroll view (invisible, just for X scroll/zoom tracking)
-        addSubview(timeScrollView)
-        timeScrollView.addSubview(timeContentView)
-
-        // Tracks vertical scroll view (visible, contains tracks)
-        addSubview(tracksVerticalScrollView)
-        tracksVerticalScrollView.addSubview(tracksContentView)
-        tracksContentView.addSubview(tracksStack)
+        // PR2.6 Hierarchy (MVP): xScrollView → contentView → tracksStack
+        // Note: tracksVerticalScrollView can be added later when Y scroll is needed
+        addSubview(xScrollView)
+        xScrollView.addSubview(contentView)
+        contentView.addSubview(tracksStack)
 
         // Add tracks
         tracksStack.addArrangedSubview(sceneTrack)
         tracksStack.addArrangedSubview(audioTrack)
 
-        #if DEBUG
-        // Add stub tracks for testing vertical scroll
-        for i in 0..<EditorConfig.debugExtraTracksCount {
-            let stubTrack = createStubTrack(index: i)
-            tracksStack.addArrangedSubview(stubTrack)
-        }
-        #endif
+        // Note: DEBUG stub tracks removed in PR2.6 MVP (no Y-scroll)
+        // Will be re-added when tracksVerticalScrollView is implemented
     }
-
-    #if DEBUG
-    private func createStubTrack(index: Int) -> UIView {
-        let view = UIView()
-        view.translatesAutoresizingMaskIntoConstraints = false
-        view.backgroundColor = UIColor.systemGray.withAlphaComponent(0.3)
-        view.layer.cornerRadius = 6
-
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "Track \(index + 3)"
-        label.font = .systemFont(ofSize: 11, weight: .regular)
-        label.textColor = .secondaryLabel
-        view.addSubview(label)
-
-        NSLayoutConstraint.activate([
-            view.heightAnchor.constraint(equalToConstant: 40),
-            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            label.centerYAnchor.constraint(equalTo: view.centerYAnchor)
-        ])
-
-        return view
-    }
-    #endif
 
     private func setupConstraints() {
         sceneTrack.translatesAutoresizingMaskIntoConstraints = false
         audioTrack.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            // Time scroll view fills the view (invisible layer for X scroll)
-            timeScrollView.topAnchor.constraint(equalTo: topAnchor),
-            timeScrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            timeScrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            timeScrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            // xScrollView fills TimelineView
+            xScrollView.topAnchor.constraint(equalTo: topAnchor),
+            xScrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            xScrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            xScrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            // Time content view
-            timeContentView.topAnchor.constraint(equalTo: timeScrollView.contentLayoutGuide.topAnchor),
-            timeContentView.leadingAnchor.constraint(equalTo: timeScrollView.contentLayoutGuide.leadingAnchor),
-            timeContentView.trailingAnchor.constraint(equalTo: timeScrollView.contentLayoutGuide.trailingAnchor),
-            timeContentView.bottomAnchor.constraint(equalTo: timeScrollView.contentLayoutGuide.bottomAnchor),
-            timeContentView.heightAnchor.constraint(equalTo: timeScrollView.frameLayoutGuide.heightAnchor),
+            // contentView inside xScrollView (contentLayoutGuide)
+            contentView.topAnchor.constraint(equalTo: xScrollView.contentLayoutGuide.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: xScrollView.contentLayoutGuide.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: xScrollView.contentLayoutGuide.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: xScrollView.contentLayoutGuide.bottomAnchor),
+            // Height matches frame for no vertical scroll in xScrollView
+            contentView.heightAnchor.constraint(equalTo: xScrollView.frameLayoutGuide.heightAnchor),
 
-            // Tracks vertical scroll view fills the view
-            tracksVerticalScrollView.topAnchor.constraint(equalTo: topAnchor),
-            tracksVerticalScrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            tracksVerticalScrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            tracksVerticalScrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
-
-            // Tracks content view
-            tracksContentView.topAnchor.constraint(equalTo: tracksVerticalScrollView.contentLayoutGuide.topAnchor),
-            tracksContentView.leadingAnchor.constraint(equalTo: tracksVerticalScrollView.contentLayoutGuide.leadingAnchor),
-            tracksContentView.bottomAnchor.constraint(equalTo: tracksVerticalScrollView.contentLayoutGuide.bottomAnchor),
-            // Width will be set by constraint
-
-            // Tracks stack inside content
-            tracksStack.topAnchor.constraint(equalTo: tracksContentView.topAnchor, constant: 8),
-            tracksStack.leadingAnchor.constraint(equalTo: tracksContentView.leadingAnchor),
-            tracksStack.trailingAnchor.constraint(equalTo: tracksContentView.trailingAnchor),
-            tracksStack.bottomAnchor.constraint(equalTo: tracksContentView.bottomAnchor, constant: -8),
+            // tracksStack inside contentView
+            tracksStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
+            tracksStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            tracksStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            tracksStack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -8),
 
             // Track heights
             sceneTrack.heightAnchor.constraint(equalToConstant: 60),
             audioTrack.heightAnchor.constraint(equalToConstant: 40),
         ])
 
-        // Content width constraints
-        timeContentWidthConstraint = timeContentView.widthAnchor.constraint(equalToConstant: 1000)
-        timeContentWidthConstraint?.isActive = true
-
-        tracksContentWidthConstraint = tracksContentView.widthAnchor.constraint(equalToConstant: 1000)
-        tracksContentWidthConstraint?.isActive = true
+        // Content width constraint (will be updated in updateContentSize)
+        contentWidthConstraint = contentView.widthAnchor.constraint(equalToConstant: 1000)
+        contentWidthConstraint?.isActive = true
     }
 
     private func setupGestures() {
@@ -263,232 +221,212 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         addGestureRecognizer(pinchGesture)
 
         // Tap on tracks area
-        tracksVerticalScrollView.addGestureRecognizer(tapGesture)
-
-        // Forward pan gestures from tracksVerticalScrollView to timeScrollView for X
-        let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        panGesture.delegate = self
-        tracksVerticalScrollView.addGestureRecognizer(panGesture)
-    }
-
-    private func setupDisplayLink() {
-        displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
-        displayLink?.add(to: .main, forMode: .common)
+        xScrollView.addGestureRecognizer(tapGesture)
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Update contentInset when view size changes
-        updateContentInset()
+
+        // Update content size when view size changes (padding depends on bounds)
+        updateContentSize()
+
+        // Initial positioning: ensure frame 0 is under playhead on first layout
+        // Must be done BEFORE notifyScrollChanged to send correct initial offset
+        if !didInitialPositioning && !stateWasRestored && bounds.width > 0 {
+            didInitialPositioning = true
+            // offset=0 means time=0 is under playhead (at center)
+            xScrollView.contentOffset = CGPoint(x: 0, y: 0)
+        }
+
+        // Notify ruler of current state (after offset is set correctly)
+        notifyScrollChanged()
     }
 
     // MARK: - Configuration
 
-    /// Configures timeline with duration and FPS.
-    func configure(durationFrames: Int, fps: Int) {
-        self.durationFrames = durationFrames
-        self.fps = fps > 0 ? fps : 30
+    /// Configures timeline with duration in microseconds and template FPS.
+    /// Does NOT reset position - use restoreState() to set position after configure.
+    /// - Parameters:
+    ///   - durationUs: Duration in microseconds (source of truth)
+    ///   - templateFPS: Template frame rate for quantization
+    func configure(durationUs: TimeUs, templateFPS: Int) {
+        self.durationUs = durationUs
+        self.templateFPS = templateFPS > 0 ? templateFPS : 30
 
-        sceneTrack.configure(durationFrames: durationFrames, fps: fps, pxPerSecond: pxPerSecond)
-        audioTrack.configure(durationFrames: durationFrames, fps: fps, pxPerSecond: pxPerSecond)
+        // Pass leftPaddingPx to tracks for spacer
+        let padding = leftPaddingPx
+        sceneTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
+        audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
         updateContentSize()
-        centerOnFrame(0)
     }
 
-    /// Updates current frame position (from playback).
+    /// Updates current time position (from playback).
     /// Skips if user is currently dragging to avoid fighting.
-    func setCurrentFrame(_ frame: Int) {
+    /// P1-1: Clamps time to valid range before storing.
+    /// - Parameter timeUs: Time in microseconds
+    func setCurrentTimeUs(_ timeUs: TimeUs) {
         // Don't interrupt user's drag/decelerate
-        guard !timeScrollView.isDragging && !timeScrollView.isDecelerating else { return }
+        guard !xScrollView.isDragging && !xScrollView.isDecelerating else { return }
 
-        currentFrame = frame
-        centerOnFrame(frame)
+        // Clamp to valid range [0, durationUs]
+        let clamped = clampTimeUs(timeUs, maxUs: durationUs)
+        currentTimeUs = clamped
+        centerOnTimeUs(clamped)
+    }
+
+    // MARK: - State Snapshot/Restore
+
+    /// Returns current time and zoom for snapshot.
+    func snapshotState() -> (timeUs: TimeUs, zoom: CGFloat) {
+        (timeUnderPlayheadUs(), currentZoom)
+    }
+
+    /// Restores time and zoom from snapshot.
+    /// Must be called after configure() to set position.
+    /// - Parameters:
+    ///   - timeUs: Time in microseconds
+    ///   - zoom: Zoom level
+    func restoreState(timeUs: TimeUs, zoom: CGFloat) {
+        // Mark that state was restored (prevents initial positioning override)
+        stateWasRestored = true
+        didInitialPositioning = true
+
+        // Restore zoom
+        currentZoom = zoom
+
+        // Update content size with new zoom
+        updateContentSize()
+
+        // Clamp time to valid range and center
+        let clampedTimeUs = clampTimeUs(timeUs, maxUs: durationUs)
+        centerOnTimeUs(clampedTimeUs)
+
+        // Sync internal state
+        currentTimeUs = clampedTimeUs
+
+        // Immediate ruler sync
+        notifyScrollChanged()
+    }
+
+    // MARK: - Selection (P1-3)
+
+    /// Programmatically sets selection and updates track highlighting.
+    /// Call this when restoring state or changing selection from outside TimelineView.
+    /// - Parameter selection: The selection to apply
+    func setSelection(_ selection: TimelineSelection) {
+        switch selection {
+        case .scene:
+            sceneTrack.setSelected(true)
+            audioTrack.setSelected(false)
+        case .audio:
+            sceneTrack.setSelected(false)
+            audioTrack.setSelected(true)
+        case .none:
+            sceneTrack.setSelected(false)
+            audioTrack.setSelected(false)
+        }
     }
 
     // MARK: - Private Helpers
 
-    private func updateContentInset() {
-        // Padding so frame 0 and last frame can be centered under playhead
-        let padding = horizontalPadding
-        timeScrollView.contentInset = UIEdgeInsets(top: 0, left: padding, bottom: 0, right: padding)
-    }
-
     private func updateContentSize() {
         let width = totalContentWidth
 
-        // Update time content width
-        timeContentWidthConstraint?.constant = width
+        // Update content width
+        contentWidthConstraint?.constant = width
 
-        // Update tracks content width
-        tracksContentWidthConstraint?.constant = width
-
-        // Update tracks
-        sceneTrack.setPxPerSecond(pxPerSecond)
-        audioTrack.setPxPerSecond(pxPerSecond)
-
-        // Update inset for current bounds
-        updateContentInset()
-
-        // Mark ruler for update
-        markRulerNeedsUpdate()
+        // Update tracks with new pxPerSecond and padding
+        let padding = leftPaddingPx
+        sceneTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
+        audioTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
     }
 
-    private func syncTracksTransform() {
-        // Sync X position of tracks with timeScrollView offset
-        let offsetX = timeScrollView.contentOffset.x + horizontalPadding
-        tracksContentView.transform = CGAffineTransform(translationX: -offsetX, y: 0)
+    /// Centers the given time under the playhead.
+    /// - Parameter timeUs: Time in microseconds
+    private func centerOnTimeUs(_ timeUs: TimeUs) {
+        guard durationUs > 0 else { return }
+
+        // offsetX = timeSeconds * pxPerSecond
+        let timeSeconds = usToSeconds(timeUs)
+        let offsetX = CGFloat(timeSeconds) * pxPerSecond
+        let clampedX = clampOffsetX(offsetX)
+
+        xScrollView.contentOffset = CGPoint(x: clampedX, y: 0)
+        notifyScrollChanged()
     }
 
-    private func centerOnFrame(_ frame: Int) {
-        guard durationFrames > 0, fps > 0 else { return }
+    /// Returns the time currently under the playhead in microseconds.
+    private func timeUnderPlayheadUs() -> TimeUs {
+        guard pxPerSecond > 0 else { return 0 }
 
-        // Frame position in content coordinates (starts at 0)
-        let frameX = CGFloat(frame) * pxPerFrame
-
-        // To center this frame under playhead (center of view),
-        // we need contentOffset.x such that:
-        // contentOffset.x + padding = frameX
-        // where padding = contentInset.left = bounds.width/2
-        //
-        // So: contentOffset.x = frameX - padding
-        // Note: with contentInset, valid offset range is [-padding, contentWidth - viewWidth + padding]
-        let padding = horizontalPadding
-        let targetOffset = frameX - padding
-
-        // Clamp to valid range
-        let minOffset = -padding
-        let maxOffset = totalContentWidth - bounds.width + padding
-        let clampedOffset = max(minOffset, min(targetOffset, maxOffset))
-
-        timeScrollView.contentOffset = CGPoint(x: clampedOffset, y: 0)
-        syncTracksTransform()
+        // time = offsetX / pxPerSecond (simple, no inset math)
+        let timeSeconds = Double(xScrollView.contentOffset.x / pxPerSecond)
+        let timeUs = secondsToUs(timeSeconds)
+        return clampTimeUs(timeUs, maxUs: durationUs)
     }
 
-    private func frameUnderPlayhead() -> Int {
-        // Playhead is at center of view
-        // With contentInset, the content coordinate under center is:
-        // contentX = contentOffset.x + padding
-        // where padding = contentInset.left
-        let padding = horizontalPadding
-        let contentX = timeScrollView.contentOffset.x + padding
-
-        guard pxPerFrame > 0 else { return 0 }
-        let frame = Int(contentX / pxPerFrame)
-        return max(0, min(frame, max(0, durationFrames - 1)))
+    /// Clamps offset to valid range [0, maxOffsetX].
+    private func clampOffsetX(_ x: CGFloat) -> CGFloat {
+        max(0, min(x, maxOffsetX))
     }
 
-    // MARK: - Ruler Throttle (PR2.1 P1-C)
-
-    private func markRulerNeedsUpdate() {
-        rulerNeedsUpdate = true
-        pendingOffset = timeScrollView.contentOffset
-        pendingPxPerSecond = pxPerSecond
-    }
-
-    @objc private func displayLinkFired() {
-        if rulerNeedsUpdate {
-            onScrollChanged?(pendingOffset, pendingPxPerSecond)
-            rulerNeedsUpdate = false
-        }
+    /// Notifies ruler of current scroll position and scale (direct, no throttle).
+    private func notifyScrollChanged() {
+        onScrollChanged?(xScrollView.contentOffset.x, pxPerSecond)
     }
 
     // MARK: - UIScrollViewDelegate
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard scrollView === timeScrollView else { return }
+        guard scrollView === xScrollView else { return }
 
-        // Sync tracks X position
-        syncTracksTransform()
+        // Clamp offset to valid range
+        let rawX = scrollView.contentOffset.x
+        let clampedX = clampOffsetX(rawX)
+        if rawX != clampedX {
+            scrollView.contentOffset = CGPoint(x: clampedX, y: 0)
+        }
 
-        // Mark ruler for throttled update
-        markRulerNeedsUpdate()
+        // Notify ruler directly (no throttle)
+        notifyScrollChanged()
 
-        // PR2.1 P1-A: Continuous scrub during drag
+        // Emit scrub during drag with .dragging mode
         if scrollView.isDragging {
-            let frame = frameUnderPlayhead()
-            if frame != lastEmittedScrubFrame {
-                lastEmittedScrubFrame = frame
-                onScrub?(frame)
+            let timeUs = timeUnderPlayheadUs()
+            if timeUs != lastEmittedScrubTimeUs {
+                lastEmittedScrubTimeUs = timeUs
+                onScrub?(timeUs, .dragging)
             }
         }
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        guard scrollView === timeScrollView else { return }
+        guard scrollView === xScrollView else { return }
         // Reset scrub tracking for new drag session
-        lastEmittedScrubFrame = nil
+        lastEmittedScrubTimeUs = nil
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        guard scrollView === timeScrollView else { return }
+        guard scrollView === xScrollView else { return }
         if !decelerate {
-            emitScrub()
+            emitFinalScrub()
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        guard scrollView === timeScrollView else { return }
-        emitScrub()
+        guard scrollView === xScrollView else { return }
+        emitFinalScrub()
     }
 
-    private func emitScrub() {
-        let frame = frameUnderPlayhead()
-        onScrub?(frame)
+    /// Emits final scrub event with .ended mode for snap-to-nearest frame.
+    private func emitFinalScrub() {
+        let timeUs = timeUnderPlayheadUs()
+        onScrub?(timeUs, .ended)
+        notifyScrollChanged()
     }
 
     // MARK: - Gesture Handlers
-
-    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        // Forward horizontal pan to timeScrollView
-        let translation = recognizer.translation(in: self)
-        let velocity = recognizer.velocity(in: self)
-
-        switch recognizer.state {
-        case .began:
-            // Begin dragging timeScrollView
-            lastEmittedScrubFrame = nil
-
-        case .changed:
-            // Update timeScrollView offset
-            var newOffset = timeScrollView.contentOffset
-            newOffset.x -= translation.x
-            timeScrollView.contentOffset = newOffset
-            recognizer.setTranslation(.zero, in: self)
-
-            // Sync and emit
-            syncTracksTransform()
-            markRulerNeedsUpdate()
-
-            // Continuous scrub
-            let frame = frameUnderPlayhead()
-            if frame != lastEmittedScrubFrame {
-                lastEmittedScrubFrame = frame
-                onScrub?(frame)
-            }
-
-        case .ended, .cancelled:
-            // Apply deceleration
-            let decelerationRate = UIScrollView.DecelerationRate.fast.rawValue
-            let projectedX = timeScrollView.contentOffset.x - velocity.x * decelerationRate
-
-            // Clamp to valid range
-            let padding = horizontalPadding
-            let minOffset = -padding
-            let maxOffset = totalContentWidth - bounds.width + padding
-            let clampedOffset = max(minOffset, min(projectedX, maxOffset))
-
-            UIView.animate(withDuration: 0.3, delay: 0, options: .curveEaseOut) {
-                self.timeScrollView.contentOffset = CGPoint(x: clampedOffset, y: 0)
-                self.syncTracksTransform()
-            } completion: { _ in
-                self.emitScrub()
-            }
-
-        default:
-            break
-        }
-    }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
         switch recognizer.state {
@@ -497,21 +435,33 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             let clampedZoom = max(1.0, min(newZoom, EditorConfig.zoomMax))
 
             if clampedZoom != currentZoom {
-                // Save frame under playhead before zoom
-                let frameBeforeZoom = frameUnderPlayhead()
+                // PR2.6: Zoom anchored under playhead
+                // 1. Save time under playhead BEFORE zoom
+                let anchorTime = xScrollView.contentOffset.x / pxPerSecond
 
+                // 2. Update zoom
                 currentZoom = clampedZoom
+
+                // 3. Update content size with new pxPerSecond
                 updateContentSize()
 
-                // Restore frame under playhead after zoom
-                centerOnFrame(frameBeforeZoom)
+                // 4. Calculate new offset to keep anchorTime under playhead
+                let newPxPerSecond = pxPerSecond
+                let newOffsetX = anchorTime * newPxPerSecond
+                let clampedOffsetX = clampOffsetX(newOffsetX)
+
+                // 5. Apply new offset
+                xScrollView.contentOffset = CGPoint(x: clampedOffsetX, y: 0)
+
+                // 6. Notify ruler
+                notifyScrollChanged()
             }
 
             recognizer.scale = 1.0
 
         case .ended, .cancelled:
             // Emit final scrub position
-            emitScrub()
+            emitFinalScrub()
 
         default:
             break
@@ -519,10 +469,10 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
-        let location = recognizer.location(in: tracksContentView)
+        let location = recognizer.location(in: contentView)
 
         // Check if tap is on scene track
-        let sceneFrame = sceneTrack.convert(sceneTrack.bounds, to: tracksContentView)
+        let sceneFrame = sceneTrack.convert(sceneTrack.bounds, to: contentView)
         if sceneFrame.contains(location) {
             onSelectionChanged?(.scene)
             sceneTrack.setSelected(true)
@@ -531,7 +481,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
 
         // Check if tap is on audio track
-        let audioFrame = audioTrack.convert(audioTrack.bounds, to: tracksContentView)
+        let audioFrame = audioTrack.convert(audioTrack.bounds, to: contentView)
         if audioFrame.contains(location) {
             onSelectionChanged?(.audio)
             sceneTrack.setSelected(false)
@@ -549,23 +499,10 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        // Allow pinch alongside scroll/pan
+        // Allow pinch alongside scroll
         if gestureRecognizer == pinchGesture {
             return true
         }
-        // Allow pan alongside vertical scroll
-        if gestureRecognizer is UIPanGestureRecognizer && otherGestureRecognizer == tracksVerticalScrollView.panGestureRecognizer {
-            return true
-        }
         return false
-    }
-
-    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        // For our custom pan gesture, only begin if primarily horizontal
-        if let pan = gestureRecognizer as? UIPanGestureRecognizer, pan != tracksVerticalScrollView.panGestureRecognizer {
-            let velocity = pan.velocity(in: self)
-            return abs(velocity.x) > abs(velocity.y)
-        }
-        return true
     }
 }

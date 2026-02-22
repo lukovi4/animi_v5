@@ -444,6 +444,8 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - PR2: Visual Editor Timeline
     private var currentProjectDraft: ProjectDraft?
+    /// Tracks whether draft has unsaved changes (Time Refactor: dirty flag for save optimization).
+    private var draftIsDirty = false
     private lazy var editorLayoutContainer = EditorLayoutContainerView()
     private weak var fullScreenPreviewVC: FullScreenPreviewViewController?
 
@@ -640,8 +642,8 @@ final class PlayerViewController: UIViewController {
             self?.handleFullScreenPreview()
         }
 
-        editorLayoutContainer.onScrub = { [weak self] frame in
-            self?.handleTimelineScrub(frame)
+        editorLayoutContainer.onScrub = { [weak self] timeUs, mode in
+            self?.handleTimelineScrub(timeUs: timeUs, mode: mode)
         }
 
         editorLayoutContainer.onTimelineSelectionChanged = { [weak self] selection in
@@ -654,6 +656,9 @@ final class PlayerViewController: UIViewController {
     private func handleEditorClose() {
         // Stop playback before closing
         stopPlayback()
+
+        // Save draft before closing (Time Refactor: ensures migrated durationUs is persisted)
+        saveDraftIfNeeded()
 
         // Pop back to previous screen
         navigationController?.popViewController(animated: true)
@@ -683,10 +688,11 @@ final class PlayerViewController: UIViewController {
             self.editorLayoutContainer.embedMetalView(self.metalView)
 
             self.dismiss(animated: true) {
-                // Restore frame position
+                // Restore position (convert frame to time for time-based API)
                 self.currentFrameIndex = frame
-                self.editorController.setCurrentFrame(frame)
-                self.editorLayoutContainer.setCurrentFrame(frame)
+                let timeUs = frameToUs(frame, fps: Int(self.sceneFPS))
+                self.editorController.setCurrentTimeUs(timeUs, mode: .playback)
+                self.editorLayoutContainer.setCurrentTimeUs(timeUs)
                 self.metalView.setNeedsDisplay()
             }
         }
@@ -698,15 +704,23 @@ final class PlayerViewController: UIViewController {
         present(fullScreenVC, animated: true)
     }
 
-    private func handleTimelineScrub(_ frame: Int) {
+    /// Handles timeline scrub events.
+    /// Time Refactor: Changed from frame-based to time-based.
+    /// - Parameters:
+    ///   - timeUs: Time in microseconds
+    ///   - mode: Quantize mode for frame calculation
+    private func handleTimelineScrub(timeUs: TimeUs, mode: QuantizeMode) {
         // Stop playback on scrub
         if isPlaying {
             stopPlayback()
         }
 
-        // Update frame
-        currentFrameIndex = frame
-        editorController.setCurrentFrame(frame)
+        // Update time in controller (which will quantize to frame)
+        editorController.setCurrentTimeUs(timeUs, mode: mode)
+
+        // Sync local frame index from controller state
+        currentFrameIndex = editorController.state.currentPreviewFrame
+
         metalView.setNeedsDisplay()
     }
 
@@ -715,16 +729,57 @@ final class PlayerViewController: UIViewController {
         editorLayoutContainer.setTimelineSelection(selection)
     }
 
-    /// Configures timeline after template is loaded
+    /// Configures timeline after template is loaded.
+    /// PR2: Uses reconfigureTimelinePreservingState to maintain frame position and zoom.
+    /// Configures timeline after template is loaded.
+    /// Time Refactor: Uses microseconds as source of truth.
     private func configureEditorTimeline() {
         guard case .editor = presentationMode else { return }
 
-        // Get effective duration
-        let templateDuration = totalFrames
-        let effectiveDuration = currentProjectDraft?.effectiveDurationFrames(templateDefault: templateDuration) ?? templateDuration
+        let fps = Int(sceneFPS)
 
-        editorLayoutContainer.configure(durationFrames: effectiveDuration, fps: Int(sceneFPS))
-        editorLayoutContainer.setCurrentFrame(0)
+        // Calculate template duration in microseconds
+        let templateDurationUs = framesToDurationUs(totalFrames, fps: fps)
+
+        // Migrate and normalize duration (Time Refactor P0)
+        if var draft = currentProjectDraft {
+            var needsSave = false
+
+            // Step 1: Migrate legacy frames to microseconds
+            if draft.migrateDurationFramesToUsIfNeeded(templateFPS: fps) {
+                draft.projectDurationFrames = nil  // cleanup legacy after migration
+                needsSave = true
+                log("[Time Refactor] Duration migrated from frames to microseconds")
+            }
+
+            // Step 2: Normalize if duration exceeds template maximum
+            if let us = draft.projectDurationUs, us > templateDurationUs {
+                log("[Time Refactor] Duration normalized: \(us) → \(templateDurationUs)")
+                draft.projectDurationUs = templateDurationUs
+                draft.projectDurationFrames = nil  // cleanup legacy
+                needsSave = true
+            }
+
+            if needsSave {
+                currentProjectDraft = draft
+                draftIsDirty = true
+            }
+        }
+
+        // Get effective duration (clamped to template max)
+        let draftDurationUs = currentProjectDraft?.effectiveDurationUs(templateDefaultUs: templateDurationUs) ?? templateDurationUs
+        let effectiveDurationUs = min(draftDurationUs, templateDurationUs)
+
+        // Configure editor controller with time parameters
+        editorController.templateFPS = fps
+        editorController.durationUs = effectiveDurationUs
+        editorController.totalFrames = totalFrames
+
+        // Configure timeline UI
+        editorLayoutContainer.reconfigureTimelinePreservingState(
+            durationUs: effectiveDurationUs,
+            templateFPS: fps
+        )
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -742,6 +797,15 @@ final class PlayerViewController: UIViewController {
         #endif
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+
+        // Time Refactor: Save draft as safety net when leaving editor
+        if isMovingFromParent || isBeingDismissed {
+            saveDraftIfNeeded()
+        }
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         #if DEBUG
@@ -750,6 +814,29 @@ final class PlayerViewController: UIViewController {
 
         // PR4: Cleanup background textures when VC disappears
         backgroundTextureService?.clearAllTrackedTextures()
+    }
+
+    // MARK: - Draft Persistence (Time Refactor)
+
+    /// Saves current project draft if it has unsaved changes.
+    /// Called on editor close and viewWillDisappear.
+    /// Saves current project draft if it has unsaved changes.
+    /// Called on editor close and viewWillDisappear.
+    /// P0-1: Uses dirty flag to avoid unnecessary writes.
+    private func saveDraftIfNeeded() {
+        guard draftIsDirty, var draft = currentProjectDraft else { return }
+
+        // Update timestamp before save
+        draft.updatedAt = Date()
+        currentProjectDraft = draft
+
+        do {
+            try ProjectStore.shared.saveProjectDraft(draft)
+            draftIsDirty = false
+            log("[Time Refactor] Draft saved: \(draft.id)")
+        } catch {
+            log("[Time Refactor] Failed to save draft: \(error.localizedDescription)")
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -2468,13 +2555,15 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func displayLinkFired() {
-        editorController.advanceFrame(totalFrames: totalFrames)
+        editorController.advanceFrame()
         // Also update VC's local frame tracking for legacy compatibility
         currentFrameIndex = editorController.state.currentPreviewFrame
 
         // PR2: Update timeline/fullscreen position during playback
+        // Time Refactor: Use time from controller state
         if case .editor = presentationMode {
-            editorLayoutContainer.setCurrentFrame(currentFrameIndex)
+            let timeUs = editorController.state.currentPreviewTimeUs
+            editorLayoutContainer.setCurrentTimeUs(timeUs)
             fullScreenPreviewVC?.setCurrentFrame(currentFrameIndex)
         }
 

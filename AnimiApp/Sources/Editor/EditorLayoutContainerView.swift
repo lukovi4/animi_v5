@@ -1,7 +1,7 @@
 import UIKit
 import MetalKit
 
-// MARK: - Editor Layout Container (PR2)
+// MARK: - Editor Layout Container (PR2.6)
 
 /// Main container view for editor mode layout.
 /// Replaces vertical scrollView layout in PlayerViewController when in .editor mode.
@@ -10,10 +10,12 @@ import MetalKit
 /// - EditorNavBar (60px)
 /// - PreviewContainer (flex, contains MetalView + PreviewMenuStrip overlay)
 /// - TimelineContainer (rulerHeight + timelineHeight = 292px)
-///   - TimeRulerView (32px)
+///   - TimeRulerView (32px) - sticky, synced via direct callback
 ///   - TimelineView (260px with internal scroll)
-///   - PlayheadView (overlay spanning ruler + timeline)
+///   - PlayheadView (overlay spanning ruler + timeline, fixed at centerX)
 /// - BottomBarContainer (72px + safe area)
+///
+/// PR2.6: Ruler sync is direct (no throttle), using xScrollView.contentOffset.x
 final class EditorLayoutContainerView: UIView {
 
     // MARK: - Callbacks
@@ -30,8 +32,9 @@ final class EditorLayoutContainerView: UIView {
     /// Called when fullscreen preview button tapped
     var onFullScreenPreview: (() -> Void)?
 
-    /// Called when timeline is scrubbed (frame index)
-    var onScrub: ((Int) -> Void)?
+    /// Called when timeline is scrubbed (time in microseconds and quantize mode).
+    /// Time Refactor: Changed from frame-based to time-based callback.
+    var onScrub: ((TimeUs, QuantizeMode) -> Void)?
 
     /// Called when timeline selection changes
     var onTimelineSelectionChanged: ((TimelineSelection) -> Void)?
@@ -196,15 +199,15 @@ final class EditorLayoutContainerView: UIView {
         menuStrip.onPlayPause = { [weak self] in self?.onPlayPause?() }
         menuStrip.onFullScreen = { [weak self] in self?.onFullScreenPreview?() }
 
-        // Timeline
-        timelineView.onScrub = { [weak self] frame in self?.onScrub?(frame) }
+        // Timeline - forward time-based scrub events
+        timelineView.onScrub = { [weak self] timeUs, mode in self?.onScrub?(timeUs, mode) }
         timelineView.onSelectionChanged = { [weak self] selection in
             self?.handleTimelineSelectionChanged(selection)
         }
 
-        // Sync ruler with timeline scroll/zoom
-        timelineView.onScrollChanged = { [weak self] offset, pxPerSecond in
-            self?.rulerView.setContentOffset(offset)
+        // PR2.6: Sync ruler with timeline scroll/zoom (direct callback, no throttle)
+        timelineView.onScrollChanged = { [weak self] offsetX, pxPerSecond in
+            self?.rulerView.setContentOffset(CGPoint(x: offsetX, y: 0))
             self?.rulerView.setPxPerSecond(pxPerSecond)
         }
     }
@@ -223,16 +226,20 @@ final class EditorLayoutContainerView: UIView {
         ])
     }
 
-    /// Configures timeline with duration and FPS
-    func configure(durationFrames: Int, fps: Int) {
-        rulerView.configure(durationFrames: durationFrames, fps: fps)
-        timelineView.configure(durationFrames: durationFrames, fps: fps)
+    /// Configures timeline with duration in microseconds and template FPS.
+    /// - Parameters:
+    ///   - durationUs: Duration in microseconds
+    ///   - templateFPS: Template frame rate for quantization
+    func configure(durationUs: TimeUs, templateFPS: Int) {
+        rulerView.configure(durationUs: durationUs)
+        timelineView.configure(durationUs: durationUs, templateFPS: templateFPS)
     }
 
-    /// Updates current frame (from playback or scrub)
-    func setCurrentFrame(_ frame: Int) {
-        timelineView.setCurrentFrame(frame)
-        rulerView.setContentOffset(timelineView.contentOffset)
+    /// Updates current time (from playback or scrub).
+    /// - Parameter timeUs: Time in microseconds
+    func setCurrentTimeUs(_ timeUs: TimeUs) {
+        // PR2.6: Ruler sync happens via onScrollChanged callback from centerOnTimeUs()
+        timelineView.setCurrentTimeUs(timeUs)
     }
 
     /// Updates play/pause button state
@@ -240,10 +247,48 @@ final class EditorLayoutContainerView: UIView {
         menuStrip.setPlaying(isPlaying)
     }
 
-    /// Updates timeline selection and switches bottom bar
+    /// Updates timeline selection and switches bottom bar.
+    /// P1-3: Also updates track UI highlighting to stay in sync.
     func setTimelineSelection(_ selection: TimelineSelection) {
         currentSelection = selection
+        timelineView.setSelection(selection)
         updateBottomBar()
+    }
+
+    // MARK: - Timeline State Snapshot/Restore (PR2, Time Refactor)
+
+    /// Creates a snapshot of current timeline state.
+    /// Includes time position, zoom, and selection.
+    func snapshotTimelineState() -> TimelineState {
+        let (timeUs, zoom) = timelineView.snapshotState()
+        return TimelineState(
+            timeUnderPlayheadUs: timeUs,
+            zoom: zoom,
+            selection: currentSelection
+        )
+    }
+
+    /// Reconfigures timeline with new duration while preserving state.
+    /// Use this instead of configure() when duration changes to maintain playhead position and zoom.
+    /// - Parameters:
+    ///   - durationUs: New duration in microseconds
+    ///   - templateFPS: Template frame rate for quantization
+    func reconfigureTimelinePreservingState(durationUs: TimeUs, templateFPS: Int) {
+        // 1. Snapshot current state
+        let state = snapshotTimelineState()
+
+        // 2. Configure with new duration (does NOT reset position)
+        rulerView.configure(durationUs: durationUs)
+        timelineView.configure(durationUs: durationUs, templateFPS: templateFPS)
+
+        // 3. Clamp time if it exceeds new duration
+        let clampedTimeUs = clampTimeUs(state.timeUnderPlayheadUs, maxUs: durationUs)
+
+        // 4. Restore selection (atomic with time/zoom)
+        setTimelineSelection(state.selection)
+
+        // 5. Restore time and zoom
+        timelineView.restoreState(timeUs: clampedTimeUs, zoom: state.zoom)
     }
 
     // MARK: - Private
