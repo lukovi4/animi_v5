@@ -17,17 +17,11 @@ import UIKit
 /// frame 0 can be centered and last frame can be centered.
 final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
 
-    // MARK: - Callbacks
+    // MARK: - Callbacks (PR1: Unified TimelineEvent)
 
-    /// Called when timeline is scrubbed (passes time in microseconds and quantize mode).
-    /// Time Refactor: Changed from frame-based to time-based callback.
-    var onScrub: ((TimeUs, QuantizeMode) -> Void)?
-
-    /// Called when scroll/zoom changes (for ruler sync) - direct, no throttle
-    var onScrollChanged: ((CGFloat, CGFloat) -> Void)?
-
-    /// Called when timeline selection changes
-    var onSelectionChanged: ((TimelineSelection) -> Void)?
+    /// Unified event callback for all timeline interactions.
+    /// Replaces onScrub, onScrollChanged, onSelectionChanged.
+    var onEvent: ((TimelineEvent) -> Void)?
 
     // MARK: - Configuration
 
@@ -47,9 +41,12 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private var didInitialPositioning = false
     private var stateWasRestored = false
 
-    // MARK: - Continuous Scrub State
+    // MARK: - Scrub Session State (PR1)
 
-    /// Last emitted scrub time to avoid redundant callbacks during drag.
+    /// Tracks whether a drag-based scrub session is active.
+    private var isScrubSessionActive = false
+
+    /// Last emitted scrub time to avoid redundant .changed events during drag.
     private var lastEmittedScrubTimeUs: TimeUs?
 
     // MARK: - Computed Properties
@@ -239,7 +236,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
 
         // Notify ruler of current state (after offset is set correctly)
-        notifyScrollChanged()
+        emitScrollEvent()
     }
 
     // MARK: - Configuration
@@ -306,7 +303,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         currentTimeUs = clampedTimeUs
 
         // Immediate ruler sync
-        notifyScrollChanged()
+        emitScrollEvent()
     }
 
     // MARK: - Selection (P1-3)
@@ -353,7 +350,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let clampedX = clampOffsetX(offsetX)
 
         xScrollView.contentOffset = CGPoint(x: clampedX, y: 0)
-        notifyScrollChanged()
+        emitScrollEvent()
     }
 
     /// Returns the time currently under the playhead in microseconds.
@@ -371,9 +368,27 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         max(0, min(x, maxOffsetX))
     }
 
-    /// Notifies ruler of current scroll position and scale (direct, no throttle).
-    private func notifyScrollChanged() {
-        onScrollChanged?(xScrollView.contentOffset.x, pxPerSecond)
+    // MARK: - Event Emission (PR1)
+
+    /// Emits a timeline event through the unified callback.
+    /// Includes debug logging for PR1-PR3 development.
+    private func emitEvent(_ event: TimelineEvent) {
+        #if DEBUG
+        switch event {
+        case .scrub(let timeUs, let quantize, let phase):
+            print("[Timeline] scrub: \(timeUs)us, \(quantize), \(phase)")
+        case .scroll(let offsetX, let pxPerSecond):
+            print("[Timeline] scroll: x=\(Int(offsetX)), pps=\(Int(pxPerSecond))")
+        case .selection(let sel):
+            print("[Timeline] selection: \(sel)")
+        }
+        #endif
+        onEvent?(event)
+    }
+
+    /// Emits scroll event for ruler sync.
+    private func emitScrollEvent() {
+        emitEvent(.scroll(offsetX: xScrollView.contentOffset.x, pxPerSecond: pxPerSecond))
     }
 
     // MARK: - UIScrollViewDelegate
@@ -385,26 +400,35 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let rawX = scrollView.contentOffset.x
         let clampedX = clampOffsetX(rawX)
         if rawX != clampedX {
+            // Setting contentOffset triggers another scrollViewDidScroll call,
+            // so return here to emit event only on the normalized second call
             scrollView.contentOffset = CGPoint(x: clampedX, y: 0)
+            return
         }
 
-        // Notify ruler directly (no throttle)
-        notifyScrollChanged()
+        // Emit scroll event for ruler sync
+        emitScrollEvent()
 
-        // Emit scrub during drag with .dragging mode
+        // Emit scrub .changed during drag (with deduplication)
         if scrollView.isDragging {
             let timeUs = timeUnderPlayheadUs()
             if timeUs != lastEmittedScrubTimeUs {
                 lastEmittedScrubTimeUs = timeUs
-                onScrub?(timeUs, .dragging)
+                emitEvent(.scrub(timeUs: timeUs, quantize: .dragging, phase: .changed))
             }
         }
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard scrollView === xScrollView else { return }
-        // Reset scrub tracking for new drag session
+
+        // Start new scrub session
+        isScrubSessionActive = true
         lastEmittedScrubTimeUs = nil
+
+        // Emit .began event
+        let timeUs = timeUnderPlayheadUs()
+        emitEvent(.scrub(timeUs: timeUs, quantize: .dragging, phase: .began))
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -419,11 +443,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         emitFinalScrub()
     }
 
-    /// Emits final scrub event with .ended mode for snap-to-nearest frame.
+    /// Emits final scrub event with .ended phase for snap-to-nearest frame.
+    /// Called at end of drag or pinch gestures.
     private func emitFinalScrub() {
         let timeUs = timeUnderPlayheadUs()
-        onScrub?(timeUs, .ended)
-        notifyScrollChanged()
+        emitEvent(.scrub(timeUs: timeUs, quantize: .ended, phase: .ended))
+
+        // Reset scrub session (if was active)
+        isScrubSessionActive = false
     }
 
     // MARK: - Gesture Handlers
@@ -450,11 +477,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 let newOffsetX = anchorTime * newPxPerSecond
                 let clampedOffsetX = clampOffsetX(newOffsetX)
 
-                // 5. Apply new offset
+                // 5. Apply new offset (triggers scrollViewDidScroll which emits scroll event)
                 xScrollView.contentOffset = CGPoint(x: clampedOffsetX, y: 0)
-
-                // 6. Notify ruler
-                notifyScrollChanged()
             }
 
             recognizer.scale = 1.0
@@ -474,7 +498,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // Check if tap is on scene track
         let sceneFrame = sceneTrack.convert(sceneTrack.bounds, to: contentView)
         if sceneFrame.contains(location) {
-            onSelectionChanged?(.scene)
+            emitEvent(.selection(.scene))
             sceneTrack.setSelected(true)
             audioTrack.setSelected(false)
             return
@@ -483,14 +507,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // Check if tap is on audio track
         let audioFrame = audioTrack.convert(audioTrack.bounds, to: contentView)
         if audioFrame.contains(location) {
-            onSelectionChanged?(.audio)
+            emitEvent(.selection(.audio))
             sceneTrack.setSelected(false)
             audioTrack.setSelected(true)
             return
         }
 
         // Tap on empty space - clear selection
-        onSelectionChanged?(.none)
+        emitEvent(.selection(.none))
         sceneTrack.setSelected(false)
         audioTrack.setSelected(false)
     }

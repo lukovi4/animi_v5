@@ -642,12 +642,28 @@ final class PlayerViewController: UIViewController {
             self?.handleFullScreenPreview()
         }
 
-        editorLayoutContainer.onScrub = { [weak self] timeUs, mode in
-            self?.handleTimelineScrub(timeUs: timeUs, mode: mode)
+        // PR1: Unified timeline event handling
+        editorLayoutContainer.onTimelineEvent = { [weak self] event in
+            self?.handleTimelineEvent(event)
         }
+    }
 
-        editorLayoutContainer.onTimelineSelectionChanged = { [weak self] selection in
-            self?.handleTimelineSelectionChanged(selection)
+    // MARK: - PR1: Unified Timeline Event Handling
+
+    /// Routes timeline events from EditorLayoutContainerView.
+    /// Scroll events are handled by the container (ruler sync).
+    private func handleTimelineEvent(_ event: TimelineEvent) {
+        switch event {
+        case .scrub(let timeUs, let quantize, _):
+            // Phase is available but not used in PR1
+            handleTimelineScrub(timeUs: timeUs, mode: quantize)
+
+        case .selection(let selection):
+            handleTimelineSelectionChanged(selection)
+
+        case .scroll:
+            // Handled by container (ruler sync), nothing to do here
+            break
         }
     }
 

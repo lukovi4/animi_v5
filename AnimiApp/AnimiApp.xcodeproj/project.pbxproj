@@ -11,6 +11,7 @@
 		0F9C3ED0FBF09B219D543DC9 /* ProjectBackgroundOverride.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55C76845C9F4E045E5E4913B /* ProjectBackgroundOverride.swift */; };
 		18CBB8DC59767967525874C6 /* PreviewVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EF91B900FF78191D281BB73 /* PreviewVideoView.swift */; };
 		1E5BA0CCE5E033BDC0F1023A /* Templates in Resources */ = {isa = PBXBuildFile; fileRef = 486CDCFFF485A0C0354A63F5 /* Templates */; };
+		1EA1B9C121F589385C6EACB7 /* TimelineEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99082F901FF221848C1D8848 /* TimelineEvents.swift */; };
 		26C0F8F6AB35CD9093B0E789 /* UserMediaTextureFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */; };
 		2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88357A08E23A0E79039FC032 /* TemplateEditorController.swift */; };
 		2FEAB6533EF1DA415C6FC778 /* TimelineTimeUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 493CBBADF2EADCE826942657 /* TimelineTimeUtils.swift */; };
@@ -104,6 +105,7 @@
 		931F43B88D909958DFAB035F /* AudioWriterPump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWriterPump.swift; sourceTree = "<group>"; };
 		945142E5769BD54EFED06588 /* EditorOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorOverlayView.swift; sourceTree = "<group>"; };
 		961567AB8773B382A94D135D /* BundleTemplateCatalogLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleTemplateCatalogLoader.swift; sourceTree = "<group>"; };
+		99082F901FF221848C1D8848 /* TimelineEvents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineEvents.swift; sourceTree = "<group>"; };
 		9914388A9AC3B6C7D244F116 /* TemplatePreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplatePreviewCell.swift; sourceTree = "<group>"; };
 		9FA23A16733352E76F88080F /* SharedAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SharedAssets; path = ../SharedAssets; sourceTree = SOURCE_ROOT; };
 		A19F78E6B097B29EDF323138 /* VideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameProvider.swift; sourceTree = "<group>"; };
@@ -278,6 +280,7 @@
 				AF4B6CA0A1B351C520F00915 /* PreviewMenuStrip.swift */,
 				F4613B149DEB66964BDE84F9 /* SceneTrackView.swift */,
 				88357A08E23A0E79039FC032 /* TemplateEditorController.swift */,
+				99082F901FF221848C1D8848 /* TimelineEvents.swift */,
 				D12222EECEE4BF66B830A41A /* TimelineSelection.swift */,
 				493CBBADF2EADCE826942657 /* TimelineTimeUtils.swift */,
 				61F2AE9AABEA22194B49C3A4 /* TimelineView.swift */,
@@ -446,6 +449,7 @@
 				54A34118FE6F0E05E99EAB9F /* TemplatesHomeViewController.swift in Sources */,
 				9456988608740988E5F27700 /* TimeRulerView.swift in Sources */,
 				DCA31A07F278761B44D14FBE /* Timeline.swift in Sources */,
+				1EA1B9C121F589385C6EACB7 /* TimelineEvents.swift in Sources */,
 				8B1AE5FEAAA7FC56548F6624 /* TimelineSelection.swift in Sources */,
 				2FEAB6533EF1DA415C6FC778 /* TimelineTimeUtils.swift in Sources */,
 				B3797DBA5A2809079BD00023 /* TimelineView.swift in Sources */,

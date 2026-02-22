@@ -32,12 +32,10 @@ final class EditorLayoutContainerView: UIView {
     /// Called when fullscreen preview button tapped
     var onFullScreenPreview: (() -> Void)?
 
-    /// Called when timeline is scrubbed (time in microseconds and quantize mode).
-    /// Time Refactor: Changed from frame-based to time-based callback.
-    var onScrub: ((TimeUs, QuantizeMode) -> Void)?
-
-    /// Called when timeline selection changes
-    var onTimelineSelectionChanged: ((TimelineSelection) -> Void)?
+    /// Unified timeline event callback (PR1).
+    /// Forwards scrub and selection events to VC.
+    /// Scroll events are handled locally for ruler sync.
+    var onTimelineEvent: ((TimelineEvent) -> Void)?
 
     // MARK: - Subviews
 
@@ -199,16 +197,30 @@ final class EditorLayoutContainerView: UIView {
         menuStrip.onPlayPause = { [weak self] in self?.onPlayPause?() }
         menuStrip.onFullScreen = { [weak self] in self?.onFullScreenPreview?() }
 
-        // Timeline - forward time-based scrub events
-        timelineView.onScrub = { [weak self] timeUs, mode in self?.onScrub?(timeUs, mode) }
-        timelineView.onSelectionChanged = { [weak self] selection in
-            self?.handleTimelineSelectionChanged(selection)
+        // PR1: Unified timeline event handling
+        timelineView.onEvent = { [weak self] event in
+            self?.handleTimelineEvent(event)
         }
+    }
 
-        // PR2.6: Sync ruler with timeline scroll/zoom (direct callback, no throttle)
-        timelineView.onScrollChanged = { [weak self] offsetX, pxPerSecond in
-            self?.rulerView.setContentOffset(CGPoint(x: offsetX, y: 0))
-            self?.rulerView.setPxPerSecond(pxPerSecond)
+    // MARK: - Timeline Event Handling (PR1)
+
+    /// Routes timeline events: scroll handled locally, others forwarded to VC.
+    private func handleTimelineEvent(_ event: TimelineEvent) {
+        switch event {
+        case .scroll(let offsetX, let pxPerSecond):
+            // Handle locally: sync ruler
+            rulerView.setContentOffset(CGPoint(x: offsetX, y: 0))
+            rulerView.setPxPerSecond(pxPerSecond)
+
+        case .scrub:
+            // Forward to VC
+            onTimelineEvent?(event)
+
+        case .selection(let selection):
+            // Handle locally + forward to VC
+            handleTimelineSelectionChanged(selection)
+            onTimelineEvent?(event)
         }
     }
 
@@ -296,7 +308,7 @@ final class EditorLayoutContainerView: UIView {
     private func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
         currentSelection = selection
         updateBottomBar()
-        onTimelineSelectionChanged?(selection)
+        // Note: Event forwarding happens in handleTimelineEvent()
     }
 
     private func updateBottomBar() {
