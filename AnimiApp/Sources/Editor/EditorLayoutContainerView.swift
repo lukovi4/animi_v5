@@ -76,6 +76,9 @@ final class EditorLayoutContainerView: UIView {
 
     private var currentSelection: TimelineSelection = .none
 
+    /// PR3: Reorder mode state (UI-only, not part of EditorStore)
+    private var isReorderMode: Bool = false
+
     // MARK: - Initialization
 
     override init(frame: CGRect) {
@@ -201,6 +204,18 @@ final class EditorLayoutContainerView: UIView {
         timelineView.onEvent = { [weak self] event in
             self?.handleTimelineEvent(event)
         }
+
+        // PR3: Reorder mode toggle
+        rulerView.onReorderModeChanged = { [weak self] isReorderMode in
+            self?.handleReorderModeChanged(isReorderMode)
+        }
+    }
+
+    // MARK: - Reorder Mode (PR3)
+
+    private func handleReorderModeChanged(_ isReorderMode: Bool) {
+        self.isReorderMode = isReorderMode
+        timelineView.setReorderMode(isReorderMode)
     }
 
     // MARK: - Timeline Event Handling (PR1 + PR2)
@@ -217,13 +232,16 @@ final class EditorLayoutContainerView: UIView {
             // Forward to VC
             onTimelineEvent?(event)
 
-        case .selection(let selection):
-            // Handle locally + forward to VC
-            handleTimelineSelectionChanged(selection)
+        case .selection:
+            // PR3.1: Only forward to VC. UI updates via store callback.
             onTimelineEvent?(event)
 
         case .trimScene:
             // PR2: Forward to VC for model update
+            onTimelineEvent?(event)
+
+        case .reorderScene:
+            // PR3: Forward to VC for model update
             onTimelineEvent?(event)
         }
     }
@@ -255,10 +273,11 @@ final class EditorLayoutContainerView: UIView {
     /// - Parameters:
     ///   - scenes: Array of SceneDraft objects
     ///   - templateFPS: Template frame rate for quantization
-    func configure(scenes: [SceneDraft], templateFPS: Int) {
+    ///   - minSceneDurationUs: Minimum scene duration for trim (PR2 fix: consistent with model)
+    func configure(scenes: [SceneDraft], templateFPS: Int, minSceneDurationUs: TimeUs = ProjectDraft.minSceneDurationUs) {
         let totalDurationUs = scenes.reduce(0) { $0 + $1.durationUs }
         rulerView.configure(durationUs: totalDurationUs)
-        timelineView.configure(scenes: scenes, templateFPS: templateFPS)
+        timelineView.configure(scenes: scenes, templateFPS: templateFPS, minSceneDurationUs: minSceneDurationUs)
     }
 
     /// Updates scenes (for trim operations, without full reconfigure).
@@ -325,12 +344,6 @@ final class EditorLayoutContainerView: UIView {
     }
 
     // MARK: - Private
-
-    private func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
-        currentSelection = selection
-        updateBottomBar()
-        // Note: Event forwarding happens in handleTimelineEvent()
-    }
 
     private func updateBottomBar() {
         switch currentSelection {

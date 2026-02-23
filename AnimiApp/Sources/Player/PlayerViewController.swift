@@ -442,6 +442,9 @@ final class PlayerViewController: UIViewController {
     private var scenePlayer: ScenePlayer?
     private let editorController = TemplateEditorController()
 
+    // MARK: - PR2: EditorStore (centralized state management)
+    private var editorStore: EditorStore?
+
     // MARK: - PR2: Visual Editor Timeline
     private var currentProjectDraft: ProjectDraft?
     /// Tracks whether draft has unsaved changes (Time Refactor: dirty flag for save optimization).
@@ -667,66 +670,76 @@ final class PlayerViewController: UIViewController {
 
         case .trimScene(let sceneId, let newDurationUs, let edge, let phase):
             handleTrimScene(sceneId: sceneId, newDurationUs: newDurationUs, edge: edge, phase: phase)
+
+        case .reorderScene(let sceneId, let toIndex, let phase):
+            handleReorderScene(sceneId: sceneId, toIndex: toIndex, phase: phase)
         }
     }
 
     // MARK: - PR2: Trim Scene Handling
 
     /// Handles trim scene events from timeline.
+    /// PR2: Dispatches to EditorStore instead of direct mutation.
     /// - Parameters:
     ///   - sceneId: ID of the scene being trimmed
     ///   - newDurationUs: New duration in microseconds
     ///   - edge: Which edge is being trimmed
     ///   - phase: Gesture phase
     private func handleTrimScene(sceneId: UUID, newDurationUs: TimeUs, edge: TrimEdge, phase: InteractionPhase) {
-        guard var draft = currentProjectDraft, var canonical = draft.canonicalTimeline else { return }
-
-        // Find the scene item
-        guard let index = canonical.sceneItems.firstIndex(where: { $0.id == sceneId }) else { return }
-
-        // Calculate max allowed duration (template max - sum of other scenes)
-        let fps = Int(sceneFPS)
-        let templateDurationUs = framesToDurationUs(totalFrames, fps: fps)
-        let otherScenesDuration = canonical.sceneItems.enumerated()
-            .filter { $0.offset != index }
-            .reduce(0 as TimeUs) { $0 + $1.element.durationUs }
-        let maxAllowedDuration = templateDurationUs - otherScenesDuration
-
-        // Clamp to valid range (PR1: use 0.1s min instead of 1 frame)
-        let minDurationUs = ProjectDraft.minSceneDurationUs
-        let clampedDurationUs = max(minDurationUs, min(newDurationUs, maxAllowedDuration))
-
-        canonical.updateSceneDuration(sceneId: sceneId, newDurationUs: clampedDurationUs)
-
-        // Convert to SceneDrafts for UI compatibility
-        let scenes = canonical.toSceneDrafts()
-
-        switch phase {
-        case .began, .changed:
-            // Update UI only (live preview)
-            editorLayoutContainer.updateScenes(scenes)
-
-        case .ended:
-            // Calculate total duration
-            let totalDurationUs = canonical.totalDurationUs
-
-            // Commit to draft (PR1: canonical timeline is the truth)
-            draft.canonicalTimeline = canonical
-            currentProjectDraft = draft
-            draftIsDirty = true
-
-            // Update editor controller duration
-            editorController.durationUs = totalDurationUs
-
-            // Update UI
-            editorLayoutContainer.updateScenes(scenes)
-
-        case .cancelled:
-            // Revert to original
-            if let originalCanonical = currentProjectDraft?.canonicalTimeline {
-                editorLayoutContainer.updateScenes(originalCanonical.toSceneDrafts())
-            }
+        guard let store = editorStore else {
+            log("[PR2] handleTrimScene: editorStore is nil")
+            return
         }
+
+        // PR2: Dispatch trim action to store
+        // PR3.1: All UI updates happen via handleStoreStateChanged callback
+        store.dispatch(.trimScene(sceneId: sceneId, phase: phase, newDurationUs: newDurationUs, edge: edge))
+    }
+
+    // MARK: - PR3: Reorder Scene Handling
+
+    /// Handles reorder scene events from timeline.
+    /// PR3: Dispatches to EditorStore on .ended phase only.
+    /// PR3.2: Converts UI insertion index (0...count) to reducer destination index (0...count-1).
+    /// - Parameters:
+    ///   - sceneId: ID of the scene being moved
+    ///   - toIndex: Insertion index from UI (0...count, where count means "insert at end")
+    ///   - phase: Gesture phase
+    private func handleReorderScene(sceneId: UUID, toIndex: Int, phase: InteractionPhase) {
+        // Only commit reorder on .ended phase
+        guard phase == .ended else { return }
+        guard toIndex >= 0 else { return } // -1 means cancelled
+
+        guard let store = editorStore else {
+            log("[PR3] handleReorderScene: editorStore is nil")
+            return
+        }
+
+        // PR3.2: Convert insertion index to destination index
+        // UI emits insertion index (0...count), reducer expects destination index (0...count-1)
+        let sceneItems = store.sceneItems
+        guard let fromIndex = sceneItems.firstIndex(where: { $0.id == sceneId }) else {
+            log("[PR3.2] handleReorderScene: scene not found")
+            return
+        }
+
+        let count = sceneItems.count
+        var destIndex = toIndex
+
+        // If inserting after current position, adjust for removal
+        if toIndex > fromIndex {
+            destIndex -= 1
+        }
+
+        // Clamp to valid destination range
+        destIndex = max(0, min(destIndex, count - 1))
+
+        // Skip if no actual move
+        guard destIndex != fromIndex else { return }
+
+        // PR3: Dispatch reorder action to store
+        // PR3.1: All UI updates happen via handleStoreStateChanged callback
+        store.dispatch(.reorderScene(sceneId: sceneId, toIndex: destIndex))
     }
 
     // MARK: - PR2: Editor Callbacks
@@ -803,14 +816,13 @@ final class PlayerViewController: UIViewController {
     }
 
     private func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
-        editorController.selectTimeline(selection)
-        editorLayoutContainer.setTimelineSelection(selection)
+        // PR3: Only dispatch to store. UI updates happen in handleStoreStateChanged.
+        editorStore?.dispatch(.select(selection: selection))
     }
 
     /// Configures timeline after template is loaded.
-    /// PR2: Uses reconfigureTimelinePreservingState to maintain frame position and zoom.
-    /// Configures timeline after template is loaded.
-    /// Time Refactor: Uses microseconds as source of truth.
+    /// PR2: Uses EditorStore for centralized state management.
+    /// Migration happens before store creation (allowed exception).
     private func configureEditorTimeline() {
         guard case .editor = presentationMode else { return }
 
@@ -819,26 +831,26 @@ final class PlayerViewController: UIViewController {
         // Calculate template duration in microseconds
         let templateDurationUs = framesToDurationUs(totalFrames, fps: fps)
 
-        // Migrate and normalize duration (Time Refactor P0)
+        // Step 1: Migration (allowed exception - happens before Store)
         if var draft = currentProjectDraft {
             var needsSave = false
 
-            // Step 1: Migrate legacy frames to microseconds (v1 → v2)
+            // Migrate legacy frames to microseconds (v1 → v2)
             if draft.migrateDurationFramesToUsIfNeeded(templateFPS: fps) {
-                draft.projectDurationFrames = nil  // cleanup legacy after migration
+                draft.projectDurationFrames = nil
                 needsSave = true
                 log("[Time Refactor] Duration migrated from frames to microseconds")
             }
 
-            // Step 2: Normalize if duration exceeds template maximum
+            // Normalize legacy projectDurationUs if exceeds template
             if let us = draft.projectDurationUs, us > templateDurationUs {
                 log("[Time Refactor] Duration normalized: \(us) → \(templateDurationUs)")
                 draft.projectDurationUs = templateDurationUs
-                draft.projectDurationFrames = nil  // cleanup legacy
+                draft.projectDurationFrames = nil
                 needsSave = true
             }
 
-            // Step 3: Migrate to canonical timeline v4 (PR1 Timeline Core)
+            // Migrate to canonical timeline v4 (PR1 Timeline Core)
             let migrationResult = draft.migrateToCanonicalTimelineIfNeeded(templateDefaultUs: templateDurationUs)
             if migrationResult.didMigrate {
                 needsSave = true
@@ -855,76 +867,79 @@ final class PlayerViewController: UIViewController {
             }
         }
 
-        // PR1: Get effective duration from canonical timeline (single source of truth)
-        let draftDurationUs = currentProjectDraft?.effectiveDurationUsFromCanonical(templateDefaultUs: templateDurationUs) ?? templateDurationUs
-        let effectiveDurationUs = min(draftDurationUs, templateDurationUs)
-
-        // PR1: Normalize canonical timeline if sum exceeds template (cascade from end)
-        let minSceneDurationUs = ProjectDraft.minSceneDurationUs
-        if var draft = currentProjectDraft, var canonical = draft.canonicalTimeline {
-            let sumUs = canonical.totalDurationUs
-            if sumUs > templateDurationUs {
-                var overflow = sumUs - templateDurationUs
-
-                // Cascade: trim scenes from end until overflow is 0
-                for i in canonical.tracks[0].items.indices.reversed() {
-                    if overflow == 0 { break }
-                    let availableToCut = canonical.tracks[0].items[i].durationUs - minSceneDurationUs
-                    if availableToCut <= 0 { continue }
-                    let cut = min(availableToCut, overflow)
-                    canonical.tracks[0].items[i].durationUs -= cut
-                    overflow -= cut
-                }
-
-                // PR2 v4: If still overflow after cascade, drop scenes from end
-                var finalSum = canonical.totalDurationUs
-                while finalSum > templateDurationUs && canonical.tracks[0].items.count > 1 {
-                    if let removed = canonical.removeScene(sceneId: canonical.tracks[0].items.last!.id) {
-                        finalSum -= removed.durationUs
-                        log("[PR1] Dropped scene to fit template, removed \(removed.durationUs)us")
-                    }
-                }
-
-                // Edge case: single scene still too long - clamp to template
-                if canonical.tracks[0].items.count == 1 && finalSum > templateDurationUs {
-                    canonical.tracks[0].items[0].durationUs = templateDurationUs
-                    finalSum = templateDurationUs
-                    log("[PR1] Clamped last remaining scene to template duration")
-                }
-
-                log("[PR1] Scenes normalized, final sum: \(finalSum)us, scene count: \(canonical.tracks[0].items.count)")
-
-                draft.canonicalTimeline = canonical
-                currentProjectDraft = draft
-                draftIsDirty = true
-            }
+        // Step 2: Create EditorStore and dispatch loadProject
+        // PR2: Store handles all normalization (cascade trim/drop/clamp, invariants)
+        guard let draft = currentProjectDraft else {
+            log("[PR2] configureEditorTimeline: no draft available")
+            return
         }
 
-        // Get final duration from canonical timeline
-        let finalDurationUs: TimeUs
-        if let canonical = currentProjectDraft?.canonicalTimeline {
-            finalDurationUs = min(canonical.totalDurationUs, templateDurationUs)
-        } else {
-            finalDurationUs = effectiveDurationUs
+        let store = EditorStore()
+        store.dispatch(.loadProject(
+            draft: draft,
+            templateFPS: fps,
+            templateDurationUs: templateDurationUs
+        ))
+        self.editorStore = store
+
+        // Wire store callbacks
+        store.onStateChanged = { [weak self] state in
+            self?.handleStoreStateChanged(state)
         }
 
-        // Configure editor controller with time parameters
+        store.onUndoRedoChanged = { [weak self] canUndo, canRedo in
+            self?.handleUndoRedoChanged(canUndo: canUndo, canRedo: canRedo)
+        }
+
+        // Sync local state from store
+        currentProjectDraft = store.currentDraft
+        if store.projectDurationUs != draft.canonicalTimeline?.totalDurationUs {
+            // Store normalized the timeline
+            draftIsDirty = true
+            log("[PR2] Store normalized timeline, new duration: \(store.projectDurationUs)us")
+        }
+
+        // Step 3: Configure editor controller with time parameters
+        let finalDurationUs = store.projectDurationUs
         editorController.templateFPS = fps
         editorController.durationUs = finalDurationUs
         editorController.totalFrames = totalFrames
 
-        // PR1: Configure timeline UI with scenes from canonical timeline
-        if let canonical = currentProjectDraft?.canonicalTimeline {
-            // Use adapter to convert TimelineItems to SceneDrafts for UI compatibility
-            let scenes = canonical.toSceneDrafts()
-            editorLayoutContainer.configure(scenes: scenes, templateFPS: fps)
-        } else {
-            // Fallback for edge case (should not happen after migration)
-            editorLayoutContainer.reconfigureTimelinePreservingState(
-                durationUs: finalDurationUs,
-                templateFPS: fps
-            )
-        }
+        // Step 4: Configure timeline UI with scenes from store
+        // PR2 fix: Pass minSceneDurationUs to UI for consistent min duration
+        let scenes = store.sceneDrafts
+        editorLayoutContainer.configure(
+            scenes: scenes,
+            templateFPS: fps,
+            minSceneDurationUs: ProjectDraft.minSceneDurationUs
+        )
+    }
+
+    // MARK: - PR2: Store Callbacks
+
+    /// Called when store state changes.
+    private func handleStoreStateChanged(_ state: EditorState) {
+        // Update UI from store state
+        let scenes = state.canonicalTimeline.toSceneDrafts()
+        editorLayoutContainer.updateScenes(scenes)
+
+        // PR3: Sync selection from store (single source of truth)
+        editorLayoutContainer.setTimelineSelection(state.selection)
+        editorController.selectTimeline(state.selection)
+
+        // Sync editor controller duration
+        editorController.durationUs = state.projectDurationUs
+
+        // Mark draft as dirty for persistence
+        draftIsDirty = true
+    }
+
+    /// Called when undo/redo availability changes.
+    private func handleUndoRedoChanged(canUndo: Bool, canRedo: Bool) {
+        // TODO: Update undo/redo buttons in UI when added
+        #if DEBUG
+        log("[PR2] Undo/Redo changed: canUndo=\(canUndo), canRedo=\(canRedo)")
+        #endif
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -967,20 +982,33 @@ final class PlayerViewController: UIViewController {
     /// Called on editor close and viewWillDisappear.
     /// Saves current project draft if it has unsaved changes.
     /// Called on editor close and viewWillDisappear.
-    /// P0-1: Uses dirty flag to avoid unnecessary writes.
+    /// PR2: Reads draft from EditorStore (single source of truth).
     private func saveDraftIfNeeded() {
-        guard draftIsDirty, var draft = currentProjectDraft else { return }
+        guard draftIsDirty else { return }
+
+        // PR2: Get draft from store (single source of truth)
+        var draft: ProjectDraft
+        if let store = editorStore {
+            draft = store.currentDraft
+        } else if let localDraft = currentProjectDraft {
+            // Fallback to local draft if store not initialized
+            draft = localDraft
+        } else {
+            return
+        }
 
         // Update timestamp before save
         draft.updatedAt = Date()
+
+        // Sync local reference
         currentProjectDraft = draft
 
         do {
             try ProjectStore.shared.saveProjectDraft(draft)
             draftIsDirty = false
-            log("[Time Refactor] Draft saved: \(draft.id)")
+            log("[PR2] Draft saved: \(draft.id)")
         } catch {
-            log("[Time Refactor] Failed to save draft: \(error.localizedDescription)")
+            log("[PR2] Failed to save draft: \(error.localizedDescription)")
         }
     }
 

@@ -1,11 +1,17 @@
 import UIKit
 
-// MARK: - Time Ruler View (PR2)
+// MARK: - Time Ruler View (PR2, PR3: Reorder toggle)
 
 /// Displays time markers (seconds) synchronized with timeline scroll/zoom.
 /// Draws programmatically based on contentOffset from TimelineView.
 /// Does NOT use UIScrollView - renders based on external offset.
+/// PR3: Includes reorder mode toggle button on the right side.
 final class TimeRulerView: UIView {
+
+    // MARK: - Callbacks (PR3)
+
+    /// Called when reorder mode toggle is changed.
+    var onReorderModeChanged: ((Bool) -> Void)?
 
     // MARK: - Configuration
 
@@ -14,6 +20,29 @@ final class TimeRulerView: UIView {
 
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
     private var contentOffsetX: CGFloat = 0
+
+    // MARK: - Reorder Mode (PR3)
+
+    private var isReorderMode: Bool = false
+
+    private lazy var reorderToggle: UIButton = {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        var config = UIButton.Configuration.filled()
+        config.title = "Reorder"
+        config.baseForegroundColor = .label
+        config.baseBackgroundColor = .tertiarySystemFill
+        config.cornerStyle = .capsule
+        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = UIFont.systemFont(ofSize: 11, weight: .medium)
+            return outgoing
+        }
+        button.configuration = config
+        button.addTarget(self, action: #selector(reorderToggleTapped), for: .touchUpInside)
+        return button
+    }()
 
     // MARK: - Appearance
 
@@ -26,10 +55,37 @@ final class TimeRulerView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .tertiarySystemBackground
+        setupReorderToggle()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    private func setupReorderToggle() {
+        addSubview(reorderToggle)
+        NSLayoutConstraint.activate([
+            reorderToggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            reorderToggle.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    @objc private func reorderToggleTapped() {
+        isReorderMode.toggle()
+        updateReorderToggleAppearance()
+        onReorderModeChanged?(isReorderMode)
+    }
+
+    private func updateReorderToggleAppearance() {
+        var config = reorderToggle.configuration ?? UIButton.Configuration.filled()
+        if isReorderMode {
+            config.baseBackgroundColor = .systemBlue
+            config.baseForegroundColor = .white
+        } else {
+            config.baseBackgroundColor = .tertiarySystemFill
+            config.baseForegroundColor = .label
+        }
+        reorderToggle.configuration = config
     }
 
     // MARK: - Configuration
@@ -155,6 +211,12 @@ final class TimeRulerView: UIView {
         let size = text.size(withAttributes: attributes)
         let labelX = x - size.width / 2
         let labelY: CGFloat = 4
+
+        // PR3.1: Don't draw labels that would overlap with reorder toggle button
+        let buttonAreaStart = bounds.width - 80 // button width (~60) + padding
+        if labelX + size.width > buttonAreaStart {
+            return
+        }
 
         text.draw(at: CGPoint(x: labelX, y: labelY), withAttributes: attributes)
     }

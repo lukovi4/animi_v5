@@ -11,6 +11,12 @@ public enum InteractionPhase: Sendable {
     case cancelled
 }
 
+/// Which edge of a clip is being trimmed.
+public enum TrimEdge: Sendable {
+    case leading
+    case trailing
+}
+
 /// Unified timeline event stream.
 /// All timeline interactions flow through this single event type.
 public enum TimelineEvent: Sendable {
@@ -29,4 +35,17 @@ public enum TimelineEvent: Sendable {
     /// Selection event: user tapped to select/deselect track.
     /// - selection: New selection state
     case selection(TimelineSelection)
+
+    /// Trim scene event: user is dragging a scene clip handle.
+    /// - sceneId: ID of the scene being trimmed
+    /// - newDurationUs: New duration for the scene in microseconds
+    /// - edge: Which edge is being trimmed (.leading or .trailing)
+    /// - phase: Gesture phase (.began, .changed, .ended)
+    case trimScene(sceneId: UUID, newDurationUs: TimeUs, edge: TrimEdge, phase: InteractionPhase)
+
+    /// Reorder scene event: user is dragging a scene to reorder (PR3).
+    /// - sceneId: ID of the scene being moved
+    /// - toIndex: Target index in scene sequence
+    /// - phase: Gesture phase (.began for lift, .changed for drag, .ended for drop)
+    case reorderScene(sceneId: UUID, toIndex: Int, phase: InteractionPhase)
 }

@@ -42,6 +42,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// Currently selected scene ID (for trim handles).
     private var selectedSceneId: UUID?
 
+    /// PR3: Reorder mode state
+    private var isReorderMode: Bool = false
+
     // MARK: - Initial Positioning State
 
     private var didInitialPositioning = false
@@ -211,10 +214,18 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             self.emitEvent(.trimScene(sceneId: sceneId, newDurationUs: newDurationUs, edge: edge, phase: phase))
         }
 
+        // PR3: Reorder scene callback
+        sceneTrack.onReorderScene = { [weak self] sceneId, toIndex, phase in
+            guard let self = self else { return }
+            self.emitEvent(.reorderScene(sceneId: sceneId, toIndex: toIndex, phase: phase))
+        }
+
         // PR2 fix: Handle pan gesture conflicts - scroll should yield to trim handle
+        // PR3: Also yield to body pan gesture for reorder
         sceneTrack.onClipCreated = { [weak self] clipView in
             guard let self = self else { return }
             self.scrollView.panGestureRecognizer.require(toFail: clipView.trailingPanGesture)
+            self.scrollView.panGestureRecognizer.require(toFail: clipView.bodyPanGesture)
         }
     }
 
@@ -314,14 +325,15 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// - Parameters:
     ///   - scenes: Array of SceneDraft objects
     ///   - templateFPS: Template frame rate for quantization
-    func configure(scenes: [SceneDraft], templateFPS: Int) {
+    ///   - minSceneDurationUs: Minimum scene duration for trim (PR2 fix: consistent with model)
+    func configure(scenes: [SceneDraft], templateFPS: Int, minSceneDurationUs: TimeUs = ProjectDraft.minSceneDurationUs) {
         self.scenes = scenes
         self.durationUs = scenes.reduce(0) { $0 + $1.durationUs }
         self.templateFPS = templateFPS > 0 ? templateFPS : 30
 
         let padding = leftPaddingPx
-        let minDurationUs = framesToDurationUs(1, fps: self.templateFPS)
-        sceneTrack.configure(scenes: scenes, pxPerSecond: pxPerSecond, leftPadding: padding, minDurationUs: minDurationUs)
+        // PR2 fix: Use passed minSceneDurationUs (0.1s) instead of 1 frame
+        sceneTrack.configure(scenes: scenes, pxPerSecond: pxPerSecond, leftPadding: padding, minDurationUs: minSceneDurationUs)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
         #if DEBUG
@@ -400,6 +412,15 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // Sync internal state
         currentTimeUs = clampedTimeUs
+    }
+
+    // MARK: - Reorder Mode (PR3)
+
+    /// Sets reorder mode and propagates to track views.
+    /// - Parameter isReorderMode: Whether reorder mode is active
+    func setReorderMode(_ isReorderMode: Bool) {
+        self.isReorderMode = isReorderMode
+        sceneTrack.setReorderMode(isReorderMode)
     }
 
     // MARK: - Selection (PR2: Multi-scene)
@@ -490,6 +511,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             print("[Timeline] selection: \(sel)")
         case .trimScene(let sceneId, let newDurationUs, let edge, let phase):
             print("[Timeline] trimScene: \(sceneId), \(newDurationUs)us, \(edge), \(phase)")
+        case .reorderScene(let sceneId, let toIndex, let phase):
+            print("[Timeline] reorderScene: \(sceneId), toIndex=\(toIndex), \(phase)")
         }
         #endif
         onEvent?(event)

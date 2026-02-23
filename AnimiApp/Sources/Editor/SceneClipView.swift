@@ -1,10 +1,11 @@
 import UIKit
 
-// MARK: - Scene Clip View (PR2: Multi-scene + Trim handles)
+// MARK: - Scene Clip View (PR2: Multi-scene + Trim handles, PR3: Reorder)
 
 /// Represents a single scene clip on the timeline.
 /// Shows the clip body with optional trim handles when selected.
 /// Handles are 44pt touch targets with 10pt visual indicator.
+/// PR3: Supports body drag for reorder in reorder mode.
 final class SceneClipView: UIView {
 
     // MARK: - Callbacks
@@ -16,6 +17,10 @@ final class SceneClipView: UIView {
     /// Parameter is the new duration in microseconds.
     var onTrimTrailing: ((TimeUs, InteractionPhase) -> Void)?
 
+    /// PR3: Called when clip body is dragged for reorder.
+    /// Parameters: dragX position in superview coordinates, phase.
+    var onReorderDrag: ((CGFloat, InteractionPhase) -> Void)?
+
     // MARK: - Configuration
 
     let sceneId: UUID
@@ -23,14 +28,17 @@ final class SceneClipView: UIView {
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
     private var isSelected: Bool = false
 
+    /// PR3: Reorder mode state
+    private var isReorderMode: Bool = false
+
     // MARK: - Constants
 
     private let handleTouchWidth: CGFloat = 44
     private let handleVisualWidth: CGFloat = 10
     private let cornerRadius: CGFloat = 8
 
-    /// PR2 fix: Configurable min duration (set via configure, default ~1 frame at 30fps)
-    private var minDurationUs: TimeUs = 33_333
+    /// PR2 fix: Configurable min duration (set via configure, default 0.1s per spec)
+    private var minDurationUs: TimeUs = ProjectDraft.minSceneDurationUs
 
     // MARK: - Appearance
 
@@ -105,6 +113,14 @@ final class SceneClipView: UIView {
         return gesture
     }()
 
+    /// PR3: Body pan gesture for reorder mode.
+    /// Exposed for require(toFail:) setup with scrollView pan.
+    private(set) lazy var bodyPanGesture: UIPanGestureRecognizer = {
+        let gesture = UIPanGestureRecognizer(target: self, action: #selector(handleBodyPan(_:)))
+        gesture.isEnabled = false // Disabled by default, enabled in reorder mode
+        return gesture
+    }()
+
     // MARK: - State
 
     private var initialDurationUs: TimeUs = 0
@@ -163,6 +179,8 @@ final class SceneClipView: UIView {
     private func setupGestures() {
         bodyView.addGestureRecognizer(tapGesture)
         trailingHandle.addGestureRecognizer(trailingPanGesture)
+        // PR3: Body pan for reorder (disabled by default)
+        bodyView.addGestureRecognizer(bodyPanGesture)
     }
 
     // MARK: - Configuration
@@ -176,12 +194,26 @@ final class SceneClipView: UIView {
 
     func setSelected(_ selected: Bool) {
         isSelected = selected
-        trailingHandle.isHidden = !selected
+        // PR3: Hide trim handle in reorder mode even if selected
+        trailingHandle.isHidden = !selected || isReorderMode
 
         UIView.animate(withDuration: 0.2) {
             self.bodyView.backgroundColor = selected ? self.selectedColor : self.normalColor
             self.bodyView.transform = selected ? CGAffineTransform(scaleX: 1.0, y: 1.02) : .identity
         }
+    }
+
+    /// PR3: Sets reorder mode - enables/disables appropriate gestures.
+    /// - Parameter isReorderMode: Whether reorder mode is active
+    func setReorderMode(_ isReorderMode: Bool) {
+        self.isReorderMode = isReorderMode
+
+        // Enable body pan in reorder mode, disable trim
+        bodyPanGesture.isEnabled = isReorderMode
+        trailingPanGesture.isEnabled = !isReorderMode
+
+        // Hide trim handle in reorder mode
+        trailingHandle.isHidden = !isSelected || isReorderMode
     }
 
     func setPxPerSecond(_ pps: CGFloat) {
@@ -227,6 +259,56 @@ final class SceneClipView: UIView {
 
         default:
             break
+        }
+    }
+
+    // MARK: - PR3: Reorder Gesture Handler
+
+    @objc private func handleBodyPan(_ recognizer: UIPanGestureRecognizer) {
+        guard isReorderMode else { return }
+
+        let location = recognizer.location(in: superview)
+
+        switch recognizer.state {
+        case .began:
+            // Apply ghost effect
+            applyGhostEffect(true)
+            onReorderDrag?(location.x, .began)
+
+        case .changed:
+            onReorderDrag?(location.x, .changed)
+
+        case .ended:
+            // Remove ghost effect
+            applyGhostEffect(false)
+            onReorderDrag?(location.x, .ended)
+
+        case .cancelled, .failed:
+            // Remove ghost effect
+            applyGhostEffect(false)
+            onReorderDrag?(location.x, .cancelled)
+
+        default:
+            break
+        }
+    }
+
+    /// Applies or removes ghost effect during reorder drag.
+    /// - Parameter apply: Whether to apply or remove the effect
+    private func applyGhostEffect(_ apply: Bool) {
+        UIView.animate(withDuration: 0.15) {
+            if apply {
+                self.alpha = 0.85
+                self.transform = CGAffineTransform(scaleX: 1.03, y: 1.03)
+                self.layer.shadowColor = UIColor.black.cgColor
+                self.layer.shadowOpacity = 0.3
+                self.layer.shadowOffset = CGSize(width: 0, height: 4)
+                self.layer.shadowRadius = 8
+            } else {
+                self.alpha = 1.0
+                self.transform = self.isSelected ? CGAffineTransform(scaleX: 1.0, y: 1.02) : .identity
+                self.layer.shadowOpacity = 0
+            }
         }
     }
 }
