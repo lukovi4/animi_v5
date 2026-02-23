@@ -679,24 +679,27 @@ final class PlayerViewController: UIViewController {
     ///   - edge: Which edge is being trimmed
     ///   - phase: Gesture phase
     private func handleTrimScene(sceneId: UUID, newDurationUs: TimeUs, edge: TrimEdge, phase: InteractionPhase) {
-        guard var draft = currentProjectDraft, var scenes = draft.scenes else { return }
+        guard var draft = currentProjectDraft, var canonical = draft.canonicalTimeline else { return }
 
-        // Find and update the scene
-        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
+        // Find the scene item
+        guard let index = canonical.sceneItems.firstIndex(where: { $0.id == sceneId }) else { return }
 
         // Calculate max allowed duration (template max - sum of other scenes)
         let fps = Int(sceneFPS)
         let templateDurationUs = framesToDurationUs(totalFrames, fps: fps)
-        let otherScenesDuration = scenes.enumerated()
+        let otherScenesDuration = canonical.sceneItems.enumerated()
             .filter { $0.offset != index }
             .reduce(0 as TimeUs) { $0 + $1.element.durationUs }
         let maxAllowedDuration = templateDurationUs - otherScenesDuration
 
-        // Clamp to valid range
-        let minDurationUs = framesToDurationUs(1, fps: fps) // At least 1 frame
+        // Clamp to valid range (PR1: use 0.1s min instead of 1 frame)
+        let minDurationUs = ProjectDraft.minSceneDurationUs
         let clampedDurationUs = max(minDurationUs, min(newDurationUs, maxAllowedDuration))
 
-        scenes[index].durationUs = clampedDurationUs
+        canonical.updateSceneDuration(sceneId: sceneId, newDurationUs: clampedDurationUs)
+
+        // Convert to SceneDrafts for UI compatibility
+        let scenes = canonical.toSceneDrafts()
 
         switch phase {
         case .began, .changed:
@@ -705,11 +708,10 @@ final class PlayerViewController: UIViewController {
 
         case .ended:
             // Calculate total duration
-            let totalDurationUs = scenes.reduce(0) { $0 + $1.durationUs }
+            let totalDurationUs = canonical.totalDurationUs
 
-            // Commit to draft (PR2 fix: sync projectDurationUs as legacy mirror)
-            draft.scenes = scenes
-            draft.projectDurationUs = totalDurationUs
+            // Commit to draft (PR1: canonical timeline is the truth)
+            draft.canonicalTimeline = canonical
             currentProjectDraft = draft
             draftIsDirty = true
 
@@ -721,8 +723,8 @@ final class PlayerViewController: UIViewController {
 
         case .cancelled:
             // Revert to original
-            if let originalScenes = currentProjectDraft?.scenes {
-                editorLayoutContainer.updateScenes(originalScenes)
+            if let originalCanonical = currentProjectDraft?.canonicalTimeline {
+                editorLayoutContainer.updateScenes(originalCanonical.toSceneDrafts())
             }
         }
     }
@@ -821,7 +823,7 @@ final class PlayerViewController: UIViewController {
         if var draft = currentProjectDraft {
             var needsSave = false
 
-            // Step 1: Migrate legacy frames to microseconds
+            // Step 1: Migrate legacy frames to microseconds (v1 → v2)
             if draft.migrateDurationFramesToUsIfNeeded(templateFPS: fps) {
                 draft.projectDurationFrames = nil  // cleanup legacy after migration
                 needsSave = true
@@ -836,71 +838,72 @@ final class PlayerViewController: UIViewController {
                 needsSave = true
             }
 
+            // Step 3: Migrate to canonical timeline v4 (PR1 Timeline Core)
+            let migrationResult = draft.migrateToCanonicalTimelineIfNeeded(templateDefaultUs: templateDurationUs)
+            if migrationResult.didMigrate {
+                needsSave = true
+                log("[PR1] Migrated to canonical timeline v4")
+                if migrationResult.scenesExtended > 0 {
+                    log("[PR1] Extended \(migrationResult.scenesExtended) scene(s) to min duration 0.1s (+\(migrationResult.durationIncreaseUs)µs)")
+                    // TODO: Show toast once (non-blocking) per spec
+                }
+            }
+
             if needsSave {
                 currentProjectDraft = draft
                 draftIsDirty = true
             }
         }
 
-        // Get effective duration from scenes (PR2 fix: scenes as source of truth)
-        let draftDurationUs = currentProjectDraft?.effectiveDurationUsWithScenes(templateDefaultUs: templateDurationUs) ?? templateDurationUs
+        // PR1: Get effective duration from canonical timeline (single source of truth)
+        let draftDurationUs = currentProjectDraft?.effectiveDurationUsFromCanonical(templateDefaultUs: templateDurationUs) ?? templateDurationUs
         let effectiveDurationUs = min(draftDurationUs, templateDurationUs)
 
-        // PR2: Lazy-init scenes if needed
-        if var draft = currentProjectDraft, draft.scenes == nil {
-            let initialScene = SceneDraft(id: UUID(), durationUs: effectiveDurationUs)
-            draft.scenes = [initialScene]
-            currentProjectDraft = draft
-            draftIsDirty = true
-            log("[PR2] Lazy-initialized scenes array with single scene")
-        }
-
-        // PR2 v3: Normalize scenes if sum exceeds template (cascade from end)
-        let minSceneDurationUs = framesToDurationUs(1, fps: fps)
-        if var draft = currentProjectDraft, var scenes = draft.scenes {
-            let sumUs = scenes.reduce(0 as TimeUs) { $0 + $1.durationUs }
+        // PR1: Normalize canonical timeline if sum exceeds template (cascade from end)
+        let minSceneDurationUs = ProjectDraft.minSceneDurationUs
+        if var draft = currentProjectDraft, var canonical = draft.canonicalTimeline {
+            let sumUs = canonical.totalDurationUs
             if sumUs > templateDurationUs {
                 var overflow = sumUs - templateDurationUs
-                let originalOverflow = overflow
 
                 // Cascade: trim scenes from end until overflow is 0
-                for i in scenes.indices.reversed() {
+                for i in canonical.tracks[0].items.indices.reversed() {
                     if overflow == 0 { break }
-                    let availableToCut = scenes[i].durationUs - minSceneDurationUs
+                    let availableToCut = canonical.tracks[0].items[i].durationUs - minSceneDurationUs
                     if availableToCut <= 0 { continue }
                     let cut = min(availableToCut, overflow)
-                    scenes[i].durationUs -= cut
+                    canonical.tracks[0].items[i].durationUs -= cut
                     overflow -= cut
                 }
 
                 // PR2 v4: If still overflow after cascade, drop scenes from end
-                var finalSum = scenes.reduce(0 as TimeUs) { $0 + $1.durationUs }
-                while finalSum > templateDurationUs && scenes.count > 1 {
-                    let removedDuration = scenes.removeLast().durationUs
-                    finalSum -= removedDuration
-                    log("[PR2] Dropped scene to fit template, removed \(removedDuration)us")
+                var finalSum = canonical.totalDurationUs
+                while finalSum > templateDurationUs && canonical.tracks[0].items.count > 1 {
+                    if let removed = canonical.removeScene(sceneId: canonical.tracks[0].items.last!.id) {
+                        finalSum -= removed.durationUs
+                        log("[PR1] Dropped scene to fit template, removed \(removed.durationUs)us")
+                    }
                 }
 
                 // Edge case: single scene still too long - clamp to template
-                if scenes.count == 1 && finalSum > templateDurationUs {
-                    scenes[0].durationUs = templateDurationUs
+                if canonical.tracks[0].items.count == 1 && finalSum > templateDurationUs {
+                    canonical.tracks[0].items[0].durationUs = templateDurationUs
                     finalSum = templateDurationUs
-                    log("[PR2] Clamped last remaining scene to template duration")
+                    log("[PR1] Clamped last remaining scene to template duration")
                 }
 
-                log("[PR2] Scenes normalized, final sum: \(finalSum)us, scene count: \(scenes.count)")
+                log("[PR1] Scenes normalized, final sum: \(finalSum)us, scene count: \(canonical.tracks[0].items.count)")
 
-                draft.scenes = scenes
-                draft.projectDurationUs = min(finalSum, templateDurationUs)
+                draft.canonicalTimeline = canonical
                 currentProjectDraft = draft
                 draftIsDirty = true
             }
         }
 
-        // Get final duration from normalized scenes
+        // Get final duration from canonical timeline
         let finalDurationUs: TimeUs
-        if let scenes = currentProjectDraft?.scenes {
-            finalDurationUs = min(scenes.reduce(0) { $0 + $1.durationUs }, templateDurationUs)
+        if let canonical = currentProjectDraft?.canonicalTimeline {
+            finalDurationUs = min(canonical.totalDurationUs, templateDurationUs)
         } else {
             finalDurationUs = effectiveDurationUs
         }
@@ -910,11 +913,13 @@ final class PlayerViewController: UIViewController {
         editorController.durationUs = finalDurationUs
         editorController.totalFrames = totalFrames
 
-        // PR2: Configure timeline UI with scenes
-        if let scenes = currentProjectDraft?.scenes {
+        // PR1: Configure timeline UI with scenes from canonical timeline
+        if let canonical = currentProjectDraft?.canonicalTimeline {
+            // Use adapter to convert TimelineItems to SceneDrafts for UI compatibility
+            let scenes = canonical.toSceneDrafts()
             editorLayoutContainer.configure(scenes: scenes, templateFPS: fps)
         } else {
-            // Fallback for edge case (should not happen after lazy-init)
+            // Fallback for edge case (should not happen after migration)
             editorLayoutContainer.reconfigureTimelinePreservingState(
                 durationUs: finalDurationUs,
                 templateFPS: fps
