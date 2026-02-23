@@ -648,7 +648,7 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    // MARK: - PR1: Unified Timeline Event Handling
+    // MARK: - PR1 + PR2: Unified Timeline Event Handling
 
     /// Routes timeline events from EditorLayoutContainerView.
     /// Scroll events are handled by the container (ruler sync).
@@ -664,6 +664,66 @@ final class PlayerViewController: UIViewController {
         case .scroll:
             // Handled by container (ruler sync), nothing to do here
             break
+
+        case .trimScene(let sceneId, let newDurationUs, let edge, let phase):
+            handleTrimScene(sceneId: sceneId, newDurationUs: newDurationUs, edge: edge, phase: phase)
+        }
+    }
+
+    // MARK: - PR2: Trim Scene Handling
+
+    /// Handles trim scene events from timeline.
+    /// - Parameters:
+    ///   - sceneId: ID of the scene being trimmed
+    ///   - newDurationUs: New duration in microseconds
+    ///   - edge: Which edge is being trimmed
+    ///   - phase: Gesture phase
+    private func handleTrimScene(sceneId: UUID, newDurationUs: TimeUs, edge: TrimEdge, phase: InteractionPhase) {
+        guard var draft = currentProjectDraft, var scenes = draft.scenes else { return }
+
+        // Find and update the scene
+        guard let index = scenes.firstIndex(where: { $0.id == sceneId }) else { return }
+
+        // Calculate max allowed duration (template max - sum of other scenes)
+        let fps = Int(sceneFPS)
+        let templateDurationUs = framesToDurationUs(totalFrames, fps: fps)
+        let otherScenesDuration = scenes.enumerated()
+            .filter { $0.offset != index }
+            .reduce(0 as TimeUs) { $0 + $1.element.durationUs }
+        let maxAllowedDuration = templateDurationUs - otherScenesDuration
+
+        // Clamp to valid range
+        let minDurationUs = framesToDurationUs(1, fps: fps) // At least 1 frame
+        let clampedDurationUs = max(minDurationUs, min(newDurationUs, maxAllowedDuration))
+
+        scenes[index].durationUs = clampedDurationUs
+
+        switch phase {
+        case .began, .changed:
+            // Update UI only (live preview)
+            editorLayoutContainer.updateScenes(scenes)
+
+        case .ended:
+            // Calculate total duration
+            let totalDurationUs = scenes.reduce(0) { $0 + $1.durationUs }
+
+            // Commit to draft (PR2 fix: sync projectDurationUs as legacy mirror)
+            draft.scenes = scenes
+            draft.projectDurationUs = totalDurationUs
+            currentProjectDraft = draft
+            draftIsDirty = true
+
+            // Update editor controller duration
+            editorController.durationUs = totalDurationUs
+
+            // Update UI
+            editorLayoutContainer.updateScenes(scenes)
+
+        case .cancelled:
+            // Revert to original
+            if let originalScenes = currentProjectDraft?.scenes {
+                editorLayoutContainer.updateScenes(originalScenes)
+            }
         }
     }
 
@@ -782,20 +842,84 @@ final class PlayerViewController: UIViewController {
             }
         }
 
-        // Get effective duration (clamped to template max)
-        let draftDurationUs = currentProjectDraft?.effectiveDurationUs(templateDefaultUs: templateDurationUs) ?? templateDurationUs
+        // Get effective duration from scenes (PR2 fix: scenes as source of truth)
+        let draftDurationUs = currentProjectDraft?.effectiveDurationUsWithScenes(templateDefaultUs: templateDurationUs) ?? templateDurationUs
         let effectiveDurationUs = min(draftDurationUs, templateDurationUs)
+
+        // PR2: Lazy-init scenes if needed
+        if var draft = currentProjectDraft, draft.scenes == nil {
+            let initialScene = SceneDraft(id: UUID(), durationUs: effectiveDurationUs)
+            draft.scenes = [initialScene]
+            currentProjectDraft = draft
+            draftIsDirty = true
+            log("[PR2] Lazy-initialized scenes array with single scene")
+        }
+
+        // PR2 v3: Normalize scenes if sum exceeds template (cascade from end)
+        let minSceneDurationUs = framesToDurationUs(1, fps: fps)
+        if var draft = currentProjectDraft, var scenes = draft.scenes {
+            let sumUs = scenes.reduce(0 as TimeUs) { $0 + $1.durationUs }
+            if sumUs > templateDurationUs {
+                var overflow = sumUs - templateDurationUs
+                let originalOverflow = overflow
+
+                // Cascade: trim scenes from end until overflow is 0
+                for i in scenes.indices.reversed() {
+                    if overflow == 0 { break }
+                    let availableToCut = scenes[i].durationUs - minSceneDurationUs
+                    if availableToCut <= 0 { continue }
+                    let cut = min(availableToCut, overflow)
+                    scenes[i].durationUs -= cut
+                    overflow -= cut
+                }
+
+                // PR2 v4: If still overflow after cascade, drop scenes from end
+                var finalSum = scenes.reduce(0 as TimeUs) { $0 + $1.durationUs }
+                while finalSum > templateDurationUs && scenes.count > 1 {
+                    let removedDuration = scenes.removeLast().durationUs
+                    finalSum -= removedDuration
+                    log("[PR2] Dropped scene to fit template, removed \(removedDuration)us")
+                }
+
+                // Edge case: single scene still too long - clamp to template
+                if scenes.count == 1 && finalSum > templateDurationUs {
+                    scenes[0].durationUs = templateDurationUs
+                    finalSum = templateDurationUs
+                    log("[PR2] Clamped last remaining scene to template duration")
+                }
+
+                log("[PR2] Scenes normalized, final sum: \(finalSum)us, scene count: \(scenes.count)")
+
+                draft.scenes = scenes
+                draft.projectDurationUs = min(finalSum, templateDurationUs)
+                currentProjectDraft = draft
+                draftIsDirty = true
+            }
+        }
+
+        // Get final duration from normalized scenes
+        let finalDurationUs: TimeUs
+        if let scenes = currentProjectDraft?.scenes {
+            finalDurationUs = min(scenes.reduce(0) { $0 + $1.durationUs }, templateDurationUs)
+        } else {
+            finalDurationUs = effectiveDurationUs
+        }
 
         // Configure editor controller with time parameters
         editorController.templateFPS = fps
-        editorController.durationUs = effectiveDurationUs
+        editorController.durationUs = finalDurationUs
         editorController.totalFrames = totalFrames
 
-        // Configure timeline UI
-        editorLayoutContainer.reconfigureTimelinePreservingState(
-            durationUs: effectiveDurationUs,
-            templateFPS: fps
-        )
+        // PR2: Configure timeline UI with scenes
+        if let scenes = currentProjectDraft?.scenes {
+            editorLayoutContainer.configure(scenes: scenes, templateFPS: fps)
+        } else {
+            // Fallback for edge case (should not happen after lazy-init)
+            editorLayoutContainer.reconfigureTimelinePreservingState(
+                durationUs: finalDurationUs,
+                templateFPS: fps
+            )
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {

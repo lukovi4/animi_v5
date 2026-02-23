@@ -203,7 +203,7 @@ final class EditorLayoutContainerView: UIView {
         }
     }
 
-    // MARK: - Timeline Event Handling (PR1)
+    // MARK: - Timeline Event Handling (PR1 + PR2)
 
     /// Routes timeline events: scroll handled locally, others forwarded to VC.
     private func handleTimelineEvent(_ event: TimelineEvent) {
@@ -220,6 +220,10 @@ final class EditorLayoutContainerView: UIView {
         case .selection(let selection):
             // Handle locally + forward to VC
             handleTimelineSelectionChanged(selection)
+            onTimelineEvent?(event)
+
+        case .trimScene:
+            // PR2: Forward to VC for model update
             onTimelineEvent?(event)
         }
     }
@@ -245,6 +249,23 @@ final class EditorLayoutContainerView: UIView {
     func configure(durationUs: TimeUs, templateFPS: Int) {
         rulerView.configure(durationUs: durationUs)
         timelineView.configure(durationUs: durationUs, templateFPS: templateFPS)
+    }
+
+    /// Configures timeline with scenes array (PR2: Multi-scene support).
+    /// - Parameters:
+    ///   - scenes: Array of SceneDraft objects
+    ///   - templateFPS: Template frame rate for quantization
+    func configure(scenes: [SceneDraft], templateFPS: Int) {
+        let totalDurationUs = scenes.reduce(0) { $0 + $1.durationUs }
+        rulerView.configure(durationUs: totalDurationUs)
+        timelineView.configure(scenes: scenes, templateFPS: templateFPS)
+    }
+
+    /// Updates scenes (for trim operations, without full reconfigure).
+    func updateScenes(_ scenes: [SceneDraft]) {
+        let totalDurationUs = scenes.reduce(0) { $0 + $1.durationUs }
+        rulerView.configure(durationUs: totalDurationUs)
+        timelineView.updateScenes(scenes)
     }
 
     /// Updates current time (from playback or scrub).
@@ -317,6 +338,7 @@ final class EditorLayoutContainerView: UIView {
             globalActionBar.isHidden = false
             contextBar.isHidden = true
         case .scene, .audio:
+            // PR2: .scene(id:) matches any scene selection
             globalActionBar.isHidden = true
             contextBar.isHidden = false
         }

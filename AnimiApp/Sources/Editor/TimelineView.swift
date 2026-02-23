@@ -1,14 +1,14 @@
 import UIKit
 
-// MARK: - Timeline View (PR2.6 Core Rewrite)
+// MARK: - Timeline View (PR2: Y-scroll + Trim)
 
-/// Horizontal scrolling timeline with pinch zoom support.
+/// 2D scrolling timeline with pinch zoom and trim support.
 /// Contains track views (SceneTrackView, AudioTrackView).
-/// Supports scrubbing and selection.
+/// Supports scrubbing, selection, and trim handles.
 ///
-/// PR2.6 Architecture:
-/// - Single xScrollView as the only source of truth for X position
-/// - No transform, no contentInset for time-axis math
+/// PR2 Architecture:
+/// - Single scrollView with 2D content (X = time, Y = tracks)
+/// - No nested scroll views, no gesture conflicts
 /// - Real padding via contentWidth = leftPad + duration*pps + rightPad
 /// - Zoom anchored under playhead (center of screen)
 ///
@@ -28,6 +28,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// Duration in microseconds (source of truth for timeline length).
     private var durationUs: TimeUs = 0
 
+    /// Scenes array for multi-scene support (PR2).
+    private var scenes: [SceneDraft] = []
+
     /// Template FPS for frame quantization (used only for derived calculations).
     private var templateFPS: Int = 30
 
@@ -35,6 +38,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// Current time under playhead in microseconds.
     private var currentTimeUs: TimeUs = 0
+
+    /// Currently selected scene ID (for trim handles).
+    private var selectedSceneId: UUID?
 
     // MARK: - Initial Positioning State
 
@@ -89,28 +95,28 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// Current content offset X (for external access)
     var contentOffsetX: CGFloat {
-        xScrollView.contentOffset.x
+        scrollView.contentOffset.x
     }
 
-    // MARK: - Subviews (PR2.6 Architecture)
+    // MARK: - Subviews (PR2: Single 2D ScrollView)
 
-    /// Horizontal scroll for time (X) - single source of truth
-    /// Note: tracksVerticalScrollView removed for MVP (Y scroll not needed with 2 tracks)
-    private lazy var xScrollView: UIScrollView = {
+    /// Single scroll view for both X (time) and Y (tracks) scrolling.
+    /// PR2: Replaces separate scrollView with unified 2D scroll.
+    private lazy var scrollView: UIScrollView = {
         let sv = UIScrollView()
         sv.translatesAutoresizingMaskIntoConstraints = false
+        // PR2 v5: Hide indicators, disable bounce for clean UX
         sv.showsHorizontalScrollIndicator = false
         sv.showsVerticalScrollIndicator = false
         sv.delegate = self
         sv.decelerationRate = .fast
         sv.alwaysBounceHorizontal = false
-        // Lock to horizontal only
         sv.alwaysBounceVertical = false
         sv.isDirectionalLockEnabled = true
         return sv
     }()
 
-    /// Content inside xScrollView (width = leftPad + duration*pps + rightPad)
+    /// Content inside scrollView (width = leftPad + duration*pps + rightPad)
     private lazy var contentView: UIView = {
         let v = UIView()
         v.translatesAutoresizingMaskIntoConstraints = false
@@ -130,6 +136,11 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     private lazy var sceneTrack = SceneTrackView()
     private lazy var audioTrack = AudioTrackView()
+
+    #if DEBUG
+    /// PR2 v8: Extra audio tracks to test Y-scroll
+    private var debugAudioTracks: [AudioTrackView] = []
+    #endif
 
     private var contentWidthConstraint: NSLayoutConstraint?
 
@@ -164,18 +175,47 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private func setupViews() {
         backgroundColor = .secondarySystemBackground
 
-        // PR2.6 Hierarchy (MVP): xScrollView → contentView → tracksStack
-        // Note: tracksVerticalScrollView can be added later when Y scroll is needed
-        addSubview(xScrollView)
-        xScrollView.addSubview(contentView)
+        // PR2 Hierarchy: scrollView → contentView → tracksStack
+        addSubview(scrollView)
+        scrollView.addSubview(contentView)
         contentView.addSubview(tracksStack)
 
         // Add tracks
         tracksStack.addArrangedSubview(sceneTrack)
         tracksStack.addArrangedSubview(audioTrack)
 
-        // Note: DEBUG stub tracks removed in PR2.6 MVP (no Y-scroll)
-        // Will be re-added when tracksVerticalScrollView is implemented
+        #if DEBUG
+        // PR2 v8: Add 8 extra audio tracks to force vertical scroll for testing
+        for _ in 0..<8 {
+            let track = AudioTrackView()
+            debugAudioTracks.append(track)
+            tracksStack.addArrangedSubview(track)
+        }
+        #endif
+
+        // Wire sceneTrack callbacks for selection and trim
+        wireSceneTrackCallbacks()
+    }
+
+    private func wireSceneTrackCallbacks() {
+        sceneTrack.onSelectScene = { [weak self] sceneId in
+            guard let self = self else { return }
+            self.selectedSceneId = sceneId
+            self.sceneTrack.setSelectedScene(sceneId)
+            self.audioTrack.setSelected(false)
+            self.emitEvent(.selection(.scene(id: sceneId)))
+        }
+
+        sceneTrack.onTrimScene = { [weak self] sceneId, newDurationUs, edge, phase in
+            guard let self = self else { return }
+            self.emitEvent(.trimScene(sceneId: sceneId, newDurationUs: newDurationUs, edge: edge, phase: phase))
+        }
+
+        // PR2 fix: Handle pan gesture conflicts - scroll should yield to trim handle
+        sceneTrack.onClipCreated = { [weak self] clipView in
+            guard let self = self else { return }
+            self.scrollView.panGestureRecognizer.require(toFail: clipView.trailingPanGesture)
+        }
     }
 
     private func setupConstraints() {
@@ -183,30 +223,39 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         audioTrack.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            // xScrollView fills TimelineView
-            xScrollView.topAnchor.constraint(equalTo: topAnchor),
-            xScrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            xScrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            xScrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            // scrollView fills TimelineView
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            // contentView inside xScrollView (contentLayoutGuide)
-            contentView.topAnchor.constraint(equalTo: xScrollView.contentLayoutGuide.topAnchor),
-            contentView.leadingAnchor.constraint(equalTo: xScrollView.contentLayoutGuide.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: xScrollView.contentLayoutGuide.trailingAnchor),
-            contentView.bottomAnchor.constraint(equalTo: xScrollView.contentLayoutGuide.bottomAnchor),
-            // Height matches frame for no vertical scroll in xScrollView
-            contentView.heightAnchor.constraint(equalTo: xScrollView.frameLayoutGuide.heightAnchor),
+            // contentView inside scrollView (contentLayoutGuide)
+            contentView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            // PR2 v6: Only width >= viewport (NOT height - that stretches tracks!)
+            contentView.widthAnchor.constraint(greaterThanOrEqualTo: scrollView.frameLayoutGuide.widthAnchor),
 
             // tracksStack inside contentView
             tracksStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
             tracksStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             tracksStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            tracksStack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -8),
+            // PR2 v5: equalTo (not <=) so content height grows with stack
+            tracksStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
 
             // Track heights
             sceneTrack.heightAnchor.constraint(equalToConstant: 60),
             audioTrack.heightAnchor.constraint(equalToConstant: 40),
         ])
+
+        #if DEBUG
+        // PR2 v8: Height constraints for debug audio tracks
+        for track in debugAudioTracks {
+            track.translatesAutoresizingMaskIntoConstraints = false
+            track.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        }
+        #endif
 
         // Content width constraint (will be updated in updateContentSize)
         contentWidthConstraint = contentView.widthAnchor.constraint(equalToConstant: 1000)
@@ -218,7 +267,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         addGestureRecognizer(pinchGesture)
 
         // Tap on tracks area
-        xScrollView.addGestureRecognizer(tapGesture)
+        scrollView.addGestureRecognizer(tapGesture)
     }
 
     override func layoutSubviews() {
@@ -228,15 +277,12 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         updateContentSize()
 
         // Initial positioning: ensure frame 0 is under playhead on first layout
-        // Must be done BEFORE notifyScrollChanged to send correct initial offset
+        // PR2 fix: setting contentOffset triggers scrollViewDidScroll which emits .scroll
         if !didInitialPositioning && !stateWasRestored && bounds.width > 0 {
             didInitialPositioning = true
             // offset=0 means time=0 is under playhead (at center)
-            xScrollView.contentOffset = CGPoint(x: 0, y: 0)
+            scrollView.contentOffset = CGPoint(x: 0, y: 0)
         }
-
-        // Notify ruler of current state (after offset is set correctly)
-        emitScrollEvent()
     }
 
     // MARK: - Configuration
@@ -255,6 +301,58 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         sceneTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
+        #if DEBUG
+        for track in debugAudioTracks {
+            track.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
+        }
+        #endif
+
+        updateContentSize()
+    }
+
+    /// Configures timeline with scenes array (PR2: Multi-scene support).
+    /// - Parameters:
+    ///   - scenes: Array of SceneDraft objects
+    ///   - templateFPS: Template frame rate for quantization
+    func configure(scenes: [SceneDraft], templateFPS: Int) {
+        self.scenes = scenes
+        self.durationUs = scenes.reduce(0) { $0 + $1.durationUs }
+        self.templateFPS = templateFPS > 0 ? templateFPS : 30
+
+        let padding = leftPaddingPx
+        let minDurationUs = framesToDurationUs(1, fps: self.templateFPS)
+        sceneTrack.configure(scenes: scenes, pxPerSecond: pxPerSecond, leftPadding: padding, minDurationUs: minDurationUs)
+        audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
+
+        #if DEBUG
+        for track in debugAudioTracks {
+            track.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
+        }
+        #endif
+
+        updateContentSize()
+    }
+
+    /// Updates scenes (for trim operations).
+    func updateScenes(_ scenes: [SceneDraft]) {
+        self.scenes = scenes
+        self.durationUs = scenes.reduce(0) { $0 + $1.durationUs }
+
+        let padding = leftPaddingPx
+
+        // PR2 v8: Do NOT rebuild clip views on live trim - use updateScenes for in-place update
+        sceneTrack.updateScenes(scenes)
+        sceneTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
+
+        // Audio: configure is ok (single block, no active gesture)
+        audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
+
+        #if DEBUG
+        for track in debugAudioTracks {
+            track.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
+        }
+        #endif
+
         updateContentSize()
     }
 
@@ -264,7 +362,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// - Parameter timeUs: Time in microseconds
     func setCurrentTimeUs(_ timeUs: TimeUs) {
         // Don't interrupt user's drag/decelerate
-        guard !xScrollView.isDragging && !xScrollView.isDecelerating else { return }
+        guard !scrollView.isDragging && !scrollView.isDecelerating else { return }
 
         // Clamp to valid range [0, durationUs]
         let clamped = clampTimeUs(timeUs, maxUs: durationUs)
@@ -296,31 +394,32 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         updateContentSize()
 
         // Clamp time to valid range and center
+        // PR2 fix: centerOnTimeUs sets contentOffset → triggers scrollViewDidScroll → emits .scroll
         let clampedTimeUs = clampTimeUs(timeUs, maxUs: durationUs)
         centerOnTimeUs(clampedTimeUs)
 
         // Sync internal state
         currentTimeUs = clampedTimeUs
-
-        // Immediate ruler sync
-        emitScrollEvent()
     }
 
-    // MARK: - Selection (P1-3)
+    // MARK: - Selection (PR2: Multi-scene)
 
     /// Programmatically sets selection and updates track highlighting.
     /// Call this when restoring state or changing selection from outside TimelineView.
     /// - Parameter selection: The selection to apply
     func setSelection(_ selection: TimelineSelection) {
         switch selection {
-        case .scene:
-            sceneTrack.setSelected(true)
+        case .scene(let id):
+            selectedSceneId = id
+            sceneTrack.setSelectedScene(id)
             audioTrack.setSelected(false)
         case .audio:
-            sceneTrack.setSelected(false)
+            selectedSceneId = nil
+            sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(true)
         case .none:
-            sceneTrack.setSelected(false)
+            selectedSceneId = nil
+            sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(false)
         }
     }
@@ -337,9 +436,16 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let padding = leftPaddingPx
         sceneTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
         audioTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
+
+        #if DEBUG
+        for track in debugAudioTracks {
+            track.setPxPerSecond(pxPerSecond, leftPadding: padding)
+        }
+        #endif
     }
 
     /// Centers the given time under the playhead.
+    /// PR2 fix: setting contentOffset triggers scrollViewDidScroll which emits .scroll
     /// - Parameter timeUs: Time in microseconds
     private func centerOnTimeUs(_ timeUs: TimeUs) {
         guard durationUs > 0 else { return }
@@ -349,8 +455,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let offsetX = CGFloat(timeSeconds) * pxPerSecond
         let clampedX = clampOffsetX(offsetX)
 
-        xScrollView.contentOffset = CGPoint(x: clampedX, y: 0)
-        emitScrollEvent()
+        // PR2 v7: Preserve Y position when centering X
+        let currentY = scrollView.contentOffset.y
+        scrollView.contentOffset = CGPoint(x: clampedX, y: currentY)
     }
 
     /// Returns the time currently under the playhead in microseconds.
@@ -358,7 +465,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         guard pxPerSecond > 0 else { return 0 }
 
         // time = offsetX / pxPerSecond (simple, no inset math)
-        let timeSeconds = Double(xScrollView.contentOffset.x / pxPerSecond)
+        let timeSeconds = Double(scrollView.contentOffset.x / pxPerSecond)
         let timeUs = secondsToUs(timeSeconds)
         return clampTimeUs(timeUs, maxUs: durationUs)
     }
@@ -381,6 +488,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             print("[Timeline] scroll: x=\(Int(offsetX)), pps=\(Int(pxPerSecond))")
         case .selection(let sel):
             print("[Timeline] selection: \(sel)")
+        case .trimScene(let sceneId, let newDurationUs, let edge, let phase):
+            print("[Timeline] trimScene: \(sceneId), \(newDurationUs)us, \(edge), \(phase)")
         }
         #endif
         onEvent?(event)
@@ -388,13 +497,13 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// Emits scroll event for ruler sync.
     private func emitScrollEvent() {
-        emitEvent(.scroll(offsetX: xScrollView.contentOffset.x, pxPerSecond: pxPerSecond))
+        emitEvent(.scroll(offsetX: scrollView.contentOffset.x, pxPerSecond: pxPerSecond))
     }
 
     // MARK: - UIScrollViewDelegate
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard scrollView === xScrollView else { return }
+        guard scrollView === self.scrollView else { return }
 
         // Clamp offset to valid range
         let rawX = scrollView.contentOffset.x
@@ -402,7 +511,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         if rawX != clampedX {
             // Setting contentOffset triggers another scrollViewDidScroll call,
             // so return here to emit event only on the normalized second call
-            scrollView.contentOffset = CGPoint(x: clampedX, y: 0)
+            // PR2 v7: Preserve Y position when clamping X
+            let currentY = scrollView.contentOffset.y
+            scrollView.contentOffset = CGPoint(x: clampedX, y: currentY)
             return
         }
 
@@ -420,7 +531,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        guard scrollView === xScrollView else { return }
+        guard scrollView === self.scrollView else { return }
 
         // Start new scrub session
         isScrubSessionActive = true
@@ -432,14 +543,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        guard scrollView === xScrollView else { return }
+        guard scrollView === self.scrollView else { return }
         if !decelerate {
             emitFinalScrub()
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        guard scrollView === xScrollView else { return }
+        guard scrollView === self.scrollView else { return }
         emitFinalScrub()
     }
 
@@ -464,7 +575,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             if clampedZoom != currentZoom {
                 // PR2.6: Zoom anchored under playhead
                 // 1. Save time under playhead BEFORE zoom
-                let anchorTime = xScrollView.contentOffset.x / pxPerSecond
+                let anchorTime = scrollView.contentOffset.x / pxPerSecond
 
                 // 2. Update zoom
                 currentZoom = clampedZoom
@@ -478,7 +589,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 let clampedOffsetX = clampOffsetX(newOffsetX)
 
                 // 5. Apply new offset (triggers scrollViewDidScroll which emits scroll event)
-                xScrollView.contentOffset = CGPoint(x: clampedOffsetX, y: 0)
+                // PR2 v7: Preserve Y position when applying pinch zoom
+                let currentY = scrollView.contentOffset.y
+                scrollView.contentOffset = CGPoint(x: clampedOffsetX, y: currentY)
             }
 
             recognizer.scale = 1.0
@@ -495,28 +608,31 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
         let location = recognizer.location(in: contentView)
 
-        // Check if tap is on scene track
-        let sceneFrame = sceneTrack.convert(sceneTrack.bounds, to: contentView)
-        if sceneFrame.contains(location) {
-            emitEvent(.selection(.scene))
-            sceneTrack.setSelected(true)
-            audioTrack.setSelected(false)
-            return
-        }
+        // Scene track taps are handled by SceneClipView (via onSelectScene callback)
+        // Only check for audio track and empty space here
 
         // Check if tap is on audio track
         let audioFrame = audioTrack.convert(audioTrack.bounds, to: contentView)
         if audioFrame.contains(location) {
-            emitEvent(.selection(.audio))
-            sceneTrack.setSelected(false)
+            selectedSceneId = nil
+            sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(true)
+            emitEvent(.selection(.audio))
+            return
+        }
+
+        // Check if tap is on scene track area (let clips handle their own taps)
+        let sceneFrame = sceneTrack.convert(sceneTrack.bounds, to: contentView)
+        if sceneFrame.contains(location) {
+            // Don't clear selection - let SceneClipView handle it
             return
         }
 
         // Tap on empty space - clear selection
-        emitEvent(.selection(.none))
-        sceneTrack.setSelected(false)
+        selectedSceneId = nil
+        sceneTrack.setSelectedScene(nil)
         audioTrack.setSelected(false)
+        emitEvent(.selection(.none))
     }
 
     // MARK: - UIGestureRecognizerDelegate
