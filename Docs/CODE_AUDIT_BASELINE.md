@@ -1,7 +1,24 @@
 # CODE AUDIT BASELINE — Snapshot Forensic Report
 
-Snapshot date (report generated): 2026-02-11  
+Snapshot date (report generated): 2026-02-11
+**Last updated:** 2026-02-17 (added Export Pipeline section)
+
 Evidence policy: **Every factual statement below is backed by at least one code anchor.** Anything not provable from snapshot is marked **NOT PROVEN** and is not used in verdict/issue counts.
+
+---
+
+## Quick Navigation
+
+- [A. Snapshot metadata](#a-snapshot-metadata)
+- [B. Module boundaries & ownership](#b-module-boundaries--ownership)
+- [C. Reachable runtime map](#c-reachable-runtime-map-proved-reachability)
+- [D. Architecture assessment](#d-architecture-assessment-facts-only)
+- [E. Concurrency & state safety](#e-concurrency--state-safety-facts-only)
+- [F. Memory & performance](#f-memory--performance-facts-only)
+- [G. Error handling & resilience](#g-error-handling--resilience-facts-only)
+- [H. Testing & tooling](#h-testing--tooling-facts-only)
+- [I. Summary verdict](#i-summary-verdict)
+- [J. Export Pipeline (added 2026-02-17)](#j-export-pipeline-added-2026-02-17)
 
 ---
 
@@ -2717,3 +2734,111 @@ Matches:
 ```
 
 - Feature flags/config: **NOT PROVEN** (no dedicated feature-flag system anchored in this baseline).
+- **Export Pipeline**: **PRESENT** (added 2026-02-17) — GPU-only video export via VideoExporter + AVAssetWriter
+
+---
+
+## J. Export Pipeline (added 2026-02-17)
+
+### J1) Export Architecture Overview
+
+The export pipeline enables GPU-only video export without CPU readback:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          VideoExporter                                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MainActor Entry                                                        │
+│  ├── exportVideo() captures state snapshots                             │
+│  └── Dispatches to exportQueue                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  exportQueue (background)                                                │
+│  ├── Creates AVAssetWriter + CVMetalTextureCache                        │
+│  ├── Frame loop with semaphore (maxFramesInFlight)                      │
+│  │   ├── Get CVPixelBuffer from pool                                    │
+│  │   ├── Create MTLTexture via CVMetalTextureCache                      │
+│  │   ├── Render frame (MetalRenderer.draw)                              │
+│  │   └── commandBuffer.addCompletedHandler → writerQueue append         │
+│  └── Wait for all frames + finalize                                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  writerQueue (serial)                                                    │
+│  ├── All AVAssetWriter append operations                                │
+│  └── AudioWriterPump audio sample delivery                              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### J2) Key Components
+
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| `VideoExporter` | `AnimiApp/Sources/Export/VideoExporter.swift` | Main export orchestrator |
+| `ExportProgressViewController` | `AnimiApp/Sources/Export/ExportProgressViewController.swift` | Modal progress UI |
+| `ExportTextureProvider` | `AnimiApp/Sources/Export/ExportTextureProvider.swift` | Thread-safe texture provider |
+| `ExportVideoSlotsCoordinator` | `AnimiApp/Sources/Export/ExportVideoSlotsCoordinator.swift` | Video slot management |
+| `ExportVideoFrameProvider` | `AnimiApp/Sources/Export/ExportVideoFrameProvider.swift` | Video frame extraction |
+| `AudioCompositionBuilder` | `AnimiApp/Sources/Export/AudioCompositionBuilder.swift` | Audio timeline composition |
+| `AudioWriterPump` | `AnimiApp/Sources/Export/AudioWriterPump.swift` | Audio sample writing |
+
+### J3) Quality Presets (B2)
+
+```swift
+public enum VideoQualityPreset: Sendable {
+    case low      // ~4 Mbps for 1080p
+    case medium   // ~10 Mbps for 1080p
+    case high     // ~15 Mbps for 1080p (used in Release)
+    case max      // ~25 Mbps for 1080p
+    case custom(bitrate: Int)
+
+    public func bitrate(for canvasSize: (width: Int, height: Int)) -> Int
+}
+```
+
+### J4) Visibility Gating (B1)
+
+Video slots only decode frames when visible (with prefetch margin):
+
+```swift
+private let visibilityPrefetchMarginSeconds: Double = 1.0
+
+func updateTextures(forSceneFrameIndex sceneFrameIndex: Int) {
+    let prefetchFrames = Int(visibilityPrefetchMarginSeconds * sceneFPS)
+    for (_, slot) in slots {
+        let visibilityStart = max(0, slot.startFrame - prefetchFrames)
+        guard sceneFrameIndex >= visibilityStart && sceneFrameIndex < slot.endFrame else {
+            continue // Skip invisible slots
+        }
+        // Decode and inject texture...
+    }
+}
+```
+
+### J5) Release Export Flow
+
+1. User taps "Export" button
+2. `ExportProgressViewController` presented modally
+3. `ExportTextureProvider` created and preloaded
+4. User media textures injected from main thread provider
+5. `VideoExporter.exportVideo()` starts background export
+6. Progress callbacks update UI
+7. On completion: share sheet displayed
+8. On cancel: `wasCancelled` flag prevents late callbacks
+
+### J6) Templates (updated 2026-02-17)
+
+Available templates in Release:
+
+| Template | Display Name |
+|----------|--------------|
+| `example_4blocks` | 4 Blocks |
+| `polaroid_shared_demo` | Polaroid |
+| `polaroid_2` | Polaroid 2 |
+
+**Code anchor**
+- `AnimiApp/Sources/Player/PlayerViewController.swift`
+```swift
+private let availableTemplates: [(name: String, displayName: String)] = [
+    ("example_4blocks", "4 Blocks"),
+    ("polaroid_shared_demo", "Polaroid"),
+    ("polaroid_2", "Polaroid 2")
+]
+```

@@ -1,6 +1,7 @@
 # Rendering Pipeline (canonical) — RenderCommands → Metal passes (Masks/Matte/Shaders)
 
 Snapshot: `project_snapshot.zip`.
+**Last updated:** 2026-02-17 (added Export Rendering section)
 
 **Rule:** Every statement below is backed by a **code anchor**: `file:lineStart-lineEnd` showing 5–15 lines. If something exists in code but is **not called** by the current execution path, it is marked **UNREACHABLE in snapshot**.
 
@@ -2378,4 +2379,171 @@ Stencil-related pipeline state/shader code exists, but mask scopes are routed in
 | drawStroke | `executeCommand` inside `renderSegment` | render | `quad_vertex` + `quad_fragment` | CPU-raster BGRA from `ShapeCache.strokeTexture` |
 | beginMask…endMask | `renderMaskGroupScope` | render + compute + render | coverage: `coverage_vertex/coverage_fragment` → combine: `mask_combine_kernel` → composite: `masked_composite_*` | R8 coverage + R8 accum + offscreen color |
 | beginMatte…endMatte | `renderMatteScope` | render(offscreen) + render(composite) | offscreen: normal segment renderer; composite: `matte_composite_*` | 2× offscreen BGRA |
+
+---
+
+## 11) Export Rendering (added 2026-02-17)
+
+### 11.1 Export Pipeline Overview
+
+Video export uses the same `MetalRenderer.draw()` rendering path but with:
+- **CVPixelBuffer → MTLTexture** instead of MTKView drawable
+- **In-flight pipelining** with semaphore control
+- **Background queue** execution (not main thread)
+
+### 11.2 GPU-Only Zero-Copy Architecture
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    VideoExporter.runExportLoop()               │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  for frameIndex in 0..<totalFrames:                           │
+│    │                                                           │
+│    ├─► CVPixelBufferPoolCreatePixelBuffer(pool, &pixelBuffer) │
+│    │   └─ Get reusable pixel buffer from AVAssetWriter pool   │
+│    │                                                           │
+│    ├─► CVMetalTextureCacheCreateTextureFromImage(             │
+│    │       textureCache, pixelBuffer, &cvMetalTexture)        │
+│    │   └─ Create Metal texture backed by pixel buffer (IOSurface) │
+│    │                                                           │
+│    ├─► CVMetalTextureGetTexture(cvMetalTexture)               │
+│    │   └─ Get MTLTexture reference (no copy)                  │
+│    │                                                           │
+│    ├─► MetalRenderer.draw(                                    │
+│    │       commands: commands,                                 │
+│    │       target: RenderTarget(texture: mtlTexture),         │
+│    │       textureProvider: exportTextureProvider,             │
+│    │       ...                                                 │
+│    │   )                                                       │
+│    │   └─ Same render path as playback (no export-specific code) │
+│    │                                                           │
+│    └─► commandBuffer.addCompletedHandler { ... }              │
+│        └─ On GPU completion: append pixelBuffer to writer     │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 11.3 Thread Safety Contract
+
+| Component | Thread | Access Pattern |
+|-----------|--------|----------------|
+| `MetalRenderer.draw()` | exportQueue | Exclusive (no concurrent calls) |
+| `ExportTextureProvider.texture(for:)` | exportQueue | NSLock-protected cache lookup |
+| `ExportTextureProvider.setTexture(_:for:)` | exportQueue | NSLock-protected cache write |
+| `AVAssetWriter.append()` | writerQueue | Serial queue |
+| `commandBuffer.commit()` | exportQueue | Non-blocking (GPU async) |
+
+### 11.4 In-Flight Pipelining
+
+Matches `MetalRenderer.maxFramesInFlight` for optimal GPU utilization:
+
+```swift
+let semaphore = DispatchSemaphore(value: maxInFlight)
+
+for frameIndex in 0..<totalFrames {
+    semaphore.wait()  // Wait for in-flight slot
+    videoGroup.enter()
+
+    // ... create pixel buffer, render frame ...
+
+    commandBuffer.addCompletedHandler { _ in
+        // After GPU completion, append on writerQueue
+        self.writerQueue.async {
+            adaptor.append(pixelBuffer, withPresentationTime: pts)
+            videoGroup.leave()
+            semaphore.signal()  // Release in-flight slot
+        }
+    }
+    commandBuffer.commit()
+}
+
+videoGroup.wait()  // Wait for all frames
+```
+
+### 11.5 Video Slot Integration (PR-E3)
+
+For scenes with video slots, `ExportVideoSlotsCoordinator` manages frame extraction:
+
+```swift
+// Before each frame render:
+videoSlotsCoordinator.updateTextures(forSceneFrameIndex: frameIndex)
+
+// Inside updateTextures():
+for slot in slots {
+    // B1: Visibility gating
+    if sceneFrameIndex >= visibilityStart && sceneFrameIndex < slot.endFrame {
+        let texture = slot.provider.texture(forSceneFrameIndex: sceneFrameIndex)
+        exportTextureProvider.setTexture(texture, for: slot.bindingAssetId)
+    }
+}
+```
+
+### 11.6 Render Target Differences
+
+| Property | Playback | Export |
+|----------|----------|--------|
+| Target texture | MTKView.currentDrawable.texture | CVPixelBuffer-backed MTLTexture |
+| Pixel format | View's colorPixelFormat | .bgra8Unorm (H.264 requirement) |
+| Size | View size (scaled) | Canvas size (unscaled) |
+| Clear color | Scene background | `.opaqueBlack` (H.264 no alpha) |
+| Draw frequency | 60Hz display link | As fast as GPU allows |
+
+### 11.7 Export Render Command Flow
+
+```
+┌──────────────────┐
+│ SceneRenderPlan  │
+│ .renderCommands()│
+└────────┬─────────┘
+         │ [RenderCommand] array
+         ▼
+┌──────────────────┐
+│ MetalRenderer    │
+│ .draw(commands:) │ ◄─── Same as playback
+└────────┬─────────┘
+         │ GPU rendering
+         ▼
+┌──────────────────┐
+│ CVPixelBuffer    │
+│ (IOSurface-backed)│
+└────────┬─────────┘
+         │ commandBuffer.addCompletedHandler
+         ▼
+┌──────────────────┐
+│ AVAssetWriter    │
+│ .append()        │
+└────────┬─────────┘
+         │ H.264 encoding
+         ▼
+┌──────────────────┐
+│ Output .mp4 file │
+└──────────────────┘
+```
+
+### 11.8 Quality Preset Mapping
+
+```swift
+public enum VideoQualityPreset {
+    case low      // ~4 Mbps @ 1080p
+    case medium   // ~10 Mbps @ 1080p
+    case high     // ~15 Mbps @ 1080p (Release default)
+    case max      // ~25 Mbps @ 1080p
+    case custom(bitrate: Int)
+
+    // Scaled by pixel count: bitrate × (canvasPixels / 1080pPixels)
+}
+```
+
+### 11.9 Export-Specific Texture Provider
+
+`ExportTextureProvider` differs from `ScenePackageTextureProvider`:
+
+| Feature | ScenePackageTextureProvider | ExportTextureProvider |
+|---------|----------------------------|----------------------|
+| Thread safety | dispatchPrecondition(.main) | NSLock |
+| Preload | Synchronous on main | Async on any queue |
+| Mutation | setTexture()/removeTexture() | setTexture()/removeTexture() |
+| Protocol | MutableTextureProvider | MutableTextureProvider |
+| Used by | Playback (main thread) | Export (background queue) |
 
