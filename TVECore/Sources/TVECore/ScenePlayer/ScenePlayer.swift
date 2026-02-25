@@ -46,19 +46,11 @@ public final class ScenePlayer {
     /// Built once during load for O(1) access.
     private var timingByBlockId: [String: BlockTiming] = [:]
 
-    /// Optional persistence store for layer toggle state (PR-30).
-    /// If nil, toggle state is only kept in memory for the session.
-    private let toggleStore: LayerToggleStore?
-
     // MARK: - Initialization
 
     /// Creates a new ScenePlayer.
-    ///
-    /// - Parameter toggleStore: Optional persistence store for layer toggle state.
-    ///   If provided, toggle state is saved/loaded across sessions.
-    public init(toggleStore: LayerToggleStore? = nil) {
-        self.toggleStore = toggleStore
-    }
+    /// PR9: Removed toggleStore — toggle state is now managed via SceneState per-instance.
+    public init() {}
 
     // MARK: - Load Pre-Compiled Scene (PR2)
 
@@ -92,6 +84,28 @@ public final class ScenePlayer {
         initializeToggleState()
 
         return compiled
+    }
+
+    // MARK: - Instance Reset (PR9)
+
+    /// Resets all mutable state for a new scene instance.
+    ///
+    /// Called when playhead moves to a different instance of the same sceneTypeId.
+    /// Ensures instances are independent — no state leaks between them.
+    ///
+    /// After calling this, the caller should apply the new instance's SceneState
+    /// (variants, transforms, toggles, media).
+    ///
+    /// Order of operations:
+    /// 1. Reset transforms
+    /// 2. Clear variant overrides
+    /// 3. Clear user media presence
+    /// 4. Reset toggles to defaults from scene.json
+    public func resetForNewInstance() {
+        resetAllUserTransforms()
+        clearAllVariantOverrides()
+        clearAllUserMediaPresence()
+        resetAllTogglesToDefaults()
     }
 
     // MARK: - User Transform (PR-16)
@@ -188,6 +202,12 @@ public final class ScenePlayer {
         variantOverrides.removeValue(forKey: blockId)
     }
 
+    /// Clears all variant overrides, reverting all blocks to compilation defaults.
+    /// PR9: Used when switching scene instances.
+    public func clearAllVariantOverrides() {
+        variantOverrides.removeAll()
+    }
+
     // MARK: - User Media State (PR-28)
 
     /// Sets whether user media is present for a block.
@@ -209,6 +229,12 @@ public final class ScenePlayer {
     /// - Returns: `true` if user media is set, `false` otherwise (default)
     public func isUserMediaPresent(blockId: String) -> Bool {
         userMediaPresent[blockId] ?? false
+    }
+
+    /// Clears user media presence for all blocks.
+    /// PR9: Used when switching scene instances.
+    public func clearAllUserMediaPresence() {
+        userMediaPresent.removeAll()
     }
 
     // MARK: - Block Timing (PR1)
@@ -336,15 +362,11 @@ public final class ScenePlayer {
         }
 
         // Update in-memory state
+        // PR9: Persistence is now handled via SceneState per-instance
         if layerToggleState[blockId] == nil {
             layerToggleState[blockId] = [:]
         }
         layerToggleState[blockId]?[toggleId] = enabled
-
-        // Persist if store available
-        if let store = toggleStore, let sceneId = compiled.runtime.scene.sceneId {
-            store.save(templateId: sceneId, blockId: blockId, toggleId: toggleId, value: enabled)
-        }
     }
 
     /// Returns the current enabled state for a layer toggle.
@@ -389,13 +411,19 @@ public final class ScenePlayer {
         }
     }
 
+    /// Resets all toggles for ALL blocks to their default states from scene.json.
+    /// PR9: Used when switching scene instances to ensure deterministic state.
+    public func resetAllTogglesToDefaults() {
+        initializeToggleState()
+    }
+
     /// Initializes toggle state for all blocks after loading.
     ///
-    /// Called internally after loadCompiledScene() succeeds. Loads persisted state from store
-    /// or falls back to `defaultOn` from scene.json.
+    /// Called internally after loadCompiledScene() succeeds.
+    /// Uses `defaultOn` from scene.json for each toggle.
+    /// PR9: Removed toggleStore — persistence is now handled via SceneState per-instance.
     private func initializeToggleState() {
         guard let compiled = compiledScene else { return }
-        let sceneId = compiled.runtime.scene.sceneId
 
         layerToggleState.removeAll()
 
@@ -407,14 +435,7 @@ public final class ScenePlayer {
             var blockState: [String: Bool] = [:]
 
             for toggle in toggles {
-                // Try to load from persistence store
-                if let store = toggleStore, let sid = sceneId,
-                   let persisted = store.load(templateId: sid, blockId: block.id, toggleId: toggle.id) {
-                    blockState[toggle.id] = persisted
-                } else {
-                    // Fall back to default
-                    blockState[toggle.id] = toggle.defaultOn
-                }
+                blockState[toggle.id] = toggle.defaultOn
             }
 
             layerToggleState[block.id] = blockState

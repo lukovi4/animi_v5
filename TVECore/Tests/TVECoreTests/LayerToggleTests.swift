@@ -275,16 +275,7 @@ final class LayerToggleTests: XCTestCase {
         }
     }
 
-    // MARK: - T8: LayerToggleStore Protocol
-
-    func testLayerToggleStore_protocolExists() {
-        // Compile-time check that protocol exists with correct signature
-        final class MockStore: LayerToggleStore, @unchecked Sendable {
-            func load(templateId: String, blockId: String, toggleId: String) -> Bool? { nil }
-            func save(templateId: String, blockId: String, toggleId: String, value: Bool) {}
-        }
-        let _: LayerToggleStore = MockStore()
-    }
+    // MARK: - T8: LayerToggleStore Protocol (PR9: Removed - toggles now managed via SceneState)
 
     // MARK: - T9: ScenePlayerError.templateCorrupted
 
