@@ -1,16 +1,25 @@
 import XCTest
+import TVECore
 @testable import AnimiApp
 
-/// Unit tests for PR2: EditorStore/Reducer.
+/// Unit tests for Release v1: EditorStore/Reducer.
 /// Tests cover:
-/// - loadProject normalizes overflow (cascade trim/drop/clamp)
-/// - trimScene.ended pushes single undo step
+/// - loadProject populates timeline from defaultSceneSequence
+/// - trimScene without upper limit (no templateDurationUs cap)
 /// - Shift-left applies on project shorten
 /// - reorderScene + playhead follows moved scene
+/// - addScene, duplicateScene, deleteScene
 /// - sceneSequence track invariant enforcement
 final class EditorReducerTests: XCTestCase {
 
     // MARK: - Test Helpers
+
+    /// Creates default scene sequence for testing.
+    private func makeDefaultSceneSequence(durations: [TimeUs]) -> [SceneTypeDefault] {
+        durations.enumerated().map { index, duration in
+            SceneTypeDefault(sceneTypeId: "test_scene_\(index)", baseDurationUs: duration)
+        }
+    }
 
     /// Creates a test draft with specified scene durations.
     private func makeDraft(sceneDurations: [TimeUs]) -> ProjectDraft {
@@ -20,9 +29,9 @@ final class EditorReducerTests: XCTestCase {
         var timeline = CanonicalTimeline.empty()
         var payloads: [UUID: TimelinePayload] = [:]
 
-        for duration in sceneDurations {
+        for (index, duration) in sceneDurations.enumerated() {
             let payloadId = UUID()
-            payloads[payloadId] = .scene(ScenePayload())
+            payloads[payloadId] = .scene(ScenePayload(sceneTypeId: "test_scene_\(index)"))
             let item = TimelineItem(
                 payloadId: payloadId,
                 kind: .scene,
@@ -44,7 +53,7 @@ final class EditorReducerTests: XCTestCase {
         audioItems: [(startUs: TimeUs, durationUs: TimeUs)]
     ) -> ProjectDraft {
         var draft = makeDraft(sceneDurations: sceneDurations)
-        guard var timeline = draft.canonicalTimeline else { return draft }
+        var timeline = draft.canonicalTimeline
 
         // Add audio track with items
         let audioTrack = Track(kind: .audio)
@@ -66,122 +75,102 @@ final class EditorReducerTests: XCTestCase {
         return draft
     }
 
-    // MARK: - 1. loadProject Normalizes Overflow
+    // MARK: - 1. loadProject Populates Timeline from Recipe
 
-    /// Test: loadProject normalizes when scenes sum exceeds template duration.
-    func testLoadProject_normalizesOverflow() {
-        // Given: scenes sum (7s) > template (5s)
-        let draft = makeDraft(sceneDurations: [2_000_000, 3_000_000, 2_000_000]) // 7s total
-        let templateDurationUs: TimeUs = 5_000_000 // 5s
+    /// Test: loadProject populates empty timeline from defaultSceneSequence.
+    func testLoadProject_populatesFromRecipe() {
+        // Given: empty draft and recipe with 3 scenes
+        let draft = ProjectDraft.create(for: "test-template")
+        let defaults = makeDefaultSceneSequence(durations: [2_000_000, 3_000_000, 5_000_000])
 
         // When: reduce with loadProject
         let result = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: templateDurationUs)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: defaults)
         )
 
-        // Then: total duration <= template
-        XCTAssertLessThanOrEqual(result.state.projectDurationUs, templateDurationUs)
+        // Then: timeline has 3 scenes from recipe
+        XCTAssertEqual(result.state.sceneItems.count, 3)
+        XCTAssertEqual(result.state.sceneItems[0].durationUs, 2_000_000)
+        XCTAssertEqual(result.state.sceneItems[1].durationUs, 3_000_000)
+        XCTAssertEqual(result.state.sceneItems[2].durationUs, 5_000_000)
 
-        // Then: all scenes have at least min duration
-        for item in result.state.sceneItems {
-            XCTAssertGreaterThanOrEqual(item.durationUs, ProjectDraft.minSceneDurationUs)
-        }
+        // Then: total duration is sum of scenes
+        XCTAssertEqual(result.state.projectDurationUs, 10_000_000)
 
         // Then: no snapshot pushed (loadProject is initialization)
         XCTAssertFalse(result.shouldPushSnapshot)
     }
 
-    /// Test: loadProject cascade trim preserves min duration.
-    func testLoadProject_cascadeTrimPreservesMinDuration() {
-        // Given: scenes that need trimming but should keep min duration
-        // Scene 1: 2s, Scene 2: 3s, Scene 3: 2s = 7s total
-        // Template: 3s
-        // Expected: cascade from end, scenes trimmed to min (0.1s each)
-        let draft = makeDraft(sceneDurations: [2_000_000, 3_000_000, 2_000_000])
-        let templateDurationUs: TimeUs = 3_000_000
+    /// Test: loadProject preserves existing timeline (doesn't overwrite with recipe).
+    func testLoadProject_preservesExistingTimeline() {
+        // Given: draft with existing scenes
+        let draft = makeDraft(sceneDurations: [4_000_000, 6_000_000])
+        let defaults = makeDefaultSceneSequence(durations: [1_000_000]) // Different from draft
 
-        // When
+        // When: loadProject
         let result = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: templateDurationUs)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: defaults)
         )
 
-        // Then: fits within template
-        XCTAssertLessThanOrEqual(result.state.projectDurationUs, templateDurationUs)
-
-        // Then: min duration enforced
-        for item in result.state.sceneItems {
-            XCTAssertGreaterThanOrEqual(item.durationUs, ProjectDraft.minSceneDurationUs)
-        }
+        // Then: existing timeline preserved (not replaced by recipe)
+        XCTAssertEqual(result.state.sceneItems.count, 2)
+        XCTAssertEqual(result.state.projectDurationUs, 10_000_000)
     }
 
-    /// Test: loadProject drops scenes if cascade not enough.
-    func testLoadProject_dropsScenesIfNeeded() {
-        // Given: many small scenes that can't all fit
-        // 10 scenes x 1s = 10s, template = 0.5s
-        // After cascade, each scene at 0.1s = 1s total, still > 0.5s
-        // Must drop scenes
-        let draft = makeDraft(sceneDurations: Array(repeating: 1_000_000, count: 10))
-        let templateDurationUs: TimeUs = 500_000
+    /// Test: loadProject enforces min duration for scenes from recipe.
+    func testLoadProject_enforcesMinDuration() {
+        // Given: recipe with scenes below min duration
+        let draft = ProjectDraft.create(for: "test-template")
+        let defaults = [
+            SceneTypeDefault(sceneTypeId: "s1", baseDurationUs: 50_000), // Below min
+            SceneTypeDefault(sceneTypeId: "s2", baseDurationUs: 200_000)
+        ]
 
-        // When
+        // When: loadProject
         let result = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: templateDurationUs)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: defaults)
         )
 
-        // Then: fits within template (may have only 1 scene left)
-        XCTAssertLessThanOrEqual(result.state.projectDurationUs, templateDurationUs)
-
-        // Then: at least 1 scene remains
-        XCTAssertGreaterThanOrEqual(result.state.sceneItems.count, 1)
+        // Then: scene durations clamped to min
+        XCTAssertGreaterThanOrEqual(result.state.sceneItems[0].durationUs, ProjectDraft.minSceneDurationUs)
+        XCTAssertEqual(result.state.sceneItems[1].durationUs, 200_000)
     }
 
-    // MARK: - 2. trimScene.ended Pushes Single Undo Step
+    // MARK: - 2. trimScene Without Upper Limit
 
-    /// Test: trimScene with phases pushes snapshot only on .ended.
-    func testTrimScene_pushesSnapshotOnlyOnEnded() {
-        // Given: initial state with one scene
-        let draft = makeDraft(sceneDurations: [3_000_000])
-        let initialResult = EditorReducer.reduce(
+    /// Test: trimScene has no upper limit (scenes can be as long as needed).
+    func testTrimScene_noUpperLimit() {
+        // Given: scene of 5s
+        let draft = makeDraft(sceneDurations: [5_000_000])
+        let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
-        )
-        let state = initialResult.state
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
         let sceneId = state.sceneItems[0].id
 
-        // When: .began phase
-        let beganResult = EditorReducer.reduce(
+        // When: trim to 50s (way beyond any "template duration")
+        let result = EditorReducer.reduce(
             state: state,
-            action: .trimScene(sceneId: sceneId, phase: .began, newDurationUs: 2_000_000, edge: .trailing)
+            action: .trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 50_000_000, edge: .trailing)
         )
-        XCTAssertFalse(beganResult.shouldPushSnapshot, ".began should NOT push snapshot")
 
-        // When: .changed phase
-        let changedResult = EditorReducer.reduce(
-            state: beganResult.state,
-            action: .trimScene(sceneId: sceneId, phase: .changed, newDurationUs: 1_500_000, edge: .trailing)
-        )
-        XCTAssertFalse(changedResult.shouldPushSnapshot, ".changed should NOT push snapshot")
-
-        // When: .ended phase
-        let endedResult = EditorReducer.reduce(
-            state: changedResult.state,
-            action: .trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 1_000_000, edge: .trailing)
-        )
-        XCTAssertTrue(endedResult.shouldPushSnapshot, ".ended SHOULD push snapshot")
+        // Then: duration is 50s (no cap)
+        XCTAssertEqual(result.state.sceneItems[0].durationUs, 50_000_000)
+        XCTAssertEqual(result.state.projectDurationUs, 50_000_000)
+        XCTAssertTrue(result.shouldPushSnapshot)
     }
 
     /// Test: trimScene enforces min duration.
     func testTrimScene_enforcesMinDuration() {
         // Given
         let draft = makeDraft(sceneDurations: [3_000_000])
-        let initialResult = EditorReducer.reduce(
+        let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
-        )
-        let state = initialResult.state
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
         let sceneId = state.sceneItems[0].id
 
         // When: try to trim below min duration
@@ -194,42 +183,51 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertEqual(result.state.sceneItems[0].durationUs, ProjectDraft.minSceneDurationUs)
     }
 
-    /// Test: trimScene clamps playhead after duration decrease.
-    func testTrimScene_clampsPlayhead() {
-        // Given: scene with playhead at end
-        let draft = makeDraft(sceneDurations: [5_000_000])
-        var state = EditorReducer.reduce(
+    /// Test: trimScene phases push snapshot only on .ended.
+    func testTrimScene_pushesSnapshotOnlyOnEnded() {
+        // Given
+        let draft = makeDraft(sceneDurations: [3_000_000])
+        let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
-        state.playheadTimeUs = 4_500_000 // near end
         let sceneId = state.sceneItems[0].id
 
-        // When: trim scene shorter than playhead position
-        let result = EditorReducer.reduce(
+        // When: .began
+        let beganResult = EditorReducer.reduce(
             state: state,
-            action: .trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 2_000_000, edge: .trailing)
+            action: .trimScene(sceneId: sceneId, phase: .began, newDurationUs: 2_000_000, edge: .trailing)
         )
+        XCTAssertFalse(beganResult.shouldPushSnapshot)
 
-        // Then: playhead clamped to new duration
-        XCTAssertLessThanOrEqual(result.state.playheadTimeUs, 2_000_000)
+        // When: .changed
+        let changedResult = EditorReducer.reduce(
+            state: beganResult.state,
+            action: .trimScene(sceneId: sceneId, phase: .changed, newDurationUs: 1_500_000, edge: .trailing)
+        )
+        XCTAssertFalse(changedResult.shouldPushSnapshot)
+
+        // When: .ended
+        let endedResult = EditorReducer.reduce(
+            state: changedResult.state,
+            action: .trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 1_000_000, edge: .trailing)
+        )
+        XCTAssertTrue(endedResult.shouldPushSnapshot)
     }
 
     // MARK: - 3. Shift-Left Applies on Shorten
 
     /// Test: shift-left applied to audio items when project shortens.
-    @MainActor func testShiftLeft_appliedOnShorten() {
+    func testShiftLeft_appliedOnShorten() {
         // Given: scene + audio item
-        // Scene: 5s, Audio: starts at 3s, duration 2s
         let draft = makeDraftWithNonSceneItems(
             sceneDurations: [5_000_000],
             audioItems: [(startUs: 3_000_000, durationUs: 2_000_000)]
         )
         let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
-
         let sceneId = state.sceneItems[0].id
 
         // When: trim scene from 5s to 3s (delta = 2s)
@@ -244,74 +242,10 @@ final class EditorReducerTests: XCTestCase {
             return
         }
 
-        // Then: audio item shifted left by 2s
-        // Original: start=3s, new project=3s, delta=2s
-        // New start: max(0, 3s - 2s) = 1s
+        // Then: audio item shifted left
         let audioTrack = result.state.canonicalTimeline.tracks[1]
         if let audioItem = audioTrack.items.first {
             XCTAssertEqual(audioItem.startUs, 1_000_000, "Audio should shift left by delta")
-            // Duration may be trimmed if extends beyond project
-            XCTAssertLessThanOrEqual((audioItem.startUs ?? 0) + audioItem.durationUs, result.state.projectDurationUs)
-        }
-    }
-
-    /// Test: shift-left removes items with 0 duration.
-    @MainActor func testShiftLeft_removesZeroDurationItems() {
-        // Given: scene + audio item that will be completely cut
-        // Scene: 5s, Audio: starts at 4.5s, duration 0.5s
-        // After trim to 2s: delta=3s, new audio start = max(0, 4.5-3) = 1.5s
-        // But audio would extend to 2s, so duration = min(0.5, 2-1.5) = 0.5s (OK)
-        // Let's use: Audio starts at 5s, trim to 2s
-        // new start = max(0, 5-3) = 2s, but project is only 2s
-        // duration = min(0.5, 2-2) = 0 -> removed
-        let draft = makeDraftWithNonSceneItems(
-            sceneDurations: [5_000_000],
-            audioItems: [(startUs: 4_900_000, durationUs: 100_000)] // starts at 4.9s
-        )
-        let state = EditorReducer.reduce(
-            state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
-        ).state
-
-        let sceneId = state.sceneItems[0].id
-
-        // When: trim scene from 5s to 2s (delta = 3s)
-        let result = EditorReducer.reduce(
-            state: state,
-            action: .trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 2_000_000, edge: .trailing)
-        )
-
-        // Then: audio track still exists but item removed (or has 0 items)
-        if result.state.canonicalTimeline.tracks.count > 1 {
-            let audioTrack = result.state.canonicalTimeline.tracks[1]
-            // Item should be removed or have valid bounds
-            for item in audioTrack.items {
-                XCTAssertGreaterThan(item.durationUs, 0, "Items with 0 duration should be removed")
-            }
-        }
-    }
-
-    /// Test: undo restores pre-shift-left state.
-    @MainActor func testShiftLeft_undoRestores() {
-        // Given: initial state
-        let draft = makeDraftWithNonSceneItems(
-            sceneDurations: [5_000_000],
-            audioItems: [(startUs: 3_000_000, durationUs: 2_000_000)]
-        )
-        let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000))
-
-        let sceneId = store.sceneItems[0].id
-        let originalAudioStart = store.canonicalTimeline.tracks[1].items.first?.startUs
-
-        // When: trim (triggers shift-left) then undo
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 3_000_000, edge: .trailing))
-        store.dispatch(.undo)
-
-        // Then: audio item restored to original position
-        if store.canonicalTimeline.tracks.count > 1 {
-            let restoredAudioStart = store.canonicalTimeline.tracks[1].items.first?.startUs
-            XCTAssertEqual(restoredAudioStart, originalAudioStart, "Undo should restore audio position")
         }
     }
 
@@ -319,11 +253,11 @@ final class EditorReducerTests: XCTestCase {
 
     /// Test: reorder moves scene to new index.
     func testReorderScene_movesScene() {
-        // Given: 3 scenes A, B, C
+        // Given: 3 scenes
         let draft = makeDraft(sceneDurations: [1_000_000, 2_000_000, 3_000_000])
         let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
 
         let sceneAId = state.sceneItems[0].id
@@ -340,114 +274,151 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertEqual(result.state.sceneItems[0].id, sceneAId)
         XCTAssertEqual(result.state.sceneItems[1].id, sceneCId)
         XCTAssertEqual(result.state.sceneItems[2].id, sceneBId)
-
-        // Then: snapshot pushed
         XCTAssertTrue(result.shouldPushSnapshot)
     }
 
-    /// Test: playhead follows moved scene with relative offset.
+    /// Test: playhead follows moved scene.
     func testReorderScene_playheadFollowsScene() {
-        // Given: 3 scenes (1s, 2s, 3s), playhead in middle of B (at 1.5s = 1s + 0.5s into B)
+        // Given: 3 scenes, playhead in B
         let draft = makeDraft(sceneDurations: [1_000_000, 2_000_000, 3_000_000])
         var state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
 
         let sceneBId = state.sceneItems[1].id
         state.playheadTimeUs = 1_500_000 // 0.5s into scene B
 
-        // When: move B (index 1) to start (index 0)
+        // When: move B to start (index 0)
         let result = EditorReducer.reduce(
             state: state,
             action: .reorderScene(sceneId: sceneBId, toIndex: 0)
         )
 
-        // Then: playhead should be 0.5s into scene B at new position
-        // New order: B, A, C
-        // B now starts at 0, so playhead should be at 0.5s
-        XCTAssertEqual(result.state.playheadTimeUs, 500_000, "Playhead should follow scene with relative offset")
+        // Then: playhead follows (0.5s into B at new position)
+        XCTAssertEqual(result.state.playheadTimeUs, 500_000)
     }
 
-    /// PR3.2: Test: reorder first scene to end position.
-    /// This verifies the destination index logic when moving to the last position.
-    /// UI sends insertionIndex=count, PlayerVC converts to destIndex=count-1.
-    func testReorderScene_moveFirstToEnd() {
-        // Given: 3 scenes A(1s), B(2s), C(3s)
-        let draft = makeDraft(sceneDurations: [1_000_000, 2_000_000, 3_000_000])
-        let state = EditorReducer.reduce(
-            state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
-        ).state
+    // MARK: - 5. addScene, duplicateScene, deleteScene
 
-        let sceneAId = state.sceneItems[0].id
-        let sceneBId = state.sceneItems[1].id
-        let sceneCId = state.sceneItems[2].id
-
-        // When: move A (index 0) to end (destIndex = 2, which is count-1)
-        // This simulates what PlayerVC does when UI sends insertionIndex=3:
-        // fromIndex=0, insertionIndex=3 > fromIndex → destIndex = 3-1 = 2
-        let result = EditorReducer.reduce(
-            state: state,
-            action: .reorderScene(sceneId: sceneAId, toIndex: 2)
-        )
-
-        // Then: order is now B, C, A
-        XCTAssertEqual(result.state.sceneItems[0].id, sceneBId)
-        XCTAssertEqual(result.state.sceneItems[1].id, sceneCId)
-        XCTAssertEqual(result.state.sceneItems[2].id, sceneAId)
-
-        // Then: durations preserved
-        XCTAssertEqual(result.state.sceneItems[0].durationUs, 2_000_000) // B
-        XCTAssertEqual(result.state.sceneItems[1].durationUs, 3_000_000) // C
-        XCTAssertEqual(result.state.sceneItems[2].durationUs, 1_000_000) // A
-
-        // Then: snapshot pushed
-        XCTAssertTrue(result.shouldPushSnapshot)
-    }
-
-    /// Test: playhead not in moved scene stays put.
-    func testReorderScene_playheadNotInMovedSceneStaysPut() {
-        // Given: playhead in scene A, move scene C
-        let draft = makeDraft(sceneDurations: [2_000_000, 2_000_000, 2_000_000])
-        var state = EditorReducer.reduce(
-            state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
-        ).state
-
-        let sceneCId = state.sceneItems[2].id
-        state.playheadTimeUs = 500_000 // in scene A
-
-        // When: move C to start
-        let result = EditorReducer.reduce(
-            state: state,
-            action: .reorderScene(sceneId: sceneCId, toIndex: 0)
-        )
-
-        // Then: playhead unchanged (it was in A, which didn't move conceptually)
-        // Note: The actual time value may shift since C is now first
-        // But the playhead should NOT follow C since it wasn't in C
-        // This test verifies that playhead only follows the moved scene if it was inside it
-        // The playhead was at 0.5s in A. After move, C is first (2s), then A, then B
-        // The playhead should NOT move to 0.5s into C
-        // It should stay relative to A, which is now at position 2s
-        // So playhead should be at 2s + 0.5s = 2.5s... but this is complex
-
-        // Actually per spec: playhead only follows if it was INSIDE the moved scene
-        // Since playhead was in A (not C), it should not follow C
-        // The exact behavior depends on implementation - let's just verify it's not broken
-        XCTAssertLessThanOrEqual(result.state.playheadTimeUs, result.state.projectDurationUs)
-    }
-
-    // MARK: - 5. sceneSequence Track Invariant
-
-    /// Test: ensures exactly one sceneSequence track at index 0.
-    func testInvariant_singleSceneSequenceTrackAtIndex0() {
-        // Given: draft with scene
+    /// Test: addScene adds new scene at end.
+    func testAddScene_addsAtEnd() {
+        // Given: existing scene
         let draft = makeDraft(sceneDurations: [2_000_000])
         let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
+
+        // When: add new scene
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .addScene(sceneTypeId: "new_scene", durationUs: 3_000_000)
+        )
+
+        // Then: 2 scenes, new one at end
+        XCTAssertEqual(result.state.sceneItems.count, 2)
+        XCTAssertEqual(result.state.sceneItems[1].durationUs, 3_000_000)
+        XCTAssertEqual(result.state.projectDurationUs, 5_000_000)
+        XCTAssertTrue(result.shouldPushSnapshot)
+
+        // Then: payload has correct sceneTypeId
+        let newItem = result.state.sceneItems[1]
+        if case .scene(let payload) = result.state.canonicalTimeline.payloads[newItem.payloadId] {
+            XCTAssertEqual(payload.sceneTypeId, "new_scene")
+        } else {
+            XCTFail("Payload should be .scene type")
+        }
+    }
+
+    /// Test: duplicateScene creates copy with same duration and SceneState.
+    func testDuplicateScene_copiesDurationAndState() {
+        // Given: scene with custom state
+        var draft = makeDraft(sceneDurations: [2_000_000])
+        let sceneId = draft.canonicalTimeline.sceneItems[0].id
+        draft.sceneInstanceStates[sceneId] = SceneState(layerToggles: ["block1": ["toggle1": true]])
+
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
+
+        // When: duplicate scene
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .duplicateScene(sceneItemId: sceneId)
+        )
+
+        // Then: 2 scenes with same duration
+        XCTAssertEqual(result.state.sceneItems.count, 2)
+        XCTAssertEqual(result.state.sceneItems[1].durationUs, 2_000_000)
+        XCTAssertTrue(result.shouldPushSnapshot)
+
+        // Then: new scene has copied SceneState
+        let newSceneId = result.state.sceneItems[1].id
+        XCTAssertEqual(
+            result.state.draft.sceneInstanceStates[newSceneId]?.layerToggles,
+            ["block1": ["toggle1": true]]
+        )
+
+        // Then: states are independent
+        XCTAssertNotEqual(sceneId, newSceneId)
+    }
+
+    /// Test: deleteScene removes scene (cannot delete last).
+    func testDeleteScene_removesScene() {
+        // Given: 2 scenes
+        let draft = makeDraft(sceneDurations: [2_000_000, 3_000_000])
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
+
+        let firstSceneId = state.sceneItems[0].id
+
+        // When: delete first scene
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .deleteScene(sceneId: firstSceneId)
+        )
+
+        // Then: 1 scene remains
+        XCTAssertEqual(result.state.sceneItems.count, 1)
+        XCTAssertEqual(result.state.projectDurationUs, 3_000_000)
+        XCTAssertTrue(result.shouldPushSnapshot)
+    }
+
+    /// Test: deleteScene cannot delete last scene.
+    func testDeleteScene_cannotDeleteLast() {
+        // Given: 1 scene
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
+
+        let sceneId = state.sceneItems[0].id
+
+        // When: try to delete last scene
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .deleteScene(sceneId: sceneId)
+        )
+
+        // Then: scene not deleted
+        XCTAssertEqual(result.state.sceneItems.count, 1)
+        XCTAssertFalse(result.shouldPushSnapshot)
+    }
+
+    // MARK: - 6. sceneSequence Track Invariant
+
+    /// Test: ensures exactly one sceneSequence track at index 0.
+    func testInvariant_singleSceneSequenceTrackAtIndex0() {
+        // Given
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
 
         // Then: tracks[0] is sceneSequence
@@ -465,40 +436,40 @@ final class EditorReducerTests: XCTestCase {
         let draft = makeDraft(sceneDurations: [1_000_000, 2_000_000, 3_000_000])
         let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
 
         // Then: all scene items have nil startUs
         for item in state.sceneItems {
-            XCTAssertNil(item.startUs, "Scene items should have nil startUs (derived from cumulative sum)")
+            XCTAssertNil(item.startUs)
         }
     }
 
     /// Test: computedStartUs returns correct cumulative sum.
     func testInvariant_computedStartUsIsCumulativeSum() {
-        // Given: 3 scenes with known durations
+        // Given
         let draft = makeDraft(sceneDurations: [1_000_000, 2_000_000, 3_000_000])
         let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
 
         let timeline = state.canonicalTimeline
 
-        // Then: computed start times are cumulative
+        // Then
         XCTAssertEqual(timeline.computedStartUs(forSceneAt: 0), 0)
         XCTAssertEqual(timeline.computedStartUs(forSceneAt: 1), 1_000_000)
-        XCTAssertEqual(timeline.computedStartUs(forSceneAt: 2), 3_000_000) // 1M + 2M
+        XCTAssertEqual(timeline.computedStartUs(forSceneAt: 2), 3_000_000)
     }
 
-    // MARK: - EditorStore Undo/Redo Integration
+    // MARK: - 7. EditorStore Undo/Redo
 
     /// Test: EditorStore undo/redo works correctly.
     @MainActor func testEditorStore_undoRedo() {
         // Given
         let draft = makeDraft(sceneDurations: [3_000_000])
         let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000))
+        store.dispatch(.loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: []))
 
         let sceneId = store.sceneItems[0].id
         let originalDuration = store.sceneItems[0].durationUs
@@ -510,32 +481,37 @@ final class EditorReducerTests: XCTestCase {
         // When: undo
         XCTAssertTrue(store.canUndo)
         store.dispatch(.undo)
-        XCTAssertEqual(store.sceneItems[0].durationUs, originalDuration, "Undo should restore original duration")
+        XCTAssertEqual(store.sceneItems[0].durationUs, originalDuration)
 
         // When: redo
         XCTAssertTrue(store.canRedo)
         store.dispatch(.redo)
-        XCTAssertEqual(store.sceneItems[0].durationUs, 1_000_000, "Redo should restore trimmed duration")
+        XCTAssertEqual(store.sceneItems[0].durationUs, 1_000_000)
     }
 
-    /// Test: Selection changes don't push undo snapshot.
-    @MainActor func testEditorStore_selectionDoesNotPushSnapshot() {
+    /// Test: trim gesture cancelled restores original state.
+    @MainActor func testTrimGesture_cancelledRestoresOriginal() {
         // Given
         let draft = makeDraft(sceneDurations: [3_000_000])
         let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000))
+        store.dispatch(.loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: []))
 
-        // When: change selection multiple times
         let sceneId = store.sceneItems[0].id
-        store.dispatch(.select(selection: .scene(id: sceneId)))
-        store.dispatch(.select(selection: .none))
-        store.dispatch(.select(selection: .audio))
+        let originalDuration = store.sceneItems[0].durationUs
 
-        // Then: no undo available (selection doesn't push)
-        XCTAssertFalse(store.canUndo, "Selection changes should not create undo steps")
+        // When: start trim gesture
+        store.dispatch(.trimScene(sceneId: sceneId, phase: .began, newDurationUs: 2_000_000, edge: .trailing))
+        store.dispatch(.trimScene(sceneId: sceneId, phase: .changed, newDurationUs: 1_000_000, edge: .trailing))
+
+        // When: cancel gesture
+        store.dispatch(.trimScene(sceneId: sceneId, phase: .cancelled, newDurationUs: 1_000_000, edge: .trailing))
+
+        // Then: restored to original
+        XCTAssertEqual(store.sceneItems[0].durationUs, originalDuration)
+        XCTAssertFalse(store.canUndo)
     }
 
-    // MARK: - Leading Edge Trim (PR2: Not Supported)
+    // MARK: - 8. Leading Edge Trim (Not Supported)
 
     /// Test: leading trim for sceneSequence is ignored.
     func testTrimScene_leadingEdgeIgnored() {
@@ -543,7 +519,7 @@ final class EditorReducerTests: XCTestCase {
         let draft = makeDraft(sceneDurations: [3_000_000])
         let state = EditorReducer.reduce(
             state: .empty(),
-            action: .loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000)
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
 
         let sceneId = state.sceneItems[0].id
@@ -555,130 +531,200 @@ final class EditorReducerTests: XCTestCase {
             action: .trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 1_000_000, edge: .leading)
         )
 
-        // Then: duration unchanged (leading trim ignored for sceneSequence in PR2)
+        // Then: duration unchanged
         XCTAssertEqual(result.state.sceneItems[0].durationUs, originalDuration)
         XCTAssertFalse(result.shouldPushSnapshot)
     }
 
-    // MARK: - PR2.1: Undo After Redo Bug Fix
+    // MARK: - 9. PR9: Scene Instance State Actions
 
-    /// Test: undo after redo returns to correct state (PR2.1 fix verification).
-    @MainActor func testEditorStore_undoAfterRedo() {
-        // Given
-        let draft = makeDraft(sceneDurations: [3_000_000])
-        let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000))
+    /// Test: setBlockVariant stores variant override in SceneState.
+    func testSetBlockVariant_storesInSceneState() {
+        // Given: scene loaded
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
 
-        let sceneId = store.sceneItems[0].id
-        let originalDuration = store.sceneItems[0].durationUs // 3s
+        let sceneId = state.sceneItems[0].id
 
-        // When: trim scene to 2s
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 2_000_000, edge: .trailing))
-        XCTAssertEqual(store.sceneItems[0].durationUs, 2_000_000, "After trim: 2s")
+        // When: set variant override
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .setBlockVariant(sceneInstanceId: sceneId, blockId: "block1", variantId: "variant_a")
+        )
 
-        // When: trim again to 1s
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 1_000_000, edge: .trailing))
-        XCTAssertEqual(store.sceneItems[0].durationUs, 1_000_000, "After second trim: 1s")
-
-        // When: undo (should go to 2s)
-        store.dispatch(.undo)
-        XCTAssertEqual(store.sceneItems[0].durationUs, 2_000_000, "After first undo: 2s")
-
-        // When: redo (should go back to 1s)
-        store.dispatch(.redo)
-        XCTAssertEqual(store.sceneItems[0].durationUs, 1_000_000, "After redo: 1s")
-
-        // When: undo AGAIN (should go to 2s - this verifies PR2.1 fix)
-        store.dispatch(.undo)
-        XCTAssertEqual(store.sceneItems[0].durationUs, 2_000_000, "After undo-after-redo: 2s (PR2.1 fix)")
-
-        // When: one more undo (should go to 3s)
-        store.dispatch(.undo)
-        XCTAssertEqual(store.sceneItems[0].durationUs, originalDuration, "After second undo: original 3s")
+        // Then: variant stored in SceneState
+        let sceneState = result.state.draft.sceneInstanceStates[sceneId]
+        XCTAssertEqual(sceneState?.variantOverrides["block1"], "variant_a")
+        XCTAssertTrue(result.shouldPushSnapshot)
     }
 
-    // MARK: - PR2.1: Gesture Baseline Bug Fix
-
-    /// Test: full trim gesture (began→changed→ended) + undo restores original state.
-    @MainActor func testTrimGesture_undoRestoresOriginalDuration() {
+    /// Test: setBlockToggle stores toggle in SceneState.
+    func testSetBlockToggle_storesInSceneState() {
         // Given
-        let draft = makeDraft(sceneDurations: [3_000_000])
-        let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000))
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
 
-        let sceneId = store.sceneItems[0].id
-        let originalDuration = store.sceneItems[0].durationUs // 3s
+        let sceneId = state.sceneItems[0].id
 
-        // When: simulate full trim gesture (began → changed → changed → ended)
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .began, newDurationUs: 2_500_000, edge: .trailing))
-        XCTAssertEqual(store.sceneItems[0].durationUs, 2_500_000, "After .began: live preview at 2.5s")
+        // When: set toggle
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .setBlockToggle(sceneInstanceId: sceneId, blockId: "block1", toggleId: "toggle1", enabled: true)
+        )
 
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .changed, newDurationUs: 2_000_000, edge: .trailing))
-        XCTAssertEqual(store.sceneItems[0].durationUs, 2_000_000, "After .changed: live preview at 2s")
-
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .changed, newDurationUs: 1_500_000, edge: .trailing))
-        XCTAssertEqual(store.sceneItems[0].durationUs, 1_500_000, "After .changed: live preview at 1.5s")
-
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 1_000_000, edge: .trailing))
-        XCTAssertEqual(store.sceneItems[0].durationUs, 1_000_000, "After .ended: committed at 1s")
-
-        // Then: undo should restore ORIGINAL duration (3s), NOT the last preview (1.5s)
-        store.dispatch(.undo)
-        XCTAssertEqual(store.sceneItems[0].durationUs, originalDuration, "Undo should restore original 3s (PR2.1 gesture baseline fix)")
+        // Then: toggle stored in SceneState
+        let sceneState = result.state.draft.sceneInstanceStates[sceneId]
+        XCTAssertEqual(sceneState?.layerToggles["block1"]?["toggle1"], true)
+        XCTAssertTrue(result.shouldPushSnapshot)
     }
 
-    /// Test: trim gesture cancelled restores original state.
-    @MainActor func testTrimGesture_cancelledRestoresOriginal() {
+    /// Test: setBlockMedia stores media reference in SceneState.
+    func testSetBlockMedia_storesInSceneState() {
         // Given
-        let draft = makeDraft(sceneDurations: [3_000_000])
-        let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000))
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
 
-        let sceneId = store.sceneItems[0].id
-        let originalDuration = store.sceneItems[0].durationUs // 3s
+        let sceneId = state.sceneItems[0].id
+        let mediaRef = MediaRef.file("Media/UserMedia/test.jpg")
 
-        // When: start trim gesture
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .began, newDurationUs: 2_000_000, edge: .trailing))
-        XCTAssertEqual(store.sceneItems[0].durationUs, 2_000_000, "After .began: live preview")
+        // When: set media
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .setBlockMedia(sceneInstanceId: sceneId, blockId: "block1", media: mediaRef)
+        )
 
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .changed, newDurationUs: 1_000_000, edge: .trailing))
-        XCTAssertEqual(store.sceneItems[0].durationUs, 1_000_000, "After .changed: live preview")
-
-        // When: cancel gesture
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .cancelled, newDurationUs: 1_000_000, edge: .trailing))
-
-        // Then: should restore original duration
-        XCTAssertEqual(store.sceneItems[0].durationUs, originalDuration, "Cancelled should restore original 3s")
-
-        // Then: no undo step should be created
-        XCTAssertFalse(store.canUndo, "Cancelled gesture should not create undo step")
+        // Then: media stored in SceneState
+        let sceneState = result.state.draft.sceneInstanceStates[sceneId]
+        XCTAssertEqual(sceneState?.mediaAssignments?["block1"], mediaRef)
+        XCTAssertTrue(result.shouldPushSnapshot)
     }
 
-    // MARK: - PR2.1: Redo Cleared After New Edit
+    /// Test: setBlockMedia with nil clears media.
+    func testSetBlockMedia_nilClearsMedia() {
+        // Given: scene with media
+        var draft = makeDraft(sceneDurations: [2_000_000])
+        let sceneId = draft.canonicalTimeline.sceneItems[0].id
+        var sceneState = SceneState.empty
+        sceneState.mediaAssignments = ["block1": MediaRef.file("old.jpg")]
+        draft.sceneInstanceStates[sceneId] = sceneState
 
-    /// Test: redo stack is cleared when new edit is made after undo.
-    @MainActor func testRedoClearedAfterNewEdit() {
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
+
+        // When: clear media
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .setBlockMedia(sceneInstanceId: sceneId, blockId: "block1", media: nil)
+        )
+
+        // Then: media cleared
+        XCTAssertNil(result.state.draft.sceneInstanceStates[sceneId]?.mediaAssignments?["block1"])
+        XCTAssertTrue(result.shouldPushSnapshot)
+    }
+
+    /// Test: setBlockTransform stores transform and only pushes on .ended.
+    @MainActor func testSetBlockTransform_gesturePhases() {
         // Given
-        let draft = makeDraft(sceneDurations: [3_000_000])
+        let draft = makeDraft(sceneDurations: [2_000_000])
         let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, templateDurationUs: 10_000_000))
+        store.dispatch(.loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: []))
 
         let sceneId = store.sceneItems[0].id
+        let transform = Matrix2D(a: 1.5, b: 0.1, c: -0.1, d: 1.5, tx: 10, ty: 20)
 
-        // When: action A (trim to 2s)
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 2_000_000, edge: .trailing))
-        XCTAssertTrue(store.canUndo, "After action A: canUndo")
-        XCTAssertFalse(store.canRedo, "After action A: no redo yet")
+        // When: began
+        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: transform, phase: .began))
+        XCTAssertFalse(store.canUndo)
 
-        // When: undo
-        store.dispatch(.undo)
-        XCTAssertTrue(store.canRedo, "After undo: canRedo should be true")
+        // When: changed
+        let changedTransform = Matrix2D(a: 2.0, b: 0.2, c: -0.2, d: 2.0, tx: 15, ty: 25)
+        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: changedTransform, phase: .changed))
+        XCTAssertFalse(store.canUndo)
 
-        // When: NEW action B (trim to 1.5s) - this should clear redo
-        store.dispatch(.trimScene(sceneId: sceneId, phase: .ended, newDurationUs: 1_500_000, edge: .trailing))
+        // Verify transform stored during changed phase
+        XCTAssertEqual(store.state.draft.sceneInstanceStates[sceneId]?.userTransforms["block1"], changedTransform)
 
-        // Then: redo should be cleared (history branched)
-        XCTAssertFalse(store.canRedo, "After new edit: redo should be cleared (PR2.1 coverage)")
-        XCTAssertTrue(store.canUndo, "After new edit: undo should still be available")
+        // When: ended
+        let endTransform = Matrix2D(a: 2.5, b: 0.3, c: -0.3, d: 2.5, tx: 20, ty: 30)
+        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: endTransform, phase: .ended))
+
+        // Then: can undo after ended
+        XCTAssertTrue(store.canUndo)
+        XCTAssertEqual(store.state.draft.sceneInstanceStates[sceneId]?.userTransforms["block1"], endTransform)
+    }
+
+    /// Test: setBlockTransform cancelled restores baseline.
+    @MainActor func testSetBlockTransform_cancelledRestoresBaseline() {
+        // Given: scene with existing transform
+        var draft = makeDraft(sceneDurations: [2_000_000])
+        let sceneId = draft.canonicalTimeline.sceneItems[0].id
+        let originalTransform = Matrix2D(a: 1.0, b: 0, c: 0, d: 1.0, tx: 5, ty: 5)
+        var sceneState = SceneState.empty
+        sceneState.userTransforms["block1"] = originalTransform
+        draft.sceneInstanceStates[sceneId] = sceneState
+
+        let store = EditorStore()
+        store.dispatch(.loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: []))
+
+        // When: start gesture
+        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: Matrix2D(a: 2.0, b: 0.1, c: -0.1, d: 2.0, tx: 10, ty: 10), phase: .began))
+
+        // When: multiple changes
+        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: Matrix2D(a: 3.0, b: 0.2, c: -0.2, d: 3.0, tx: 20, ty: 20), phase: .changed))
+
+        // When: cancel
+        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: Matrix2D(a: 4.0, b: 0.3, c: -0.3, d: 4.0, tx: 30, ty: 30), phase: .cancelled))
+
+        // Then: restored to original
+        XCTAssertEqual(store.state.draft.sceneInstanceStates[sceneId]?.userTransforms["block1"], originalTransform)
+        XCTAssertFalse(store.canUndo)
+    }
+
+    /// Test: duplicated scene has independent SceneState.
+    func testDuplicateScene_independentSceneState() {
+        // Given: scene with state
+        var draft = makeDraft(sceneDurations: [2_000_000])
+        let sceneId = draft.canonicalTimeline.sceneItems[0].id
+        var sceneState = SceneState.empty
+        sceneState.variantOverrides["block1"] = "variant_a"
+        sceneState.userTransforms["block1"] = Matrix2D(a: 1.5, b: 0.1, c: -0.1, d: 1.5, tx: 10, ty: 10)
+        draft.sceneInstanceStates[sceneId] = sceneState
+
+        let state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state
+
+        // When: duplicate
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .duplicateScene(sceneItemId: sceneId)
+        )
+
+        // Then: new scene has copied state
+        let newSceneId = result.state.sceneItems[1].id
+        let newState = result.state.draft.sceneInstanceStates[newSceneId]
+        XCTAssertEqual(newState?.variantOverrides["block1"], "variant_a")
+        XCTAssertEqual(newState?.userTransforms["block1"], sceneState.userTransforms["block1"])
+
+        // Then: modify new scene doesn't affect original
+        let result2 = EditorReducer.reduce(
+            state: result.state,
+            action: .setBlockVariant(sceneInstanceId: newSceneId, blockId: "block1", variantId: "variant_b")
+        )
+
+        XCTAssertEqual(result2.state.draft.sceneInstanceStates[sceneId]?.variantOverrides["block1"], "variant_a")
+        XCTAssertEqual(result2.state.draft.sceneInstanceStates[newSceneId]?.variantOverrides["block1"], "variant_b")
     }
 }

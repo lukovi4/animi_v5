@@ -7,12 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0402365D45452BE0FFA85FE7 /* EditorStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17978D254FF4A01AF6C27265 /* EditorStore.swift */; };
 		0D7C19312488787BBA9F8379 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 7AEA66CBE6EB5B30975CB68C /* LaunchScreen.storyboard */; };
 		0F9C3ED0FBF09B219D543DC9 /* ProjectBackgroundOverride.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55C76845C9F4E045E5E4913B /* ProjectBackgroundOverride.swift */; };
+		10B8D513E511EBF48A1E7FCA /* TimelineLayoutContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E20361C384C400823FEDDE1 /* TimelineLayoutContext.swift */; };
 		18CBB8DC59767967525874C6 /* PreviewVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EF91B900FF78191D281BB73 /* PreviewVideoView.swift */; };
 		1E5BA0CCE5E033BDC0F1023A /* Templates in Resources */ = {isa = PBXBuildFile; fileRef = 486CDCFFF485A0C0354A63F5 /* Templates */; };
 		1EA1B9C121F589385C6EACB7 /* TimelineEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99082F901FF221848C1D8848 /* TimelineEvents.swift */; };
 		26C0F8F6AB35CD9093B0E789 /* UserMediaTextureFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */; };
+		283620DB39148AB24A06ECC1 /* BundleSceneLibraryLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EADDEDB66974033DE631FC0 /* BundleSceneLibraryLoader.swift */; };
 		2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88357A08E23A0E79039FC032 /* TemplateEditorController.swift */; };
 		2FEAB6533EF1DA415C6FC778 /* TimelineTimeUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 493CBBADF2EADCE826942657 /* TimelineTimeUtils.swift */; };
 		30AF45D83241BE9B59AB781B /* ExportVideoSlotsCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF894A5BD8FDCD16513F4379 /* ExportVideoSlotsCoordinator.swift */; };
@@ -20,6 +23,7 @@
 		466851FBF16FEB68F8B6CC15 /* TemplateModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C6721DDF84A3D3E800B6D2 /* TemplateModels.swift */; };
 		498C37DBB763362200900A78 /* BundleTemplateCatalogLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 961567AB8773B382A94D135D /* BundleTemplateCatalogLoader.swift */; };
 		54A34118FE6F0E05E99EAB9F /* TemplatesHomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FB56BE62079A849F579C2F /* TemplatesHomeViewController.swift */; };
+		55D77C0FBB83BC5D85687949 /* TimelinePayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = B685C4E5B201E8A6899D2B21 /* TimelinePayload.swift */; };
 		5730DA4CA9AA56F5D0794FD6 /* TVECore in Frameworks */ = {isa = PBXBuildFile; productRef = C660994DFEAC165D15AE3107 /* TVECore */; };
 		57C23E798E20C6709A23C537 /* AudioTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC6C7BCD49916848933ACCC5 /* AudioTrackView.swift */; };
 		5C6F794FED16BDF583B38CB6 /* PlayheadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1696482BFA3E93F558EEE181 /* PlayheadView.swift */; };
@@ -29,6 +33,8 @@
 		6D8ECBA9A63E3BBE961807B1 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D531F2B70470609DAAEC0E92 /* SceneDelegate.swift */; };
 		6DCCC8529A71ADB91E2B34AF /* TemplatePreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9914388A9AC3B6C7D244F116 /* TemplatePreviewCell.swift */; };
 		6F9B9494538317DADF567CBB /* ContextBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D910D732A40F53C827CAF44B /* ContextBar.swift */; };
+		A1B2C3D4E5F67890FEDCBA01 /* SceneCatalogViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F67890ABCDEF01 /* SceneCatalogViewController.swift */; };
+		70B4C549F74311F52D1CDA70 /* EditorState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D7B8DBCF6017C4BF93805D7 /* EditorState.swift */; };
 		70F7C5CF6D0F9A28D9BF27D3 /* TestAssets in Resources */ = {isa = PBXBuildFile; fileRef = 2BF0652B3DD5E20359F327E7 /* TestAssets */; };
 		73CECF77FB8C3AF12D28CEA6 /* TVECompilerCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1304677CAEF71F6D64A5F398 /* TVECompilerCore */; };
 		765ACCED62853D04AF334A8E /* FullScreenPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84DEF8B8CAB545A1A822FF33 /* FullScreenPreviewViewController.swift */; };
@@ -45,47 +51,80 @@
 		912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945142E5769BD54EFED06588 /* EditorOverlayView.swift */; };
 		921C1521C032FB6559CA59C4 /* ProjectDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24544FC9E0EAD15CABC4A7B4 /* ProjectDraft.swift */; };
 		9456988608740988E5F27700 /* TimeRulerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385E496113EA1117E64E135D /* TimeRulerView.swift */; };
+		9679197E9E746DC549BDD438 /* SceneLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 278EBCE880F11881818C5A11 /* SceneLibrary.swift */; };
 		968F63459420D7EAAF660A2C /* TemplateDetailsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6B0E0125B6479C561D538B /* TemplateDetailsViewController.swift */; };
 		9B9FA36C978C9DE53E4DBFCD /* GlobalActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25DBB2B5ADE5A32A5283B35D /* GlobalActionBar.swift */; };
 		A200AB2DA8A8FB5D874D1D60 /* Point2.swift in Sources */ = {isa = PBXBuildFile; fileRef = B807292DC00C6DF32839947B /* Point2.swift */; };
+		A86034E54315B2988A33C9D0 /* Scenes in Resources */ = {isa = PBXBuildFile; fileRef = 3FD576CEB284337AADB270BD /* Scenes */; };
 		B319D3EED1F23C34885E8646 /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B68FDC0B5B9E176AEECBF7BF /* ProjectStore.swift */; };
+		B32E00282D93D218EFFDE577 /* EditorReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F5EF817846AED742165D197 /* EditorReducer.swift */; };
 		B3797DBA5A2809079BD00023 /* TimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F2AE9AABEA22194B49C3A4 /* TimelineView.swift */; };
+		B76A183D3E44848DC6A05679 /* TemplateRecipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46BEAF44ECC8C85DC84E04B9 /* TemplateRecipe.swift */; };
+		B77095075AB7C55898B21242 /* UndoStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CBFAA44A3E3195D060D6D72 /* UndoStack.swift */; };
 		BB56874175D0D84955195BB6 /* BackgroundEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CEF30C879280B5B61779F14 /* BackgroundEditorViewController.swift */; };
 		BD6CDED31CADDB057B7FB98C /* BackgroundPresets in Resources */ = {isa = PBXBuildFile; fileRef = EFFC65D891ED4DE5B877E8F1 /* BackgroundPresets */; };
+		C4071986B9BC622B346488AB /* SceneLibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7386B6921BAF86E88B6FE1D0 /* SceneLibraryModels.swift */; };
 		C5D500A921DF5C5F4217977C /* SharedAssets in Resources */ = {isa = PBXBuildFile; fileRef = 9FA23A16733352E76F88080F /* SharedAssets */; };
 		C792AB83AD2AA9EADF6164E8 /* MediaRef.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D5135EA575C330539D1FD0A /* MediaRef.swift */; };
 		CC06AC77DBA6E10D00B88CCF /* ExportVideoFrameProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1244C22C36801F4B52AFE62 /* ExportVideoFrameProvider.swift */; };
 		CC20D98CF2C2D50F0579DDAF /* AudioWriterPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 931F43B88D909958DFAB035F /* AudioWriterPump.swift */; };
 		CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9681217003171DED246CF7A /* AppDelegate.swift */; };
-		D22F17DCEF79EBBAB4293C0A /* ProjectDraftToggleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B398FADABF45745F1E7A5E60 /* ProjectDraftToggleStore.swift */; };
+		D2AFCF642E69E8DA0BE06307 /* EditorReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008B456A6D18BC55E52A997F /* EditorReducerTests.swift */; };
 		D50A8104DC75F005771E3189 /* ExportProgressViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 405CA61F8D950F938A7C179C /* ExportProgressViewController.swift */; };
+		D5568C9185447FE2389AE27A /* TrackViewContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */; };
 		DA572C5E6C6860C97D060989 /* CategoryTemplatesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B853898BDFB63E02EA083BD5 /* CategoryTemplatesViewController.swift */; };
 		DAF36B0BD227C3540277E7F9 /* HexColorParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5465499A4FD116462422D72B /* HexColorParser.swift */; };
 		DB29C8E7EDC3DD99C8977858 /* SceneState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1811C646979CF0638C6195 /* SceneState.swift */; };
-		DCA31A07F278761B44D14FBE /* Timeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0A87EE3F7640864449EF7C8 /* Timeline.swift */; };
 		DF26CFCE6FDB0C6EA1F0DBD2 /* TemplateCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 695CDA66BFAAF9E9490AFDFA /* TemplateCatalog.swift */; };
+		E1B097003BE842813CB0A919 /* TimelinePerfCounters.swift in Sources */ = {isa = PBXBuildFile; fileRef = D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */; };
 		E25698A846DA76F3CA4038B4 /* BackgroundTextureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CA7A6FD8503DAF43604786F /* BackgroundTextureService.swift */; };
+		E7808653295E10429A48CC9C /* SceneTrackSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3601FA3EBE222F831A10F3DB /* SceneTrackSnapshot.swift */; };
+		EA5DFD8E85E8165771D4BFF3 /* CanonicalTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3364EA3951160DA864738903 /* CanonicalTimeline.swift */; };
 		ED54801EBD50C76234462BC3 /* ExportTextureProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1974DAD2C56CCA5F71BFF6E /* ExportTextureProvider.swift */; };
+		F02391F95A0262E103152584 /* BundleTemplateRecipeLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABBDB7457558A6C904FF6AD4 /* BundleTemplateRecipeLoader.swift */; };
 		F059A3DD3D82CF5803F3CE2B /* PreparingOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85271CBA652BF18E5476B593 /* PreparingOverlayView.swift */; };
 		F200089354BE041C4F9D88C9 /* PreviewMenuStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF4B6CA0A1B351C520F00915 /* PreviewMenuStrip.swift */; };
 		F559E08D57AFB0EC6087FF8A /* EditorLayoutContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4EBB70D610E864BB54F5058 /* EditorLayoutContainerView.swift */; };
+		F5C114671E2811827AB06760 /* EditorAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4057F5327F4F91E6220168 /* EditorAction.swift */; };
+		F6282E7E21B82388F3CC2243 /* TimelinePlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE5E9CF111CD6CF5A6213688 /* TimelinePlaybackCoordinator.swift */; };
 		F69A4CE0C87E4F294A365892 /* VideoExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41ECBBE27F729040A4BA24F9 /* VideoExporter.swift */; };
+		FA72E6CEF83D57DE1252D780 /* SceneClipSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05A4F385A358366E47B026B /* SceneClipSnapshot.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		45B810784CEFF25ABAD53A58 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D4035B6B9A7CD4FEDF854712 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 10B17D6EDD6B127CDCBC280E;
+			remoteInfo = AnimiApp;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		008B456A6D18BC55E52A997F /* EditorReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerTests.swift; sourceTree = "<group>"; };
 		0AD0CC2427FEECE70284560E /* EditorNavBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorNavBar.swift; sourceTree = "<group>"; };
 		1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaTextureFactory.swift; sourceTree = "<group>"; };
 		1696482BFA3E93F558EEE181 /* PlayheadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayheadView.swift; sourceTree = "<group>"; };
+		17978D254FF4A01AF6C27265 /* EditorStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStore.swift; sourceTree = "<group>"; };
+		1CBFAA44A3E3195D060D6D72 /* UndoStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoStack.swift; sourceTree = "<group>"; };
+		212495D3F0034E5DF8679EAE /* AnimiAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AnimiAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		21BCAE9CA856E61018333E4F /* AudioCompositionBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCompositionBuilder.swift; sourceTree = "<group>"; };
 		24544FC9E0EAD15CABC4A7B4 /* ProjectDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDraft.swift; sourceTree = "<group>"; };
 		25DBB2B5ADE5A32A5283B35D /* GlobalActionBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalActionBar.swift; sourceTree = "<group>"; };
+		278EBCE880F11881818C5A11 /* SceneLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneLibrary.swift; sourceTree = "<group>"; };
 		2BF0652B3DD5E20359F327E7 /* TestAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TestAssets; path = ../TestAssets; sourceTree = SOURCE_ROOT; };
 		2CFCF74F9E5906B8855CBA71 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		2EADDEDB66974033DE631FC0 /* BundleSceneLibraryLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleSceneLibraryLoader.swift; sourceTree = "<group>"; };
 		309F76627D024207657CC40A /* PlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViewController.swift; sourceTree = "<group>"; };
+		3364EA3951160DA864738903 /* CanonicalTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalTimeline.swift; sourceTree = "<group>"; };
+		3601FA3EBE222F831A10F3DB /* SceneTrackSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneTrackSnapshot.swift; sourceTree = "<group>"; };
 		385E496113EA1117E64E135D /* TimeRulerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeRulerView.swift; sourceTree = "<group>"; };
+		3FD576CEB284337AADB270BD /* Scenes */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Scenes; path = Resources/Scenes; sourceTree = SOURCE_ROOT; };
 		405CA61F8D950F938A7C179C /* ExportProgressViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportProgressViewController.swift; sourceTree = "<group>"; };
 		41ECBBE27F729040A4BA24F9 /* VideoExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporter.swift; sourceTree = "<group>"; };
 		45DB9A7231F7931C434FE7C4 /* SceneClipView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneClipView.swift; sourceTree = "<group>"; };
+		46BEAF44ECC8C85DC84E04B9 /* TemplateRecipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateRecipe.swift; sourceTree = "<group>"; };
 		486CDCFFF485A0C0354A63F5 /* Templates */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Templates; path = Resources/Templates; sourceTree = SOURCE_ROOT; };
 		493CBBADF2EADCE826942657 /* TimelineTimeUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineTimeUtils.swift; sourceTree = "<group>"; };
 		4F32D1C7C5D29936244DF41F /* EffectiveBackgroundBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EffectiveBackgroundBuilder.swift; sourceTree = "<group>"; };
@@ -99,7 +138,11 @@
 		6E46BB327022D25C2BAEBD96 /* BackgroundImageTransformViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundImageTransformViewController.swift; sourceTree = "<group>"; };
 		6EF91B900FF78191D281BB73 /* PreviewVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewVideoView.swift; sourceTree = "<group>"; };
 		6F1811C646979CF0638C6195 /* SceneState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneState.swift; sourceTree = "<group>"; };
+		7386B6921BAF86E88B6FE1D0 /* SceneLibraryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneLibraryModels.swift; sourceTree = "<group>"; };
 		7AEA66CBE6EB5B30975CB68C /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		7D7B8DBCF6017C4BF93805D7 /* EditorState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorState.swift; sourceTree = "<group>"; };
+		7E20361C384C400823FEDDE1 /* TimelineLayoutContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineLayoutContext.swift; sourceTree = "<group>"; };
+		7F5EF817846AED742165D197 /* EditorReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducer.swift; sourceTree = "<group>"; };
 		84DEF8B8CAB545A1A822FF33 /* FullScreenPreviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullScreenPreviewViewController.swift; sourceTree = "<group>"; };
 		85271CBA652BF18E5476B593 /* PreparingOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparingOverlayView.swift; sourceTree = "<group>"; };
 		88357A08E23A0E79039FC032 /* TemplateEditorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateEditorController.swift; sourceTree = "<group>"; };
@@ -112,10 +155,13 @@
 		9FA23A16733352E76F88080F /* SharedAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SharedAssets; path = ../SharedAssets; sourceTree = SOURCE_ROOT; };
 		A19F78E6B097B29EDF323138 /* VideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameProvider.swift; sourceTree = "<group>"; };
 		A9681217003171DED246CF7A /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		AA4057F5327F4F91E6220168 /* EditorAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorAction.swift; sourceTree = "<group>"; };
 		AB6B0E0125B6479C561D538B /* TemplateDetailsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateDetailsViewController.swift; sourceTree = "<group>"; };
+		ABBDB7457558A6C904FF6AD4 /* BundleTemplateRecipeLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleTemplateRecipeLoader.swift; sourceTree = "<group>"; };
 		AF4B6CA0A1B351C520F00915 /* PreviewMenuStrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewMenuStrip.swift; sourceTree = "<group>"; };
+		B05A4F385A358366E47B026B /* SceneClipSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneClipSnapshot.swift; sourceTree = "<group>"; };
 		B1C6721DDF84A3D3E800B6D2 /* TemplateModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateModels.swift; sourceTree = "<group>"; };
-		B398FADABF45745F1E7A5E60 /* ProjectDraftToggleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDraftToggleStore.swift; sourceTree = "<group>"; };
+		B685C4E5B201E8A6899D2B21 /* TimelinePayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePayload.swift; sourceTree = "<group>"; };
 		B68FDC0B5B9E176AEECBF7BF /* ProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStore.swift; sourceTree = "<group>"; };
 		B807292DC00C6DF32839947B /* Point2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Point2.swift; sourceTree = "<group>"; };
 		B853898BDFB63E02EA083BD5 /* CategoryTemplatesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryTemplatesViewController.swift; sourceTree = "<group>"; };
@@ -123,12 +169,15 @@
 		C1244C22C36801F4B52AFE62 /* ExportVideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProvider.swift; sourceTree = "<group>"; };
 		C463B57720E8B12E559B2CA6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CA08D7E49AF2FAED41B3739D /* EditorConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorConfig.swift; sourceTree = "<group>"; };
-		D0A87EE3F7640864449EF7C8 /* Timeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Timeline.swift; sourceTree = "<group>"; };
 		D12222EECEE4BF66B830A41A /* TimelineSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineSelection.swift; sourceTree = "<group>"; };
 		D531F2B70470609DAAEC0E92 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackViewContracts.swift; sourceTree = "<group>"; };
 		D910D732A40F53C827CAF44B /* ContextBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBar.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F67890ABCDEF01 /* SceneCatalogViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneCatalogViewController.swift; sourceTree = "<group>"; };
+		D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePerfCounters.swift; sourceTree = "<group>"; };
 		DC6C7BCD49916848933ACCC5 /* AudioTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioTrackView.swift; sourceTree = "<group>"; };
 		DCF00B9CD6E40ED94892ADC9 /* PerfLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerfLogger.swift; sourceTree = "<group>"; };
+		DE5E9CF111CD6CF5A6213688 /* TimelinePlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePlaybackCoordinator.swift; sourceTree = "<group>"; };
 		E1974DAD2C56CCA5F71BFF6E /* ExportTextureProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportTextureProvider.swift; sourceTree = "<group>"; };
 		E3FB56BE62079A849F579C2F /* TemplatesHomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplatesHomeViewController.swift; sourceTree = "<group>"; };
 		E4EBB70D610E864BB54F5058 /* EditorLayoutContainerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorLayoutContainerView.swift; sourceTree = "<group>"; };
@@ -157,8 +206,17 @@
 			children = (
 				309F76627D024207657CC40A /* PlayerViewController.swift */,
 				85271CBA652BF18E5476B593 /* PreparingOverlayView.swift */,
+				DE5E9CF111CD6CF5A6213688 /* TimelinePlaybackCoordinator.swift */,
 			);
 			path = Player;
+			sourceTree = "<group>";
+		};
+		0D782A98F5B7B201D779F3B4 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				008B456A6D18BC55E52A997F /* EditorReducerTests.swift */,
+			);
+			path = Tests;
 			sourceTree = "<group>";
 		};
 		0E52CFC5E2E4FF6ABE254A14 /* Resources */ = {
@@ -188,15 +246,15 @@
 		192D2901CC0DF98E94429A09 /* Project */ = {
 			isa = PBXGroup;
 			children = (
+				3364EA3951160DA864738903 /* CanonicalTimeline.swift */,
 				CA08D7E49AF2FAED41B3739D /* EditorConfig.swift */,
 				6D5135EA575C330539D1FD0A /* MediaRef.swift */,
 				B807292DC00C6DF32839947B /* Point2.swift */,
 				55C76845C9F4E045E5E4913B /* ProjectBackgroundOverride.swift */,
 				24544FC9E0EAD15CABC4A7B4 /* ProjectDraft.swift */,
-				B398FADABF45745F1E7A5E60 /* ProjectDraftToggleStore.swift */,
 				B68FDC0B5B9E176AEECBF7BF /* ProjectStore.swift */,
 				6F1811C646979CF0638C6195 /* SceneState.swift */,
-				D0A87EE3F7640864449EF7C8 /* Timeline.swift */,
+				B685C4E5B201E8A6899D2B21 /* TimelinePayload.swift */,
 			);
 			path = Project;
 			sourceTree = "<group>";
@@ -231,6 +289,7 @@
 			children = (
 				E5ECE540AAD3F6F6FE110D7F /* App */,
 				5EE3CBAF8EB42497C510D2D4 /* Background */,
+				9E265860D86C3AF53EC27331 /* Content */,
 				AB885C05AC47A6617B0FB4FE /* Editor */,
 				174A8C02D785B7926CEE2F64 /* Export */,
 				0C30BD67F1694F5E87D23958 /* Player */,
@@ -246,8 +305,33 @@
 			isa = PBXGroup;
 			children = (
 				BAD378EB2800FA21FD5D791A /* AnimiApp.app */,
+				212495D3F0034E5DF8679EAE /* AnimiAppTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		88FC97825728EC3F6E3EBA29 /* Store */ = {
+			isa = PBXGroup;
+			children = (
+				AA4057F5327F4F91E6220168 /* EditorAction.swift */,
+				7F5EF817846AED742165D197 /* EditorReducer.swift */,
+				7D7B8DBCF6017C4BF93805D7 /* EditorState.swift */,
+				17978D254FF4A01AF6C27265 /* EditorStore.swift */,
+				1CBFAA44A3E3195D060D6D72 /* UndoStack.swift */,
+			);
+			path = Store;
+			sourceTree = "<group>";
+		};
+		9E265860D86C3AF53EC27331 /* Content */ = {
+			isa = PBXGroup;
+			children = (
+				2EADDEDB66974033DE631FC0 /* BundleSceneLibraryLoader.swift */,
+				ABBDB7457558A6C904FF6AD4 /* BundleTemplateRecipeLoader.swift */,
+				278EBCE880F11881818C5A11 /* SceneLibrary.swift */,
+				7386B6921BAF86E88B6FE1D0 /* SceneLibraryModels.swift */,
+				46BEAF44ECC8C85DC84E04B9 /* TemplateRecipe.swift */,
+			);
+			path = Content;
 			sourceTree = "<group>";
 		};
 		A0AB6734E8DF17D4B092309A /* Packages */ = {
@@ -280,14 +364,21 @@
 				25DBB2B5ADE5A32A5283B35D /* GlobalActionBar.swift */,
 				1696482BFA3E93F558EEE181 /* PlayheadView.swift */,
 				AF4B6CA0A1B351C520F00915 /* PreviewMenuStrip.swift */,
+				B05A4F385A358366E47B026B /* SceneClipSnapshot.swift */,
 				45DB9A7231F7931C434FE7C4 /* SceneClipView.swift */,
+				A1B2C3D4E5F67890ABCDEF01 /* SceneCatalogViewController.swift */,
+				3601FA3EBE222F831A10F3DB /* SceneTrackSnapshot.swift */,
 				F4613B149DEB66964BDE84F9 /* SceneTrackView.swift */,
 				88357A08E23A0E79039FC032 /* TemplateEditorController.swift */,
 				99082F901FF221848C1D8848 /* TimelineEvents.swift */,
+				7E20361C384C400823FEDDE1 /* TimelineLayoutContext.swift */,
+				D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */,
 				D12222EECEE4BF66B830A41A /* TimelineSelection.swift */,
 				493CBBADF2EADCE826942657 /* TimelineTimeUtils.swift */,
 				61F2AE9AABEA22194B49C3A4 /* TimelineView.swift */,
 				385E496113EA1117E64E135D /* TimeRulerView.swift */,
+				D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */,
+				88FC97825728EC3F6E3EBA29 /* Store */,
 			);
 			path = Editor;
 			sourceTree = "<group>";
@@ -296,12 +387,14 @@
 			isa = PBXGroup;
 			children = (
 				EFFC65D891ED4DE5B877E8F1 /* BackgroundPresets */,
+				3FD576CEB284337AADB270BD /* Scenes */,
 				9FA23A16733352E76F88080F /* SharedAssets */,
 				486CDCFFF485A0C0354A63F5 /* Templates */,
 				2BF0652B3DD5E20359F327E7 /* TestAssets */,
 				A0AB6734E8DF17D4B092309A /* Packages */,
 				0E52CFC5E2E4FF6ABE254A14 /* Resources */,
 				6CA488A52B38F2680625E762 /* Sources */,
+				0D782A98F5B7B201D779F3B4 /* Tests */,
 				8405B0FB569F6CFAD1EB74CF /* Products */,
 			);
 			sourceTree = "<group>";
@@ -350,6 +443,24 @@
 			productReference = BAD378EB2800FA21FD5D791A /* AnimiApp.app */;
 			productType = "com.apple.product-type.application";
 		};
+		65136F447BC60C8FF7FDE046 /* AnimiAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DB658A4930805B7659EE7423 /* Build configuration list for PBXNativeTarget "AnimiAppTests" */;
+			buildPhases = (
+				40A3CD54B48B1F8E7FE40B5B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BCD3BFC2251B7330325FE6C4 /* PBXTargetDependency */,
+			);
+			name = AnimiAppTests;
+			packageProductDependencies = (
+			);
+			productName = AnimiAppTests;
+			productReference = 212495D3F0034E5DF8679EAE /* AnimiAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -360,6 +471,10 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					10B17D6EDD6B127CDCBC280E = {
+						ProvisioningStyle = Automatic;
+					};
+					65136F447BC60C8FF7FDE046 = {
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -381,6 +496,7 @@
 			projectRoot = "";
 			targets = (
 				10B17D6EDD6B127CDCBC280E /* AnimiApp */,
+				65136F447BC60C8FF7FDE046 /* AnimiAppTests */,
 			);
 		};
 /* End PBXProject section */
@@ -393,6 +509,7 @@
 				8417606871FCEA18666AF617 /* Assets.xcassets in Resources */,
 				BD6CDED31CADDB057B7FB98C /* BackgroundPresets in Resources */,
 				0D7C19312488787BBA9F8379 /* LaunchScreen.storyboard in Resources */,
+				A86034E54315B2988A33C9D0 /* Scenes in Resources */,
 				C5D500A921DF5C5F4217977C /* SharedAssets in Resources */,
 				1E5BA0CCE5E033BDC0F1023A /* Templates in Resources */,
 				70F7C5CF6D0F9A28D9BF27D3 /* TestAssets in Resources */,
@@ -402,6 +519,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		40A3CD54B48B1F8E7FE40B5B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D2AFCF642E69E8DA0BE06307 /* EditorReducerTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9C218C7383C3B91BD8E2DF1D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -414,13 +539,21 @@
 				8E9D3945030E03E20245EAE3 /* BackgroundImageTransformViewController.swift in Sources */,
 				85DF4E86681E99E8A748BF67 /* BackgroundPresetLibrary.swift in Sources */,
 				E25698A846DA76F3CA4038B4 /* BackgroundTextureService.swift in Sources */,
+				283620DB39148AB24A06ECC1 /* BundleSceneLibraryLoader.swift in Sources */,
 				498C37DBB763362200900A78 /* BundleTemplateCatalogLoader.swift in Sources */,
+				F02391F95A0262E103152584 /* BundleTemplateRecipeLoader.swift in Sources */,
+				EA5DFD8E85E8165771D4BFF3 /* CanonicalTimeline.swift in Sources */,
 				DA572C5E6C6860C97D060989 /* CategoryTemplatesViewController.swift in Sources */,
 				6F9B9494538317DADF567CBB /* ContextBar.swift in Sources */,
+				A1B2C3D4E5F67890FEDCBA01 /* SceneCatalogViewController.swift in Sources */,
+				F5C114671E2811827AB06760 /* EditorAction.swift in Sources */,
 				8B250EE681BECBBE0BC1224E /* EditorConfig.swift in Sources */,
 				F559E08D57AFB0EC6087FF8A /* EditorLayoutContainerView.swift in Sources */,
 				8C7E40E257296FDDE6326467 /* EditorNavBar.swift in Sources */,
 				912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */,
+				B32E00282D93D218EFFDE577 /* EditorReducer.swift in Sources */,
+				70B4C549F74311F52D1CDA70 /* EditorState.swift in Sources */,
+				0402365D45452BE0FFA85FE7 /* EditorStore.swift in Sources */,
 				83D31A071A2AE1D9DAAEAF33 /* EffectiveBackgroundBuilder.swift in Sources */,
 				D50A8104DC75F005771E3189 /* ExportProgressViewController.swift in Sources */,
 				ED54801EBD50C76234462BC3 /* ExportTextureProvider.swift in Sources */,
@@ -439,24 +572,33 @@
 				18CBB8DC59767967525874C6 /* PreviewVideoView.swift in Sources */,
 				0F9C3ED0FBF09B219D543DC9 /* ProjectBackgroundOverride.swift in Sources */,
 				921C1521C032FB6559CA59C4 /* ProjectDraft.swift in Sources */,
-				D22F17DCEF79EBBAB4293C0A /* ProjectDraftToggleStore.swift in Sources */,
 				B319D3EED1F23C34885E8646 /* ProjectStore.swift in Sources */,
+				FA72E6CEF83D57DE1252D780 /* SceneClipSnapshot.swift in Sources */,
 				77047C61D50F5BC54DE12794 /* SceneClipView.swift in Sources */,
 				6D8ECBA9A63E3BBE961807B1 /* SceneDelegate.swift in Sources */,
+				9679197E9E746DC549BDD438 /* SceneLibrary.swift in Sources */,
+				C4071986B9BC622B346488AB /* SceneLibraryModels.swift in Sources */,
 				DB29C8E7EDC3DD99C8977858 /* SceneState.swift in Sources */,
+				E7808653295E10429A48CC9C /* SceneTrackSnapshot.swift in Sources */,
 				5D1EAB0A11774675AA58B727 /* SceneTrackView.swift in Sources */,
 				DF26CFCE6FDB0C6EA1F0DBD2 /* TemplateCatalog.swift in Sources */,
 				968F63459420D7EAAF660A2C /* TemplateDetailsViewController.swift in Sources */,
 				2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */,
 				466851FBF16FEB68F8B6CC15 /* TemplateModels.swift in Sources */,
 				6DCCC8529A71ADB91E2B34AF /* TemplatePreviewCell.swift in Sources */,
+				B76A183D3E44848DC6A05679 /* TemplateRecipe.swift in Sources */,
 				54A34118FE6F0E05E99EAB9F /* TemplatesHomeViewController.swift in Sources */,
 				9456988608740988E5F27700 /* TimeRulerView.swift in Sources */,
-				DCA31A07F278761B44D14FBE /* Timeline.swift in Sources */,
 				1EA1B9C121F589385C6EACB7 /* TimelineEvents.swift in Sources */,
+				10B8D513E511EBF48A1E7FCA /* TimelineLayoutContext.swift in Sources */,
+				55D77C0FBB83BC5D85687949 /* TimelinePayload.swift in Sources */,
+				E1B097003BE842813CB0A919 /* TimelinePerfCounters.swift in Sources */,
+				F6282E7E21B82388F3CC2243 /* TimelinePlaybackCoordinator.swift in Sources */,
 				8B1AE5FEAAA7FC56548F6624 /* TimelineSelection.swift in Sources */,
 				2FEAB6533EF1DA415C6FC778 /* TimelineTimeUtils.swift in Sources */,
 				B3797DBA5A2809079BD00023 /* TimelineView.swift in Sources */,
+				D5568C9185447FE2389AE27A /* TrackViewContracts.swift in Sources */,
+				B77095075AB7C55898B21242 /* UndoStack.swift in Sources */,
 				8C5D68D2752FF42C00D0F093 /* UserMediaService.swift in Sources */,
 				26C0F8F6AB35CD9093B0E789 /* UserMediaTextureFactory.swift in Sources */,
 				F69A4CE0C87E4F294A365892 /* VideoExporter.swift in Sources */,
@@ -465,6 +607,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BCD3BFC2251B7330325FE6C4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 10B17D6EDD6B127CDCBC280E /* AnimiApp */;
+			targetProxy = 45B810784CEFF25ABAD53A58 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1C286A63FCE03685CBE08418 /* Release */ = {
@@ -609,6 +759,26 @@
 			};
 			name = Release;
 		};
+		337313D991D47DD0E926DEBF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.animi.app.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnimiApp.app/AnimiApp";
+			};
+			name = Release;
+		};
 		7B36287936D21BDE7AC37BB3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -632,6 +802,26 @@
 			};
 			name = Debug;
 		};
+		F114E4C45209811A1BAB12C6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.animi.app.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnimiApp.app/AnimiApp";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -640,6 +830,15 @@
 			buildConfigurations = (
 				231CC8A1C3778D309AAA0F56 /* Debug */,
 				1C286A63FCE03685CBE08418 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DB658A4930805B7659EE7423 /* Build configuration list for PBXNativeTarget "AnimiAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F114E4C45209811A1BAB12C6 /* Debug */,
+				337313D991D47DD0E926DEBF /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

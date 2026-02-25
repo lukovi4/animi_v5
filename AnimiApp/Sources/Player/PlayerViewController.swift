@@ -437,6 +437,8 @@ final class PlayerViewController: UIViewController {
     private var deviceHeaderLogged = false
     /// PR-33: Track last frame to avoid redundant video updates
     private var lastVideoUpdateFrame: Int = -1
+    /// Release v1: Track async playhead task to cancel stale requests
+    private var playheadAsyncTask: Task<Void, Never>?
 
     // MARK: - Editor (PR-19)
     private var scenePlayer: ScenePlayer?
@@ -444,6 +446,15 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - PR2: EditorStore (centralized state management)
     private var editorStore: EditorStore?
+
+    // MARK: - Release v1: Scene Library + Playback Coordinator
+    private var sceneLibrarySnapshot: SceneLibrarySnapshot?
+    private var playbackCoordinator: TimelinePlaybackCoordinator?
+    private var defaultSceneSequence: [SceneTypeDefault] = []
+
+    // MARK: - PR9: Active Scene Instance Tracking
+    /// Currently active scene instance ID (for per-instance state apply).
+    private var activeSceneInstanceId: UUID?
 
     // MARK: - PR2: Visual Editor Timeline
     private var currentProjectDraft: ProjectDraft?
@@ -528,45 +539,77 @@ final class PlayerViewController: UIViewController {
             loadCompiledTemplateFromBundle(templateName: "example_4blocks")
             #endif
         case .editor(let templateId):
-            // PR2: Load or create ProjectDraft for this template
-            loadOrCreateProjectDraft(for: templateId)
-            // Auto-load the selected template from catalog
-            loadCompiledTemplateFromBundle(templateName: templateId)
+            // Release v1: Load SceneLibrary, Recipe, then first scene
+            Task { @MainActor in
+                await loadEditorContent(templateId: templateId)
+            }
         }
     }
 
-    // MARK: - PR2: Project Draft Loading
+    // MARK: - Release v1: Editor Content Loading
 
-    /// Loads existing ProjectDraft or creates new one for the template.
-    /// Sets currentProjectDraft as the in-memory source of truth for the session.
-    private func loadOrCreateProjectDraft(for templateId: String) {
+    /// Loads all editor content: SceneLibrary, Recipe, ProjectDraft, and first scene.
+    private func loadEditorContent(templateId: String) async {
         currentTemplateId = templateId
 
-        // Try to find existing project for this template
+        // Step 1: Load SceneLibrary
         do {
-            if let projectId = try ProjectStore.shared.projectId(for: templateId) {
-                // Load existing project
-                if let draft = try ProjectStore.shared.loadProjectDraft(projectId: projectId, templateId: templateId) {
-                    currentProjectDraft = draft
-                    currentProjectId = projectId
-                    log("[PR2] Loaded existing project: \(projectId)")
-                    return
-                }
-            }
+            let library = try await SceneLibrary.shared.load()
+            sceneLibrarySnapshot = library
+            log("[Release v1] SceneLibrary loaded: \(library.scenesById.count) scenes, fps=\(library.fps)")
         } catch {
-            log("[PR2] Failed to load project: \(error). Creating new.")
+            log("[Release v1] ERROR: Failed to load SceneLibrary: \(error)")
+            loadingState = .failed(message: "Scene library load failed")
+            updateLoadingStateUI()
+            return
         }
 
-        // No existing project or failed to load - create new draft (in-memory only for PR2)
-        createNewProjectDraft(for: templateId)
-    }
+        // Step 2: Load Recipe
+        do {
+            let recipeLoader = BundleTemplateRecipeLoader()
+            defaultSceneSequence = try recipeLoader.loadWithDefaults(
+                templateId: templateId,
+                library: sceneLibrarySnapshot!
+            )
+            log("[Release v1] Recipe loaded: \(defaultSceneSequence.count) scenes")
+        } catch {
+            log("[Release v1] ERROR: Failed to load recipe: \(error)")
+            loadingState = .failed(message: "Recipe load failed")
+            updateLoadingStateUI()
+            return
+        }
 
-    /// Creates a new in-memory ProjectDraft for the template.
-    private func createNewProjectDraft(for templateId: String) {
-        let draft = ProjectDraft.create(for: templateId)
-        currentProjectDraft = draft
-        currentProjectId = draft.id
-        log("[PR2] Created new project draft: \(draft.id)")
+        // Step 3: Load or create ProjectDraft via ProjectStore (single source of truth)
+        do {
+            let draft = try ProjectStore.shared.createOrLoadProjectDraft(for: templateId)
+            currentProjectDraft = draft
+            currentProjectId = draft.id
+            log("[Release v1] Project draft loaded/created: \(draft.id)")
+        } catch {
+            log("[Release v1] ERROR: Failed to load/create project: \(error)")
+            loadingState = .failed(message: "Project load failed")
+            updateLoadingStateUI()
+            return
+        }
+
+        // Step 4: Load first scene from SceneLibrary
+        // P0-2 fix: Use draft timeline first (for saved projects), fallback to recipe
+        let firstSceneTypeId: String
+        if let draftFirstSceneTypeId = currentProjectDraft?.canonicalTimeline.firstSceneTypeId {
+            firstSceneTypeId = draftFirstSceneTypeId
+            log("[Release v1] Using first scene from draft: \(firstSceneTypeId)")
+        } else if let recipeFirstSceneTypeId = defaultSceneSequence.first?.sceneTypeId {
+            firstSceneTypeId = recipeFirstSceneTypeId
+            log("[Release v1] Using first scene from recipe: \(firstSceneTypeId)")
+        } else {
+            log("[Release v1] ERROR: No scenes in draft or recipe")
+            loadingState = .failed(message: "Empty project")
+            updateLoadingStateUI()
+            return
+        }
+
+        // Load the first scene (this also configures the editor timeline)
+        loadSceneTypeFromBundle(sceneTypeId: firstSceneTypeId)
     }
 
     /// Applies UI changes based on presentation mode (PR-Templates)
@@ -648,6 +691,19 @@ final class PlayerViewController: UIViewController {
         // PR1: Unified timeline event handling
         editorLayoutContainer.onTimelineEvent = { [weak self] event in
             self?.handleTimelineEvent(event)
+        }
+
+        // PR9: Scene context actions
+        editorLayoutContainer.onDuplicateScene = { [weak self] sceneId in
+            self?.editorStore?.dispatch(.duplicateScene(sceneItemId: sceneId))
+        }
+
+        editorLayoutContainer.onDeleteScene = { [weak self] sceneId in
+            self?.editorStore?.dispatch(.deleteScene(sceneId: sceneId))
+        }
+
+        editorLayoutContainer.onAddScene = { [weak self] in
+            self?.presentSceneCatalog()
         }
     }
 
@@ -796,7 +852,7 @@ final class PlayerViewController: UIViewController {
     }
 
     /// Handles timeline scrub events.
-    /// Time Refactor: Changed from frame-based to time-based.
+    /// Release v1: Routes through EditorStore for single source of truth.
     /// - Parameters:
     ///   - timeUs: Time in microseconds
     ///   - mode: Quantize mode for frame calculation
@@ -806,13 +862,8 @@ final class PlayerViewController: UIViewController {
             stopPlayback()
         }
 
-        // Update time in controller (which will quantize to frame)
-        editorController.setCurrentTimeUs(timeUs, mode: mode)
-
-        // Sync local frame index from controller state
-        currentFrameIndex = editorController.state.currentPreviewFrame
-
-        metalView.setNeedsDisplay()
+        // Dispatch to store - onPlayheadChanged callback handles coordinator + redraw + currentFrameIndex
+        editorStore?.dispatch(.setPlayhead(timeUs: timeUs, quantize: mode))
     }
 
     private func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
@@ -820,117 +871,403 @@ final class PlayerViewController: UIViewController {
         editorStore?.dispatch(.select(selection: selection))
     }
 
-    /// Configures timeline after template is loaded.
-    /// PR2: Uses EditorStore for centralized state management.
-    /// Migration happens before store creation (allowed exception).
+    /// Configures timeline after scene is loaded.
+    /// Release v1: Uses EditorStore with split callbacks and defaultSceneSequence.
+    /// No legacy migrations - schema mismatch creates new project.
     private func configureEditorTimeline() {
         guard case .editor = presentationMode else { return }
 
-        let fps = Int(sceneFPS)
+        let fps = sceneLibrarySnapshot?.fps ?? Int(sceneFPS)
 
-        // Calculate template duration in microseconds
-        let templateDurationUs = framesToDurationUs(totalFrames, fps: fps)
-
-        // Step 1: Migration (allowed exception - happens before Store)
-        if var draft = currentProjectDraft {
-            var needsSave = false
-
-            // Migrate legacy frames to microseconds (v1 → v2)
-            if draft.migrateDurationFramesToUsIfNeeded(templateFPS: fps) {
-                draft.projectDurationFrames = nil
-                needsSave = true
-                log("[Time Refactor] Duration migrated from frames to microseconds")
-            }
-
-            // Normalize legacy projectDurationUs if exceeds template
-            if let us = draft.projectDurationUs, us > templateDurationUs {
-                log("[Time Refactor] Duration normalized: \(us) → \(templateDurationUs)")
-                draft.projectDurationUs = templateDurationUs
-                draft.projectDurationFrames = nil
-                needsSave = true
-            }
-
-            // Migrate to canonical timeline v4 (PR1 Timeline Core)
-            let migrationResult = draft.migrateToCanonicalTimelineIfNeeded(templateDefaultUs: templateDurationUs)
-            if migrationResult.didMigrate {
-                needsSave = true
-                log("[PR1] Migrated to canonical timeline v4")
-                if migrationResult.scenesExtended > 0 {
-                    log("[PR1] Extended \(migrationResult.scenesExtended) scene(s) to min duration 0.1s (+\(migrationResult.durationIncreaseUs)µs)")
-                    // TODO: Show toast once (non-blocking) per spec
-                }
-            }
-
-            if needsSave {
-                currentProjectDraft = draft
-                draftIsDirty = true
-            }
-        }
-
-        // Step 2: Create EditorStore and dispatch loadProject
-        // PR2: Store handles all normalization (cascade trim/drop/clamp, invariants)
+        // Step 1: Ensure we have a draft
         guard let draft = currentProjectDraft else {
-            log("[PR2] configureEditorTimeline: no draft available")
+            log("[Release v1] configureEditorTimeline: no draft available")
             return
         }
 
+        // Step 2: Create EditorStore and dispatch loadProject
+        // Release v1: Reducer populates timeline from defaultSceneSequence if empty
         let store = EditorStore()
         store.dispatch(.loadProject(
             draft: draft,
             templateFPS: fps,
-            templateDurationUs: templateDurationUs
+            defaultSceneSequence: defaultSceneSequence
         ))
         self.editorStore = store
 
-        // Wire store callbacks
-        store.onStateChanged = { [weak self] state in
-            self?.handleStoreStateChanged(state)
+        // Step 3: Wire split callbacks (Release v1)
+        // onPlayheadChanged: lightweight, frequent updates (scrubbing, playback tick)
+        store.onPlayheadChanged = { [weak self] timeUs in
+            self?.handlePlayheadChanged(timeUs)
+        }
+
+        // onSelectionChanged: lightweight updates (highlight, handles)
+        store.onSelectionChanged = { [weak self] selection in
+            self?.handleSelectionChanged(selection)
+        }
+
+        // onTimelineChanged: heavier updates (scene add/remove/trim commit)
+        store.onTimelineChanged = { [weak self] state in
+            self?.handleTimelineChanged(state)
         }
 
         store.onUndoRedoChanged = { [weak self] canUndo, canRedo in
             self?.handleUndoRedoChanged(canUndo: canUndo, canRedo: canRedo)
         }
 
-        // Sync local state from store
+        // Step 4: Sync local state from store
         currentProjectDraft = store.currentDraft
-        if store.projectDurationUs != draft.canonicalTimeline?.totalDurationUs {
-            // Store normalized the timeline
-            draftIsDirty = true
-            log("[PR2] Store normalized timeline, new duration: \(store.projectDurationUs)us")
-        }
+        log("[Release v1] Timeline configured: \(store.sceneItems.count) scenes, duration=\(store.projectDurationUs)us")
 
-        // Step 3: Configure editor controller with time parameters
+        // Step 5: Configure editor controller with time parameters
         let finalDurationUs = store.projectDurationUs
         editorController.templateFPS = fps
         editorController.durationUs = finalDurationUs
         editorController.totalFrames = totalFrames
 
-        // Step 4: Configure timeline UI with scenes from store
-        // PR2 fix: Pass minSceneDurationUs to UI for consistent min duration
+        // Step 6: Configure timeline UI with scenes from store
         let scenes = store.sceneDrafts
         editorLayoutContainer.configure(
             scenes: scenes,
             templateFPS: fps,
             minSceneDurationUs: ProjectDraft.minSceneDurationUs
         )
+
+        // Step 7: Setup TimelinePlaybackCoordinator (Release v1)
+        setupPlaybackCoordinator()
+
+        // Step 8: PR9.1 - Initial apply SceneState for first scene
+        // Without this, activeSceneInstanceId stays nil until first scrub/play
+        handlePlayheadChanged(store.playheadTimeUs)
     }
 
-    // MARK: - PR2: Store Callbacks
+    /// Sets up the TimelinePlaybackCoordinator for multi-scene playback.
+    private func setupPlaybackCoordinator() {
+        guard let library = sceneLibrarySnapshot,
+              let store = editorStore else { return }
 
-    /// Called when store state changes.
-    private func handleStoreStateChanged(_ state: EditorState) {
-        // Update UI from store state
+        let coordinator = TimelinePlaybackCoordinator()
+        coordinator.configure(
+            sceneLibrary: library,
+            fps: library.fps,
+            loadSceneType: { [weak self] sceneTypeId in
+                guard let self = self else {
+                    throw NSError(domain: "PlayerViewController", code: -1)
+                }
+                return try await self.loadSceneTypeAsync(sceneTypeId: sceneTypeId)
+            }
+        )
+
+        // Initialize timeline from store
+        coordinator.updateSceneTimeline(from: store.state)
+
+        // P1 fix: Bootstrap with already-loaded first scene (prevents double load)
+        // P0-2 fix: Use store.state to get the actual first scene (matches what was loaded)
+        if let player = scenePlayer,
+           let compiled = compiledScene,
+           let provider = textureProvider as? ScenePackageTextureProvider,
+           let resolver = currentResolver,
+           let firstSceneTypeId = store.state.canonicalTimeline.firstSceneTypeId {
+            coordinator.bootstrap(
+                sceneTypeId: firstSceneTypeId,
+                player: player,
+                compiled: compiled,
+                provider: provider,
+                resolver: resolver
+            )
+        }
+
+        // Wire coordinator callbacks
+        coordinator.onSceneLoaded = { [weak self] loadedScene in
+            self?.handleCoordinatorSceneLoaded(loadedScene)
+        }
+
+        // PR9: Wire active scene change callback for per-instance state
+        coordinator.onActiveSceneChanged = { [weak self] sceneInfo in
+            self?.handleActiveSceneChanged(sceneInfo)
+        }
+
+        self.playbackCoordinator = coordinator
+    }
+
+    /// Loads a scene type asynchronously for the coordinator.
+    /// Heavy IO (file loading, decoding) runs on background thread to avoid main thread freezes.
+    private func loadSceneTypeAsync(sceneTypeId: String) async throws -> TimelinePlaybackCoordinator.LoadedScene {
+        guard let sceneDescriptor = sceneLibrarySnapshot?.scene(byId: sceneTypeId),
+              let sceneURL = sceneDescriptor.folderURL else {
+            throw NSError(domain: "PlayerViewController", code: -1, userInfo: [NSLocalizedDescriptionKey: "Scene not found: \(sceneTypeId)"])
+        }
+
+        // Heavy IO on background thread (prevents main thread freezes)
+        let (compiledPackage, resolver) = try await Task.detached(priority: .userInitiated) {
+            let compiledLoader = CompiledScenePackageLoader(engineVersion: TVECore.version)
+            let compiledPackage = try compiledLoader.load(from: sceneURL)
+
+            let localIndex = try LocalAssetsIndex(imagesRootURL: sceneURL.appendingPathComponent("images"))
+            let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
+            let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
+
+            return (compiledPackage, resolver)
+        }.value
+
+        // Metal resources on main thread
+        let player = await MainActor.run { ScenePlayer() }
+        let compiled = await MainActor.run { player.loadCompiledScene(compiledPackage.compiled) }
+
+        guard let device = await MainActor.run(body: { metalView.device }) else {
+            throw NSError(domain: "PlayerViewController", code: -2, userInfo: [NSLocalizedDescriptionKey: "No Metal device"])
+        }
+
+        let provider = await MainActor.run {
+            SceneTextureProviderFactory.create(
+                device: device,
+                mergedAssetIndex: compiled.mergedAssetIndex,
+                resolver: resolver,
+                bindingAssetIds: compiled.bindingAssetIds,
+                logger: { _ in }
+            )
+        }
+
+        // P1-1 fix: Preload textures on background thread (Sendable-safe)
+        let queue = await MainActor.run(body: { commandQueue })
+        if let queue = queue {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    provider.preloadAll(commandQueue: queue)
+                    cont.resume()
+                }
+            }
+        }
+
+        return TimelinePlaybackCoordinator.LoadedScene(
+            sceneTypeId: sceneTypeId,
+            player: player,
+            compiled: compiled,
+            provider: provider,
+            resolver: resolver
+        )
+    }
+
+    /// Called when coordinator loads a new scene.
+    private func handleCoordinatorSceneLoaded(_ loadedScene: TimelinePlaybackCoordinator.LoadedScene) {
+        // Update current scene player for rendering
+        scenePlayer = loadedScene.player
+        editorController.setPlayer(loadedScene.player)
+        compiledScene = loadedScene.compiled
+        textureProvider = loadedScene.provider
+        currentResolver = loadedScene.resolver
+
+        // Reset video update gate on scene change (prevents skipped updates when localFrame matches)
+        lastVideoUpdateFrame = -1
+
+        // P0 fix: Recreate UserMediaService for new scene
+        // Old service holds stale scenePlayer/textureProvider references
+        if let device = metalView.device, let queue = commandQueue {
+            userMediaService = UserMediaService(
+                device: device,
+                commandQueue: queue,
+                scenePlayer: loadedScene.player,
+                textureProvider: loadedScene.provider
+            )
+            userMediaService?.setSceneFPS(Double(loadedScene.compiled.runtime.fps))
+            userMediaService?.onNeedsDisplay = { [weak self] in
+                self?.metalView.setNeedsDisplay()
+            }
+        }
+
+        // Update canvas size if different
+        let newCanvasSize = loadedScene.compiled.runtime.canvasSize
+        if canvasSize != newCanvasSize {
+            canvasSize = newCanvasSize
+            editorController.canvasSize = canvasSize
+            updateMetalViewAspectRatio(width: canvasSize.width, height: canvasSize.height)
+        }
+
+        log("[Release v1] Coordinator loaded scene: \(loadedScene.sceneTypeId)")
+
+        // PR9: Apply per-instance state after scene load
+        if let instanceId = activeSceneInstanceId {
+            resetRuntimeForSceneInstanceChange()
+            applySceneInstanceState(instanceId: instanceId)
+        }
+
+        metalView.setNeedsDisplay()
+    }
+
+    // MARK: - PR9: Active Scene Instance Handling
+
+    /// Called when active scene instance changes.
+    /// Fires on every instance change, even if sceneTypeId is the same.
+    private func handleActiveSceneChanged(_ sceneInfo: TimelinePlaybackCoordinator.SceneTimeInfo) {
+        let previousInstanceId = activeSceneInstanceId
+        activeSceneInstanceId = sceneInfo.sceneInstanceId
+
+        // If scene is already loaded (same sceneTypeId), apply state immediately
+        // Otherwise, state will be applied in handleCoordinatorSceneLoaded after load
+        if let coordinator = playbackCoordinator,
+           coordinator.currentSceneTypeId == sceneInfo.sceneTypeId,
+           scenePlayer != nil {
+            // Only reset/apply if instance actually changed
+            if previousInstanceId != sceneInfo.sceneInstanceId {
+                resetRuntimeForSceneInstanceChange()
+                applySceneInstanceState(instanceId: sceneInfo.sceneInstanceId)
+                metalView.setNeedsDisplay()
+            }
+        }
+    }
+
+    /// Resets runtime state for a scene instance change.
+    /// Clears all overrides before applying new instance state.
+    private func resetRuntimeForSceneInstanceChange() {
+        // 1. Reset ScenePlayer state
+        scenePlayer?.resetForNewInstance()
+
+        // 2. Clear UserMediaService
+        userMediaService?.clearAll()
+
+        // 3. Reset video update gate
+        lastVideoUpdateFrame = -1
+    }
+
+    /// Applies persisted SceneState to runtime for a scene instance.
+    private func applySceneInstanceState(instanceId: UUID) {
+        guard let state = editorStore?.state.draft.sceneInstanceStates[instanceId],
+              let player = scenePlayer else {
+            return
+        }
+
+        // 1. Apply variant overrides
+        player.applyVariantSelection(state.variantOverrides)
+
+        // 2. Apply user transforms
+        for (blockId, transform) in state.userTransforms {
+            player.setUserTransform(blockId: blockId, transform: transform)
+        }
+
+        // 3. Apply layer toggles
+        for (blockId, toggles) in state.layerToggles {
+            for (toggleId, enabled) in toggles {
+                player.setLayerToggle(blockId: blockId, toggleId: toggleId, enabled: enabled)
+            }
+        }
+
+        // 4. Apply media assignments (PR9: photo only for now)
+        if let mediaAssignments = state.mediaAssignments {
+            applyMediaAssignments(mediaAssignments)
+        }
+
+        #if DEBUG
+        print("[PlayerVC] Applied state for instance \(instanceId): variants=\(state.variantOverrides.count), transforms=\(state.userTransforms.count), toggles=\(state.layerToggles.count)")
+        #endif
+    }
+
+    /// Applies media assignments from SceneState.
+    private func applyMediaAssignments(_ assignments: [String: MediaRef]) {
+        for (blockId, mediaRef) in assignments {
+            guard mediaRef.kind == .file else { continue }
+
+            // Resolve URL from relative path
+            guard let url = try? ProjectStore.shared.absoluteURL(for: mediaRef) else {
+                #if DEBUG
+                print("[PlayerVC] Failed to resolve media URL: \(mediaRef.id)")
+                #endif
+                continue
+            }
+
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                #if DEBUG
+                print("[PlayerVC] Media file not found: \(url.path)")
+                #endif
+                continue
+            }
+
+            // Determine media type from extension
+            let ext = url.pathExtension.lowercased()
+            if ["jpg", "jpeg", "png", "heic"].contains(ext) {
+                // Photo
+                if let image = UIImage(contentsOfFile: url.path) {
+                    let success = userMediaService?.setPhoto(blockId: blockId, image: image) ?? false
+                    #if DEBUG
+                    print("[PlayerVC] Applied media for \(blockId): \(success ? "success" : "failed")")
+                    #endif
+                }
+            }
+            // Note: Video support deferred per PR9 scope (photo only)
+        }
+    }
+
+    // MARK: - Release v1: Store Callbacks (Split for Performance)
+
+    /// Called when playhead position changes (lightweight, frequent).
+    /// Used for scrubbing and playback tick updates.
+    private func handlePlayheadChanged(_ timeUs: TimeUs) {
+        guard let coordinator = playbackCoordinator else { return }
+
+        // Try sync path first (same scene, no load needed)
+        if let localFrame = coordinator.syncSetGlobalTimeUs(timeUs) {
+            // P1 fix: Cancel pending async task since we're back in loaded scene
+            playheadAsyncTask?.cancel()
+            playheadAsyncTask = nil
+
+            // Same scene - update frame and redraw
+            currentFrameIndex = localFrame
+            metalView.setNeedsDisplay()
+
+            // P1: Update video frames during timeline scrub (when not playing)
+            if !isPlaying, localFrame != lastVideoUpdateFrame {
+                userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                lastVideoUpdateFrame = localFrame
+            }
+        } else {
+            // Scene switch needed - use async path
+            // Cancel previous playhead task to avoid stale frame application
+            playheadAsyncTask?.cancel()
+            let requestedTimeUs = timeUs
+            playheadAsyncTask = Task { @MainActor in
+                let localFrame = await coordinator.setGlobalTimeUs(requestedTimeUs)
+
+                // Check if this task was cancelled (superseded by newer request)
+                guard !Task.isCancelled else { return }
+
+                self.currentFrameIndex = localFrame
+                self.metalView.setNeedsDisplay()
+
+                // P1: Update video frames after scene switch (when not playing)
+                if !self.isPlaying, localFrame != self.lastVideoUpdateFrame {
+                    self.userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                    self.lastVideoUpdateFrame = localFrame
+                }
+            }
+        }
+
+        // Sync editor controller (for UI frame display - global frame)
+        editorController.setCurrentTimeUs(timeUs, mode: .ended)
+    }
+
+    /// Called when selection changes (lightweight, frequent).
+    /// Used for tap/drag selection updates.
+    private func handleSelectionChanged(_ selection: TimelineSelection?) {
+        let sel = selection ?? .none
+        let sceneCount = editorStore?.sceneItems.count ?? 1
+        editorLayoutContainer.setTimelineSelection(sel, sceneCount: sceneCount)
+        editorController.selectTimeline(sel)
+    }
+
+    /// Called when timeline structure changes (heavier, less frequent).
+    /// Used for scene add/remove/trim commits.
+    private func handleTimelineChanged(_ state: EditorState) {
+        // Update scene clips UI
         let scenes = state.canonicalTimeline.toSceneDrafts()
         editorLayoutContainer.updateScenes(scenes)
-
-        // PR3: Sync selection from store (single source of truth)
-        editorLayoutContainer.setTimelineSelection(state.selection)
-        editorController.selectTimeline(state.selection)
 
         // Sync editor controller duration
         editorController.durationUs = state.projectDurationUs
 
+        // Update coordinator timeline
+        playbackCoordinator?.updateSceneTimeline(from: state)
+
         // Mark draft as dirty for persistence
+        currentProjectDraft = state.draft
         draftIsDirty = true
     }
 
@@ -1089,7 +1426,8 @@ final class PlayerViewController: UIViewController {
         userMediaContainer.isHidden = true
 
         // PR-32: Add user media buttons to stack
-        [addPhotoButton, addVideoButton, clearMediaButton].forEach { userMediaStack.addArrangedSubview($0) }
+        // PR9.1: Video hidden until video persistence is implemented
+        [addPhotoButton, clearMediaButton].forEach { userMediaStack.addArrangedSubview($0) }
         overlayView.translatesAutoresizingMaskIntoConstraints = false
         preparingOverlay.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1828,14 +2166,51 @@ final class PlayerViewController: UIViewController {
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
         editorController.handlePan(recognizer)
+        persistTransformIfNeeded(recognizer)
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
         editorController.handlePinch(recognizer)
+        persistTransformIfNeeded(recognizer)
     }
 
     @objc private func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
         editorController.handleRotation(recognizer)
+        persistTransformIfNeeded(recognizer)
+    }
+
+    /// PR9.1: Persists current transform to store for undo/redo and save/load.
+    private func persistTransformIfNeeded(_ recognizer: UIGestureRecognizer) {
+        guard let instanceId = activeSceneInstanceId,
+              let blockId = editorController.state.selectedBlockId,
+              let player = scenePlayer else { return }
+
+        let phase: InteractionPhase
+        switch recognizer.state {
+        case .began: phase = .began
+        case .changed: phase = .changed
+        case .ended: phase = .ended
+        case .cancelled, .failed: phase = .cancelled
+        default: return
+        }
+
+        let transform = player.userTransform(blockId: blockId)
+
+        editorStore?.dispatch(.setBlockTransform(
+            sceneInstanceId: instanceId,
+            blockId: blockId,
+            transform: transform,
+            phase: phase
+        ))
+
+        // On cancel, Store restores baseline but runtime still has "last" value.
+        // Apply restored baseline transform back to runtime.
+        // Use .identity as fallback when baseline has no saved transform.
+        if phase == .cancelled {
+            let restored = editorStore?.state.draft.sceneInstanceStates[instanceId]?.userTransforms[blockId] ?? .identity
+            player.setUserTransform(blockId: blockId, transform: restored)
+            metalView.setNeedsDisplay()
+        }
     }
 
     @objc private func modeToggleChanged() {
@@ -1867,6 +2242,15 @@ final class PlayerViewController: UIViewController {
         if isPlaying { stopPlayback() }
         editorController.setSelectedVariantForSelectedBlock(variants[idx].id)
         log("[Variant] block=\(editorController.state.selectedBlockId ?? "?") -> \(variants[idx].id)")
+
+        // PR9.1: Persist variant to store (write-through)
+        guard let instanceId = activeSceneInstanceId,
+              let blockId = editorController.state.selectedBlockId else { return }
+        editorStore?.dispatch(.setBlockVariant(
+            sceneInstanceId: instanceId,
+            blockId: blockId,
+            variantId: variants[idx].id
+        ))
     }
 
     @objc private func presetPickerChanged() {
@@ -2071,6 +2455,16 @@ final class PlayerViewController: UIViewController {
         guard let toggleId = sender.accessibilityIdentifier else { return }
         editorController.setToggle(toggleId: toggleId, enabled: sender.isOn)
         log("[Toggle] \(toggleId) = \(sender.isOn ? "ON" : "OFF")")
+
+        // PR9.1: Persist toggle to store (write-through)
+        guard let instanceId = activeSceneInstanceId,
+              let blockId = editorController.state.selectedBlockId else { return }
+        editorStore?.dispatch(.setBlockToggle(
+            sceneInstanceId: instanceId,
+            blockId: blockId,
+            toggleId: toggleId,
+            enabled: sender.isOn
+        ))
     }
 
     // MARK: - User Media UI (PR-32)
@@ -2127,10 +2521,100 @@ final class PlayerViewController: UIViewController {
 
     @objc private func clearMediaTapped() {
         guard let blockId = state.selectedBlockId else { return }
+
+        // PR9: Clear from runtime service
         userMediaService?.clear(blockId: blockId)
+
+        // PR9: Clear from store (persistent)
+        if let instanceId = activeSceneInstanceId {
+            editorStore?.dispatch(.setBlockMedia(
+                sceneInstanceId: instanceId,
+                blockId: blockId,
+                media: nil
+            ))
+        }
+
         updateUserMediaStatusLabel()
         metalView.setNeedsDisplay()
         log("[UserMedia] Cleared media for block '\(blockId)'")
+    }
+
+    /// PR9: Handles user media image picked from PHPicker.
+    /// Saves to persistent storage and dispatches to store.
+    private func handleUserMediaImagePicked(blockId: String, image: UIImage) {
+        // Step 1: Apply to runtime (for immediate preview)
+        let runtimeSuccess = userMediaService?.setPhoto(blockId: blockId, image: image) ?? false
+
+        if !runtimeSuccess {
+            log("[UserMedia] Failed to set photo for block '\(blockId)'")
+            updateUserMediaStatusLabel()
+            metalView.setNeedsDisplay()
+            return
+        }
+
+        log("[UserMedia] Photo set for block '\(blockId)'")
+
+        // Step 2: Save to persistent storage and dispatch to store
+        guard let instanceId = activeSceneInstanceId else {
+            log("[UserMedia] No active scene instance, skipping persistence")
+            updateUserMediaStatusLabel()
+            metalView.setNeedsDisplay()
+            return
+        }
+
+        // Resize and save to disk
+        let maxDimension: CGFloat = 2048
+        let resizedImage = resizeImageIfNeeded(image, maxDimension: maxDimension)
+
+        guard let jpegData = resizedImage.jpegData(compressionQuality: 0.9) else {
+            log("[UserMedia] Failed to create JPEG data for block '\(blockId)'")
+            updateUserMediaStatusLabel()
+            metalView.setNeedsDisplay()
+            return
+        }
+
+        do {
+            let mediaRef = try ProjectStore.shared.saveUserMedia(
+                jpegData,
+                sceneInstanceId: instanceId,
+                blockId: blockId
+            )
+
+            // Dispatch to store for persistence
+            editorStore?.dispatch(.setBlockMedia(
+                sceneInstanceId: instanceId,
+                blockId: blockId,
+                media: mediaRef
+            ))
+
+            log("[UserMedia] Saved media: \(mediaRef.id)")
+        } catch {
+            log("[UserMedia] Failed to save media: \(error)")
+        }
+
+        updateUserMediaStatusLabel()
+        metalView.setNeedsDisplay()
+    }
+
+    /// Resizes image if larger than maxDimension while preserving aspect ratio.
+    private func resizeImageIfNeeded(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let size = image.size
+        guard size.width > maxDimension || size.height > maxDimension else {
+            return image
+        }
+
+        let scale: CGFloat
+        if size.width > size.height {
+            scale = maxDimension / size.width
+        } else {
+            scale = maxDimension / size.height
+        }
+
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
     }
 
     private func presentPhotoPicker(for filter: PHPickerFilter) {
@@ -2140,6 +2624,36 @@ final class PlayerViewController: UIViewController {
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = self
         present(picker, animated: true)
+    }
+
+    // MARK: - PR9: Scene Catalog
+
+    /// Presents the scene catalog for adding a new scene.
+    private func presentSceneCatalog() {
+        guard let library = sceneLibrarySnapshot else {
+            log("[PR9] presentSceneCatalog: sceneLibrarySnapshot is nil")
+            return
+        }
+
+        let catalogVC = SceneCatalogViewController(sceneLibrary: library)
+        catalogVC.onSelectScene = { [weak self] sceneTypeId, baseDurationUs in
+            self?.handleAddScene(sceneTypeId: sceneTypeId, baseDurationUs: baseDurationUs)
+        }
+
+        let navController = UINavigationController(rootViewController: catalogVC)
+        present(navController, animated: true)
+    }
+
+    /// Handles scene selection from catalog.
+    private func handleAddScene(sceneTypeId: String, baseDurationUs: TimeUs) {
+        guard let store = editorStore else {
+            log("[PR9] handleAddScene: editorStore is nil")
+            return
+        }
+
+        // Dispatch addScene action to store
+        store.dispatch(.addScene(sceneTypeId: sceneTypeId, durationUs: baseDurationUs))
+        log("[PR9] Added scene: \(sceneTypeId) duration=\(baseDurationUs)us")
     }
 
     /// Convenience accessor for editor state.
@@ -2521,6 +3035,223 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    // MARK: - Release v1: Scene Type Loading
+
+    /// Loads a scene type from the SceneLibrary.
+    /// Release v1: Replaces loadCompiledTemplateFromBundle for editor mode.
+    /// Uses sceneLibrarySnapshot.folderURL instead of Templates/<name>.
+    private func loadSceneTypeFromBundle(sceneTypeId: String) {
+        stopPlayback()
+        renderErrorLogged = false
+        log("---\n[Release v1] Loading scene type '\(sceneTypeId)'...")
+
+        guard let device = metalView.device else {
+            log("ERROR: No Metal device")
+            loadingState = .failed(message: "No Metal device")
+            updateLoadingStateUI()
+            return
+        }
+
+        // Get scene folder URL from SceneLibrary
+        guard let sceneDescriptor = sceneLibrarySnapshot?.scene(byId: sceneTypeId),
+              let sceneURL = sceneDescriptor.folderURL else {
+            log("ERROR: Scene type '\(sceneTypeId)' not found in library")
+            loadingState = .failed(message: "Scene not found")
+            updateLoadingStateUI()
+            return
+        }
+
+        // PR-D: Cancel previous loading task if any
+        preparingTask?.cancel()
+
+        // PR-D: Generate new request ID for cancellation check
+        let requestId = UUID()
+        currentRequestId = requestId
+        loadingState = .preparing(requestId: requestId)
+        updateLoadingStateUI()
+
+        // PR-D: Async loading pipeline
+        preparingTask = Task { [weak self] in
+            guard let self = self else { return }
+
+            // === PHASE 1: Background ===
+            do {
+                let result: BackgroundLoadResult = try await Task(priority: .userInitiated) {
+                    try Task.checkCancellation()
+
+                    // Load .tve file from SceneLibrary folder
+                    let compiledLoader = CompiledScenePackageLoader(engineVersion: TVECore.version)
+                    let compiledPackage = try compiledLoader.load(from: sceneURL)
+
+                    try Task.checkCancellation()
+
+                    // Create asset indices
+                    let localIndex = try LocalAssetsIndex(imagesRootURL: sceneURL.appendingPathComponent("images"))
+                    let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
+                    let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
+
+                    return BackgroundLoadResult(
+                        compiledPackage: compiledPackage,
+                        resolver: resolver
+                    )
+                }.value
+
+                guard !Task.isCancelled, self.currentRequestId == requestId else {
+                    await MainActor.run { self.log("Scene load cancelled") }
+                    return
+                }
+
+                // === PHASE 2: Main Actor — ScenePlayer setup ===
+                await MainActor.run {
+                    self.log("Scene package loaded: \(result.compiledPackage.sceneId ?? sceneTypeId)")
+                    self.preparingOverlay.setStatus("Preparing scene...")
+                }
+
+                let sceneSetupResult: SceneSetupResult = await MainActor.run {
+                    let player = ScenePlayer()
+                    let compiled = player.loadCompiledScene(result.compiledPackage.compiled)
+                    return SceneSetupResult(player: player, compiled: compiled)
+                }
+
+                guard !Task.isCancelled, self.currentRequestId == requestId else { return }
+
+                // === PHASE 3: Background — Texture preload ===
+                await MainActor.run {
+                    self.preparingOverlay.setStatus("Loading textures...")
+                }
+
+                let (provider, queue): (ScenePackageTextureProvider, MTLCommandQueue?) = await MainActor.run {
+                    let p = SceneTextureProviderFactory.create(
+                        device: device,
+                        mergedAssetIndex: sceneSetupResult.compiled.mergedAssetIndex,
+                        resolver: result.resolver,
+                        bindingAssetIds: sceneSetupResult.compiled.bindingAssetIds,
+                        logger: { [weak self] msg in
+                            Task { @MainActor in self?.log(msg) }
+                        }
+                    )
+                    return (p, self.commandQueue)
+                }
+
+                try await Task(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    if let q = queue {
+                        provider.preloadAll(commandQueue: q)
+                    }
+                }.value
+
+                guard !Task.isCancelled, self.currentRequestId == requestId else { return }
+
+                // === PHASE 4: Main Actor — Finalize ===
+                await MainActor.run {
+                    self.applyLoadedSceneType(
+                        sceneTypeId: sceneTypeId,
+                        player: sceneSetupResult.player,
+                        compiled: sceneSetupResult.compiled,
+                        provider: provider,
+                        resolver: result.resolver,
+                        requestId: requestId
+                    )
+                }
+
+            } catch is CancellationError {
+                await MainActor.run { self.log("Scene load cancelled") }
+            } catch {
+                guard self.currentRequestId == requestId else { return }
+                await MainActor.run {
+                    self.log("ERROR: Failed to load scene: \(error)")
+                    self.loadingState = .failed(message: "Failed to load scene")
+                    self.updateLoadingStateUI()
+                }
+            }
+        }
+    }
+
+    /// Release v1: Applies loaded scene type to UI.
+    private func applyLoadedSceneType(
+        sceneTypeId: String,
+        player: ScenePlayer,
+        compiled: CompiledScene,
+        provider: ScenePackageTextureProvider,
+        resolver: CompositeAssetResolver,
+        requestId: UUID
+    ) {
+        guard currentRequestId == requestId else {
+            log("Scene load result discarded")
+            return
+        }
+
+        // Log preload stats
+        if let stats = provider.lastPreloadStats {
+            log(String(format: "[Preload] loaded: %d, missing: %d, skipped: %d, duration: %.1fms",
+                       stats.loadedCount, stats.missingCount, stats.skippedBindingCount, stats.durationMs))
+        }
+
+        // Apply to state
+        compiledScene = compiled
+        scenePlayer = player
+        editorController.setPlayer(player)
+        textureProvider = provider
+        currentResolver = resolver
+
+        // Store canvas size
+        canvasSize = compiled.runtime.canvasSize
+        editorController.canvasSize = canvasSize
+        updateMetalViewAspectRatio(width: canvasSize.width, height: canvasSize.height)
+
+        // Store merged asset sizes
+        mergedAssetSizes = compiled.mergedAssetIndex.sizeById
+
+        // Create UserMediaService
+        if let tp = textureProvider, let queue = commandQueue {
+            userMediaService = UserMediaService(
+                device: metalView.device!,
+                commandQueue: queue,
+                scenePlayer: player,
+                textureProvider: tp
+            )
+            userMediaService?.setSceneFPS(Double(compiled.runtime.fps))
+            userMediaService?.onNeedsDisplay = { [weak self] in
+                self?.metalView.setNeedsDisplay()
+            }
+            log("UserMediaService initialized")
+        }
+
+        // Setup background state
+        setupBackgroundState(compiled: compiled)
+
+        // Log results
+        let runtime = compiled.runtime
+        let canvasSizeStr = "\(Int(canvasSize.width))x\(Int(canvasSize.height))"
+        log("[Release v1] Scene loaded: \(canvasSizeStr) @ \(runtime.fps)fps, \(runtime.durationFrames) frames")
+
+        // Store scene properties
+        totalFrames = runtime.durationFrames
+        sceneFPS = Double(runtime.fps)
+
+        // Configure editor timeline (Release v1: uses new loadProject action)
+        configureEditorTimeline()
+
+        // Setup playback controls
+        currentFrameIndex = 0
+        frameSlider.maximumValue = Float(max(0, totalFrames - 1))
+        frameSlider.value = 0
+        frameSlider.isEnabled = true
+        playPauseButton.isEnabled = true
+        updateFrameLabel()
+
+        // Setup mode toggle
+        modeToggle.isEnabled = true
+        modeToggle.selectedSegmentIndex = 0 // Preview mode
+
+        // Transition to ready state
+        loadingState = .ready
+        updateLoadingStateUI()
+
+        // Trigger first frame render
+        metalView.setNeedsDisplay()
+    }
+
     /// PR-D: Applies loaded template to UI (must be called on main).
     private func applyLoadedTemplate(
         player: ScenePlayer,
@@ -2624,7 +3355,7 @@ final class PlayerViewController: UIViewController {
         do {
             currentProjectId = try ProjectStore.shared.createOrLoadProjectId(for: templateId)
             if let projectId = currentProjectId {
-                projectBackgroundOverride = try ProjectStore.shared.loadBackgroundOverride(projectId: projectId)
+                projectBackgroundOverride = try ProjectStore.shared.loadBackgroundOverride(projectId: projectId, templateId: templateId)
             }
         } catch {
             log("[Background] ProjectStore error: \(error.localizedDescription)")
@@ -2700,8 +3431,9 @@ final class PlayerViewController: UIViewController {
         let fps = Float(sceneFPS)
         displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
         displayLink?.add(to: .main, forMode: .common)
-        // PR-33: Start video playback (AVPlayer rate=1)
-        userMediaService?.startVideoPlayback(sceneFrameIndex: currentFrameIndex)
+        // PR-33: Start video playback - use LOCAL frame from coordinator
+        let localFrame = playbackCoordinator?.currentLocalFrame ?? currentFrameIndex
+        userMediaService?.startVideoPlayback(sceneFrameIndex: localFrame)
         // PR2: Update editor layout play state
         editorLayoutContainer.setPlaying(true)
         fullScreenPreviewVC?.setPlaying(true)
@@ -2728,28 +3460,43 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func displayLinkFired() {
-        editorController.advanceFrame()
-        // Also update VC's local frame tracking for legacy compatibility
-        currentFrameIndex = editorController.state.currentPreviewFrame
-
-        // PR2: Update timeline/fullscreen position during playback
-        // Time Refactor: Use time from controller state
-        if case .editor = presentationMode {
-            let timeUs = editorController.state.currentPreviewTimeUs
-            editorLayoutContainer.setCurrentTimeUs(timeUs)
-            fullScreenPreviewVC?.setCurrentFrame(currentFrameIndex)
+        // Release v1: Calculate next time and dispatch through store
+        guard let store = editorStore else {
+            // Fallback for preview mode without store
+            editorController.advanceFrame()
+            currentFrameIndex = editorController.state.currentPreviewFrame
+            return
         }
 
-        // PR-33: Gated video update (playback mode, no seek per frame)
-        // Only update if:
-        // 1. Playing (isPlaying = true)
-        // 2. Has video blocks
-        // 3. Frame changed since last update
+        let fps = store.state.templateFPS
+        let frameDurationUs: TimeUs = 1_000_000 / TimeUs(fps)
+        let currentTimeUs = store.playheadTimeUs
+        let nextTimeUs = min(currentTimeUs + frameDurationUs, store.projectDurationUs)
+
+        // Dispatch to store - onPlayheadChanged callback handles coordinator + redraw
+        store.dispatch(.setPlayhead(timeUs: nextTimeUs, quantize: .playback))
+
+        // Global frame for UI (timeline ruler, fullscreen position)
+        let globalFrameIndex = Int(nextTimeUs * TimeUs(fps) / 1_000_000)
+
+        // Update timeline/fullscreen position during playback
+        if case .editor = presentationMode {
+            editorLayoutContainer.setCurrentTimeUs(nextTimeUs)
+            fullScreenPreviewVC?.setCurrentFrame(globalFrameIndex)
+        }
+
+        // PR-33: Gated video update - use LOCAL frame from coordinator
+        let localFrame = playbackCoordinator?.currentLocalFrame ?? globalFrameIndex
         if let service = userMediaService,
            !service.blockIdsWithVideo.isEmpty,
-           currentFrameIndex != lastVideoUpdateFrame {
-            service.updateVideoFramesForPlayback(sceneFrameIndex: currentFrameIndex)
-            lastVideoUpdateFrame = currentFrameIndex
+           localFrame != lastVideoUpdateFrame {
+            service.updateVideoFramesForPlayback(sceneFrameIndex: localFrame)
+            lastVideoUpdateFrame = localFrame
+        }
+
+        // Auto-stop at end
+        if nextTimeUs >= store.projectDurationUs {
+            stopPlayback()
         }
     }
 
@@ -2883,11 +3630,17 @@ extension PlayerViewController: MTKViewDelegate {
                 }
             }
 
-            // PR-19: Get render commands from editor controller (mode-aware)
+            // Release v1: Get render commands from coordinator (editor mode) or fallback
             let commands: [RenderCommand]
-            if let editorCommands = editorController.currentRenderCommands() {
+            if case .editor = presentationMode,
+               let coordinatorCommands = playbackCoordinator?.currentRenderCommands(mode: .edit) {
+                // Coordinator is single source of truth for editor mode
+                commands = coordinatorCommands
+            } else if let editorCommands = editorController.currentRenderCommands() {
+                // Preview mode: use editor controller
                 commands = editorCommands
             } else {
+                // Fallback: direct scene render
                 commands = compiled.runtime.renderCommands(sceneFrameIndex: currentFrameIndex)
             }
 
@@ -3079,14 +3832,8 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
                 }
 
                 DispatchQueue.main.async {
-                    let success = self.userMediaService?.setPhoto(blockId: blockId, image: image) ?? false
-                    if success {
-                        self.log("[UserMedia] Photo set for block '\(blockId)'")
-                    } else {
-                        self.log("[UserMedia] Failed to set photo for block '\(blockId)'")
-                    }
-                    self.updateUserMediaStatusLabel()
-                    self.metalView.setNeedsDisplay()
+                    // PR9: Save image to persistent storage and dispatch to store
+                    self.handleUserMediaImagePicked(blockId: blockId, image: image)
                 }
             }
         } else if result.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
@@ -3175,11 +3922,12 @@ extension PlayerViewController: BackgroundEditorDelegate {
 
     func backgroundEditorWillDismiss(override: ProjectBackgroundOverride, presetId: String) {
         // Save to ProjectStore
-        guard let projectId = currentProjectId else { return }
+        guard let projectId = currentProjectId,
+              let templateId = currentTemplateId else { return }
 
         do {
-            try ProjectStore.shared.saveBackgroundOverride(projectId: projectId, override: override)
-            log("[Background] Saved override for project \(projectId)")
+            try ProjectStore.shared.saveBackgroundOverride(projectId: projectId, templateId: templateId, override: override)
+            log("[Background] Saved override for project \(projectId), template \(templateId)")
         } catch {
             log("[Background] Failed to save: \(error.localizedDescription)")
         }

@@ -18,7 +18,20 @@ targets:
       - path: Sources
         type: group
       - path: Resources
+        excludes:
+          - Templates/**
+          - BackgroundPresets/**
+          - Scenes/**
         type: group
+      - path: Resources/Templates
+        type: folder
+        buildPhase: resources
+      - path: Resources/BackgroundPresets
+        type: folder
+        buildPhase: resources
+      - path: Resources/Scenes
+        type: folder
+        buildPhase: resources
       - path: ../TestAssets
         type: folder
         buildPhase: resources
@@ -27,6 +40,9 @@ targets:
         buildPhase: resources
     dependencies:
       - package: TVECore
+        product: TVECore
+      - package: TVECore
+        product: TVECompilerCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.animi.app
@@ -66,3 +82,32 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         UIRequiresFullScreen: true
+
+  AnimiAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+        type: group
+    dependencies:
+      - target: AnimiApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.animi.app.tests
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  AnimiApp:
+    build:
+      targets:
+        AnimiApp: all
+        AnimiAppTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - AnimiAppTests
