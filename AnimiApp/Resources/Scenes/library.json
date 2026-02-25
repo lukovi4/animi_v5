@@ -1,0 +1,33 @@
+{
+  "fps": 30,
+  "canvas": {
+    "width": 1080,
+    "height": 1920
+  },
+  "scenes": [
+    {
+      "id": "example_4blocks",
+      "order": 0,
+      "title": "4 Blocks Demo",
+      "baseDurationUs": 10000000,
+      "folderPath": "Scenes/example_4blocks",
+      "previewImagePath": "Scenes/example_4blocks/preview.jpg"
+    },
+    {
+      "id": "polaroid_shared_demo",
+      "order": 1,
+      "title": "Polaroid Classic",
+      "baseDurationUs": 10000000,
+      "folderPath": "Scenes/polaroid_shared_demo",
+      "previewImagePath": "Scenes/polaroid_shared_demo/preview.jpg"
+    },
+    {
+      "id": "polaroid_2",
+      "order": 2,
+      "title": "Polaroid Style 2",
+      "baseDurationUs": 5000000,
+      "folderPath": "Scenes/polaroid_2",
+      "previewImagePath": "Scenes/polaroid_2/preview.jpg"
+    }
+  ]
+}
