@@ -22,11 +22,6 @@ public enum EditorConfig {
     /// Maximum project duration in seconds
     public static let maxDurationSeconds: Int = 60
 
-    // MARK: - Snap
-
-    /// Snap step in seconds for duration drag (0.5 = snap to half-seconds)
-    public static let snapStepSeconds: Double = 0.5
-
     // MARK: - Undo/Redo
 
     /// Maximum number of operations in undo stack

@@ -69,15 +69,13 @@ extension TimelinePayload: Codable {
 // MARK: - Scene Payload
 
 /// Payload for scene items.
-/// Minimal in PR1 (Core). Contains slot for future per-scene state override.
+/// Contains the scene type ID that links to the SceneLibrary.
 public struct ScenePayload: Codable, Equatable, Sendable {
-    /// Reserved for future: reference to per-scene state override.
-    /// When nil, scene inherits global SceneState from ProjectDraft.
-    /// Not used in PR1 (Timeline Core).
-    public var stateOverrideRef: UUID?
+    /// Scene type identifier (refers to SceneLibrary).
+    public var sceneTypeId: String
 
-    public init(stateOverrideRef: UUID? = nil) {
-        self.stateOverrideRef = stateOverrideRef
+    public init(sceneTypeId: String) {
+        self.sceneTypeId = sceneTypeId
     }
 }
 

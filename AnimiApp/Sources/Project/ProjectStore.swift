@@ -73,6 +73,7 @@ public final class ProjectStore {
     private static let indexFileName = "index.json"
     private static let mediaDirectoryName = "Media"
     private static let backgroundMediaDirectoryName = "Background"
+    private static let userMediaDirectoryName = "UserMedia"
 
     // MARK: - Properties
 
@@ -109,14 +110,24 @@ public final class ProjectStore {
             .appendingPathComponent(Self.backgroundMediaDirectoryName)
     }
 
+    /// Returns the media directory for user media (scene instance photos/videos).
+    public func userMediaDirectoryURL() throws -> URL {
+        let projectsDir = try projectsDirectoryURL()
+        return projectsDir
+            .appendingPathComponent(Self.mediaDirectoryName)
+            .appendingPathComponent(Self.userMediaDirectoryName)
+    }
+
     /// Ensures all required directories exist.
     public func ensureDirectoriesExist() throws {
         let projectsDir = try projectsDirectoryURL()
-        let mediaDir = try backgroundMediaDirectoryURL()
+        let backgroundDir = try backgroundMediaDirectoryURL()
+        let userMediaDir = try userMediaDirectoryURL()
 
         do {
             try fileManager.createDirectory(at: projectsDir, withIntermediateDirectories: true)
-            try fileManager.createDirectory(at: mediaDir, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: backgroundDir, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: userMediaDir, withIntermediateDirectories: true)
         } catch {
             throw ProjectStoreError.directoryCreationFailed(error)
         }
@@ -208,52 +219,19 @@ public final class ProjectStore {
         try projectsDirectoryURL().appendingPathComponent("\(projectId.uuidString).json")
     }
 
-    // MARK: - Background Override API (Compatibility Layer)
-    //
-    // These methods provide backwards compatibility with existing code.
-    // They now read/write through ProjectDraft to ensure data consistency.
-    // New code should use ProjectDraft API directly.
+    // MARK: - Background Override API
 
     /// Loads the background override for a project.
-    /// Reads from ProjectDraft.background (with legacy migration support).
+    /// Reads from ProjectDraft.background.
     /// - Parameters:
     ///   - projectId: Project UUID
-    ///   - templateId: Template identifier (required for migration)
+    ///   - templateId: Template identifier
     /// - Returns: Background override or nil if not found
     public func loadBackgroundOverride(projectId: UUID, templateId: String) throws -> ProjectBackgroundOverride? {
         guard let draft = try loadProjectDraft(projectId: projectId, templateId: templateId) else {
             return nil
         }
         return draft.background
-    }
-
-    /// Loads the background override for a project (legacy signature).
-    /// - Note: Deprecated. Use `loadBackgroundOverride(projectId:templateId:)` instead.
-    /// - Parameter projectId: Project UUID
-    /// - Returns: Background override or nil if not found
-    @available(*, deprecated, message: "Use loadBackgroundOverride(projectId:templateId:) instead")
-    public func loadBackgroundOverride(projectId: UUID) throws -> ProjectBackgroundOverride? {
-        let url = try projectURL(for: projectId)
-
-        guard fileManager.fileExists(atPath: url.path) else {
-            return nil
-        }
-
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
-        // Try to decode as ProjectDraft first
-        if let draft = try? decoder.decode(ProjectDraft.self, from: data) {
-            return draft.background
-        }
-
-        // Fallback to legacy format
-        do {
-            return try JSONDecoder().decode(ProjectBackgroundOverride.self, from: data)
-        } catch {
-            throw ProjectStoreError.projectReadFailed(projectId, error)
-        }
     }
 
     /// Saves the background override for a project.
@@ -273,42 +251,6 @@ public final class ProjectStore {
 
         // Save full draft
         try saveProjectDraft(draft)
-    }
-
-    /// Saves the background override for a project (legacy signature).
-    /// - Warning: This method cannot update ProjectDraft correctly without templateId.
-    ///            Use `saveBackgroundOverride(projectId:templateId:override:)` instead.
-    /// - Warning: When no ProjectDraft exists, this creates a legacy background-only file.
-    ///            It will be migrated to ProjectDraft only when `loadProjectDraft(projectId:templateId:)` is called.
-    ///            Until then, other ProjectDraft fields (name, sceneState, timeline) will not exist.
-    @available(*, deprecated, message: "Use saveBackgroundOverride(projectId:templateId:override:) instead")
-    public func saveBackgroundOverride(projectId: UUID, override: ProjectBackgroundOverride) throws {
-        let url = try projectURL(for: projectId)
-
-        // Try to load existing draft to preserve other data
-        let data = try? Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
-        if var draft = data.flatMap({ try? decoder.decode(ProjectDraft.self, from: $0) }) {
-            // Update background in existing draft
-            draft.background = override
-            draft.updatedAt = Date()
-            try saveProjectDraft(draft)
-        } else {
-            // No existing draft - this is a legacy call, write legacy format
-            // This maintains backwards compatibility but is not recommended
-            try ensureDirectoriesExist()
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let encodedData = try encoder.encode(override)
-            try encodedData.write(to: url, options: .atomic)
-
-            // Run GC async after save
-            Task.detached { [weak self] in
-                await self?.collectOrphanBackgroundMediaFiles()
-            }
-        }
     }
 
     /// Deletes a project and its associated data.
@@ -332,13 +274,14 @@ public final class ProjectStore {
         try saveIndex(index)
     }
 
-    // MARK: - Project Draft API (PR1)
+    // MARK: - Project Draft API (Release v1)
 
-    /// Loads the project draft for a project, with automatic migration from legacy format.
+    /// Loads the project draft for a project.
+    /// If schema version doesn't match current, returns nil (fallback to new project).
     /// - Parameters:
     ///   - projectId: Project UUID
-    ///   - templateId: Template identifier (needed for migration)
-    /// - Returns: ProjectDraft or nil if not found
+    ///   - templateId: Template identifier
+    /// - Returns: ProjectDraft or nil if not found or incompatible schema
     public func loadProjectDraft(projectId: UUID, templateId: String) throws -> ProjectDraft? {
         let url = try projectURL(for: projectId)
 
@@ -348,29 +291,27 @@ public final class ProjectStore {
 
         let data = try Data(contentsOf: url)
 
-        // Try to decode as ProjectDraft first (with ISO8601 dates)
+        // Try to decode as ProjectDraft (with ISO8601 dates)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        if let draft = try? decoder.decode(ProjectDraft.self, from: data) {
-            return draft
-        }
 
-        // Fallback: try to decode as legacy ProjectBackgroundOverride and migrate
-        do {
-            let legacy = try JSONDecoder().decode(ProjectBackgroundOverride.self, from: data)
-            let migrated = ProjectDraft.migrate(from: legacy, templateId: templateId, projectId: projectId)
-
-            // Rewrite file in new format (atomic)
-            try saveProjectDraft(migrated)
-
+        guard let draft = try? decoder.decode(ProjectDraft.self, from: data) else {
+            // Cannot decode - treat as corrupted, will create new project
             #if DEBUG
-            print("[ProjectStore] Migrated legacy project \(projectId) to ProjectDraft format")
+            print("[ProjectStore] Cannot decode project \(projectId), will create new")
             #endif
-
-            return migrated
-        } catch {
-            throw ProjectStoreError.projectReadFailed(projectId, error)
+            return nil
         }
+
+        // Check schema version - no migrations, just fallback to new project
+        guard draft.isValid else {
+            #if DEBUG
+            print("[ProjectStore] Schema mismatch for project \(projectId): \(draft.schemaVersion) != \(ProjectDraft.currentSchemaVersion), will create new")
+            #endif
+            return nil
+        }
+
+        return draft
     }
 
     /// Saves the project draft.
@@ -397,19 +338,24 @@ public final class ProjectStore {
     }
 
     /// Creates or loads a ProjectDraft for a template.
+    /// If existing project has incompatible schema, creates a new empty project.
     /// - Parameter templateId: Template identifier
     /// - Returns: Existing or new ProjectDraft
     public func createOrLoadProjectDraft(for templateId: String) throws -> ProjectDraft {
         let projectId = try createOrLoadProjectId(for: templateId)
 
-        // Try to load existing draft
+        // Try to load existing draft (returns nil if schema mismatch)
         if let existingDraft = try loadProjectDraft(projectId: projectId, templateId: templateId) {
             return existingDraft
         }
 
-        // Create new draft
+        // Create new empty draft (timeline will be populated from recipe in loadProject)
         let newDraft = ProjectDraft.create(for: templateId, projectId: projectId)
         try saveProjectDraft(newDraft)
+
+        #if DEBUG
+        print("[ProjectStore] Created new empty draft for template \(templateId)")
+        #endif
 
         return newDraft
     }
@@ -516,6 +462,31 @@ public final class ProjectStore {
         return MediaRef.file(relativePath)
     }
 
+    /// Saves user media (photo) to the user media directory.
+    /// - Parameters:
+    ///   - imageData: JPEG image data
+    ///   - sceneInstanceId: Scene instance ID for organizing files
+    ///   - blockId: Block ID for organizing files
+    /// - Returns: MediaRef with relative path
+    public func saveUserMedia(
+        _ imageData: Data,
+        sceneInstanceId: UUID,
+        blockId: String
+    ) throws -> MediaRef {
+        try ensureDirectoriesExist()
+
+        let uuid = UUID().uuidString
+        let filename = "\(sceneInstanceId.uuidString)_\(blockId)_\(uuid).jpg"
+        let relativePath = "\(Self.mediaDirectoryName)/\(Self.userMediaDirectoryName)/\(filename)"
+
+        let mediaDir = try userMediaDirectoryURL()
+        let fileURL = mediaDir.appendingPathComponent(filename)
+
+        try imageData.write(to: fileURL, options: .atomic)
+
+        return MediaRef.file(relativePath)
+    }
+
     /// Returns the absolute URL for a media reference.
     /// - Parameter mediaRef: Media reference
     /// - Returns: Absolute file URL
@@ -595,7 +566,7 @@ public final class ProjectStore {
         for (templateId, projectIdString) in index.byTemplateId {
             guard let projectId = UUID(uuidString: projectIdString) else { continue }
 
-            // Try to load as ProjectDraft first, fallback to legacy
+            // Load ProjectDraft and collect MediaRefs
             if let draft = try? loadProjectDraft(projectId: projectId, templateId: templateId) {
                 // Collect MediaRefs from background regions
                 for (_, regionOverride) in draft.background.regions {
@@ -604,13 +575,6 @@ public final class ProjectStore {
                     }
                 }
                 // Future: collect from sceneState.mediaAssignments when implemented
-            } else if let override = try? loadBackgroundOverride(projectId: projectId) {
-                // Legacy fallback
-                for (_, regionOverride) in override.regions {
-                    if let mediaRef = regionOverride.imageMediaRef {
-                        paths.insert(mediaRef.id)
-                    }
-                }
             }
         }
 

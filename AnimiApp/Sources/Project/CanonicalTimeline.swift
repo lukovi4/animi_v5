@@ -1,5 +1,23 @@
 import Foundation
 
+// MARK: - Scene Draft (UI Adapter)
+
+/// Simple struct for passing scene info to UI components.
+/// Contains only id and duration - used by TimelineView, SceneTrackView, etc.
+/// This is a UI adapter, NOT the domain model (use TimelineItem for domain logic).
+public struct SceneDraft: Codable, Equatable, Sendable {
+    /// Unique identifier for this scene instance.
+    public let id: UUID
+
+    /// Duration of this scene in microseconds.
+    public var durationUs: TimeUs
+
+    public init(id: UUID = UUID(), durationUs: TimeUs) {
+        self.id = id
+        self.durationUs = durationUs
+    }
+}
+
 // MARK: - Canonical Timeline (v4 Schema)
 
 /// Canonical microseconds-based timeline model.
@@ -23,6 +41,53 @@ public struct CanonicalTimeline: Codable, Equatable, Sendable {
     public static func empty() -> CanonicalTimeline {
         let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: [])
         return CanonicalTimeline(tracks: [sceneTrack], payloads: [:])
+    }
+
+    /// Creates a timeline with a single scene.
+    /// - Parameters:
+    ///   - sceneTypeId: Scene type identifier from SceneLibrary
+    ///   - durationUs: Duration for the scene in microseconds
+    /// - Returns: CanonicalTimeline with one scene item and its payload
+    public static func makeWithSingleScene(sceneTypeId: String, durationUs: TimeUs) -> CanonicalTimeline {
+        let payloadId = UUID()
+        let sceneItem = TimelineItem(
+            id: UUID(),
+            payloadId: payloadId,
+            kind: .scene,
+            startUs: nil,
+            durationUs: durationUs
+        )
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: [sceneItem])
+        let payloads: [UUID: TimelinePayload] = [payloadId: .scene(ScenePayload(sceneTypeId: sceneTypeId))]
+        return CanonicalTimeline(tracks: [sceneTrack], payloads: payloads)
+    }
+
+    /// Creates a timeline from a sequence of scene type defaults.
+    /// Used when initializing a project from a template recipe.
+    /// - Parameter defaults: Array of scene type defaults from recipe
+    /// - Returns: CanonicalTimeline with scene items for each default
+    public static func makeFromRecipe(defaults: [SceneTypeDefault]) -> CanonicalTimeline {
+        var items: [TimelineItem] = []
+        var payloads: [UUID: TimelinePayload] = [:]
+
+        for sceneDefault in defaults {
+            let payloadId = UUID()
+            let durationUs = max(sceneDefault.baseDurationUs, ProjectDraft.minSceneDurationUs)
+
+            let item = TimelineItem(
+                id: UUID(),
+                payloadId: payloadId,
+                kind: .scene,
+                startUs: nil,
+                durationUs: durationUs
+            )
+
+            items.append(item)
+            payloads[payloadId] = .scene(ScenePayload(sceneTypeId: sceneDefault.sceneTypeId))
+        }
+
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: items)
+        return CanonicalTimeline(tracks: [sceneTrack], payloads: payloads)
     }
 }
 
@@ -140,6 +205,17 @@ public extension CanonicalTimeline {
         sceneSequenceTrack.items.reduce(0) { $0 + $1.durationUs }
     }
 
+    /// Returns sceneTypeId of the first scene in timeline, if any.
+    /// Used to determine initial scene when opening a saved project.
+    var firstSceneTypeId: String? {
+        guard let firstItem = sceneItems.first,
+              let payload = payloads[firstItem.payloadId],
+              case .scene(let scenePayload) = payload else {
+            return nil
+        }
+        return scenePayload.sceneTypeId
+    }
+
     /// Computes startUs for a scene item at given index (derived from cumulative sum).
     func computedStartUs(forSceneAt index: Int) -> TimeUs {
         guard index >= 0 && index < sceneSequenceTrack.items.count else { return 0 }
@@ -206,13 +282,14 @@ public extension CanonicalTimeline {
 public extension CanonicalTimeline {
     /// Adds a new scene item to the sceneSequence track.
     /// - Parameters:
+    ///   - sceneTypeId: Scene type identifier from SceneLibrary
     ///   - durationUs: Duration in microseconds
     ///   - payloads: Inout reference to payloads registry
     /// - Returns: The created item
     @discardableResult
-    mutating func addScene(durationUs: TimeUs, payloads: inout [UUID: TimelinePayload]) -> TimelineItem {
+    mutating func addScene(sceneTypeId: String, durationUs: TimeUs, payloads: inout [UUID: TimelinePayload]) -> TimelineItem {
         let payloadId = UUID()
-        payloads[payloadId] = .scene(ScenePayload())
+        payloads[payloadId] = .scene(ScenePayload(sceneTypeId: sceneTypeId))
 
         let item = TimelineItem(
             id: UUID(),
