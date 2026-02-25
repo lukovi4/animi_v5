@@ -55,6 +55,9 @@ jobs:
             --skip "testAnim1_frame0_opacityIsZero" \
             --skip "testAnim1_frame15_opacityIsMidpoint"
 
+      - name: Download Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Build iOS App
         run: |
           xcodebuild build \
