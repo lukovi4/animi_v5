@@ -1,6 +1,6 @@
 import UIKit
 
-// MARK: - Timeline View (PR2: Y-scroll + Trim)
+// MARK: - Timeline View (PR2: Y-scroll + Trim, PR4: Data/Layout split)
 
 /// 2D scrolling timeline with pinch zoom and trim support.
 /// Contains track views (SceneTrackView, AudioTrackView).
@@ -11,6 +11,11 @@ import UIKit
 /// - No nested scroll views, no gesture conflicts
 /// - Real padding via contentWidth = leftPad + duration*pps + rightPad
 /// - Zoom anchored under playhead (center of screen)
+///
+/// PR4 Architecture:
+/// - Data path: applySnapshot (scenes change) - infrequent
+/// - Layout path: setLayoutContext (zoom/scroll) - frequent
+/// - Scroll/zoom does NOT trigger data updates
 ///
 /// Playhead model: playhead is fixed at center X of the view.
 /// Content scrolls underneath. leftPaddingPx provides space so
@@ -44,6 +49,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// PR3: Reorder mode state
     private var isReorderMode: Bool = false
+
+    /// PR4: Min scene duration for trim clamp (model constraint)
+    private var minSceneDurationUs: TimeUs = ProjectDraft.minSceneDurationUs
 
     // MARK: - Initial Positioning State
 
@@ -300,28 +308,18 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// Configures timeline with duration in microseconds and template FPS.
     /// Does NOT reset position - use restoreState() to set position after configure.
+    /// PR4: Legacy single-scene API, converts to scenes array internally.
     /// - Parameters:
     ///   - durationUs: Duration in microseconds (source of truth)
     ///   - templateFPS: Template frame rate for quantization
     func configure(durationUs: TimeUs, templateFPS: Int) {
-        self.durationUs = durationUs
-        self.templateFPS = templateFPS > 0 ? templateFPS : 30
-
-        // Pass leftPaddingPx to tracks for spacer
-        let padding = leftPaddingPx
-        sceneTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
-        audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
-
-        #if DEBUG
-        for track in debugAudioTracks {
-            track.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
-        }
-        #endif
-
-        updateContentSize()
+        // Convert to single-scene array for PR4 compatibility
+        let singleScene = SceneDraft(id: UUID(), durationUs: durationUs)
+        configure(scenes: [singleScene], templateFPS: templateFPS, minSceneDurationUs: ProjectDraft.minSceneDurationUs)
     }
 
     /// Configures timeline with scenes array (PR2: Multi-scene support).
+    /// PR4: Uses applySnapshot for data, setLayoutContext for layout.
     /// - Parameters:
     ///   - scenes: Array of SceneDraft objects
     ///   - templateFPS: Template frame rate for quantization
@@ -330,10 +328,18 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         self.scenes = scenes
         self.durationUs = scenes.reduce(0) { $0 + $1.durationUs }
         self.templateFPS = templateFPS > 0 ? templateFPS : 30
+        self.minSceneDurationUs = minSceneDurationUs
 
+        // PR4: Data path - applySnapshot
+        let snapshot = SceneTrackSnapshot(
+            scenes: scenes,
+            selectedSceneId: selectedSceneId,
+            minDurationUs: minSceneDurationUs
+        )
+        sceneTrack.applySnapshot(snapshot)
+
+        // PR4: Layout path - setLayoutContext (done via updateContentSize)
         let padding = leftPaddingPx
-        // PR2 fix: Use passed minSceneDurationUs (0.1s) instead of 1 frame
-        sceneTrack.configure(scenes: scenes, pxPerSecond: pxPerSecond, leftPadding: padding, minDurationUs: minSceneDurationUs)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
         #if DEBUG
@@ -346,17 +352,21 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     /// Updates scenes (for trim operations).
+    /// PR4: Uses applySnapshot for data (with diff), layout via updateContentSize.
     func updateScenes(_ scenes: [SceneDraft]) {
         self.scenes = scenes
         self.durationUs = scenes.reduce(0) { $0 + $1.durationUs }
 
-        let padding = leftPaddingPx
-
-        // PR2 v8: Do NOT rebuild clip views on live trim - use updateScenes for in-place update
-        sceneTrack.updateScenes(scenes)
-        sceneTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
+        // PR4: Data path - applySnapshot (handles diff internally)
+        let snapshot = SceneTrackSnapshot(
+            scenes: scenes,
+            selectedSceneId: selectedSceneId,
+            minDurationUs: minSceneDurationUs
+        )
+        sceneTrack.applySnapshot(snapshot)
 
         // Audio: configure is ok (single block, no active gesture)
+        let padding = leftPaddingPx
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
         #if DEBUG
@@ -365,6 +375,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         #endif
 
+        // PR4: Layout path via updateContentSize
         updateContentSize()
     }
 
@@ -453,9 +464,10 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // Update content width
         contentWidthConstraint?.constant = width
 
-        // Update tracks with new pxPerSecond and padding
+        // PR4: Layout path only - update tracks with new layout context
         let padding = leftPaddingPx
-        sceneTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
+        let layoutContext = TimelineLayoutContext(pxPerSecond: pxPerSecond, leftPadding: padding)
+        sceneTrack.setLayoutContext(layoutContext)
         audioTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
 
         #if DEBUG

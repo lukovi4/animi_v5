@@ -1,12 +1,13 @@
 import UIKit
 
-// MARK: - Scene Clip View (PR2: Multi-scene + Trim handles, PR3: Reorder)
+// MARK: - Scene Clip View (PR2: Multi-scene + Trim handles, PR3: Reorder, PR4: Data/Layout split)
 
 /// Represents a single scene clip on the timeline.
 /// Shows the clip body with optional trim handles when selected.
 /// Handles are 44pt touch targets with 10pt visual indicator.
 /// PR3: Supports body drag for reorder in reorder mode.
-final class SceneClipView: UIView {
+/// PR4: Conforms to ClipViewContract - separates data (applySnapshot) from layout (applyLayout).
+final class SceneClipView: UIView, ClipViewContract {
 
     // MARK: - Callbacks
 
@@ -183,9 +184,31 @@ final class SceneClipView: UIView {
         bodyView.addGestureRecognizer(bodyPanGesture)
     }
 
-    // MARK: - Configuration
+    // MARK: - ClipViewContract (PR4)
+
+    /// Applies data snapshot. Called when clip data changes, NOT during scroll/zoom.
+    /// - Parameter snapshot: Data snapshot with duration, selection, constraints
+    func applySnapshot(_ snapshot: SceneClipSnapshot) {
+        #if DEBUG
+        TimelinePerfCounters.incrementApplySnapshot(.scene)
+        #endif
+
+        self.durationUs = snapshot.durationUs
+        self.minDurationUs = snapshot.minDurationUs
+        // Note: isSelected is handled via setSelected() for animation support
+    }
+
+    /// Applies layout parameters. Called during layout pass.
+    /// - Parameter pxPerSecond: Pixels per second for gesture calculations
+    func applyLayout(pxPerSecond: CGFloat) {
+        self.pxPerSecond = pxPerSecond
+    }
+
+    // MARK: - Configuration (Legacy - PR4 deprecated)
 
     /// PR2 fix: Added minDurationUs parameter (calculated from templateFPS)
+    /// PR4: Deprecated - use applySnapshot + applyLayout instead
+    @available(*, deprecated, message: "Use applySnapshot + applyLayout instead")
     func configure(durationUs: TimeUs, pxPerSecond: CGFloat, minDurationUs: TimeUs) {
         self.durationUs = durationUs
         self.pxPerSecond = pxPerSecond
@@ -216,8 +239,10 @@ final class SceneClipView: UIView {
         trailingHandle.isHidden = !isSelected || isReorderMode
     }
 
+    /// PR4: Legacy method, use applyLayout(pxPerSecond:) instead
+    @available(*, deprecated, message: "Use applyLayout(pxPerSecond:) instead")
     func setPxPerSecond(_ pps: CGFloat) {
-        pxPerSecond = pps
+        applyLayout(pxPerSecond: pps)
     }
 
     // MARK: - Computed

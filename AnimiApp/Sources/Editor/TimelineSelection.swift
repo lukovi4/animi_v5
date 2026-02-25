@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-// MARK: - Timeline Selection (PR2)
+// MARK: - Timeline Selection (PR2: Multi-scene support)
 
 /// Represents the currently selected item on the timeline.
 /// Used to switch between GlobalActionBar and ContextBar.
@@ -9,13 +9,19 @@ public enum TimelineSelection: Equatable, Sendable {
     /// No item selected - show GlobalActionBar
     case none
 
-    /// Scene track selected - show ContextBar
-    case scene
+    /// Scene clip selected by ID - show ContextBar with trim handles
+    case scene(id: UUID)
 
     /// Audio track selected - show ContextBar (placeholder for future)
     case audio
 
     // Future: case layer(id: String)
+
+    /// Returns true if any scene is selected (regardless of ID)
+    var isSceneSelected: Bool {
+        if case .scene = self { return true }
+        return false
+    }
 }
 
 // MARK: - Timeline State (PR2, Time Refactor)

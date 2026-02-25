@@ -1,12 +1,13 @@
 import UIKit
 
-// MARK: - Scene Track View (PR2: Multi-scene support, PR3: Reorder)
+// MARK: - Scene Track View (PR2: Multi-scene support, PR3: Reorder, PR4: Data/Layout split)
 
 /// Visualizes scene clips on the timeline.
 /// Renders multiple SceneClipViews based on scenes array.
 /// PR2: Supports selection and trim handles.
 /// PR3: Supports reorder mode with drag & drop.
-final class SceneTrackView: UIView {
+/// PR4: Conforms to TrackViewContract - separates data (applySnapshot) from layout (layoutItems).
+final class SceneTrackView: UIView, TrackViewContract {
 
     // MARK: - Callbacks
 
@@ -22,14 +23,19 @@ final class SceneTrackView: UIView {
     /// PR2 fix: Called when a clip view is created (for gesture conflict resolution).
     var onClipCreated: ((SceneClipView) -> Void)?
 
-    // MARK: - Configuration
+    // MARK: - Data State (PR4: data path)
 
     private var scenes: [SceneDraft] = []
-    private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
-    private var leftPadding: CGFloat = 0
     private var selectedSceneId: UUID?
     /// PR2 fix: Min duration for trim clamp (0.1s per spec)
     private var minDurationUs: TimeUs = ProjectDraft.minSceneDurationUs
+
+    // MARK: - Layout State (PR4: layout path)
+
+    private var layoutContext: TimelineLayoutContext = TimelineLayoutContext(
+        pxPerSecond: EditorConfig.basePxPerSecond,
+        leftPadding: 0
+    )
 
     // MARK: - Reorder Mode (PR3)
 
@@ -66,53 +72,152 @@ final class SceneTrackView: UIView {
         addSubview(insertionLine)
     }
 
-    // MARK: - Configuration
+    // MARK: - TrackViewContract (PR4)
 
-    /// Configures track with scenes array.
-    /// - Parameters:
-    ///   - scenes: Array of SceneDraft objects
-    ///   - pxPerSecond: Pixels per second for width calculation
-    ///   - leftPadding: Left padding where time=0 starts
-    ///   - minDurationUs: Minimum duration for trim clamp (1 frame at templateFPS)
-    func configure(scenes: [SceneDraft], pxPerSecond: CGFloat, leftPadding: CGFloat, minDurationUs: TimeUs) {
-        self.scenes = scenes
-        self.pxPerSecond = pxPerSecond
-        self.leftPadding = leftPadding
-        self.minDurationUs = minDurationUs
-        rebuildClipViews()
-    }
+    /// Applies data snapshot. Called when scenes change, NOT during scroll/zoom.
+    /// Creates/removes clip views as needed (diff by IDs).
+    /// - Parameter snapshot: Data snapshot with scenes, selection, constraints
+    func applySnapshot(_ snapshot: SceneTrackSnapshot) {
+        #if DEBUG
+        TimelinePerfCounters.incrementApplySnapshot(.scene)
+        #endif
 
-    /// Updates pixels per second and leftPadding (when timeline zooms).
-    func setPxPerSecond(_ pxPerSec: CGFloat, leftPadding: CGFloat) {
-        self.pxPerSecond = pxPerSec
-        self.leftPadding = leftPadding
-        updateClipLayouts()
-    }
+        let oldIds = Set(scenes.map { $0.id })
+        let newIds = Set(snapshot.scenes.map { $0.id })
 
-    /// Updates scenes and refreshes layout.
-    /// PR2 v7: Only rebuild if IDs changed, otherwise update frames in-place (for live trim)
-    func updateScenes(_ scenes: [SceneDraft]) {
-        let oldIds = self.scenes.map { $0.id }
-        let newIds = scenes.map { $0.id }
+        // Store new data
+        self.scenes = snapshot.scenes
+        self.selectedSceneId = snapshot.selectedSceneId
+        self.minDurationUs = snapshot.minDurationUs
 
-        self.scenes = scenes
+        // Diff: determine what changed
+        let addedIds = newIds.subtracting(oldIds)
+        let removedIds = oldIds.subtracting(newIds)
+        let existingIds = oldIds.intersection(newIds)
 
-        // Rebuild only if structure changed
-        if oldIds != newIds || clipViews.count != scenes.count {
-            rebuildClipViews()
-            return
+        // Remove clips for removed scenes
+        for id in removedIds {
+            clipViews[id]?.removeFromSuperview()
+            clipViews.removeValue(forKey: id)
         }
 
-        // Same clips, just durations updated -> update frames in place
-        updateClipLayouts()
+        // Create clips for added scenes
+        for scene in snapshot.scenes where addedIds.contains(scene.id) {
+            createClipView(for: scene)
+        }
+
+        // Update data for existing clips (no frame changes here!)
+        for scene in snapshot.scenes where existingIds.contains(scene.id) {
+            guard let clipView = clipViews[scene.id] else { continue }
+
+            let clipSnapshot = SceneClipSnapshot(
+                durationUs: scene.durationUs,
+                isSelected: scene.id == snapshot.selectedSceneId,
+                minDurationUs: snapshot.minDurationUs
+            )
+            clipView.applySnapshot(clipSnapshot)
+            clipView.setSelected(scene.id == snapshot.selectedSceneId)
+        }
+
+        // Update selection for new clips
+        for id in addedIds {
+            clipViews[id]?.setSelected(id == snapshot.selectedSceneId)
+        }
+
+        // Trigger layout (frames will be set in layoutItems)
+        setNeedsLayout()
     }
 
-    /// Sets selected scene by ID.
+    /// Performs layout-only update (frames, positions).
+    /// Called during scroll/zoom, must NOT trigger data updates.
+    /// - Parameter context: Layout context with pxPerSecond and leftPadding
+    func layoutItems(_ context: TimelineLayoutContext) {
+        #if DEBUG
+        TimelinePerfCounters.incrementLayout(.scene)
+        #endif
+
+        self.layoutContext = context
+        var currentX = context.leftPadding
+
+        for scene in scenes {
+            guard let clipView = clipViews[scene.id] else { continue }
+
+            let durationSeconds = CGFloat(usToSeconds(scene.durationUs))
+            let clipWidth = durationSeconds * context.pxPerSecond
+
+            // Set frame (layout only)
+            clipView.frame = CGRect(
+                x: currentX,
+                y: 0,
+                width: clipWidth,
+                height: bounds.height
+            )
+
+            // Apply layout params to clip (for gesture calculations)
+            clipView.applyLayout(pxPerSecond: context.pxPerSecond)
+
+            currentX += clipWidth
+        }
+
+        // Update insertion line position if active
+        if let draggingId = draggingSceneId, currentTargetIndex >= 0 {
+            updateInsertionLine(for: currentTargetIndex, draggingSceneId: draggingId)
+        }
+    }
+
+    // MARK: - Layout Context Setter (PR4)
+
+    /// Updates layout context and triggers layout.
+    /// Called by TimelineView when zoom/scroll changes.
+    /// - Parameter context: New layout context
+    func setLayoutContext(_ context: TimelineLayoutContext) {
+        self.layoutContext = context
+        setNeedsLayout()
+    }
+
+    // MARK: - Selection (PR4: separate from applySnapshot)
+
+    /// Sets selected scene by ID. Only updates visual state.
+    /// - Parameter sceneId: Scene ID to select, or nil to clear
     func setSelectedScene(_ sceneId: UUID?) {
         selectedSceneId = sceneId
         for (id, clipView) in clipViews {
             clipView.setSelected(id == sceneId)
         }
+    }
+
+    // MARK: - Legacy Configuration (PR4 deprecated)
+
+    /// Configures track with scenes array.
+    /// PR4: Deprecated - use applySnapshot + setLayoutContext instead
+    @available(*, deprecated, message: "Use applySnapshot + setLayoutContext instead")
+    func configure(scenes: [SceneDraft], pxPerSecond: CGFloat, leftPadding: CGFloat, minDurationUs: TimeUs) {
+        let snapshot = SceneTrackSnapshot(
+            scenes: scenes,
+            selectedSceneId: selectedSceneId,
+            minDurationUs: minDurationUs
+        )
+        applySnapshot(snapshot)
+        setLayoutContext(TimelineLayoutContext(pxPerSecond: pxPerSecond, leftPadding: leftPadding))
+    }
+
+    /// Updates pixels per second and leftPadding (when timeline zooms).
+    /// PR4: Deprecated - use setLayoutContext instead
+    @available(*, deprecated, message: "Use setLayoutContext instead")
+    func setPxPerSecond(_ pxPerSec: CGFloat, leftPadding: CGFloat) {
+        setLayoutContext(TimelineLayoutContext(pxPerSecond: pxPerSec, leftPadding: leftPadding))
+    }
+
+    /// Updates scenes and refreshes layout.
+    /// PR4: Deprecated - use applySnapshot instead
+    @available(*, deprecated, message: "Use applySnapshot instead")
+    func updateScenes(_ scenes: [SceneDraft]) {
+        let snapshot = SceneTrackSnapshot(
+            scenes: scenes,
+            selectedSceneId: selectedSceneId,
+            minDurationUs: minDurationUs
+        )
+        applySnapshot(snapshot)
     }
 
     // MARK: - Reorder Mode (PR3)
@@ -139,7 +244,7 @@ final class SceneTrackView: UIView {
     func configure(durationUs: TimeUs, pxPerSecond: CGFloat, leftPadding: CGFloat) {
         // Create a single scene for backward compatibility (uses default minDurationUs ~30fps)
         let singleScene = SceneDraft(id: UUID(), durationUs: durationUs)
-        configure(scenes: [singleScene], pxPerSecond: pxPerSecond, leftPadding: leftPadding, minDurationUs: 33_333)
+        configure(scenes: [singleScene], pxPerSecond: pxPerSecond, leftPadding: leftPadding, minDurationUs: ProjectDraft.minSceneDurationUs)
     }
 
     /// Legacy selection API.
@@ -152,74 +257,51 @@ final class SceneTrackView: UIView {
         }
     }
 
-    // MARK: - Private
+    // MARK: - Private (PR4)
 
-    private func rebuildClipViews() {
-        // Remove old clip views
-        for (_, clipView) in clipViews {
-            clipView.removeFromSuperview()
-        }
-        clipViews.removeAll()
+    /// Creates a new clip view for a scene. Callbacks are set once at creation.
+    /// - Parameter scene: Scene data for the clip
+    private func createClipView(for scene: SceneDraft) {
+        let clipView = SceneClipView(sceneId: scene.id, durationUs: scene.durationUs)
+        // PR2 v5 fix: Use frame-based layout, NOT Auto Layout
+        // (translatesAutoresizingMaskIntoConstraints defaults to true)
 
-        // Create new clip views
-        for scene in scenes {
-            let clipView = SceneClipView(sceneId: scene.id, durationUs: scene.durationUs)
-            // PR2 v5 fix: Use frame-based layout, NOT Auto Layout
-            // (translatesAutoresizingMaskIntoConstraints defaults to true)
-            clipView.setPxPerSecond(pxPerSecond)
-            clipView.setSelected(scene.id == selectedSceneId)
+        // PR4: Apply initial data snapshot
+        let clipSnapshot = SceneClipSnapshot(
+            durationUs: scene.durationUs,
+            isSelected: scene.id == selectedSceneId,
+            minDurationUs: minDurationUs
+        )
+        clipView.applySnapshot(clipSnapshot)
 
-            // Wire callbacks
-            clipView.onSelect = { [weak self] in
-                self?.onSelectScene?(scene.id)
-            }
-
-            clipView.onTrimTrailing = { [weak self] newDurationUs, phase in
-                self?.onTrimScene?(scene.id, newDurationUs, .trailing, phase)
-            }
-
-            // PR3: Reorder callback
-            clipView.onReorderDrag = { [weak self] dragX, phase in
-                self?.handleReorderDrag(sceneId: scene.id, dragX: dragX, phase: phase)
-            }
-
-            addSubview(clipView)
-            clipViews[scene.id] = clipView
-
-            // PR3: Apply current reorder mode
-            clipView.setReorderMode(isReorderMode)
-
-            // PR2 fix: Notify for gesture conflict resolution
-            onClipCreated?(clipView)
+        // Wire callbacks ONCE at creation (PR4: not in applySnapshot)
+        clipView.onSelect = { [weak self] in
+            self?.onSelectScene?(scene.id)
         }
 
-        updateClipLayouts()
-    }
-
-    private func updateClipLayouts() {
-        var currentX = leftPadding
-
-        for scene in scenes {
-            guard let clipView = clipViews[scene.id] else { continue }
-
-            let durationSeconds = CGFloat(usToSeconds(scene.durationUs))
-            let clipWidth = durationSeconds * pxPerSecond
-
-            clipView.frame = CGRect(
-                x: currentX,
-                y: 0,
-                width: clipWidth,
-                height: bounds.height
-            )
-            clipView.configure(durationUs: scene.durationUs, pxPerSecond: pxPerSecond, minDurationUs: minDurationUs)
-
-            currentX += clipWidth
+        clipView.onTrimTrailing = { [weak self] newDurationUs, phase in
+            self?.onTrimScene?(scene.id, newDurationUs, .trailing, phase)
         }
+
+        // PR3: Reorder callback
+        clipView.onReorderDrag = { [weak self] dragX, phase in
+            self?.handleReorderDrag(sceneId: scene.id, dragX: dragX, phase: phase)
+        }
+
+        addSubview(clipView)
+        clipViews[scene.id] = clipView
+
+        // PR3: Apply current reorder mode
+        clipView.setReorderMode(isReorderMode)
+
+        // PR2 fix: Notify for gesture conflict resolution
+        onClipCreated?(clipView)
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        updateClipLayouts()
+        // PR4: Only call layout path, no data updates
+        layoutItems(layoutContext)
     }
 
     // MARK: - Reorder Handling (PR3)
@@ -269,13 +351,13 @@ final class SceneTrackView: UIView {
     private func calculateTargetIndex(for dragX: CGFloat, draggingSceneId: UUID) -> Int {
         guard !scenes.isEmpty else { return 0 }
 
-        // Calculate clip boundaries
-        var boundaries: [CGFloat] = [leftPadding]
-        var currentX = leftPadding
+        // Calculate clip boundaries (PR4: use layoutContext)
+        var boundaries: [CGFloat] = [layoutContext.leftPadding]
+        var currentX = layoutContext.leftPadding
 
         for scene in scenes {
             let durationSeconds = CGFloat(usToSeconds(scene.durationUs))
-            let clipWidth = durationSeconds * pxPerSecond
+            let clipWidth = durationSeconds * layoutContext.pxPerSecond
             currentX += clipWidth
             boundaries.append(currentX)
         }
@@ -318,17 +400,17 @@ final class SceneTrackView: UIView {
             return
         }
 
-        // PR3.1: Calculate X position for insertion line
+        // PR3.1: Calculate X position for insertion line (PR4: use layoutContext)
         // - index 0: leftPadding
         // - index N (scenes.count): end of last clip
-        var lineX = leftPadding
+        var lineX = layoutContext.leftPadding
 
         for (index, scene) in scenes.enumerated() {
             if index == targetIndex {
                 break
             }
             let durationSeconds = CGFloat(usToSeconds(scene.durationUs))
-            lineX += durationSeconds * pxPerSecond
+            lineX += durationSeconds * layoutContext.pxPerSecond
         }
         // Note: if targetIndex == scenes.count, loop completes without break,
         // lineX ends up at the correct position (end of all clips)

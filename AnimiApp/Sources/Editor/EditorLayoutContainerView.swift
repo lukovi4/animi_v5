@@ -37,6 +37,16 @@ final class EditorLayoutContainerView: UIView {
     /// Scroll events are handled locally for ruler sync.
     var onTimelineEvent: ((TimelineEvent) -> Void)?
 
+    // PR9: Scene context actions
+    /// Called when Duplicate scene is tapped
+    var onDuplicateScene: ((UUID) -> Void)?
+
+    /// Called when Delete scene is tapped
+    var onDeleteScene: ((UUID) -> Void)?
+
+    /// Called when Add Scene is tapped
+    var onAddScene: (() -> Void)?
+
     // MARK: - Subviews
 
     private(set) lazy var navBar = EditorNavBar()
@@ -209,6 +219,19 @@ final class EditorLayoutContainerView: UIView {
         rulerView.onReorderModeChanged = { [weak self] isReorderMode in
             self?.handleReorderModeChanged(isReorderMode)
         }
+
+        // PR9: Context bar actions
+        contextBar.onDuplicateScene = { [weak self] sceneId in
+            self?.onDuplicateScene?(sceneId)
+        }
+        contextBar.onDeleteScene = { [weak self] sceneId in
+            self?.onDeleteScene?(sceneId)
+        }
+
+        // PR9: Global action bar - Add Scene
+        globalActionBar.onAddScene = { [weak self] in
+            self?.onAddScene?()
+        }
     }
 
     // MARK: - Reorder Mode (PR3)
@@ -301,9 +324,13 @@ final class EditorLayoutContainerView: UIView {
 
     /// Updates timeline selection and switches bottom bar.
     /// P1-3: Also updates track UI highlighting to stay in sync.
-    func setTimelineSelection(_ selection: TimelineSelection) {
+    /// - Parameters:
+    ///   - selection: New selection state
+    ///   - sceneCount: Total number of scenes (for delete validation in context bar)
+    func setTimelineSelection(_ selection: TimelineSelection, sceneCount: Int = 1) {
         currentSelection = selection
         timelineView.setSelection(selection)
+        contextBar.configure(for: selection, sceneCount: sceneCount)
         updateBottomBar()
     }
 
