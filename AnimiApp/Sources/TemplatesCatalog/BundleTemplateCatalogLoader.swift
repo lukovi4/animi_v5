@@ -57,16 +57,17 @@ final class BundleTemplateCatalogLoader {
             throw CatalogLoaderError.decodingFailed(error)
         }
 
-        // Resolve URLs for each template, skip those with missing compiledURL
+        // Resolve URLs for each template, skip those with missing recipeURL
+        // Release v1: Templates reference recipes, not compiled.tve files
         let resolvedTemplates: [TemplateDescriptor] = manifest.templates.compactMap { template in
             var resolved = template
-            resolved.compiledURL = resolveURL(for: template.compiledPath)
+            resolved.recipeURL = resolveURL(for: template.recipePath)
             resolved.previewURL = resolveURL(for: template.previewVideoPath)
 
-            // Skip templates with missing compiled asset
-            guard resolved.compiledURL != nil else {
+            // Skip templates with missing recipe
+            guard resolved.recipeURL != nil else {
                 #if DEBUG
-                print("[Catalog] ⚠️ Skipping template '\(template.id)': missing compiled file at \(template.compiledPath)")
+                print("[Catalog] ⚠️ Skipping template '\(template.id)': missing recipe at \(template.recipePath)")
                 #endif
                 return nil
             }
@@ -81,9 +82,9 @@ final class BundleTemplateCatalogLoader {
     }
 
     /// Resolves a relative path to a bundle URL.
+    /// Release v1: Simple direct file lookup for all files (recipes, previews).
     private func resolveURL(for relativePath: String) -> URL? {
-        // Path format: "Templates/polaroid_shared_demo/compiled.tve"
-        // Split into directory and filename using NSString (avoids leading "/" from URL)
+        // Path format: "Templates/Recipes/example_4blocks.json"
         let nsPath = relativePath as NSString
         let directory = nsPath.deletingLastPathComponent
         let filenameWithExt = nsPath.lastPathComponent as NSString
@@ -94,33 +95,14 @@ final class BundleTemplateCatalogLoader {
         print("[Catalog] Resolving: \(relativePath) -> dir=\(directory), file=\(filename), ext=\(ext)")
         #endif
 
-        // For compiled.tve, return template folder URL (PlayerViewController expects folder, not file)
-        if filename == "compiled" && ext == "tve" {
-            let templateFolder = (directory as NSString).lastPathComponent
-            if let folderURL = bundle.url(
-                forResource: templateFolder,
-                withExtension: nil,
-                subdirectory: "Templates"
-            ) {
-                #if DEBUG
-                print("[Catalog] Folder found: \(folderURL.path)")
-                #endif
-                return folderURL
-            }
-            #if DEBUG
-            print("[Catalog] Folder NOT found for: \(templateFolder)")
-            #endif
-            return nil
-        }
-
-        // Direct file lookup for other files (preview.mp4, etc.)
+        // Direct file lookup
         if let directURL = bundle.url(
             forResource: filename,
             withExtension: ext.isEmpty ? nil : ext,
             subdirectory: directory
         ) {
             #if DEBUG
-            print("[Catalog] Direct found: \(directURL.path)")
+            print("[Catalog] Found: \(directURL.path)")
             #endif
             return directURL
         }

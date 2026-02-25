@@ -18,23 +18,25 @@ enum TemplateOpenBehavior: String, Codable {
 // MARK: - Template Descriptor
 
 /// Describes a single template in the catalog.
+/// Release v1: Templates reference recipes, not compiled.tve files.
 struct TemplateDescriptor: Codable, Identifiable {
     let id: TemplateID
     let categoryId: CategoryID
     let order: Int
     let title: String
     let titleKey: String?
-    let compiledPath: String
+    /// Path to recipe JSON (e.g., "Templates/Recipes/example_4blocks.json")
+    let recipePath: String
     let previewVideoPath: String
     let openBehavior: TemplateOpenBehavior
 
-    /// Resolved URL for compiled.tve (set after manifest load).
-    var compiledURL: URL?
+    /// Resolved URL for recipe JSON (set after manifest load).
+    var recipeURL: URL?
     /// Resolved URL for preview.mp4 (set after manifest load).
     var previewURL: URL?
 
     enum CodingKeys: String, CodingKey {
-        case id, categoryId, order, title, titleKey, compiledPath, previewVideoPath, openBehavior
+        case id, categoryId, order, title, titleKey, recipePath, previewVideoPath, openBehavior
     }
 }
 

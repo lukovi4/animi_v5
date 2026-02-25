@@ -20,8 +20,8 @@
       "order": 0,
       "title": "4 Blocks Demo",
       "titleKey": "template_4blocks",
-      "compiledPath": "Templates/example_4blocks/compiled.tve",
-      "previewVideoPath": "Templates/example_4blocks/preview.mp4",
+      "recipePath": "Templates/Recipes/example_4blocks.json",
+      "previewVideoPath": "Templates/Previews/example_4blocks.mp4",
       "openBehavior": "previewFirst"
     },
     {
@@ -30,8 +30,8 @@
       "order": 0,
       "title": "Polaroid Classic",
       "titleKey": "template_polaroid_classic",
-      "compiledPath": "Templates/polaroid_shared_demo/compiled.tve",
-      "previewVideoPath": "Templates/polaroid_shared_demo/preview.mp4",
+      "recipePath": "Templates/Recipes/polaroid_shared_demo.json",
+      "previewVideoPath": "Templates/Previews/polaroid_shared_demo.mp4",
       "openBehavior": "previewFirst"
     },
     {
@@ -40,8 +40,8 @@
       "order": 1,
       "title": "Polaroid Style 2",
       "titleKey": "template_polaroid_2",
-      "compiledPath": "Templates/polaroid_2/compiled.tve",
-      "previewVideoPath": "Templates/polaroid_2/preview.mp4",
+      "recipePath": "Templates/Recipes/polaroid_2.json",
+      "previewVideoPath": "Templates/Previews/polaroid_2.mp4",
       "openBehavior": "previewFirst"
     }
   ]
