@@ -51,7 +51,7 @@ public enum HexColorParser {
             a = Double(hexValue & 0xFF) / 255.0
         }
 
-        return ClearColor(r: r, g: g, b: b, a: a)
+        return ClearColor(red: r, green: g, blue: b, alpha: a)
     }
 
     /// Parses a hex color string with fallback to black.
@@ -59,7 +59,7 @@ public enum HexColorParser {
     /// - Parameter hex: Hex color string
     /// - Returns: ClearColor (black if parsing fails)
     public static func parseOrBlack(_ hex: String) -> ClearColor {
-        parse(hex) ?? ClearColor(r: 0, g: 0, b: 0, a: 1)
+        parse(hex) ?? ClearColor(red: 0, green: 0, blue: 0, alpha: 1)
     }
 
     /// Converts ClearColor to hex string.
@@ -69,12 +69,12 @@ public enum HexColorParser {
     ///   - includeAlpha: Whether to include alpha component
     /// - Returns: Hex string with # prefix
     public static func toHex(_ color: ClearColor, includeAlpha: Bool = false) -> String {
-        let r = UInt8(min(max(color.r, 0), 1) * 255)
-        let g = UInt8(min(max(color.g, 0), 1) * 255)
-        let b = UInt8(min(max(color.b, 0), 1) * 255)
+        let r = UInt8(min(max(color.red, 0), 1) * 255)
+        let g = UInt8(min(max(color.green, 0), 1) * 255)
+        let b = UInt8(min(max(color.blue, 0), 1) * 255)
 
         if includeAlpha {
-            let a = UInt8(min(max(color.a, 0), 1) * 255)
+            let a = UInt8(min(max(color.alpha, 0), 1) * 255)
             return String(format: "#%02X%02X%02X%02X", r, g, b, a)
         } else {
             return String(format: "#%02X%02X%02X", r, g, b)

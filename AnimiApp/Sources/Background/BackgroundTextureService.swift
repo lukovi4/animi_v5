@@ -71,17 +71,22 @@ public final class BackgroundTextureService {
     // MARK: - Texture Loading
 
     /// Loads a texture from a MediaRef and injects it into the provider.
+    /// PR4: If file is missing, logs warning and returns (no throw) - renderer will skip draw.
     ///
     /// - Parameters:
     ///   - slotKey: Texture slot key (e.g., "bg/wave_split/top")
     ///   - mediaRef: Reference to the image file
-    /// - Throws: BackgroundTextureError if loading fails
+    /// - Throws: BackgroundTextureError if loading fails (except missing file)
     public func loadTexture(slotKey: String, mediaRef: MediaRef) async throws {
         // Resolve absolute path
         let fileURL = try projectStore.absoluteURL(for: mediaRef)
 
+        // PR4: Missing file → log + return (not throw), renderer will skip draw
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            throw BackgroundTextureError.fileNotFound(path: fileURL.path)
+            #if DEBUG
+            print("[BackgroundTextureService] WARNING: File not found for slot '\(slotKey)': \(fileURL.path)")
+            #endif
+            return
         }
 
         // Load image data on background thread
@@ -151,6 +156,12 @@ public final class BackgroundTextureService {
         #if DEBUG
         print("[BackgroundTextureService] Cleared all background textures")
         #endif
+    }
+
+    /// PR4: Alias for clearAllTextures - clears all tracked background textures.
+    /// Called on PlayerViewController lifecycle (viewDidDisappear/deinit).
+    public func clearAllTrackedTextures() {
+        clearAllTextures()
     }
 
     // MARK: - Image Saving

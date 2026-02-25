@@ -116,7 +116,7 @@ public enum EffectiveBackgroundBuilder {
         }
 
         // Fallback: solid black
-        return .solid(SolidConfig(color: ClearColor(r: 0, g: 0, b: 0, a: 1)))
+        return .solid(SolidConfig(color: ClearColor(red: 0, green: 0, blue: 0, alpha: 1)))
     }
 
     // MARK: - Conversion Helpers
@@ -154,14 +154,14 @@ public enum EffectiveBackgroundBuilder {
                 let color = HexColorParser.parseOrBlack(colorHex)
                 return .solid(SolidConfig(color: color))
             }
-            return .solid(SolidConfig(color: ClearColor(r: 0, g: 0, b: 0, a: 1)))
+            return .solid(SolidConfig(color: ClearColor(red: 0, green: 0, blue: 0, alpha: 1)))
 
         case "gradient":
             if let gradientLinear = regionDefault.gradientLinear {
                 return convertGradientLinearDefault(gradientLinear)
             }
             // Fallback if gradient config missing
-            return .solid(SolidConfig(color: ClearColor(r: 0, g: 0, b: 0, a: 1)))
+            return .solid(SolidConfig(color: ClearColor(red: 0, green: 0, blue: 0, alpha: 1)))
 
         case "image":
             // Template defaults cannot specify image (no MediaRef)
@@ -169,13 +169,13 @@ public enum EffectiveBackgroundBuilder {
             #if DEBUG
             print("[EffectiveBackgroundBuilder] WARNING: Template default specifies 'image' source type, which is not supported. Falling back to solid black.")
             #endif
-            return .solid(SolidConfig(color: ClearColor(r: 0, g: 0, b: 0, a: 1)))
+            return .solid(SolidConfig(color: ClearColor(red: 0, green: 0, blue: 0, alpha: 1)))
 
         default:
             #if DEBUG
             print("[EffectiveBackgroundBuilder] WARNING: Unknown source type '\(regionDefault.sourceType)'. Falling back to solid black.")
             #endif
-            return .solid(SolidConfig(color: ClearColor(r: 0, g: 0, b: 0, a: 1)))
+            return .solid(SolidConfig(color: ClearColor(red: 0, green: 0, blue: 0, alpha: 1)))
         }
     }
 
@@ -186,7 +186,7 @@ public enum EffectiveBackgroundBuilder {
             #if DEBUG
             print("[EffectiveBackgroundBuilder] WARNING: Gradient has \(override.stops.count) stops, expected 2. Falling back to solid black.")
             #endif
-            return .solid(SolidConfig(color: ClearColor(r: 0, g: 0, b: 0, a: 1)))
+            return .solid(SolidConfig(color: ClearColor(red: 0, green: 0, blue: 0, alpha: 1)))
         }
 
         let stops = override.stops.map { stop in
@@ -212,7 +212,7 @@ public enum EffectiveBackgroundBuilder {
             #if DEBUG
             print("[EffectiveBackgroundBuilder] WARNING: Gradient has \(gradientLinear.stops.count) stops, expected 2. Falling back to solid black.")
             #endif
-            return .solid(SolidConfig(color: ClearColor(r: 0, g: 0, b: 0, a: 1)))
+            return .solid(SolidConfig(color: ClearColor(red: 0, green: 0, blue: 0, alpha: 1)))
         }
 
         let stops = gradientLinear.stops.map { stop in
@@ -232,6 +232,7 @@ public enum EffectiveBackgroundBuilder {
     }
 
     /// Converts a transform override to render transform.
+    /// Applies defensive clamp to prevent invalid values from corrupted persistence.
     private static func convertTransformOverride(_ override: BgImageTransformOverride) -> ImageTransform {
         let fitMode: BackgroundFitMode
         switch override.fitMode.lowercased() {
@@ -241,9 +242,12 @@ public enum EffectiveBackgroundBuilder {
             fitMode = .fill
         }
 
+        // PR4: Defensive clamp for zoom (0.5-4.0)
+        let clampedZoom = min(max(override.zoom, 0.5), 4.0)
+
         return ImageTransform(
             pan: Vec2D(x: override.pan.x, y: override.pan.y),
-            zoom: override.zoom,
+            zoom: clampedZoom,
             rotationRadians: override.rotationRadians,
             flipX: override.flipX,
             flipY: override.flipY,

@@ -366,20 +366,20 @@ final class BackgroundEditorViewController: UIViewController {
             case .solid(let colorHex):
                 if let color = HexColorParser.parse(colorHex) {
                     picker.selectedColor = UIColor(
-                        red: CGFloat(color.r),
-                        green: CGFloat(color.g),
-                        blue: CGFloat(color.b),
-                        alpha: CGFloat(color.a)
+                        red: CGFloat(color.red),
+                        green: CGFloat(color.green),
+                        blue: CGFloat(color.blue),
+                        alpha: CGFloat(color.alpha)
                     )
                 }
             case .gradient(let gradient):
                 if let index = stopIndex, index < gradient.stops.count {
                     if let color = HexColorParser.parse(gradient.stops[index].colorHex) {
                         picker.selectedColor = UIColor(
-                            red: CGFloat(color.r),
-                            green: CGFloat(color.g),
-                            blue: CGFloat(color.b),
-                            alpha: CGFloat(color.a)
+                            red: CGFloat(color.red),
+                            green: CGFloat(color.green),
+                            blue: CGFloat(color.blue),
+                            alpha: CGFloat(color.alpha)
                         )
                     }
                 }
@@ -512,7 +512,7 @@ extension BackgroundEditorViewController: UIColorPickerViewControllerDelegate {
 
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         color.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let clearColor = ClearColor(r: Double(r), g: Double(g), b: Double(b), a: Double(a))
+        let clearColor = ClearColor(red: Double(r), green: Double(g), blue: Double(b), alpha: Double(a))
         let colorHex = HexColorParser.toHex(clearColor, includeAlpha: a < 1.0)
 
         let isGradient = viewController.view.tag >= 1000
