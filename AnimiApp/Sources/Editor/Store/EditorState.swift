@@ -1,5 +1,16 @@
 import Foundation
 
+// MARK: - Editor UI Mode (PR-A: Scene Edit)
+
+/// UI mode for the editor.
+/// Controls whether timeline or scene edit UI is shown.
+public enum EditorUIMode: Equatable, Sendable {
+    /// Normal timeline editing mode.
+    case timeline
+    /// Scene edit mode for editing media blocks within a scene.
+    case sceneEdit(sceneInstanceId: UUID)
+}
+
 // MARK: - Editor State (Release v1)
 
 /// Centralized state for the editor.
@@ -24,6 +35,21 @@ public struct EditorState: Equatable, Sendable {
 
     /// Template frame rate for quantization.
     public var templateFPS: Int
+
+    // MARK: - Scene Edit Mode (PR-A)
+    // Note: These fields are NOT included in EditorSnapshot.
+    // Undo/redo should restore content, not teleport user between UI modes.
+
+    /// Current UI mode (timeline vs scene edit).
+    public var uiMode: EditorUIMode = .timeline
+
+    /// Selected block ID in scene edit mode.
+    /// Only relevant when `uiMode == .sceneEdit`.
+    public var selectedBlockId: String?
+
+    /// Saved playhead position for returning from scene edit.
+    /// Set when entering scene edit, restored when exiting.
+    public var sceneEditReturnPlayheadUs: TimeUs?
 
     // MARK: - Derived Properties
 

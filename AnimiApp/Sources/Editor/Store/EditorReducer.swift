@@ -117,6 +117,30 @@ public enum EditorReducer {
                 media: media
             )
 
+        // MARK: - Scene Edit Mode (PR-A)
+
+        case .enterSceneEdit(let sceneId):
+            return enterSceneEdit(state: newState, sceneId: sceneId)
+
+        case .exitSceneEdit:
+            return exitSceneEdit(state: newState)
+
+        case .selectBlock(let blockId):
+            newState.selectedBlockId = blockId
+            // Selection changes don't push snapshot
+            return ReducerResult(state: newState, shouldPushSnapshot: false)
+
+        case .resetSceneState(let sceneInstanceId):
+            return resetSceneState(state: newState, sceneInstanceId: sceneInstanceId)
+
+        case .setBlockMediaPresent(let sceneInstanceId, let blockId, let present):
+            return setBlockMediaPresent(
+                state: newState,
+                sceneInstanceId: sceneInstanceId,
+                blockId: blockId,
+                present: present
+            )
+
         // MARK: - Undo/Redo (handled by Store, not reducer)
 
         case .undo, .redo:
@@ -653,6 +677,7 @@ private extension EditorReducer {
     }
 
     /// Sets a media assignment for a scene instance.
+    /// PR-A: Also automatically sets userMediaPresent to sync persisted state with runtime.
     static func setBlockMedia(
         state: EditorState,
         sceneInstanceId: UUID,
@@ -669,12 +694,113 @@ private extension EditorReducer {
             sceneState.mediaAssignments = [:]
         }
 
+        // PR-A: Ensure userMediaPresent exists
+        if sceneState.userMediaPresent == nil {
+            sceneState.userMediaPresent = [:]
+        }
+
         // Update or remove media
         if let mediaRef = media {
+            // Add media: store assignment and make visible
             sceneState.mediaAssignments?[blockId] = mediaRef
+            sceneState.userMediaPresent?[blockId] = true
         } else {
+            // Remove media: clear assignment and hide
             sceneState.mediaAssignments?.removeValue(forKey: blockId)
+            sceneState.userMediaPresent?[blockId] = false
         }
+
+        // Store back
+        newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+}
+
+// MARK: - Scene Edit Mode (PR-A)
+
+private extension EditorReducer {
+
+    /// Enters scene edit mode for a specific scene.
+    /// Saves current playhead, moves to scene start, sets UI mode.
+    static func enterSceneEdit(
+        state: EditorState,
+        sceneId: UUID
+    ) -> ReducerResult {
+        var newState = state
+
+        // 1. Save current playhead for return
+        newState.sceneEditReturnPlayheadUs = state.playheadTimeUs
+
+        // 2. Find scene index and compute its startUs
+        guard let index = state.canonicalTimeline.sceneItems.firstIndex(where: { $0.id == sceneId }) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+        let startUs = state.canonicalTimeline.computedStartUs(forSceneAt: index)
+
+        // 3. Move playhead to scene start
+        newState.playheadTimeUs = startUs
+
+        // 4. Set UI mode
+        newState.uiMode = .sceneEdit(sceneInstanceId: sceneId)
+        newState.selectedBlockId = nil
+
+        // 5. Do NOT push snapshot (UI transition)
+        return ReducerResult(state: newState, shouldPushSnapshot: false)
+    }
+
+    /// Exits scene edit mode.
+    /// Restores playhead to saved position, clears Scene Edit state.
+    static func exitSceneEdit(
+        state: EditorState
+    ) -> ReducerResult {
+        var newState = state
+
+        // 1. Restore playhead
+        if let returnPlayhead = state.sceneEditReturnPlayheadUs {
+            newState.playheadTimeUs = returnPlayhead
+        }
+
+        // 2. Clear Scene Edit state
+        newState.sceneEditReturnPlayheadUs = nil
+        newState.uiMode = .timeline
+        newState.selectedBlockId = nil
+
+        // 3. Do NOT push snapshot (UI transition)
+        return ReducerResult(state: newState, shouldPushSnapshot: false)
+    }
+
+    /// Resets SceneState for an instance to .empty.
+    static func resetSceneState(
+        state: EditorState,
+        sceneInstanceId: UUID
+    ) -> ReducerResult {
+        var newState = state
+
+        newState.draft.sceneInstanceStates[sceneInstanceId] = .empty
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Sets userMediaPresent for a block (disable/enable asset visibility).
+    static func setBlockMediaPresent(
+        state: EditorState,
+        sceneInstanceId: UUID,
+        blockId: String,
+        present: Bool
+    ) -> ReducerResult {
+        var newState = state
+
+        // Get or create SceneState for this instance
+        var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
+
+        // Ensure userMediaPresent exists
+        if sceneState.userMediaPresent == nil {
+            sceneState.userMediaPresent = [:]
+        }
+
+        // Update present flag
+        sceneState.userMediaPresent?[blockId] = present
 
         // Store back
         newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState

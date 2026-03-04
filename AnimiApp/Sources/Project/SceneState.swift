@@ -28,12 +28,27 @@ public struct SceneState: Codable, Equatable, Sendable {
     /// Blocks without entry use defaults from scene.json.
     public var layerToggles: [String: [String: Bool]]
 
-    // MARK: - Media Assignments (Placeholder for future)
+    // MARK: - Media Assignments
 
     /// Per-block media slot assignments.
     /// Key: blockId, Value: MediaRef to assigned media.
-    /// Not used in P0 — placeholder for future persistence.
     public var mediaAssignments: [String: MediaRef]?
+
+    // MARK: - User Media Presence (PR-A: Scene Edit)
+
+    /// Per-block visibility flag for binding layer.
+    /// Key: blockId, Value: whether to render the binding layer.
+    /// nil treated as [:] (empty dictionary).
+    ///
+    /// Semantics:
+    /// - `userMediaPresent[blockId] = true` → render binding layer
+    /// - `userMediaPresent[blockId] = false` → hide binding layer (media still assigned)
+    /// - key absent → follows automatic logic from UserMediaService
+    ///
+    /// Default in SceneRenderPlan: `userMediaPresent[blockId] ?? false`
+    /// This is correct because UserMediaService.setPhoto/setVideo automatically
+    /// sets `present = true` when media is added.
+    public var userMediaPresent: [String: Bool]?
 
     // MARK: - Initialization
 
@@ -41,12 +56,14 @@ public struct SceneState: Codable, Equatable, Sendable {
         variantOverrides: [String: String] = [:],
         userTransforms: [String: Matrix2D] = [:],
         layerToggles: [String: [String: Bool]] = [:],
-        mediaAssignments: [String: MediaRef]? = nil
+        mediaAssignments: [String: MediaRef]? = nil,
+        userMediaPresent: [String: Bool]? = nil
     ) {
         self.variantOverrides = variantOverrides
         self.userTransforms = userTransforms
         self.layerToggles = layerToggles
         self.mediaAssignments = mediaAssignments
+        self.userMediaPresent = userMediaPresent
     }
 
     /// Empty state with all defaults.

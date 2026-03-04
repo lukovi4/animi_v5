@@ -103,11 +103,43 @@ public enum EditorAction: Sendable {
 
     /// Sets a media assignment for a scene instance.
     /// Pushes undo snapshot.
+    /// Also automatically sets userMediaPresent to true/false (PR-A).
     /// - Parameters:
     ///   - sceneInstanceId: ID of the scene instance
     ///   - blockId: ID of the media block
     ///   - media: MediaRef to assigned media, or nil to clear
     case setBlockMedia(sceneInstanceId: UUID, blockId: String, media: MediaRef?)
+
+    // MARK: - Scene Edit Mode (PR-A)
+
+    /// Enters scene edit mode for a specific scene.
+    /// Saves current playhead for return, moves playhead to scene start.
+    /// Does NOT push undo snapshot (UI transition).
+    /// - Parameter sceneId: ID of the scene to edit
+    case enterSceneEdit(sceneId: UUID)
+
+    /// Exits scene edit mode.
+    /// Restores playhead to saved position.
+    /// Does NOT push undo snapshot (UI transition).
+    case exitSceneEdit
+
+    /// Selects a block in scene edit mode.
+    /// Does NOT push undo snapshot (UI operation).
+    /// - Parameter blockId: ID of the block to select, or nil to deselect
+    case selectBlock(blockId: String?)
+
+    /// Resets SceneState for an instance to .empty.
+    /// Pushes undo snapshot (model change).
+    /// - Parameter sceneInstanceId: ID of the scene instance to reset
+    case resetSceneState(sceneInstanceId: UUID)
+
+    /// Sets userMediaPresent for a block (disable/enable asset visibility).
+    /// Pushes undo snapshot (model change).
+    /// - Parameters:
+    ///   - sceneInstanceId: ID of the scene instance
+    ///   - blockId: ID of the media block
+    ///   - present: Whether the binding layer should be rendered
+    case setBlockMediaPresent(sceneInstanceId: UUID, blockId: String, present: Bool)
 
     // MARK: - Undo/Redo
 

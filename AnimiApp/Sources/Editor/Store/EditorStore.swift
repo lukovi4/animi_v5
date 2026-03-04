@@ -37,8 +37,25 @@ public final class EditorStore {
     /// Use for heavier UI updates (rebuilding scene clips, layout).
     public var onTimelineChanged: ((EditorState) -> Void)?
 
+    /// Called during live-trim preview (phase .began/.changed).
+    /// Use for lightweight UI updates only (no playback coordinator, no persistence).
+    public var onTimelinePreviewChanged: ((EditorState) -> Void)?
+
     /// Called when undo/redo availability changes.
     public var onUndoRedoChanged: ((Bool, Bool) -> Void)?
+
+    // MARK: - Scene Edit Mode Callbacks (PR-A)
+
+    /// Called when UI mode changes (timeline ↔ sceneEdit).
+    public var onUIModeChanged: ((EditorUIMode) -> Void)?
+
+    /// Called when selected block changes in Scene Edit.
+    public var onSelectedBlockChanged: ((String?) -> Void)?
+
+    /// Called after undo/redo restores snapshot.
+    /// Needed because runtime (ScenePlayer/UserMediaService) uses write-through
+    /// and must be explicitly re-applied for the active scene instance.
+    public var onStateRestoredFromUndoRedo: (() -> Void)?
 
     // MARK: - Initialization
 
@@ -129,6 +146,8 @@ public final class EditorStore {
         let oldPlayhead = state.playheadTimeUs
         let oldTimeline = state.canonicalTimeline
         let oldSelection = state.selection
+        let oldUIMode = state.uiMode
+        let oldSelectedBlockId = state.selectedBlockId
 
         // Reduce
         let result = EditorReducer.reduce(state: state, action: action)
@@ -147,6 +166,14 @@ public final class EditorStore {
         let selectionChanged = state.selection != oldSelection
         let timelineChanged = state.canonicalTimeline != oldTimeline || result.shouldPushSnapshot
 
+        // Determine if this is a trim preview action (.began/.changed)
+        let isTrimPreview: Bool = {
+            if case .trimScene(_, let phase, _, _) = action {
+                return phase == .began || phase == .changed
+            }
+            return false
+        }()
+
         if playheadChanged {
             onPlayheadChanged?(state.playheadTimeUs)
         }
@@ -155,8 +182,22 @@ public final class EditorStore {
             notifySelectionChanged()
         }
 
+        // PR-A: UI mode change detection
+        if state.uiMode != oldUIMode {
+            onUIModeChanged?(state.uiMode)
+        }
+
+        // PR-A: Selected block change detection
+        if state.selectedBlockId != oldSelectedBlockId {
+            onSelectedBlockChanged?(state.selectedBlockId)
+        }
+
         if timelineChanged {
-            notifyTimelineChanged()
+            if isTrimPreview {
+                notifyTimelinePreviewChanged()
+            } else {
+                notifyTimelineChanged()
+            }
         }
 
         #if DEBUG
@@ -195,6 +236,9 @@ public final class EditorStore {
         onPlayheadChanged?(state.playheadTimeUs)
         notifyUndoRedoChanged()
 
+        // PR-A: Notify runtime to re-apply state for active scene instance
+        onStateRestoredFromUndoRedo?()
+
         #if DEBUG
         print("[EditorStore] Undo performed. Stack: \(undoStack.debugDescription)")
         #endif
@@ -218,6 +262,9 @@ public final class EditorStore {
         notifySelectionChanged()
         onPlayheadChanged?(state.playheadTimeUs)
         notifyUndoRedoChanged()
+
+        // PR-A: Notify runtime to re-apply state for active scene instance
+        onStateRestoredFromUndoRedo?()
 
         #if DEBUG
         print("[EditorStore] Redo performed. Stack: \(undoStack.debugDescription)")
@@ -267,6 +314,10 @@ public final class EditorStore {
         onTimelineChanged?(state)
     }
 
+    private func notifyTimelinePreviewChanged() {
+        onTimelinePreviewChanged?(state)
+    }
+
     private func notifySelectionChanged() {
         let selection: TimelineSelection? = state.selection == .none ? nil : state.selection
         onSelectionChanged?(selection)
@@ -292,6 +343,11 @@ public final class EditorStore {
         case .setBlockVariant: actionName = "setBlockVariant"
         case .setBlockToggle: actionName = "setBlockToggle"
         case .setBlockMedia: actionName = "setBlockMedia"
+        case .enterSceneEdit: actionName = "enterSceneEdit"
+        case .exitSceneEdit: actionName = "exitSceneEdit"
+        case .selectBlock: actionName = "selectBlock"
+        case .resetSceneState: actionName = "resetSceneState"
+        case .setBlockMediaPresent: actionName = "setBlockMediaPresent"
         case .undo: actionName = "undo"
         case .redo: actionName = "redo"
         default: actionName = "other"
