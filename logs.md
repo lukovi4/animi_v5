@@ -1,31 +1,35 @@
-[19:15:18] MetalRenderer initialized (maxFramesInFlight=3)
-[19:15:18] AnimiApp initialized, TVECore: 0.1.0, Metal: Apple A15 GPU
-[19:15:18] ---
-Loading compiled template 'example_4blocks'...
-[19:15:18] Compiled package loaded: scene_test_2x2_4blocks
-[19:15:19] UserMediaService initialized
-[19:15:19] Template loaded: 1080x1920 @ 30fps, 300 frames, 4 blocks
-[19:15:19] Warm render started (frames: [0, 150])...
-[19:15:19] Ready for playback!
-[19:15:19] Warm render done
-59638328 Plugin query method called
-(501) Invalidation handler invoked, clearing connection
-(501) personaAttributesForPersonaType for type:0 failed with error Error Domain=NSCocoaErrorDomain Code=4099 "The connection to service named com.apple.mobile.usermanagerd.xpc was invalidated from this process." UserInfo={NSDebugDescription=The connection to service named com.apple.mobile.usermanagerd.xpc was invalidated from this process.}
-LaunchServices: store (null) or url (null) was nil: Error Domain=NSOSStatusErrorDomain Code=-54 "process may not map database" UserInfo={_LSLine=72, _LSFunction=_LSServer_GetServerStoreForConnectionWithCompletionHandler, _LSFile=LSDReadService.mm, NSDebugDescription=process may not map database}
-Attempt to map database failed: permission was denied. This attempt will not be retried.
-Failed to initialize client context with error Error Domain=NSOSStatusErrorDomain Code=-54 "process may not map database" UserInfo={_LSLine=72, _LSFunction=_LSServer_GetServerStoreForConnectionWithCompletionHandler, _LSFile=LSDReadService.mm, NSDebugDescription=process may not map database}
-[19:15:30] [UserMedia] Photo set for block 'block_02'
-LaunchServices: store (null) or url (null) was nil: Error Domain=NSOSStatusErrorDomain Code=-54 "process may not map database" UserInfo={_LSLine=72, _LSFunction=_LSServer_GetServerStoreForConnectionWithCompletionHandler, _LSFile=LSDReadService.mm, NSDebugDescription=process may not map database}
-Attempt to map database failed: permission was denied. This attempt will not be retried.
-Failed to initialize client context with error Error Domain=NSOSStatusErrorDomain Code=-54 "process may not map database" UserInfo={_LSLine=72, _LSFunction=_LSServer_GetServerStoreForConnectionWithCompletionHandler, _LSFile=LSDReadService.mm, NSDebugDescription=process may not map database}
-<<<< FigApplicationStateMonitor >>>> signalled err=-19431 at <>:474
-<<<< FigApplicationStateMonitor >>>> signalled err=-19431 at <>:474
-[19:15:35] [UserMedia] Video set for block 'block_04' (async poster pending)
-[19:15:42] [Variant] block=block_01 -> v2
-LaunchServices: store (null) or url (null) was nil: Error Domain=NSOSStatusErrorDomain Code=-54 "process may not map database" UserInfo={_LSLine=72, _LSFunction=_LSServer_GetServerStoreForConnectionWithCompletionHandler, _LSFile=LSDReadService.mm, NSDebugDescription=process may not map database}
-Attempt to map database failed: permission was denied. This attempt will not be retried.
-Failed to initialize client context with error Error Domain=NSOSStatusErrorDomain Code=-54 "process may not map database" UserInfo={_LSLine=72, _LSFunction=_LSServer_GetServerStoreForConnectionWithCompletionHandler, _LSFile=LSDReadService.mm, NSDebugDescription=process may not map database}
-[19:15:45] [UserMedia] Photo set for block 'block_01'
-[19:15:54] [Variant] block=block_02 -> v1
-[19:15:55] [Variant] block=block_04 -> v1
-[19:15:56] [Variant] block=block_01 -> v3
+[PerfCounter] applySnapshot(scene): 1
+[PerfCounter] applySnapshot(scene): 2
+[PERF] FPS: 5.0 | CPU: 13.9% (1core), 2.3% (all) | MEM: 156MB res, 108MB foot | GPU: avg 2.01ms, p95 2.45ms | DRAW: avg 64.50ms, p95 2.08ms, max 634.73ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 10.6ms | encode: 64.4ms
+[PERF] FPS: 36.5 | CPU: 12.1% (1core), 2.0% (all) | MEM: 156MB res, 108MB foot | GPU: avg 2.15ms, p95 2.51ms | DRAW: avg 0.91ms, p95 1.02ms, max 4.81ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 14.7ms | encode: 0.8ms
+[PERF] FPS: 23.0 | CPU: 4.6% (1core), 0.8% (all) | MEM: 156MB res, 108MB foot | GPU: avg 2.05ms, p95 2.52ms | DRAW: avg 1.06ms, p95 2.13ms, max 4.81ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 14.1ms | encode: 0.9ms
+
+DebugSkipMetalRender
+[PerfCounter] applySnapshot(scene): 1
+[PerfCounter] applySnapshot(scene): 2
+[PERF] FPS: 13.0 | CPU: 12.5% (1core), 2.1% (all) | MEM: 156MB res, 109MB foot | GPU: avg 2.09ms, p95 2.59ms | DRAW: avg 25.39ms, p95 1.67ms, max 637.65ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 11.9ms | encode: 25.3ms
+[PERF] FPS: 37.5 | CPU: 11.2% (1core), 1.9% (all) | MEM: 156MB res, 111MB foot | GPU: avg 1.98ms, p95 2.46ms | DRAW: avg 1.08ms, p95 2.12ms, max 3.60ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 10.8ms | encode: 1.0ms
+[PERF] FPS: 34.0 | CPU: 8.9% (1core), 1.5% (all) | MEM: 156MB res, 109MB foot | GPU: avg 2.00ms, p95 2.51ms | DRAW: avg 1.00ms, p95 2.18ms, max 4.07ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 11.2ms | encode: 0.9ms
+[PERF] FPS: 14.0 | CPU: 5.4% (1core), 0.9% (all) | MEM: 156MB res, 109MB foot | GPU: avg 1.82ms, p95 2.37ms | DRAW: avg 1.34ms, p95 3.26ms, max 5.15ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 10.9ms | encode: 1.2ms
+[PERF] FPS: 0.0 | CPU: 4.1% (1core), 0.7% (all) | MEM: 156MB res, 103MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+
+ThrottleRender30Hz
+[PerfCounter] applySnapshot(scene): 1
+[PerfCounter] applySnapshot(scene): 2
+[PERF] FPS: 14.5 | CPU: 8.9% (1core), 1.5% (all) | MEM: 156MB res, 108MB foot | GPU: avg 1.77ms, p95 2.38ms | DRAW: avg 23.14ms, p95 3.78ms, max 641.64ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 9.1ms | encode: 23.0ms
+[PERF] FPS: 20.5 | CPU: 10.0% (1core), 1.7% (all) | MEM: 156MB res, 108MB foot | GPU: avg 2.07ms, p95 2.67ms | DRAW: avg 1.12ms, p95 2.43ms, max 3.95ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 10.9ms | encode: 1.0ms
+[PERF] FPS: 16.0 | CPU: 8.7% (1core), 1.5% (all) | MEM: 156MB res, 110MB foot | GPU: avg 2.08ms, p95 2.39ms | DRAW: avg 1.12ms, p95 2.43ms, max 6.76ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 10.0ms | encode: 1.0ms
+[PERF] FPS: 36.0 | CPU: 7.7% (1core), 1.3% (all) | MEM: 156MB res, 108MB foot | GPU: avg 1.93ms, p95 2.44ms | DRAW: avg 0.92ms, p95 2.08ms, max 2.19ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 10.8ms | encode: 0.8ms
+[PERF] FPS: 31.0 | CPU: 10.0% (1core), 1.7% (all) | MEM: 156MB res, 108MB foot | GPU: avg 2.02ms, p95 2.43ms | DRAW: avg 0.95ms, p95 1.73ms, max 3.30ms
+[PERF-SPLIT] sem: 0.0ms | cmds: 11.6ms | encode: 0.8ms
