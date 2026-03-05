@@ -585,6 +585,11 @@ public final class UserMediaService {
     public func updateVideoFramesForScrub(sceneFrameIndex: Int) {
         guard let player = scenePlayer else { return }
 
+        #if DEBUG
+        let signpostId = ScrubSignpost.beginUpdateVideoFramesForScrub()
+        var processedBlockCount = 0
+        #endif
+
         for (blockId, kind) in mediaState {
             guard case .video(let selection) = kind,
                   let provider = videoProviders[blockId] else { continue }
@@ -607,7 +612,15 @@ public final class UserMediaService {
             for (_, assetId) in assetIds {
                 textureProvider.setTexture(texture, for: assetId)
             }
+
+            #if DEBUG
+            processedBlockCount += 1
+            #endif
         }
+
+        #if DEBUG
+        ScrubSignpost.endUpdateVideoFramesForScrub(signpostId, blockCount: processedBlockCount)
+        #endif
     }
 
     /// Updates video textures for frozen/edit mode.

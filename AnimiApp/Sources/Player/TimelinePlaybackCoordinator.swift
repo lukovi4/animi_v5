@@ -79,6 +79,7 @@ public final class TimelinePlaybackCoordinator {
 
     /// Called when active scene instance changes (PR9: for per-instance state apply).
     /// Fires on every instance change, even if sceneTypeId is the same.
+    /// Fires immediately after findActiveScene(at:), before loading a new sceneType if needed.
     public var onActiveSceneChanged: ((SceneTimeInfo) -> Void)?
 
     // MARK: - Dependencies

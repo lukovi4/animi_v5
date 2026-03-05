@@ -284,10 +284,15 @@ final class EditorLayoutContainerView: UIView {
     }
 
     /// Configures timeline with duration in microseconds and template FPS.
+    /// PR4: Legacy single-scene API, converts to scenes array internally.
     /// - Parameters:
     ///   - durationUs: Duration in microseconds
     ///   - templateFPS: Template frame rate for quantization
+    @available(*, deprecated, message: "Use configure(scenes:templateFPS:minSceneDurationUs:)")
     func configure(durationUs: TimeUs, templateFPS: Int) {
+        #if DEBUG
+        assertionFailure("Legacy timeline API. Use configure(scenes:templateFPS:minSceneDurationUs:) via EditorStore snapshot.")
+        #endif
         rulerView.configure(durationUs: durationUs)
         timelineView.configure(durationUs: durationUs, templateFPS: templateFPS)
     }
@@ -349,10 +354,15 @@ final class EditorLayoutContainerView: UIView {
 
     /// Reconfigures timeline with new duration while preserving state.
     /// Use this instead of configure() when duration changes to maintain playhead position and zoom.
+    /// PR4: Legacy API - uses duration-based configure internally.
     /// - Parameters:
     ///   - durationUs: New duration in microseconds
     ///   - templateFPS: Template frame rate for quantization
+    @available(*, deprecated, message: "Use configure(scenes:templateFPS:minSceneDurationUs:)")
     func reconfigureTimelinePreservingState(durationUs: TimeUs, templateFPS: Int) {
+        #if DEBUG
+        assertionFailure("Legacy timeline API. Use configure(scenes:templateFPS:minSceneDurationUs:) via EditorStore snapshot.")
+        #endif
         // 1. Snapshot current state
         let state = snapshotTimelineState()
 

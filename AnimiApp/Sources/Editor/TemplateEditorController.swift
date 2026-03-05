@@ -180,6 +180,10 @@ final class TemplateEditorController {
     ///   - timeUs: Time in microseconds
     ///   - mode: Quantize mode for frame calculation
     func setCurrentTimeUs(_ timeUs: TimeUs, mode: QuantizeMode) {
+        #if DEBUG
+        let signpostId = ScrubSignpost.beginSetCurrentTimeUs()
+        defer { ScrubSignpost.endSetCurrentTimeUs(signpostId) }
+        #endif
         applyTimeUs(timeUs, mode: mode)
     }
 
@@ -211,14 +215,32 @@ final class TemplateEditorController {
     // MARK: - Hit-Test & Selection (edit only)
 
     /// Handles tap in view coordinates. Converts to canvas, runs hit-test, updates selection.
+    /// Automatically switches to edit mode if in preview mode.
     func handleTap(viewPoint: CGPoint) {
-        guard state.mode == .edit, let player = player else { return }
+        print("[handleTap] viewPoint=\(viewPoint), hasPlayer=\(player != nil), canvasSize=\(canvasSize), viewSize=\(viewSize)")
+
+        guard let player = player else {
+            print("[handleTap] ERROR: no player")
+            return
+        }
+
+        // Auto-switch to edit mode on tap
+        if state.mode == .preview {
+            state.mode = .edit
+            state.isPlaying = false
+            print("[handleTap] switched to edit mode")
+        }
+
         let canvasPoint = viewToCanvas(viewPoint)
+        print("[handleTap] canvasPoint=\(canvasPoint)")
+
         let hit = player.hitTest(
             point: Vec2D(x: Double(canvasPoint.x), y: Double(canvasPoint.y)),
             frame: ScenePlayer.editFrameIndex,
             mode: .edit
         )
+        print("[handleTap] hit=\(hit ?? "nil")")
+
         state.selectedBlockId = hit
         updateOverlay()
         requestDisplay()

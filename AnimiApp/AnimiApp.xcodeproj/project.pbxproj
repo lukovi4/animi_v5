@@ -70,6 +70,7 @@
 		CC20D98CF2C2D50F0579DDAF /* AudioWriterPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 931F43B88D909958DFAB035F /* AudioWriterPump.swift */; };
 		CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9681217003171DED246CF7A /* AppDelegate.swift */; };
 		D2AFCF642E69E8DA0BE06307 /* EditorReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008B456A6D18BC55E52A997F /* EditorReducerTests.swift */; };
+		F2B3C4D5E6F01234567890AB /* EditorStoreTimelinePreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A2B3C4D5E6F0123456789A /* EditorStoreTimelinePreviewTests.swift */; };
 		D50A8104DC75F005771E3189 /* ExportProgressViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 405CA61F8D950F938A7C179C /* ExportProgressViewController.swift */; };
 		D5568C9185447FE2389AE27A /* TrackViewContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */; };
 		DA572C5E6C6860C97D060989 /* CategoryTemplatesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B853898BDFB63E02EA083BD5 /* CategoryTemplatesViewController.swift */; };
@@ -77,6 +78,7 @@
 		DB29C8E7EDC3DD99C8977858 /* SceneState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1811C646979CF0638C6195 /* SceneState.swift */; };
 		DF26CFCE6FDB0C6EA1F0DBD2 /* TemplateCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 695CDA66BFAAF9E9490AFDFA /* TemplateCatalog.swift */; };
 		E1B097003BE842813CB0A919 /* TimelinePerfCounters.swift in Sources */ = {isa = PBXBuildFile; fileRef = D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */; };
+		SCRUB0001DIAG00001SIGNPOST /* ScrubDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = SCRUB0002DIAG00002FILEREF /* ScrubDiagnostics.swift */; };
 		E25698A846DA76F3CA4038B4 /* BackgroundTextureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CA7A6FD8503DAF43604786F /* BackgroundTextureService.swift */; };
 		E7808653295E10429A48CC9C /* SceneTrackSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3601FA3EBE222F831A10F3DB /* SceneTrackSnapshot.swift */; };
 		EA5DFD8E85E8165771D4BFF3 /* CanonicalTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3364EA3951160DA864738903 /* CanonicalTimeline.swift */; };
@@ -103,6 +105,7 @@
 
 /* Begin PBXFileReference section */
 		008B456A6D18BC55E52A997F /* EditorReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerTests.swift; sourceTree = "<group>"; };
+		E1A2B3C4D5E6F0123456789A /* EditorStoreTimelinePreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStoreTimelinePreviewTests.swift; sourceTree = "<group>"; };
 		0AD0CC2427FEECE70284560E /* EditorNavBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorNavBar.swift; sourceTree = "<group>"; };
 		1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaTextureFactory.swift; sourceTree = "<group>"; };
 		1696482BFA3E93F558EEE181 /* PlayheadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayheadView.swift; sourceTree = "<group>"; };
@@ -175,6 +178,7 @@
 		D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackViewContracts.swift; sourceTree = "<group>"; };
 		D910D732A40F53C827CAF44B /* ContextBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBar.swift; sourceTree = "<group>"; };
 		D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePerfCounters.swift; sourceTree = "<group>"; };
+		SCRUB0002DIAG00002FILEREF /* ScrubDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrubDiagnostics.swift; sourceTree = "<group>"; };
 		DC6C7BCD49916848933ACCC5 /* AudioTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioTrackView.swift; sourceTree = "<group>"; };
 		DCF00B9CD6E40ED94892ADC9 /* PerfLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerfLogger.swift; sourceTree = "<group>"; };
 		DE5E9CF111CD6CF5A6213688 /* TimelinePlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePlaybackCoordinator.swift; sourceTree = "<group>"; };
@@ -215,6 +219,7 @@
 			isa = PBXGroup;
 			children = (
 				008B456A6D18BC55E52A997F /* EditorReducerTests.swift */,
+				E1A2B3C4D5E6F0123456789A /* EditorStoreTimelinePreviewTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -373,6 +378,7 @@
 				99082F901FF221848C1D8848 /* TimelineEvents.swift */,
 				7E20361C384C400823FEDDE1 /* TimelineLayoutContext.swift */,
 				D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */,
+				SCRUB0002DIAG00002FILEREF /* ScrubDiagnostics.swift */,
 				D12222EECEE4BF66B830A41A /* TimelineSelection.swift */,
 				493CBBADF2EADCE826942657 /* TimelineTimeUtils.swift */,
 				61F2AE9AABEA22194B49C3A4 /* TimelineView.swift */,
@@ -524,6 +530,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D2AFCF642E69E8DA0BE06307 /* EditorReducerTests.swift in Sources */,
+				F2B3C4D5E6F01234567890AB /* EditorStoreTimelinePreviewTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -593,6 +600,7 @@
 				10B8D513E511EBF48A1E7FCA /* TimelineLayoutContext.swift in Sources */,
 				55D77C0FBB83BC5D85687949 /* TimelinePayload.swift in Sources */,
 				E1B097003BE842813CB0A919 /* TimelinePerfCounters.swift in Sources */,
+				SCRUB0001DIAG00001SIGNPOST /* ScrubDiagnostics.swift in Sources */,
 				F6282E7E21B82388F3CC2243 /* TimelinePlaybackCoordinator.swift in Sources */,
 				8B1AE5FEAAA7FC56548F6624 /* TimelineSelection.swift in Sources */,
 				2FEAB6533EF1DA415C6FC778 /* TimelineTimeUtils.swift in Sources */,

@@ -365,20 +365,6 @@ final class PlayerViewController: UIViewController {
         return btn
     }()
 
-    /// Add video button.
-    private lazy var addVideoButton: UIButton = {
-        var config = UIButton.Configuration.filled()
-        config.title = "Add Video"
-        config.cornerStyle = .medium
-        config.baseBackgroundColor = .systemPurple
-        config.image = UIImage(systemName: "video")
-        config.imagePadding = 4
-        let btn = UIButton(configuration: config)
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.addTarget(self, action: #selector(addVideoTapped), for: .touchUpInside)
-        return btn
-    }()
-
     /// Clear media button.
     private lazy var clearMediaButton: UIButton = {
         var config = UIButton.Configuration.filled()
@@ -433,6 +419,14 @@ final class PlayerViewController: UIViewController {
     private var displayLink: CADisplayLink?
     private var isPlaying = false
     private var sceneFPS = 30.0
+
+    // MARK: - Scrub Render Throttle (A/B Testing)
+    /// True when user is actively dragging the timeline scrubber
+    private var isScrubDragging = false
+    /// Last time we triggered a Metal render during scrub drag
+    private var lastScrubRenderAt: CFTimeInterval = 0
+    /// True if a render was skipped due to throttle and needs to be done on .ended
+    private var pendingScrubRender = false
     private var renderErrorLogged = false
     private var deviceHeaderLogged = false
     /// PR-33: Track last frame to avoid redundant video updates
@@ -713,9 +707,8 @@ final class PlayerViewController: UIViewController {
     /// Scroll events are handled by the container (ruler sync).
     private func handleTimelineEvent(_ event: TimelineEvent) {
         switch event {
-        case .scrub(let timeUs, let quantize, _):
-            // Phase is available but not used in PR1
-            handleTimelineScrub(timeUs: timeUs, mode: quantize)
+        case .scrub(let timeUs, let quantize, let phase):
+            handleTimelineScrub(timeUs: timeUs, mode: quantize, phase: phase)
 
         case .selection(let selection):
             handleTimelineSelectionChanged(selection)
@@ -745,6 +738,11 @@ final class PlayerViewController: UIViewController {
         guard let store = editorStore else {
             log("[PR2] handleTrimScene: editorStore is nil")
             return
+        }
+
+        // Stop playback on trim start to avoid coordinator/UI desync during preview
+        if phase == .began && isPlaying {
+            stopPlayback()
         }
 
         // PR2: Dispatch trim action to store
@@ -856,7 +854,23 @@ final class PlayerViewController: UIViewController {
     /// - Parameters:
     ///   - timeUs: Time in microseconds
     ///   - mode: Quantize mode for frame calculation
-    private func handleTimelineScrub(timeUs: TimeUs, mode: QuantizeMode) {
+    ///   - phase: Gesture phase for scrub drag state tracking
+    private func handleTimelineScrub(timeUs: TimeUs, mode: QuantizeMode, phase: InteractionPhase) {
+        // Track scrub drag state for render throttling (A/B testing)
+        switch phase {
+        case .began:
+            isScrubDragging = true
+        case .ended, .cancelled:
+            isScrubDragging = false
+            // Force final render if any was skipped due to throttle
+            if pendingScrubRender {
+                metalView.setNeedsDisplay()
+                pendingScrubRender = false
+            }
+        case .changed:
+            break
+        }
+
         // Stop playback on scrub
         if isPlaying {
             stopPlayback()
@@ -911,6 +925,11 @@ final class PlayerViewController: UIViewController {
             self?.handleTimelineChanged(state)
         }
 
+        // onTimelinePreviewChanged: lightweight updates (trim preview only)
+        store.onTimelinePreviewChanged = { [weak self] state in
+            self?.handleTimelinePreviewChanged(state)
+        }
+
         store.onUndoRedoChanged = { [weak self] canUndo, canRedo in
             self?.handleUndoRedoChanged(canUndo: canUndo, canRedo: canRedo)
         }
@@ -939,6 +958,19 @@ final class PlayerViewController: UIViewController {
         // Step 8: PR9.1 - Initial apply SceneState for first scene
         // Without this, activeSceneInstanceId stays nil until first scrub/play
         handlePlayheadChanged(store.playheadTimeUs)
+
+        // PR10: Editor boot invariant - verify wiring is complete
+        #if DEBUG
+        if activeSceneInstanceId == nil {
+            assertionFailure("[PR10] configureEditorTimeline: activeSceneInstanceId is nil after initial apply")
+        }
+        if scenePlayer == nil {
+            assertionFailure("[PR10] configureEditorTimeline: scenePlayer is nil after initial apply")
+        }
+        if playbackCoordinator?.currentSceneInstanceId == nil {
+            assertionFailure("[PR10] configureEditorTimeline: playbackCoordinator.currentSceneInstanceId is nil after initial apply")
+        }
+        #endif
     }
 
     /// Sets up the TimelinePlaybackCoordinator for multi-scene playback.
@@ -1203,6 +1235,11 @@ final class PlayerViewController: UIViewController {
     private func handlePlayheadChanged(_ timeUs: TimeUs) {
         guard let coordinator = playbackCoordinator else { return }
 
+        #if DEBUG
+        let signpostId = ScrubSignpost.beginHandlePlayheadChanged()
+        ScrubCallCounter.shared.recordHandlePlayheadChanged()
+        #endif
+
         // Try sync path first (same scene, no load needed)
         if let localFrame = coordinator.syncSetGlobalTimeUs(timeUs) {
             // P1 fix: Cancel pending async task since we're back in loaded scene
@@ -1211,13 +1248,24 @@ final class PlayerViewController: UIViewController {
 
             // Same scene - update frame and redraw
             currentFrameIndex = localFrame
-            metalView.setNeedsDisplay()
+            requestMetalRender()
 
             // P1: Update video frames during timeline scrub (when not playing)
+            // DEBUG: DebugSkipScrubVideoUpdates toggle for A/B testing H1
             if !isPlaying, localFrame != lastVideoUpdateFrame {
+                #if DEBUG
+                if !ScrubDebugToggles.skipScrubVideoUpdates {
+                    userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                }
+                #else
                 userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                #endif
                 lastVideoUpdateFrame = localFrame
             }
+
+            #if DEBUG
+            ScrubSignpost.endHandlePlayheadChanged(signpostId, syncPath: true)
+            #endif
         } else {
             // Scene switch needed - use async path
             // Cancel previous playhead task to avoid stale frame application
@@ -1230,18 +1278,36 @@ final class PlayerViewController: UIViewController {
                 guard !Task.isCancelled else { return }
 
                 self.currentFrameIndex = localFrame
-                self.metalView.setNeedsDisplay()
+                self.requestMetalRender()
 
                 // P1: Update video frames after scene switch (when not playing)
+                // DEBUG: DebugSkipScrubVideoUpdates toggle for A/B testing H1
                 if !self.isPlaying, localFrame != self.lastVideoUpdateFrame {
+                    #if DEBUG
+                    if !ScrubDebugToggles.skipScrubVideoUpdates {
+                        self.userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                    }
+                    #else
                     self.userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                    #endif
                     self.lastVideoUpdateFrame = localFrame
                 }
             }
+
+            #if DEBUG
+            ScrubSignpost.endHandlePlayheadChanged(signpostId, syncPath: false)
+            #endif
         }
 
         // Sync editor controller (for UI frame display - global frame)
+        // DEBUG: DebugSkipEditorControllerTimeUpdate toggle for A/B testing H2
+        #if DEBUG
+        if !ScrubDebugToggles.skipEditorControllerTimeUpdate {
+            editorController.setCurrentTimeUs(timeUs, mode: .ended)
+        }
+        #else
         editorController.setCurrentTimeUs(timeUs, mode: .ended)
+        #endif
     }
 
     /// Called when selection changes (lightweight, frequent).
@@ -1269,6 +1335,21 @@ final class PlayerViewController: UIViewController {
         // Mark draft as dirty for persistence
         currentProjectDraft = state.draft
         draftIsDirty = true
+    }
+
+    /// Called during live-trim preview (lightweight, frequent).
+    /// Only updates UI, skips playback coordinator and persistence.
+    private func handleTimelinePreviewChanged(_ state: EditorState) {
+        // Update scene clips UI only
+        let scenes = state.canonicalTimeline.toSceneDrafts()
+        editorLayoutContainer.updateScenes(scenes)
+
+        // Sync editor controller duration (cheap, keeps UI consistent)
+        editorController.durationUs = state.projectDurationUs
+
+        // NOTE: Intentionally NOT updating:
+        // - playbackCoordinator (expensive O(n) rebuild)
+        // - currentProjectDraft / draftIsDirty (persistence only on commit)
     }
 
     /// Called when undo/redo availability changes.
@@ -1599,7 +1680,7 @@ final class PlayerViewController: UIViewController {
         editorController.setOverlayView(overlayView)
 
         editorController.onNeedsDisplay = { [weak self] in
-            self?.metalView.setNeedsDisplay()
+            self?.requestMetalRender()
         }
 
         editorController.onStateChanged = { [weak self] state in
@@ -2154,14 +2235,10 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func metalViewTapped(_ recognizer: UITapGestureRecognizer) {
-        // PR-19: In edit mode, tap does hit-test for block selection
-        if editorController.state.mode == .edit {
-            let point = recognizer.location(in: metalView)
-            editorController.handleTap(viewPoint: point)
-            return
-        }
-        // Preview mode: toggle fullscreen
-        toggleFullscreen()
+        // Tap always does hit-test for block selection (regardless of mode)
+        let point = recognizer.location(in: metalView)
+        print("[TAP] point=\(point), hasPlayer=\(scenePlayer != nil)")
+        editorController.handleTap(viewPoint: point)
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
@@ -2475,13 +2552,21 @@ final class PlayerViewController: UIViewController {
         let hasBinding: Bool
         if let blockId = state.selectedBlockId, let player = scenePlayer {
             hasBinding = player.bindingAssetId(blockId: blockId) != nil
+            print("[updateUserMediaUI] blockId=\(blockId), hasBinding=\(hasBinding), bindingAssetId=\(player.bindingAssetId(blockId: blockId) ?? "nil")")
         } else {
             hasBinding = false
+            print("[updateUserMediaUI] no blockId or no player")
         }
         let showUserMedia = state.mode == .edit && hasBinding
+        print("[updateUserMediaUI] mode=\(state.mode), showUserMedia=\(showUserMedia)")
+        print("[updateUserMediaUI] BEFORE: userMediaContainer.isHidden=\(userMediaContainer.isHidden), superview=\(userMediaContainer.superview != nil)")
 
         // Hide entire container (UIStackView auto-collapses)
         userMediaContainer.isHidden = !showUserMedia
+
+        print("[updateUserMediaUI] AFTER: userMediaContainer.isHidden=\(userMediaContainer.isHidden)")
+        print("[updateUserMediaUI] scrollView.isHidden=\(scrollView.isHidden)")
+        print("[updateUserMediaUI] presentationMode=\(presentationMode)")
 
         guard showUserMedia else { return }
 
@@ -2512,11 +2597,6 @@ final class PlayerViewController: UIViewController {
     @objc private func addPhotoTapped() {
         guard state.selectedBlockId != nil else { return }
         presentPhotoPicker(for: .images)
-    }
-
-    @objc private func addVideoTapped() {
-        guard state.selectedBlockId != nil else { return }
-        presentPhotoPicker(for: .videos)
     }
 
     @objc private func clearMediaTapped() {
@@ -3529,6 +3609,42 @@ final class PlayerViewController: UIViewController {
         }
     }
     #endif
+
+    // MARK: - Scrub Render Throttle (A/B Testing)
+
+    /// Requests Metal render with optional throttling during scrub drag.
+    /// Used for A/B testing render pipeline bottleneck hypothesis.
+    /// - Only applies throttle/skip when `isScrubDragging == true`
+    /// - Otherwise passes through to `metalView.setNeedsDisplay()` immediately
+    private func requestMetalRender() {
+        #if DEBUG
+        // Only apply throttle/skip during active scrub drag
+        guard isScrubDragging else {
+            metalView.setNeedsDisplay()
+            return
+        }
+
+        // H3: Skip render entirely during drag (test if render is the bottleneck)
+        if ScrubDebugToggles.skipMetalRender {
+            pendingScrubRender = true
+            return
+        }
+
+        // H3-throttle: Limit render to 30Hz during drag
+        if ScrubDebugToggles.throttleRender30Hz {
+            let now = CACurrentMediaTime()
+            let minInterval = 1.0 / 30.0  // 33.3ms
+            if now - lastScrubRenderAt < minInterval {
+                pendingScrubRender = true
+                return
+            }
+            lastScrubRenderAt = now
+            pendingScrubRender = false
+        }
+        #endif
+
+        metalView.setNeedsDisplay()
+    }
 }
 
 // MARK: - MTKViewDelegate

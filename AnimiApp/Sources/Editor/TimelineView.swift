@@ -312,7 +312,11 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// - Parameters:
     ///   - durationUs: Duration in microseconds (source of truth)
     ///   - templateFPS: Template frame rate for quantization
+    @available(*, deprecated, message: "Use configure(scenes:templateFPS:minSceneDurationUs:)")
     func configure(durationUs: TimeUs, templateFPS: Int) {
+        #if DEBUG
+        assertionFailure("Legacy timeline API. Use configure(scenes:templateFPS:minSceneDurationUs:) via EditorStore snapshot.")
+        #endif
         // Convert to single-scene array for PR4 compatibility
         let singleScene = SceneDraft(id: UUID(), durationUs: durationUs)
         configure(scenes: [singleScene], templateFPS: templateFPS, minSceneDurationUs: ProjectDraft.minSceneDurationUs)
@@ -540,10 +544,20 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard scrollView === self.scrollView else { return }
 
+        #if DEBUG
+        let signpostId = ScrubSignpost.beginScrollViewDidScroll()
+        ScrubCallCounter.shared.recordScrollViewDidScroll()
+        defer { ScrubSignpost.endScrollViewDidScroll(signpostId) }
+        #endif
+
         // Clamp offset to valid range
         let rawX = scrollView.contentOffset.x
         let clampedX = clampOffsetX(rawX)
         if rawX != clampedX {
+            #if DEBUG
+            ScrubSignpost.emitClampHit()
+            ScrubCallCounter.shared.recordClampHit()
+            #endif
             // Setting contentOffset triggers another scrollViewDidScroll call,
             // so return here to emit event only on the normalized second call
             // PR2 v7: Preserve Y position when clamping X
@@ -560,6 +574,10 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             let timeUs = timeUnderPlayheadUs()
             if timeUs != lastEmittedScrubTimeUs {
                 lastEmittedScrubTimeUs = timeUs
+                #if DEBUG
+                ScrubSignpost.emitScrubChanged(timeUs: timeUs)
+                ScrubCallCounter.shared.recordScrubChanged()
+                #endif
                 emitEvent(.scrub(timeUs: timeUs, quantize: .dragging, phase: .changed))
             }
         }
@@ -579,6 +597,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         guard scrollView === self.scrollView else { return }
+        #if DEBUG
+        ScrubCallCounter.shared.forceReport()
+        #endif
         if !decelerate {
             emitFinalScrub()
         }
