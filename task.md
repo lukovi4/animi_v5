@@ -1,9 +1,11 @@
 # PR: Scene Edit Mode (Full-screen) + Removal of Dev Editor + Edit Visibility Safety
 
-**Версия:** 2.5 (PR-A реализован)
+**Версия:** 2.7 (PR-A, PR-B и PR-C реализованы)
 
 ### Implementation Log:
 - **2026-03-04:** PR-A (Model Layer) — COMPLETED. Архив: `PR-A_SceneEditMode_ModelLayer.zip`
+- **2026-03-05:** PR-B (TVECore Safety) — COMPLETED. Архив: `PR-B_TVECore_Safety.zip`
+- **2026-03-05:** PR-C (UI Layout) — COMPLETED. Архив: `PR-C_UI_Layout.zip`
 
 ### Changelog v2.4 (финальный после полного аудита):
 1. ✅ **CLARIFY:** BlockVisibilityPolicy vs TemplateMode — разделение ответственности (см. 6.1, 6.4)
@@ -1462,7 +1464,7 @@ func test_previewMode_hidesBlockBeforeStartFrame() {
 
 **Архив для ревью:** `PR-A_SceneEditMode_ModelLayer.zip`
 
-### PR-B: TVECore Safety
+### PR-B: TVECore Safety ✅ COMPLETED (2026-03-05)
 **Файлы:**
 - `ScenePlayerTypes.swift` — `BlockVisibilityPolicy`
 - `SceneRenderPlan.swift` — параметр `visibility`
@@ -1471,7 +1473,18 @@ func test_previewMode_hidesBlockBeforeStartFrame() {
 
 **Критерий готовности:** В edit mode все блоки видны/кликабельны независимо от timing
 
-### PR-C: UI Layout
+**Что реализовано:**
+- ✅ `BlockVisibilityPolicy` enum с `.timeline` и `.all`
+- ✅ Параметр `visibility` в `SceneRenderPlan.renderCommands()`
+- ✅ Timing bypass в `ScenePlayer.renderCommands(mode:)` — `.edit` → `.all`
+- ✅ Timing bypass в `hitTest()` — `if mode == .preview { guard timing... }`
+- ✅ Timing bypass в `overlays()` — `if mode == .preview { guard timing... }`
+- ✅ Convenience API: `mediaInput()`, `allowedMedia()`, `userTransformsAllowed()`
+- ✅ 5 тестов для edit mode timing bypass
+
+**Архив для ревью:** `PR-B_TVECore_Safety.zip`
+
+### PR-C: UI Layout ✅ COMPLETED (2026-03-05)
 **Файлы:**
 - `ContextBar.swift` — кнопка Edit
 - `EditorLayoutContainerView.swift` — `setSceneEditMode()` через constraint-группы, `embedOverlayView()`
@@ -1480,6 +1493,23 @@ func test_previewMode_hidesBlockBeforeStartFrame() {
 - `MediaBlockActionBar.swift` — новый
 
 **Критерий готовности:** UI переключается между режимами, layout корректный, без AutoLayout warnings
+
+**Что реализовано:**
+- ✅ `ContextBar`: добавлен callback `onEditScene` и кнопка Edit
+- ✅ `EditorNavBar`: добавлен `EditorNavBarMode` enum, кнопка Done, метод `setMode()`
+- ✅ `EditorLayoutContainerView`:
+  - Constraint groups (`timelineVisibleConstraints`, `sceneEditConstraints`)
+  - `setSceneEditMode(_:animated:)` — переключает constraints, скрывает timeline и menuStrip
+  - `embedOverlayView()` — добавляет overlay между metalView и menuStrip
+  - `updateSceneEditBottomBar(selectedBlockId:)` — переключает SceneEditBar/MediaBlockActionBar
+  - Callbacks: `onEditScene`, `onDone`
+  - P2 fix: `setSceneEditMode()` теперь устанавливает bottom bar в консистентное состояние
+- ✅ `SceneEditBar`: Background, Reset Scene, hint label
+  - P1 fix: Anti-overlap constraint + compression priorities для hintLabel
+- ✅ `MediaBlockActionBar`: Photo, Video, Animation, Disable/Enable, Remove
+  - P1 fix: scrollView использует contentLayoutGuide/frameLayoutGuide для корректного скролла
+
+**Архив для ревью:** `PR-C_UI_Layout.zip`
 
 ### PR-D: Wiring + Interaction + Video Persist
 **Файлы:**
