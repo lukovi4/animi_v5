@@ -5,7 +5,7 @@ import TVECore
 /// Displays interactive block outlines using CAShapeLayer.
 ///
 /// PR-19: Editor overlay — CAShapeLayer-based (lead-approved).
-/// `isUserInteractionEnabled = false` — all gestures go to metalView underneath.
+/// PR-D: `isUserInteractionEnabled = true` — gestures are handled here in Scene Edit mode.
 final class EditorOverlayView: UIView {
 
     // MARK: - Properties
@@ -23,7 +23,8 @@ final class EditorOverlayView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        isUserInteractionEnabled = false
+        // PR-D: Enable user interaction for Scene Edit gestures
+        isUserInteractionEnabled = true
         backgroundColor = .clear
     }
 

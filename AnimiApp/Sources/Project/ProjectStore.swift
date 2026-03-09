@@ -487,6 +487,42 @@ public final class ProjectStore {
         return MediaRef.file(relativePath)
     }
 
+    /// Saves user video to the user media directory.
+    ///
+    /// PR-D: Uses `FileManager.copyItem` instead of loading video into memory.
+    /// Preserves original extension (mov/mp4/m4v).
+    ///
+    /// - Parameters:
+    ///   - sourceURL: Source video file URL (will be copied, not moved)
+    ///   - sceneInstanceId: Scene instance ID for organizing files
+    ///   - blockId: Block ID for organizing files
+    /// - Returns: MediaRef with relative path to the copied video
+    public func saveUserVideo(
+        from sourceURL: URL,
+        sceneInstanceId: UUID,
+        blockId: String
+    ) throws -> MediaRef {
+        try ensureDirectoriesExist()
+
+        let uuid = UUID().uuidString
+        let ext = sourceURL.pathExtension.lowercased()
+        let filename = "\(sceneInstanceId.uuidString)_\(blockId)_\(uuid).\(ext)"
+        let relativePath = "\(Self.mediaDirectoryName)/\(Self.userMediaDirectoryName)/\(filename)"
+
+        let mediaDir = try userMediaDirectoryURL()
+        let destURL = mediaDir.appendingPathComponent(filename)
+
+        // Remove existing file if present (for replaceItemAt semantics)
+        if fileManager.fileExists(atPath: destURL.path) {
+            try fileManager.removeItem(at: destURL)
+        }
+
+        // Copy video file (efficient, no memory loading)
+        try fileManager.copyItem(at: sourceURL, to: destURL)
+
+        return MediaRef.file(relativePath)
+    }
+
     /// Returns the absolute URL for a media reference.
     /// - Parameter mediaRef: Media reference
     /// - Returns: Absolute file URL

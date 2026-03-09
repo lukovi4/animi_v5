@@ -461,6 +461,9 @@ final class PlayerViewController: UIViewController {
     private var userMediaService: UserMediaService?
     private lazy var overlayView = EditorOverlayView()
 
+    // MARK: - Scene Edit Mode (PR-D)
+    private var sceneEditController: SceneEditInteractionController?
+
     // MARK: - Background (PR3)
     private var backgroundTextureService: BackgroundTextureService?
     private var effectiveBackgroundState: EffectiveBackgroundState?
@@ -699,6 +702,15 @@ final class PlayerViewController: UIViewController {
         editorLayoutContainer.onAddScene = { [weak self] in
             self?.presentSceneCatalog()
         }
+
+        // PR-D: Scene Edit Mode callbacks
+        editorLayoutContainer.onEditScene = { [weak self] sceneId in
+            self?.editorStore?.dispatch(.enterSceneEdit(sceneId: sceneId))
+        }
+
+        editorLayoutContainer.onDone = { [weak self] in
+            self?.editorStore?.dispatch(.exitSceneEdit)
+        }
     }
 
     // MARK: - PR1 + PR2: Unified Timeline Event Handling
@@ -934,6 +946,39 @@ final class PlayerViewController: UIViewController {
             self?.handleUndoRedoChanged(canUndo: canUndo, canRedo: canRedo)
         }
 
+        // PR-D: Scene Edit Mode callbacks
+        store.onUIModeChanged = { [weak self] mode in
+            self?.handleUIModeChanged(mode)
+        }
+
+        store.onSelectedBlockChanged = { [weak self] blockId in
+            self?.handleSelectedBlockChanged(blockId)
+        }
+
+        store.onStateRestoredFromUndoRedo = { [weak self] in
+            self?.handleStateRestoredFromUndoRedo()
+        }
+
+        // PR-D: Setup Scene Edit interaction controller
+        let sceneEditCtrl = SceneEditInteractionController()
+        sceneEditCtrl.overlayView = overlayView
+        sceneEditCtrl.getScenePlayer = { [weak self] in self?.scenePlayer }
+        sceneEditCtrl.getUIMode = { [weak self] in self?.editorStore?.state.uiMode ?? .timeline }
+        sceneEditCtrl.getSelectedBlockId = { [weak self] in self?.editorStore?.state.selectedBlockId }
+
+        sceneEditCtrl.onSelectBlock = { [weak self] blockId in
+            self?.editorStore?.dispatch(.selectBlock(blockId: blockId))
+        }
+
+        sceneEditCtrl.onTransformChanged = { [weak self] blockId, transform, phase in
+            guard let self = self else { return }
+            // Apply to runtime
+            self.scenePlayer?.setUserTransform(blockId: blockId, transform: transform)
+            self.metalView.setNeedsDisplay()
+        }
+
+        self.sceneEditController = sceneEditCtrl
+
         // Step 4: Sync local state from store
         currentProjectDraft = store.currentDraft
         log("[Release v1] Timeline configured: \(store.sceneItems.count) scenes, duration=\(store.projectDurationUs)us")
@@ -1168,33 +1213,56 @@ final class PlayerViewController: UIViewController {
             return
         }
 
-        // 1. Apply variant overrides
+        // PR-D: Correct order for state restoration:
+        // 1. Media assignments (auto sets present=true)
+        // 2. Explicit userMediaPresent overrides (can disable)
+        // 3. Variant overrides, transforms, toggles
+
+        // STEP 1: Apply media assignments (PR-D: now includes video)
+        // This automatically sets userMediaPresent=true for assigned blocks
+        // P0-3 fix: Pass userMediaPresent for video presentOnReady calculation
+        if let mediaAssignments = state.mediaAssignments {
+            applyMediaAssignments(mediaAssignments, userMediaPresent: state.userMediaPresent)
+        }
+
+        // STEP 2: Apply explicit userMediaPresent overrides (PR-D: critical fix)
+        // This allows "Disable" to override the automatic present=true from assignments
+        if let userMediaPresent = state.userMediaPresent {
+            for (blockId, present) in userMediaPresent {
+                player.setUserMediaPresent(blockId: blockId, present: present)
+            }
+        }
+
+        // STEP 3: Apply variant overrides
         player.applyVariantSelection(state.variantOverrides)
 
-        // 2. Apply user transforms
+        // STEP 4: Apply user transforms
         for (blockId, transform) in state.userTransforms {
             player.setUserTransform(blockId: blockId, transform: transform)
         }
 
-        // 3. Apply layer toggles
+        // STEP 5: Apply layer toggles
         for (blockId, toggles) in state.layerToggles {
             for (toggleId, enabled) in toggles {
                 player.setLayerToggle(blockId: blockId, toggleId: toggleId, enabled: enabled)
             }
         }
 
-        // 4. Apply media assignments (PR9: photo only for now)
-        if let mediaAssignments = state.mediaAssignments {
-            applyMediaAssignments(mediaAssignments)
-        }
-
         #if DEBUG
-        print("[PlayerVC] Applied state for instance \(instanceId): variants=\(state.variantOverrides.count), transforms=\(state.userTransforms.count), toggles=\(state.layerToggles.count)")
+        print("[PlayerVC] Applied state for instance \(instanceId): " +
+              "assignments=\(state.mediaAssignments?.count ?? 0), " +
+              "present=\(state.userMediaPresent?.count ?? 0), " +
+              "variants=\(state.variantOverrides.count), " +
+              "transforms=\(state.userTransforms.count), " +
+              "toggles=\(state.layerToggles.count)")
         #endif
     }
 
     /// Applies media assignments from SceneState.
-    private func applyMediaAssignments(_ assignments: [String: MediaRef]) {
+    /// - Parameters:
+    ///   - assignments: Media assignments (blockId -> MediaRef)
+    ///   - userMediaPresent: Optional overrides for userMediaPresent (for video presentOnReady)
+    private func applyMediaAssignments(_ assignments: [String: MediaRef], userMediaPresent: [String: Bool]?) {
         for (blockId, mediaRef) in assignments {
             guard mediaRef.kind == .file else { continue }
 
@@ -1216,15 +1284,27 @@ final class PlayerViewController: UIViewController {
             // Determine media type from extension
             let ext = url.pathExtension.lowercased()
             if ["jpg", "jpeg", "png", "heic"].contains(ext) {
-                // Photo
+                // Photo (sync, override will work in STEP 2)
                 if let image = UIImage(contentsOfFile: url.path) {
                     let success = userMediaService?.setPhoto(blockId: blockId, image: image) ?? false
                     #if DEBUG
-                    print("[PlayerVC] Applied media for \(blockId): \(success ? "success" : "failed")")
+                    print("[PlayerVC] Applied photo for \(blockId): \(success ? "success" : "failed")")
                     #endif
                 }
+            } else if ["mov", "mp4", "m4v"].contains(ext) {
+                // PR-D: Video support with persistent ownership (file is in ProjectStore)
+                // P0-3 fix: Use presentOnReady from userMediaPresent to respect Disable state
+                let presentOnReady = userMediaPresent?[blockId] ?? true
+                let success = userMediaService?.setVideo(
+                    blockId: blockId,
+                    url: url,
+                    ownership: .persistent,
+                    presentOnReady: presentOnReady
+                ) ?? false
+                #if DEBUG
+                print("[PlayerVC] Applied video for \(blockId): presentOnReady=\(presentOnReady), \(success ? "success" : "failed")")
+                #endif
             }
-            // Note: Video support deferred per PR9 scope (photo only)
         }
     }
 
@@ -1360,6 +1440,64 @@ final class PlayerViewController: UIViewController {
         #endif
     }
 
+    // MARK: - PR-D: Scene Edit Mode Handlers
+
+    /// Handles UI mode changes (timeline ↔ sceneEdit).
+    /// PR-D: Wires store.onUIModeChanged to layout and interaction controller.
+    private func handleUIModeChanged(_ mode: EditorUIMode) {
+        switch mode {
+        case .timeline:
+            // Exit Scene Edit: restore timeline UI
+            editorLayoutContainer.setSceneEditMode(false, animated: true)
+            editorLayoutContainer.navBar.setMode(.timeline)
+            sceneEditController?.updateOverlay()
+
+        case .sceneEdit(let sceneId):
+            // Enter Scene Edit: stop playback, collapse timeline
+            if isPlaying {
+                stopPlayback()
+            }
+            editorLayoutContainer.setSceneEditMode(true, animated: true)
+            editorLayoutContainer.navBar.setMode(.sceneEdit)
+            sceneEditController?.updateOverlay()
+
+            #if DEBUG
+            log("[PR-D] Entered Scene Edit for scene: \(sceneId)")
+            #endif
+        }
+    }
+
+    /// Handles selected block changes in Scene Edit mode.
+    /// PR-D: Updates bottom bar and overlay when block selection changes.
+    private func handleSelectedBlockChanged(_ blockId: String?) {
+        editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: blockId)
+        sceneEditController?.updateOverlay()
+
+        #if DEBUG
+        log("[PR-D] Selected block changed: \(blockId ?? "nil")")
+        #endif
+    }
+
+    /// Handles state restoration after undo/redo.
+    /// PR-D: Re-applies runtime state for active scene instance to sync with restored snapshot.
+    private func handleStateRestoredFromUndoRedo() {
+        guard let instanceId = activeSceneInstanceId else { return }
+
+        // Clear runtime user media to avoid "stale textures" after undo
+        userMediaService?.clearAll()
+
+        // Re-apply full persisted state for active instance
+        applySceneInstanceState(instanceId: instanceId)
+
+        // Refresh overlay and redraw
+        sceneEditController?.updateOverlay()
+        metalView.setNeedsDisplay()
+
+        #if DEBUG
+        log("[PR-D] State restored from undo/redo, re-applied instance: \(instanceId)")
+        #endif
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         // PR2: Hide system navigation bar in editor mode (we use EditorNavBar)
@@ -1434,8 +1572,18 @@ final class PlayerViewController: UIViewController {
         super.viewDidLayoutSubviews()
         editorController.viewSize = metalView.bounds.size
         overlayView.canvasToView = editorController.canvasToViewTransform()
+
+        // PR-D: Update Scene Edit mapper with current canvas/view sizes
+        sceneEditController?.mapper.canvasSize = canvasSize
+        sceneEditController?.mapper.viewSize = metalView.bounds.size
+
         // Lead fix #5: refresh overlay after layout change to prevent "jump"
         editorController.refreshOverlayIfNeeded()
+
+        // P1-2: Refresh Scene Edit overlay after layout change
+        if case .sceneEdit = editorStore?.state.uiMode {
+            sceneEditController?.updateOverlay()
+        }
     }
 
     /// Main vertical stack for all controls below metalView
@@ -1660,9 +1808,13 @@ final class PlayerViewController: UIViewController {
         metalView.layer.cornerRadius = 0
         metalView.clipsToBounds = false
 
-        // PR-19: All gestures on metalView
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(metalViewTapped))
-        metalView.addGestureRecognizer(tapGesture)
+        // PR-19: Tap gesture on metalView for dev mode
+        let metalTapGesture = UITapGestureRecognizer(target: self, action: #selector(metalViewTapped))
+        metalView.addGestureRecognizer(metalTapGesture)
+
+        // PR-D: All transform gestures on overlayView for Scene Edit mode
+        let overlayTapGesture = UITapGestureRecognizer(target: self, action: #selector(overlayViewTapped))
+        overlayView.addGestureRecognizer(overlayTapGesture)
 
         let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan))
         let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
@@ -1670,9 +1822,9 @@ final class PlayerViewController: UIViewController {
         panGesture.delegate = self
         pinchGesture.delegate = self
         rotationGesture.delegate = self
-        metalView.addGestureRecognizer(panGesture)
-        metalView.addGestureRecognizer(pinchGesture)
-        metalView.addGestureRecognizer(rotationGesture)
+        overlayView.addGestureRecognizer(panGesture)
+        overlayView.addGestureRecognizer(pinchGesture)
+        overlayView.addGestureRecognizer(rotationGesture)
     }
 
     /// Wires editor controller callbacks. Called once from viewDidLoad.
@@ -2241,19 +2393,44 @@ final class PlayerViewController: UIViewController {
         editorController.handleTap(viewPoint: point)
     }
 
+    // PR-D: Tap handler for Scene Edit mode (on overlayView)
+    @objc private func overlayViewTapped(_ recognizer: UITapGestureRecognizer) {
+        guard case .sceneEdit = editorStore?.state.uiMode else { return }
+        let point = recognizer.location(in: overlayView)
+        sceneEditController?.handleTap(viewPoint: point)
+    }
+
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        editorController.handlePan(recognizer)
-        persistTransformIfNeeded(recognizer)
+        // PR-D: Route to sceneEditController in Scene Edit mode
+        if case .sceneEdit = editorStore?.state.uiMode {
+            sceneEditController?.handlePan(recognizer)
+            persistTransformIfNeededSceneEdit(recognizer)
+        } else {
+            editorController.handlePan(recognizer)
+            persistTransformIfNeeded(recognizer)
+        }
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
-        editorController.handlePinch(recognizer)
-        persistTransformIfNeeded(recognizer)
+        // PR-D: Route to sceneEditController in Scene Edit mode
+        if case .sceneEdit = editorStore?.state.uiMode {
+            sceneEditController?.handlePinch(recognizer)
+            persistTransformIfNeededSceneEdit(recognizer)
+        } else {
+            editorController.handlePinch(recognizer)
+            persistTransformIfNeeded(recognizer)
+        }
     }
 
     @objc private func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
-        editorController.handleRotation(recognizer)
-        persistTransformIfNeeded(recognizer)
+        // PR-D: Route to sceneEditController in Scene Edit mode
+        if case .sceneEdit = editorStore?.state.uiMode {
+            sceneEditController?.handleRotation(recognizer)
+            persistTransformIfNeededSceneEdit(recognizer)
+        } else {
+            editorController.handleRotation(recognizer)
+            persistTransformIfNeeded(recognizer)
+        }
     }
 
     /// PR9.1: Persists current transform to store for undo/redo and save/load.
@@ -2283,6 +2460,38 @@ final class PlayerViewController: UIViewController {
         // On cancel, Store restores baseline but runtime still has "last" value.
         // Apply restored baseline transform back to runtime.
         // Use .identity as fallback when baseline has no saved transform.
+        if phase == .cancelled {
+            let restored = editorStore?.state.draft.sceneInstanceStates[instanceId]?.userTransforms[blockId] ?? .identity
+            player.setUserTransform(blockId: blockId, transform: restored)
+            metalView.setNeedsDisplay()
+        }
+    }
+
+    /// PR-D: Persists transform from Scene Edit mode gestures.
+    private func persistTransformIfNeededSceneEdit(_ recognizer: UIGestureRecognizer) {
+        guard let instanceId = activeSceneInstanceId,
+              let blockId = editorStore?.state.selectedBlockId,
+              let player = scenePlayer else { return }
+
+        let phase: InteractionPhase
+        switch recognizer.state {
+        case .began: phase = .began
+        case .changed: phase = .changed
+        case .ended: phase = .ended
+        case .cancelled, .failed: phase = .cancelled
+        default: return
+        }
+
+        let transform = player.userTransform(blockId: blockId)
+
+        editorStore?.dispatch(.setBlockTransform(
+            sceneInstanceId: instanceId,
+            blockId: blockId,
+            transform: transform,
+            phase: phase
+        ))
+
+        // On cancel, restore baseline transform
         if phase == .cancelled {
             let restored = editorStore?.state.draft.sceneInstanceStates[instanceId]?.userTransforms[blockId] ?? .identity
             player.setUserTransform(blockId: blockId, transform: restored)
@@ -2671,6 +2880,69 @@ final class PlayerViewController: UIViewController {
         } catch {
             log("[UserMedia] Failed to save media: \(error)")
         }
+
+        updateUserMediaStatusLabel()
+        metalView.setNeedsDisplay()
+    }
+
+    /// PR-D: Handles video picked from PHPicker with full persistence flow.
+    /// - Parameters:
+    ///   - blockId: Target block ID
+    ///   - tempURL: Temporary URL of copied video file (will be deleted after processing)
+    private func handleUserMediaVideoPicked(blockId: String, tempURL: URL) {
+        // Step 1: Get active scene instance for persistence
+        guard let instanceId = activeSceneInstanceId else {
+            log("[UserMedia] No active scene instance, skipping video persistence")
+            try? FileManager.default.removeItem(at: tempURL)
+            updateUserMediaStatusLabel()
+            metalView.setNeedsDisplay()
+            return
+        }
+
+        // Step 2: Save video to persistent storage
+        let mediaRef: MediaRef
+        let persistedURL: URL
+        do {
+            mediaRef = try ProjectStore.shared.saveUserVideo(
+                from: tempURL,
+                sceneInstanceId: instanceId,
+                blockId: blockId
+            )
+            persistedURL = try ProjectStore.shared.absoluteURL(for: mediaRef)
+        } catch {
+            log("[UserMedia] Failed to save video: \(error)")
+            try? FileManager.default.removeItem(at: tempURL)
+            updateUserMediaStatusLabel()
+            metalView.setNeedsDisplay()
+            return
+        }
+
+        // Step 3: Apply to runtime with persistent ownership
+        let runtimeSuccess = userMediaService?.setVideo(
+            blockId: blockId,
+            url: persistedURL,
+            ownership: .persistent
+        ) ?? false
+
+        if !runtimeSuccess {
+            log("[UserMedia] Failed to set video for block '\(blockId)'")
+            try? FileManager.default.removeItem(at: tempURL)
+            updateUserMediaStatusLabel()
+            metalView.setNeedsDisplay()
+            return
+        }
+
+        // Step 4: Dispatch to store for persistence
+        editorStore?.dispatch(.setBlockMedia(
+            sceneInstanceId: instanceId,
+            blockId: blockId,
+            media: mediaRef
+        ))
+
+        log("[UserMedia] Video saved and set for block '\(blockId)': \(mediaRef.id)")
+
+        // Step 5: Cleanup temp file (already copied to persistent storage)
+        try? FileManager.default.removeItem(at: tempURL)
 
         updateUserMediaStatusLabel()
         metalView.setNeedsDisplay()
@@ -3980,16 +4252,8 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
                 }
 
                 DispatchQueue.main.async {
-                    let success = self.userMediaService?.setVideo(blockId: blockId, tempURL: tempURL) ?? false
-                    if success {
-                        self.log("[UserMedia] Video set for block '\(blockId)' (async poster pending)")
-                    } else {
-                        self.log("[UserMedia] Failed to set video for block '\(blockId)'")
-                        // Clean up temp file on failure
-                        try? FileManager.default.removeItem(at: tempURL)
-                    }
-                    self.updateUserMediaStatusLabel()
-                    self.metalView.setNeedsDisplay()
+                    // PR-D: Use full persistence flow
+                    self.handleUserMediaVideoPicked(blockId: blockId, tempURL: tempURL)
                 }
             }
         }

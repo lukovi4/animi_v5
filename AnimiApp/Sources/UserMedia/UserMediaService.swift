@@ -3,6 +3,39 @@ import Metal
 import AVFoundation
 import TVECore
 
+// MARK: - Async Semaphore (P1: Poster Throttling)
+
+/// Simple async semaphore for limiting concurrent operations.
+/// P1: Used to throttle poster generation to avoid memory spikes.
+private actor AsyncSemaphore {
+    private let limit: Int
+    private var current: Int = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func acquire() async {
+        if current < limit {
+            current += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if let waiter = waiters.first {
+            waiters.removeFirst()
+            waiter.resume()
+        } else {
+            current = max(0, current - 1)
+        }
+    }
+}
+
 // MARK: - Video Selection (PR1)
 
 /// Represents a user's video selection with trim/offset parameters.
@@ -86,6 +119,20 @@ public enum UserMediaKind: Equatable {
     case photo
     case video(VideoSelection)
     case none
+}
+
+// MARK: - Media Ownership (PR-D)
+
+/// Ownership model for video files.
+///
+/// PR-D: Determines whether UserMediaService should delete the file on cleanup.
+/// - `temporary`: File was copied to temp by UserMediaService, delete on cleanup.
+/// - `persistent`: File is managed externally (e.g., ProjectStore), do NOT delete.
+public enum MediaOwnership: Equatable, Sendable {
+    /// Temporary file owned by UserMediaService. Deleted on cleanup.
+    case temporary
+    /// Persistent file owned externally (ProjectStore). NOT deleted on cleanup.
+    case persistent
 }
 
 // MARK: - Video Budget Policy (PR-F)
@@ -173,6 +220,9 @@ public final class UserMediaService {
     /// Temp video file URLs per block (PR1: for cleanup)
     private var tempVideoURLByBlockId: [String: URL] = [:]
 
+    /// PR-D: Video file ownership per block (determines cleanup behavior)
+    private var videoOwnershipByBlockId: [String: MediaOwnership] = [:]
+
     /// Scene FPS (needed for video frame calculation)
     private var sceneFPS: Double = 30.0
 
@@ -188,6 +238,12 @@ public final class UserMediaService {
 
     /// Active video setup tasks per blockId (for cancellation on replace/cleanup).
     private var videoSetupTasksByBlock: [String: Task<Void, Never>] = [:]
+
+    // MARK: - Poster Throttling (P1)
+
+    /// Semaphore to limit concurrent poster generations.
+    /// P1: Limits to max 2 concurrent poster extractions to avoid memory spikes.
+    private let posterSemaphore = AsyncSemaphore(limit: 2)
 
     // MARK: - Video Budget (PR-F)
 
@@ -278,15 +334,18 @@ public final class UserMediaService {
     /// Uses poster gating: `userMediaPresent` is only set to `true` after poster is ready.
     /// PR-async-race: Token-protected to prevent stale updates on rapid replace.
     ///
-    /// Note: Caller (PlayerViewController) must copy video to temp before calling.
-    /// This is required by PHPicker API — the source URL is only valid inside the callback.
+    /// PR-D: Added ownership parameter to control cleanup behavior:
+    /// - `.temporary`: File will be deleted on cleanup (default, for PHPicker temp files)
+    /// - `.persistent`: File will NOT be deleted (for persisted videos from ProjectStore)
     ///
     /// - Parameters:
     ///   - blockId: Identifier of the media block
-    ///   - tempURL: URL of the video file (already copied to temp by caller)
+    ///   - url: URL of the video file
+    ///   - ownership: Who owns the file lifecycle (default: `.temporary`)
+    ///   - presentOnReady: Value for `userMediaPresent` after poster extraction (default: `true`)
     /// - Returns: `true` if video accepted (async poster generation started), `false` on validation error
     @discardableResult
-    public func setVideo(blockId: String, tempURL: URL) -> Bool {
+    public func setVideo(blockId: String, url: URL, ownership: MediaOwnership = .temporary, presentOnReady: Bool = true) -> Bool {
         guard let player = scenePlayer else {
             print("[UserMediaService] setVideo failed: no scene player")
             return false
@@ -302,11 +361,12 @@ public final class UserMediaService {
 
         videoSetupTasksByBlock[blockId]?.cancel()
 
-        // Store temp URL for cleanup (caller already copied, we manage lifecycle)
-        tempVideoURLByBlockId[blockId] = tempURL
+        // PR-D: Store URL and ownership for cleanup
+        tempVideoURLByBlockId[blockId] = url
+        videoOwnershipByBlockId[blockId] = ownership
 
         // Create video frame provider with scene FPS
-        let provider = VideoFrameProvider(device: device, commandQueue: commandQueue, url: tempURL, sceneFPS: sceneFPS)
+        let provider = VideoFrameProvider(device: device, commandQueue: commandQueue, url: url, sceneFPS: sceneFPS)
         videoProviders[blockId] = provider
 
         // PR1: Store state immediately but userMediaPresent = false (poster gating)
@@ -319,6 +379,9 @@ public final class UserMediaService {
         let setupTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
 
+            // P1: Throttle concurrent poster extractions
+            await self.posterSemaphore.acquire()
+
             do {
                 // PR1 FIX: requestPoster waits for ready internally, no need for separate polling
                 // Request poster at time 0 first to ensure provider is ready
@@ -329,6 +392,7 @@ public final class UserMediaService {
                     #if DEBUG
                     print("[UserMediaService] setVideo: stale task ignored for blockId=\(blockId)")
                     #endif
+                    await self.posterSemaphore.release()
                     return
                 }
 
@@ -339,16 +403,18 @@ public final class UserMediaService {
                 guard duration > Self.epsilon else {
                     print("[UserMediaService] setVideo failed: video duration too short (\(duration)s)")
                     self.clear(blockId: blockId)
+                    await self.posterSemaphore.release()
                     return
                 }
 
                 // Create proper VideoSelection with duration
-                let selection = VideoSelection(url: tempURL, duration: duration)
+                let selection = VideoSelection(url: url, duration: duration)
 
                 // Validate selection
                 guard selection.isValid else {
                     print("[UserMediaService] setVideo failed: invalid selection (winEnd <= winStart)")
                     self.clear(blockId: blockId)
+                    await self.posterSemaphore.release()
                     return
                 }
 
@@ -357,6 +423,7 @@ public final class UserMediaService {
                     #if DEBUG
                     print("[UserMediaService] setVideo: stale task ignored (pre-commit) for blockId=\(blockId)")
                     #endif
+                    await self.posterSemaphore.release()
                     return
                 }
 
@@ -371,7 +438,8 @@ public final class UserMediaService {
                 }
 
                 // NOW enable binding layer (poster gating complete)
-                player.setUserMediaPresent(blockId: blockId, present: true)
+                // P0-3 fix: Use presentOnReady instead of hardcoded true
+                player.setUserMediaPresent(blockId: blockId, present: presentOnReady)
 
                 // PR1.1: Trigger redraw after async poster injection
                 self.onNeedsDisplay?()
@@ -380,17 +448,25 @@ public final class UserMediaService {
                 print("[UserMediaService] setVideo success: blockId=\(blockId), duration=\(duration)s, needsDisplay fired")
                 #endif
 
+                // P1: Release semaphore on success
+                await self.posterSemaphore.release()
+
             } catch is CancellationError {
                 // PR-async-race: Expected on cancel/replace — silent ignore
                 #if DEBUG
                 print("[UserMediaService] setVideo: cancelled for blockId=\(blockId)")
                 #endif
+                await self.posterSemaphore.release()
             } catch {
                 // PR-async-race: Only clear if still current
-                guard self.videoSetupGenerationByBlock[blockId] == token else { return }
+                guard self.videoSetupGenerationByBlock[blockId] == token else {
+                    await self.posterSemaphore.release()
+                    return
+                }
                 // PR1: On poster error, log and clear
                 print("[UserMediaService] setVideo failed: poster generation error - \(error.localizedDescription)")
                 self.clear(blockId: blockId)
+                await self.posterSemaphore.release()
             }
         }
 
@@ -731,8 +807,12 @@ public final class UserMediaService {
 
     /// Clears all user media for all blocks.
     public func clearAll() {
-        let blockIds = Array(mediaState.keys)
-        for blockId in blockIds {
+        // P1-1 fix: Use union of all keys to catch pending tasks during poster gating
+        let allBlockIds = Set(mediaState.keys)
+            .union(tempVideoURLByBlockId.keys)
+            .union(videoProviders.keys)
+            .union(videoSetupTasksByBlock.keys)
+        for blockId in allBlockIds {
             clear(blockId: blockId)
         }
     }
@@ -741,6 +821,7 @@ public final class UserMediaService {
 
     /// Cleans up video resources for a block (provider + temp file).
     /// PR-async-race: Increments generation and cancels setup task to prevent stale updates.
+    /// PR-D: Only deletes file if ownership is `.temporary`.
     private func cleanupVideoResources(for blockId: String) {
         // PR-async-race: Invalidate pending async operations for this blockId
         videoSetupGenerationByBlock[blockId, default: 0] += 1
@@ -752,15 +833,24 @@ public final class UserMediaService {
             provider.release()
         }
 
-        // Delete temp file
-        if let tempURL = tempVideoURLByBlockId.removeValue(forKey: blockId) {
-            do {
-                try FileManager.default.removeItem(at: tempURL)
+        // PR-D: Get ownership before removing URL
+        let ownership = videoOwnershipByBlockId.removeValue(forKey: blockId) ?? .temporary
+
+        // Delete file only if temporary (owned by UserMediaService)
+        if let fileURL = tempVideoURLByBlockId.removeValue(forKey: blockId) {
+            if ownership == .temporary {
+                do {
+                    try FileManager.default.removeItem(at: fileURL)
+                    #if DEBUG
+                    print("[UserMediaService] Deleted temp file: \(fileURL.lastPathComponent)")
+                    #endif
+                } catch {
+                    print("[UserMediaService] Failed to delete temp file: \(error.localizedDescription)")
+                }
+            } else {
                 #if DEBUG
-                print("[UserMediaService] Deleted temp file: \(tempURL.lastPathComponent)")
+                print("[UserMediaService] Preserved persistent file: \(fileURL.lastPathComponent)")
                 #endif
-            } catch {
-                print("[UserMediaService] Failed to delete temp file: \(error.localizedDescription)")
             }
         }
     }
@@ -774,9 +864,13 @@ public final class UserMediaService {
         // We access ivars directly without actor isolation because:
         // 1. deinit is the final access point - no other references exist
         // 2. No concurrent access is possible during deinitialization
-        let tempURLs = tempVideoURLByBlockId.values
-        for tempURL in tempURLs {
-            try? FileManager.default.removeItem(at: tempURL)
+        //
+        // PR-D: Only delete files with .temporary ownership
+        for (blockId, fileURL) in tempVideoURLByBlockId {
+            let ownership = videoOwnershipByBlockId[blockId] ?? .temporary
+            if ownership == .temporary {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
         }
     }
 
