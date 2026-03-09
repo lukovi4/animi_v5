@@ -328,6 +328,41 @@ public final class ScenePlayer {
         return result
     }
 
+    // MARK: - MediaInput Access (PR-B)
+
+    /// Returns the MediaInput configuration for a block.
+    ///
+    /// Used by UI to check allowed media types and transform permissions.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: MediaInput configuration, or `nil` if block not found
+    public func mediaInput(blockId: String) -> MediaInput? {
+        compiledScene?.runtime.scene.mediaBlocks.first { $0.id == blockId }?.input
+    }
+
+    /// Returns the allowed media types for a block.
+    ///
+    /// Convenience wrapper around `mediaInput(blockId:)?.allowedMedia`.
+    /// UI uses this to enable/disable Add Photo/Add Video buttons.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: Array of allowed media types (e.g., ["photo", "video"]), or `nil` if block not found
+    public func allowedMedia(blockId: String) -> [String]? {
+        mediaInput(blockId: blockId)?.allowedMedia
+    }
+
+    /// Returns the user transform permissions for a block.
+    ///
+    /// Convenience wrapper around `mediaInput(blockId:)?.userTransformsAllowed`.
+    /// UI uses this to enable/disable pan/zoom/rotate gestures.
+    /// `nil` means all transforms are allowed (backward compatible).
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: UserTransformsAllowed with pan/zoom/rotate flags, or `nil` (= all allowed)
+    public func userTransformsAllowed(blockId: String) -> UserTransformsAllowed? {
+        mediaInput(blockId: blockId)?.userTransformsAllowed
+    }
+
     // MARK: - Layer Toggles (PR-30)
 
     /// Returns the list of available toggles for a block.
@@ -517,7 +552,10 @@ public final class ScenePlayer {
 
         // Walk top-to-bottom (reversed: blocks are sorted ascending by zIndex)
         for block in runtime.blocks.reversed() {
-            guard block.timing.isVisible(at: frame) else { continue }
+            // PR-B: In edit mode, don't filter by timing — all blocks are hittable
+            if mode == .preview {
+                guard block.timing.isVisible(at: frame) else { continue }
+            }
 
             if block.hitTestMode == .mask {
                 // Try shape hit-test via mediaInput path
@@ -560,7 +598,10 @@ public final class ScenePlayer {
 
         // Top-to-bottom order (reversed: blocks are sorted ascending by zIndex)
         for block in runtime.blocks.reversed() {
-            guard block.timing.isVisible(at: frame) else { continue }
+            // PR-B: In edit mode, don't filter by timing — all blocks get overlays
+            if mode == .preview {
+                guard block.timing.isVisible(at: frame) else { continue }
+            }
 
             let hitPath: BezierPath
 
@@ -650,10 +691,13 @@ public final class ScenePlayer {
         let frameIndex: Int
         let overrides: [String: String]
 
+        let visibility: BlockVisibilityPolicy
+
         switch mode {
         case .preview:
             frameIndex = sceneFrameIndex
             overrides = variantOverrides
+            visibility = .timeline
         case .edit:
             frameIndex = Self.editFrameIndex
             // Build edit override map: every block → its editVariantId
@@ -662,6 +706,8 @@ public final class ScenePlayer {
                     ($0.blockId, $0.editVariantId)
                 }
             )
+            // PR-B: In edit mode, show all blocks regardless of timing
+            visibility = .all
         }
 
         return SceneRenderPlan.renderCommands(
@@ -670,7 +716,8 @@ public final class ScenePlayer {
             userTransforms: userTransforms,
             variantOverrides: overrides,
             userMediaPresent: userMediaPresent,
-            layerToggleState: layerToggleState
+            layerToggleState: layerToggleState,
+            visibility: visibility
         )
     }
 

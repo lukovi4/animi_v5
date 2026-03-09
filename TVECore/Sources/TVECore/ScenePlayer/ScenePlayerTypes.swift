@@ -212,6 +212,24 @@ public struct BlockTiming: Sendable, Equatable, Codable {
     }
 }
 
+// MARK: - Block Visibility Policy (PR-B)
+
+/// Policy for block visibility filtering in SceneRenderPlan.
+///
+/// - `timeline`: Filter by `block.timing.isVisible(at: frame)` — normal playback.
+///   Blocks outside their timing window are not rendered.
+/// - `all`: Show all blocks regardless of timing — edit mode.
+///   All blocks are rendered at the given frame, ignoring timing constraints.
+///
+/// Note: `hitTest`/`overlays` use existing `TemplateMode` parameter for bypass (see 6.4).
+/// This enum is specifically for `SceneRenderPlan.renderCommands()`.
+public enum BlockVisibilityPolicy: Sendable {
+    /// Filter blocks by timing (normal playback behavior)
+    case timeline
+    /// Show all blocks regardless of timing (edit mode)
+    case all
+}
+
 // MARK: - Template Mode (PR-18)
 
 /// Template display mode — determines how the scene is rendered.

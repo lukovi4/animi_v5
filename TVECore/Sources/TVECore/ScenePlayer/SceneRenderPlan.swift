@@ -24,6 +24,8 @@ public enum SceneRenderPlan {
     ///     When `false`, the binding layer is excluded from render commands entirely.
     ///   - layerToggleState: Per-block toggle state (PR-30).
     ///     Maps blockId → (toggleId → enabled). Toggles not present default to enabled.
+    ///   - visibility: Block visibility policy (PR-B).
+    ///     `.timeline` filters by timing (default), `.all` shows all blocks (edit mode).
     /// - Returns: Array of render commands for all visible blocks
     public static func renderCommands(
         for runtime: SceneRuntime,
@@ -31,7 +33,8 @@ public enum SceneRenderPlan {
         userTransforms: [String: Matrix2D] = [:],
         variantOverrides: [String: String] = [:],
         userMediaPresent: [String: Bool] = [:],
-        layerToggleState: [String: [String: Bool]] = [:]
+        layerToggleState: [String: [String: Bool]] = [:],
+        visibility: BlockVisibilityPolicy = .timeline
     ) -> [RenderCommand] {
         var commands: [RenderCommand] = []
 
@@ -46,11 +49,12 @@ public enum SceneRenderPlan {
 
         // Process blocks in zIndex order (already sorted in runtime)
         for block in runtime.blocks {
-            // Skip invisible blocks at the given frame.
-            // In edit mode sceneFrameIndex == editFrameIndex (0),
-            // so blocks whose timing starts after frame 0 are NOT editable.
-            guard block.timing.isVisible(at: sceneFrameIndex) else {
-                continue
+            // PR-B: Filter by timing only in timeline mode.
+            // In edit mode (visibility == .all), show all blocks regardless of timing.
+            if visibility == .timeline {
+                guard block.timing.isVisible(at: sceneFrameIndex) else {
+                    continue
+                }
             }
 
             // Resolve active variant: override → compilation default → first (PR-20)
