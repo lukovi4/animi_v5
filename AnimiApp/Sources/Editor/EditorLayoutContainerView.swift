@@ -47,6 +47,13 @@ final class EditorLayoutContainerView: UIView {
     /// Called when Add Scene is tapped
     var onAddScene: (() -> Void)?
 
+    // PR-C: Scene Edit mode callbacks
+    /// Called when Edit scene is tapped (PR-C)
+    var onEditScene: ((UUID) -> Void)?
+
+    /// Called when Done is tapped in Scene Edit mode (PR-C)
+    var onDone: (() -> Void)?
+
     // MARK: - Subviews
 
     private(set) lazy var navBar = EditorNavBar()
@@ -82,12 +89,33 @@ final class EditorLayoutContainerView: UIView {
     private(set) lazy var globalActionBar = GlobalActionBar()
     private(set) lazy var contextBar = ContextBar()
 
+    // PR-C: Scene Edit mode bars
+    private(set) lazy var sceneEditBar = SceneEditBar()
+    private(set) lazy var mediaBlockActionBar = MediaBlockActionBar()
+
     // MARK: - State
 
     private var currentSelection: TimelineSelection = .none
 
     /// PR3: Reorder mode state (UI-only, not part of EditorStore)
     private var isReorderMode: Bool = false
+
+    /// PR-C: Scene Edit mode state
+    private var isSceneEditMode: Bool = false
+
+    // MARK: - Scene Edit Mode Constraints (PR-C)
+
+    /// Constraints active in timeline mode (normal editor)
+    private var timelineVisibleConstraints: [NSLayoutConstraint] = []
+
+    /// Constraints active in Scene Edit mode (timeline hidden)
+    private var sceneEditConstraints: [NSLayoutConstraint] = []
+
+    /// Preview bottom to timeline top (timeline mode)
+    private var previewBottomToTimeline: NSLayoutConstraint!
+
+    /// Preview bottom to bottom bar top (scene edit mode)
+    private var previewBottomToBottomBar: NSLayoutConstraint!
 
     // MARK: - Initialization
 
@@ -124,9 +152,13 @@ final class EditorLayoutContainerView: UIView {
         // Bottom bar contents
         bottomBarContainer.addSubview(globalActionBar)
         bottomBarContainer.addSubview(contextBar)
+        bottomBarContainer.addSubview(sceneEditBar)
+        bottomBarContainer.addSubview(mediaBlockActionBar)
 
         // Initial state: show GlobalActionBar
         contextBar.isHidden = true
+        sceneEditBar.isHidden = true
+        mediaBlockActionBar.isHidden = true
     }
 
     private func setupConstraints() {
@@ -137,25 +169,67 @@ final class EditorLayoutContainerView: UIView {
         playheadView.translatesAutoresizingMaskIntoConstraints = false
         globalActionBar.translatesAutoresizingMaskIntoConstraints = false
         contextBar.translatesAutoresizingMaskIntoConstraints = false
+        sceneEditBar.translatesAutoresizingMaskIntoConstraints = false
+        mediaBlockActionBar.translatesAutoresizingMaskIntoConstraints = false
 
-        NSLayoutConstraint.activate([
+        // PR-C: Create alternative preview bottom constraints
+        previewBottomToTimeline = previewContainer.bottomAnchor.constraint(equalTo: timelineContainer.topAnchor)
+        previewBottomToBottomBar = previewContainer.bottomAnchor.constraint(equalTo: bottomBarContainer.topAnchor)
+
+        // Shared constraints (always active)
+        let sharedConstraints: [NSLayoutConstraint] = [
             // NavBar - top, full width
             navBar.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor),
             navBar.leadingAnchor.constraint(equalTo: leadingAnchor),
             navBar.trailingAnchor.constraint(equalTo: trailingAnchor),
             navBar.heightAnchor.constraint(equalToConstant: EditorConfig.navBarHeight),
 
-            // PreviewContainer - between navBar and timelineContainer
+            // PreviewContainer - top and sides (bottom varies by mode)
             previewContainer.topAnchor.constraint(equalTo: navBar.bottomAnchor),
             previewContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
             previewContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            previewContainer.bottomAnchor.constraint(equalTo: timelineContainer.topAnchor),
 
             // MenuStrip - overlay at bottom of previewContainer
             menuStrip.leadingAnchor.constraint(equalTo: previewContainer.leadingAnchor),
             menuStrip.trailingAnchor.constraint(equalTo: previewContainer.trailingAnchor),
             menuStrip.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor),
             menuStrip.heightAnchor.constraint(equalToConstant: EditorConfig.previewMenuHeight),
+
+            // BottomBarContainer - bottom with safe area
+            bottomBarContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            bottomBarContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bottomBarContainer.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor),
+            bottomBarContainer.heightAnchor.constraint(equalToConstant: EditorConfig.bottomBarHeight),
+
+            // GlobalActionBar - fills bottomBarContainer
+            globalActionBar.topAnchor.constraint(equalTo: bottomBarContainer.topAnchor),
+            globalActionBar.leadingAnchor.constraint(equalTo: bottomBarContainer.leadingAnchor),
+            globalActionBar.trailingAnchor.constraint(equalTo: bottomBarContainer.trailingAnchor),
+            globalActionBar.bottomAnchor.constraint(equalTo: bottomBarContainer.bottomAnchor),
+
+            // ContextBar - fills bottomBarContainer (hidden by default)
+            contextBar.topAnchor.constraint(equalTo: bottomBarContainer.topAnchor),
+            contextBar.leadingAnchor.constraint(equalTo: bottomBarContainer.leadingAnchor),
+            contextBar.trailingAnchor.constraint(equalTo: bottomBarContainer.trailingAnchor),
+            contextBar.bottomAnchor.constraint(equalTo: bottomBarContainer.bottomAnchor),
+
+            // PR-C: SceneEditBar - fills bottomBarContainer (hidden by default)
+            sceneEditBar.topAnchor.constraint(equalTo: bottomBarContainer.topAnchor),
+            sceneEditBar.leadingAnchor.constraint(equalTo: bottomBarContainer.leadingAnchor),
+            sceneEditBar.trailingAnchor.constraint(equalTo: bottomBarContainer.trailingAnchor),
+            sceneEditBar.bottomAnchor.constraint(equalTo: bottomBarContainer.bottomAnchor),
+
+            // PR-C: MediaBlockActionBar - fills bottomBarContainer (hidden by default)
+            mediaBlockActionBar.topAnchor.constraint(equalTo: bottomBarContainer.topAnchor),
+            mediaBlockActionBar.leadingAnchor.constraint(equalTo: bottomBarContainer.leadingAnchor),
+            mediaBlockActionBar.trailingAnchor.constraint(equalTo: bottomBarContainer.trailingAnchor),
+            mediaBlockActionBar.bottomAnchor.constraint(equalTo: bottomBarContainer.bottomAnchor),
+        ]
+
+        // PR-C: Timeline visible constraints (normal editor mode)
+        timelineVisibleConstraints = [
+            // Preview bottom to timeline
+            previewBottomToTimeline,
 
             // TimelineContainer - fixed height above bottomBar
             timelineContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -180,25 +254,17 @@ final class EditorLayoutContainerView: UIView {
             playheadView.bottomAnchor.constraint(equalTo: timelineContainer.bottomAnchor),
             playheadView.centerXAnchor.constraint(equalTo: timelineContainer.centerXAnchor),
             playheadView.widthAnchor.constraint(equalToConstant: 2),
+        ]
 
-            // BottomBarContainer - bottom with safe area
-            bottomBarContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
-            bottomBarContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            bottomBarContainer.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor),
-            bottomBarContainer.heightAnchor.constraint(equalToConstant: EditorConfig.bottomBarHeight),
+        // PR-C: Scene Edit constraints (timeline hidden)
+        sceneEditConstraints = [
+            // Preview bottom to bottom bar
+            previewBottomToBottomBar,
+        ]
 
-            // GlobalActionBar - fills bottomBarContainer
-            globalActionBar.topAnchor.constraint(equalTo: bottomBarContainer.topAnchor),
-            globalActionBar.leadingAnchor.constraint(equalTo: bottomBarContainer.leadingAnchor),
-            globalActionBar.trailingAnchor.constraint(equalTo: bottomBarContainer.trailingAnchor),
-            globalActionBar.bottomAnchor.constraint(equalTo: bottomBarContainer.bottomAnchor),
-
-            // ContextBar - fills bottomBarContainer (hidden by default)
-            contextBar.topAnchor.constraint(equalTo: bottomBarContainer.topAnchor),
-            contextBar.leadingAnchor.constraint(equalTo: bottomBarContainer.leadingAnchor),
-            contextBar.trailingAnchor.constraint(equalTo: bottomBarContainer.trailingAnchor),
-            contextBar.bottomAnchor.constraint(equalTo: bottomBarContainer.bottomAnchor),
-        ])
+        // Activate shared + timeline visible by default
+        NSLayoutConstraint.activate(sharedConstraints)
+        NSLayoutConstraint.activate(timelineVisibleConstraints)
     }
 
     private func wireCallbacks() {
@@ -231,6 +297,16 @@ final class EditorLayoutContainerView: UIView {
         // PR9: Global action bar - Add Scene
         globalActionBar.onAddScene = { [weak self] in
             self?.onAddScene?()
+        }
+
+        // PR-C: Edit scene
+        contextBar.onEditScene = { [weak self] sceneId in
+            self?.onEditScene?(sceneId)
+        }
+
+        // PR-C: Done from Scene Edit
+        navBar.onDone = { [weak self] in
+            self?.onDone?()
         }
     }
 
@@ -281,6 +357,81 @@ final class EditorLayoutContainerView: UIView {
             metalView.trailingAnchor.constraint(equalTo: previewContainer.trailingAnchor),
             metalView.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor),
         ])
+    }
+
+    /// Adds EditorOverlayView to previewContainer (PR-C: called by PlayerViewController).
+    /// Inserted between metalView and menuStrip for proper z-ordering.
+    func embedOverlayView(_ overlay: UIView) {
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        // Insert below menuStrip (which is already in previewContainer)
+        previewContainer.insertSubview(overlay, belowSubview: menuStrip)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: previewContainer.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: previewContainer.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: previewContainer.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor),
+        ])
+    }
+
+    /// Switches between timeline mode and scene edit mode (PR-C).
+    /// In scene edit mode: timeline hidden, preview expands, menuStrip hidden.
+    /// - Parameters:
+    ///   - enabled: Whether to enable scene edit mode
+    ///   - animated: Whether to animate the transition
+    func setSceneEditMode(_ enabled: Bool, animated: Bool) {
+        guard enabled != isSceneEditMode else { return }
+        isSceneEditMode = enabled
+
+        if enabled {
+            // Scene Edit mode: hide timeline, expand preview
+            NSLayoutConstraint.deactivate(timelineVisibleConstraints)
+            NSLayoutConstraint.activate(sceneEditConstraints)
+            timelineContainer.isHidden = true
+            menuStrip.isHidden = true  // Hide (not disable) per review.md
+
+            // P2 fix: Set bottom bar to consistent state on enter
+            globalActionBar.isHidden = true
+            contextBar.isHidden = true
+            sceneEditBar.isHidden = false      // Default: no block selected
+            mediaBlockActionBar.isHidden = true
+        } else {
+            // Timeline mode: show timeline, restore preview
+            NSLayoutConstraint.deactivate(sceneEditConstraints)
+            NSLayoutConstraint.activate(timelineVisibleConstraints)
+            timelineContainer.isHidden = false
+            menuStrip.isHidden = false
+
+            // P2 fix: Hide scene edit bars and restore timeline bar state
+            sceneEditBar.isHidden = true
+            mediaBlockActionBar.isHidden = true
+            updateBottomBar()  // Restores globalActionBar/contextBar based on selection
+        }
+
+        if animated {
+            UIView.animate(withDuration: 0.25) { self.layoutIfNeeded() }
+        } else {
+            layoutIfNeeded()
+        }
+    }
+
+    /// Updates the bottom bar for Scene Edit mode (PR-C).
+    /// - Parameter selectedBlockId: Currently selected block, or nil for no selection
+    func updateSceneEditBottomBar(selectedBlockId: String?) {
+        guard isSceneEditMode else { return }
+
+        if selectedBlockId != nil {
+            // Block selected: show MediaBlockActionBar
+            sceneEditBar.isHidden = true
+            mediaBlockActionBar.isHidden = false
+        } else {
+            // No block selected: show SceneEditBar
+            sceneEditBar.isHidden = false
+            mediaBlockActionBar.isHidden = true
+        }
+
+        // Hide timeline mode bars
+        globalActionBar.isHidden = true
+        contextBar.isHidden = true
     }
 
     /// Configures timeline with duration in microseconds and template FPS.
@@ -383,6 +534,9 @@ final class EditorLayoutContainerView: UIView {
     // MARK: - Private
 
     private func updateBottomBar() {
+        // PR-C: Don't update if in scene edit mode (handled separately)
+        guard !isSceneEditMode else { return }
+
         switch currentSelection {
         case .none:
             globalActionBar.isHidden = false
@@ -392,5 +546,9 @@ final class EditorLayoutContainerView: UIView {
             globalActionBar.isHidden = true
             contextBar.isHidden = false
         }
+
+        // Ensure scene edit bars are hidden
+        sceneEditBar.isHidden = true
+        mediaBlockActionBar.isHidden = true
     }
 }

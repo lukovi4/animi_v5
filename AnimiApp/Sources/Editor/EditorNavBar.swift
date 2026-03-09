@@ -1,9 +1,20 @@
 import UIKit
 
+// MARK: - Editor Nav Bar Mode (PR-C)
+
+/// Navigation bar mode for editor.
+/// - `timeline`: Normal editor mode with Close, Undo, Redo, Export
+/// - `sceneEdit`: Scene Edit mode with Done, Undo, Redo (no Close/Export)
+enum EditorNavBarMode {
+    case timeline   // Close, Undo, Redo, Export
+    case sceneEdit  // Done, Undo, Redo (no Close/Export)
+}
+
 // MARK: - Editor Nav Bar (PR2)
 
 /// Navigation bar for editor mode.
 /// Contains: Close (left), Undo/Redo (center, disabled in PR2), Export (right).
+/// PR-C: Supports timeline and sceneEdit modes with different button visibility.
 final class EditorNavBar: UIView {
 
     // MARK: - Callbacks
@@ -12,6 +23,8 @@ final class EditorNavBar: UIView {
     var onUndo: (() -> Void)?
     var onRedo: (() -> Void)?
     var onExport: (() -> Void)?
+    /// Called when Done is tapped (PR-C Scene Edit mode)
+    var onDone: (() -> Void)?
 
     // MARK: - Subviews
 
@@ -68,6 +81,26 @@ final class EditorNavBar: UIView {
         return btn
     }()
 
+    /// Done button (PR-C Scene Edit mode) — styled like Export
+    private lazy var doneButton: UIButton = {
+        var config = UIButton.Configuration.filled()
+        config.title = "Done"
+        config.cornerStyle = .capsule
+        config.baseBackgroundColor = .systemBlue
+        config.baseForegroundColor = .white
+        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
+
+        let btn = UIButton(configuration: config)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.addTarget(self, action: #selector(doneTapped), for: .touchUpInside)
+        btn.isHidden = true  // Hidden by default (timeline mode)
+        return btn
+    }()
+
+    // MARK: - State
+
+    private var currentMode: EditorNavBarMode = .timeline
+
     // MARK: - Initialization
 
     override init(frame: CGRect) {
@@ -87,6 +120,7 @@ final class EditorNavBar: UIView {
         addSubview(closeButton)
         addSubview(centerStack)
         addSubview(exportButton)
+        addSubview(doneButton)
     }
 
     private func setupConstraints() {
@@ -106,6 +140,10 @@ final class EditorNavBar: UIView {
 
             exportButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             exportButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            // Done button - same position as Export (PR-C)
+            doneButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            doneButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
@@ -121,6 +159,26 @@ final class EditorNavBar: UIView {
     func setRedoEnabled(_ enabled: Bool) {
         redoButton.isEnabled = enabled
         redoButton.alpha = enabled ? 1.0 : 0.4
+    }
+
+    /// Sets the navigation bar mode (PR-C).
+    /// - `timeline`: Shows Close, Undo, Redo, Export
+    /// - `sceneEdit`: Shows Done, Undo, Redo (hides Close/Export)
+    func setMode(_ mode: EditorNavBarMode) {
+        guard mode != currentMode else { return }
+        currentMode = mode
+
+        switch mode {
+        case .timeline:
+            closeButton.isHidden = false
+            exportButton.isHidden = false
+            doneButton.isHidden = true
+
+        case .sceneEdit:
+            closeButton.isHidden = true
+            exportButton.isHidden = true
+            doneButton.isHidden = false
+        }
     }
 
     // MARK: - Actions
@@ -139,5 +197,9 @@ final class EditorNavBar: UIView {
 
     @objc private func exportTapped() {
         onExport?()
+    }
+
+    @objc private func doneTapped() {
+        onDone?()
     }
 }

@@ -14,6 +14,9 @@ final class ContextBar: UIView {
     /// Called when Delete is tapped. Parameter: scene item ID.
     var onDeleteScene: ((UUID) -> Void)?
 
+    /// Called when Edit is tapped (PR-C). Parameter: scene item ID.
+    var onEditScene: ((UUID) -> Void)?
+
     // MARK: - State
 
     /// Currently selected scene ID (for button actions).
@@ -62,6 +65,20 @@ final class ContextBar: UIView {
         return button
     }()
 
+    private lazy var editButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "slider.horizontal.3")
+        config.title = "Edit"
+        config.imagePlacement = .top
+        config.imagePadding = 4
+        config.baseForegroundColor = .label
+
+        let button = UIButton(configuration: config)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(editTapped), for: .touchUpInside)
+        return button
+    }()
+
     private lazy var placeholderLabel: UILabel = {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -94,6 +111,7 @@ final class ContextBar: UIView {
 
         stackView.addArrangedSubview(duplicateButton)
         stackView.addArrangedSubview(deleteButton)
+        stackView.addArrangedSubview(editButton)
 
         // Initially hidden until scene is selected
         stackView.isHidden = true
@@ -152,5 +170,10 @@ final class ContextBar: UIView {
     @objc private func deleteTapped() {
         guard let sceneId = selectedSceneId, canDelete else { return }
         onDeleteScene?(sceneId)
+    }
+
+    @objc private func editTapped() {
+        guard let sceneId = selectedSceneId else { return }
+        onEditScene?(sceneId)
     }
 }
