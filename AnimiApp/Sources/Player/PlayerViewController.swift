@@ -46,16 +46,6 @@ struct SceneVariantPreset {
     let mapping: [String: String]  // blockId -> variantId
 }
 
-// MARK: - Player Presentation Mode (PR-Templates)
-
-/// Defines how PlayerViewController is presented and what UI is shown.
-enum PlayerPresentationMode {
-    /// Development mode - full debug UI (default when no mode specified)
-    case dev
-    /// Editor mode from Templates catalog - hides dev UI, auto-loads template
-    case editor(templateId: String)
-}
-
 // MARK: - PR-D: Async Loading Helper Structs
 
 /// Result from background phase of template loading.
@@ -71,179 +61,32 @@ private struct SceneSetupResult {
     let compiled: CompiledScene
 }
 
-/// Main player view controller with Metal rendering surface and debug log.
-/// Supports full scene playback with multiple media blocks.
+/// Main player view controller with Metal rendering surface.
+/// PR-E: Production-only editor mode (dev-UI removed).
 final class PlayerViewController: UIViewController {
 
-    // MARK: - Presentation Mode (PR-Templates)
+    // MARK: - Initializers (PR-E: editor mode only)
 
-    /// Current presentation mode (dev vs editor from catalog)
-    private var presentationMode: PlayerPresentationMode = .dev
+    /// Current template ID for editor mode
+    private var currentEditorTemplateId: String?
 
-    // MARK: - Initializers
-
-    /// Initializer with specific presentation mode
-    init(mode: PlayerPresentationMode) {
-        self.presentationMode = mode
+    /// Initializer with template ID for editor mode
+    init(templateId: String) {
+        self.currentEditorTemplateId = templateId
         super.init(nibName: nil, bundle: nil)
     }
 
-    /// Default initializer for dev mode
-    override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
-        self.presentationMode = .dev
-        super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
-    }
-
     required init?(coder: NSCoder) {
-        self.presentationMode = .dev
-        super.init(coder: coder)
+        fatalError("init(coder:) has not been implemented")
     }
 
-    // MARK: - UI Components
-
-    private lazy var scrollView: UIScrollView = {
-        let sv = UIScrollView()
-        sv.translatesAutoresizingMaskIntoConstraints = false
-        sv.showsVerticalScrollIndicator = true
-        sv.showsHorizontalScrollIndicator = false
-        sv.alwaysBounceVertical = true
-        return sv
-    }()
-
-    private lazy var contentView: UIView = {
-        let v = UIView()
-        v.translatesAutoresizingMaskIntoConstraints = false
-        return v
-    }()
-
-    /// Available templates for selection
-    private let availableTemplates: [(name: String, displayName: String)] = [
-        ("example_4blocks", "4 Blocks"),
-        ("polaroid_shared_demo", "Polaroid"),
-        ("polaroid_2", "Polaroid 2")
-    ]
-
-    /// Template selector (available in both Debug and Release)
-    private lazy var templateSelector: UISegmentedControl = {
-        let items = availableTemplates.map(\.displayName)
-        let control = UISegmentedControl(items: items)
-        control.translatesAutoresizingMaskIntoConstraints = false
-        control.selectedSegmentIndex = 0
-        control.addTarget(self, action: #selector(templateSelectorChanged), for: .valueChanged)
-        return control
-    }()
-
-    // MARK: - Export UI (Release)
-
-    private lazy var exportButton: UIButton = {
-        makeButton(title: "Export", color: .systemTeal, action: #selector(exportTapped))
-    }()
-
-    // PR3: Background Editor button
-    private lazy var backgroundButton: UIButton = {
-        makeButton(title: "Background", color: .systemIndigo, action: #selector(backgroundTapped))
-    }()
+    // MARK: - Export State
 
     private var isExporting = false
     private var videoExporter: VideoExporter?
     private var exportProgressVC: ExportProgressViewController?
 
-    #if DEBUG
-    private lazy var sceneSelector: UISegmentedControl = {
-        let control = UISegmentedControl(items: ["4 Blocks", "Alpha Matte", "Variant Demo", "Shared Decor"])
-        control.translatesAutoresizingMaskIntoConstraints = false
-        control.selectedSegmentIndex = 0
-        return control
-    }()
-
-    private lazy var loadButton: UIButton = {
-        makeButton(title: "Load Scene", action: #selector(loadTestPackageTapped))
-    }()
-
-    private lazy var smokeTestButton: UIButton = {
-        makeButton(title: "Run Export Smoke Tests", color: .systemOrange, action: #selector(smokeTestTapped))
-    }()
-
-    private lazy var smokeTestStatusLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        label.textAlignment = .center
-        label.textColor = .systemOrange
-        label.numberOfLines = 0
-        label.text = ""
-        label.isHidden = true
-        return label
-    }()
-
-    private var isSmokeTestRunning = false
-
-    /// Result status for smoke tests (pass/fail/skip)
-    private enum SmokeTestResult {
-        case pass
-        case fail
-        case skip
-    }
-    private var smokeTestResults: [(name: String, result: SmokeTestResult)] = []
-
-    // Export audio configuration (DEBUG toggles)
-    private var exportIncludeOriginalAudio = true
-    private var exportIncludeMusic = false
-    private var exportIncludeVoiceover = false
-
-    /// Returns test music URL from bundle (ExportTestAssets/music.m4a)
-    private var testMusicURL: URL? {
-        Bundle.main.url(forResource: "music", withExtension: "m4a", subdirectory: "ExportTestAssets")
-    }
-
-    /// Returns test voiceover URL from bundle (ExportTestAssets/voiceover.m4a)
-    private var testVoiceoverURL: URL? {
-        Bundle.main.url(forResource: "voiceover", withExtension: "m4a", subdirectory: "ExportTestAssets")
-    }
-    #endif
-
-    private lazy var playPauseButton: UIButton = {
-        let btn = makeButton(title: "Play", color: .systemGreen, action: #selector(playPauseTapped))
-        btn.isEnabled = false
-        return btn
-    }()
-
-    private lazy var frameSlider: UISlider = {
-        let slider = UISlider()
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        slider.addTarget(self, action: #selector(frameSliderChanged), for: .valueChanged)
-        slider.isEnabled = false
-        return slider
-    }()
-
-    private lazy var frameLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
-        label.textAlignment = .center
-        label.text = "Frame: 0 / 0"
-        return label
-    }()
-
-    private lazy var controlsStack: UIStackView = {
-        let stack = UIStackView(arrangedSubviews: [playPauseButton, frameSlider])
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .horizontal
-        stack.spacing = 12
-        stack.alignment = .center
-        return stack
-    }()
-
-    private lazy var logTextView: UITextView = {
-        let textView = UITextView()
-        textView.translatesAutoresizingMaskIntoConstraints = false
-        textView.isEditable = false
-        textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        textView.backgroundColor = .secondarySystemBackground
-        textView.layer.cornerRadius = 8
-        textView.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        return textView
-    }()
+    // MARK: - Metal View
 
     private lazy var metalView: MTKView = {
         let mtkView = MTKView()
@@ -259,149 +102,8 @@ final class PlayerViewController: UIViewController {
         return mtkView
     }()
 
-    private func makeButton(title: String, color: UIColor = .systemBlue, action: Selector) -> UIButton {
-        var config = UIButton.Configuration.filled()
-        config.title = title
-        config.cornerStyle = .medium
-        config.baseBackgroundColor = color
-        let btn = UIButton(configuration: config)
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.addTarget(self, action: action, for: .touchUpInside)
-        return btn
-    }
+    // MARK: - Rendering
 
-    // MARK: - Variant Switching UI (PR-20)
-
-    /// Per-block variant picker — visible in Edit mode when a block is selected.
-    private lazy var variantPicker: UISegmentedControl = {
-        let control = UISegmentedControl()
-        control.translatesAutoresizingMaskIntoConstraints = false
-        control.addTarget(self, action: #selector(variantPickerChanged), for: .valueChanged)
-        return control
-    }()
-
-    /// Label shown above variant picker to indicate which block is selected.
-    private lazy var variantLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .secondaryLabel
-        label.text = ""
-        return label
-    }()
-
-    /// Scene preset picker — always visible when scene is loaded.
-    private lazy var presetPicker: UISegmentedControl = {
-        let control = UISegmentedControl()
-        control.translatesAutoresizingMaskIntoConstraints = false
-        control.addTarget(self, action: #selector(presetPickerChanged), for: .valueChanged)
-        control.isHidden = true
-        return control
-    }()
-
-    /// Current presets for the loaded scene. Empty for scenes without variant data.
-    private var scenePresets: [SceneVariantPreset] = []
-
-    /// Cached variant IDs for the current picker — avoids reading titles from UIKit (lead fix #2).
-    private var lastVariantIds: [String] = []
-
-    // MARK: - Layer Toggle UI (PR-30)
-
-    /// Label for toggle section.
-    private lazy var toggleLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .secondaryLabel
-        label.text = "Layer Toggles"
-        return label
-    }()
-
-    /// Stack view containing toggle switches.
-    private lazy var toggleStack: UIStackView = {
-        let stack = UIStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .vertical
-        stack.spacing = 8
-        return stack
-    }()
-
-    /// Cached toggle IDs to detect when we need to rebuild UI.
-    private var lastToggleIds: [String] = []
-
-    // MARK: - User Media UI (PR-32)
-
-    /// Label for user media section.
-    private lazy var userMediaLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .secondaryLabel
-        label.text = "User Media"
-        return label
-    }()
-
-    /// Stack view containing user media buttons.
-    private lazy var userMediaStack: UIStackView = {
-        let stack = UIStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .horizontal
-        stack.spacing = 8
-        stack.distribution = .fillEqually
-        return stack
-    }()
-
-    /// Add photo button.
-    private lazy var addPhotoButton: UIButton = {
-        var config = UIButton.Configuration.filled()
-        config.title = "Add Photo"
-        config.cornerStyle = .medium
-        config.baseBackgroundColor = .systemIndigo
-        config.image = UIImage(systemName: "photo")
-        config.imagePadding = 4
-        let btn = UIButton(configuration: config)
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.addTarget(self, action: #selector(addPhotoTapped), for: .touchUpInside)
-        return btn
-    }()
-
-    /// Clear media button.
-    private lazy var clearMediaButton: UIButton = {
-        var config = UIButton.Configuration.filled()
-        config.title = "Clear"
-        config.cornerStyle = .medium
-        config.baseBackgroundColor = .systemRed
-        config.image = UIImage(systemName: "xmark.circle")
-        config.imagePadding = 4
-        let btn = UIButton(configuration: config)
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.addTarget(self, action: #selector(clearMediaTapped), for: .touchUpInside)
-        return btn
-    }()
-
-    /// User media status label (shows current media state).
-    private lazy var userMediaStatusLabel: UILabel = {
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .tertiaryLabel
-        label.textAlignment = .center
-        label.text = "No media"
-        return label
-    }()
-
-    // MARK: - Properties
-
-    #if DEBUG
-    private let loader = ScenePackageLoader()
-    private let sceneValidator = SceneValidator()
-    private let animLoader = AnimLoader()
-    private let animValidator = AnimValidator()
-    private var currentPackage: ScenePackage?
-    private var loadedAnimations: LoadedAnimations?
-    private var isSceneValid = false
-    private var isAnimValid = false
-    #endif
     private lazy var commandQueue: MTLCommandQueue? = { metalView.device?.makeCommandQueue() }()
     private var renderer: MetalRenderer?
     /// PR-33: Use protocol type for flexibility
@@ -436,7 +138,6 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - Editor (PR-19)
     private var scenePlayer: ScenePlayer?
-    private let editorController = TemplateEditorController()
 
     // MARK: - PR2: EditorStore (centralized state management)
     private var editorStore: EditorStore?
@@ -472,14 +173,16 @@ final class PlayerViewController: UIViewController {
     private var currentTemplateId: String?
     private var pendingBackgroundRegionId: String?
     private var lastBackgroundPresetId: String?
-    private lazy var modeToggle: UISegmentedControl = {
-        let control = UISegmentedControl(items: ["Preview", "Edit"])
-        control.translatesAutoresizingMaskIntoConstraints = false
-        control.selectedSegmentIndex = 0  // Preview by default
-        control.addTarget(self, action: #selector(modeToggleChanged), for: .valueChanged)
-        control.isEnabled = false
-        return control
-    }()
+
+    // PR-E: Pending media picker state (deterministic blockId tracking)
+    private var pendingPickedMediaBlockId: String?
+    private var pendingMediaKind: MediaKind?
+
+    /// Media kind for picker validation (PR-E)
+    private enum MediaKind {
+        case photo
+        case video
+    }
 
     // In-flight frame limiting (must match MetalRendererOptions.maxFramesInFlight)
     private static let maxFramesInFlight = 3
@@ -499,47 +202,23 @@ final class PlayerViewController: UIViewController {
     private let perfLogger = PerfLogger(intervalSeconds: 2.0)
     #endif
 
-    // Fullscreen mode
-    private var isFullscreen = false
-    private var metalViewHeightConstraint: NSLayoutConstraint?
-    private var metalViewTopToLoadButtonConstraint: NSLayoutConstraint?
-    private var metalViewTopToSafeAreaConstraint: NSLayoutConstraint?
-    private var metalViewBottomConstraint: NSLayoutConstraint?
-    private var metalViewLeadingConstraint: NSLayoutConstraint?
-    private var metalViewTrailingConstraint: NSLayoutConstraint?
-
-    // Editor mode layout constraints (PR-Templates)
-    private var exportButtonTopToTemplateSelectorConstraint: NSLayoutConstraint?
-    private var exportButtonTopToContentViewConstraint: NSLayoutConstraint?
-    private var logTextViewHeightConstraint: NSLayoutConstraint?
-    private var logTextViewBottomConstraint: NSLayoutConstraint?
-    private var mainControlsStackBottomConstraint: NSLayoutConstraint?
-
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupUI()
+        view.backgroundColor = .systemBackground
         setupRenderer()
-        wireEditorController()
-        applyPresentationMode()
+        setupEditorLayout()
         let deviceName = metalView.device?.name ?? "N/A"
         log("AnimiApp initialized, TVECore: \(TVECore.version), Metal: \(deviceName)")
 
-        // PR-Templates: Handle auto-load based on presentation mode
-        switch presentationMode {
-        case .dev:
-            // PR4: Auto-load default template on startup
-            // In Release builds, load pre-compiled template automatically
-            // In Debug builds, user can select and load via Load Scene button
-            #if !DEBUG
-            loadCompiledTemplateFromBundle(templateName: "example_4blocks")
-            #endif
-        case .editor(let templateId):
-            // Release v1: Load SceneLibrary, Recipe, then first scene
-            Task { @MainActor in
-                await loadEditorContent(templateId: templateId)
-            }
+        // PR-E: Production editor mode - load content from stored templateId
+        guard let templateId = currentEditorTemplateId else {
+            log("[PR-E] ERROR: No templateId provided")
+            return
+        }
+        Task { @MainActor in
+            await loadEditorContent(templateId: templateId)
         }
     }
 
@@ -609,45 +288,12 @@ final class PlayerViewController: UIViewController {
         loadSceneTypeFromBundle(sceneTypeId: firstSceneTypeId)
     }
 
-    /// Applies UI changes based on presentation mode (PR-Templates)
-    private func applyPresentationMode() {
-        switch presentationMode {
-        case .dev:
-            // Show all dev UI
-            templateSelector.isHidden = false
-            logTextView.isHidden = false
-            scrollView.isHidden = false
-            editorLayoutContainer.isHidden = true
-
-            // Restore dev mode constraints
-            exportButtonTopToContentViewConstraint?.isActive = false
-            exportButtonTopToTemplateSelectorConstraint?.isActive = true
-
-            mainControlsStackBottomConstraint?.isActive = false
-            logTextViewHeightConstraint?.isActive = true
-            logTextViewBottomConstraint?.isActive = true
-
-        case .editor:
-            // PR2: Use EditorLayoutContainerView instead of scrollView
-            scrollView.isHidden = true
-            editorLayoutContainer.isHidden = false
-
-            // Hide dev-only UI in editor mode
-            templateSelector.isHidden = true
-            logTextView.isHidden = true
-
-            // Hide system navigation bar - we have our own EditorNavBar
-            navigationController?.setNavigationBarHidden(true, animated: false)
-
-            // Setup editor layout
-            setupEditorLayout()
-        }
-    }
-
     // MARK: - PR2: Editor Layout Setup
 
-    /// Sets up the editor layout container for .editor mode
+    /// Sets up the editor layout container (PR-E: production editor only)
     private func setupEditorLayout() {
+        // PR-E: Hide system navigation bar - we use EditorNavBar
+        navigationController?.setNavigationBarHidden(true, animated: false)
         // Add editorLayoutContainer to view if not already added
         if editorLayoutContainer.superview == nil {
             editorLayoutContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -663,8 +309,43 @@ final class PlayerViewController: UIViewController {
         // Embed metalView in editor layout
         editorLayoutContainer.embedMetalView(metalView)
 
+        // PR-E: Embed overlayView for gesture handling in Scene Edit
+        editorLayoutContainer.embedOverlayView(overlayView)
+
+        // PR-E: Add preparingOverlay for loading states
+        preparingOverlay.translatesAutoresizingMaskIntoConstraints = false
+        editorLayoutContainer.addSubview(preparingOverlay)
+        NSLayoutConstraint.activate([
+            preparingOverlay.topAnchor.constraint(equalTo: editorLayoutContainer.topAnchor),
+            preparingOverlay.leadingAnchor.constraint(equalTo: editorLayoutContainer.leadingAnchor),
+            preparingOverlay.trailingAnchor.constraint(equalTo: editorLayoutContainer.trailingAnchor),
+            preparingOverlay.bottomAnchor.constraint(equalTo: editorLayoutContainer.bottomAnchor),
+        ])
+
+        // PR-E: Setup gesture recognizers on overlayView for Scene Edit interaction
+        setupOverlayGestureRecognizers()
+
         // Wire callbacks
         wireEditorLayoutCallbacks()
+    }
+
+    /// Sets up gesture recognizers on overlayView for Scene Edit mode
+    private func setupOverlayGestureRecognizers() {
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(overlayViewTapped(_:)))
+        overlayView.addGestureRecognizer(tapGesture)
+
+        let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        let rotationGesture = UIRotationGestureRecognizer(target: self, action: #selector(handleRotation(_:)))
+
+        // PR-E: Assign delegate for gesture gating (sceneEdit + selectedBlock) and simultaneous pinch+rotate
+        panGesture.delegate = self
+        pinchGesture.delegate = self
+        rotationGesture.delegate = self
+
+        overlayView.addGestureRecognizer(panGesture)
+        overlayView.addGestureRecognizer(pinchGesture)
+        overlayView.addGestureRecognizer(rotationGesture)
     }
 
     /// Wires callbacks from EditorLayoutContainerView
@@ -710,6 +391,63 @@ final class PlayerViewController: UIViewController {
 
         editorLayoutContainer.onDone = { [weak self] in
             self?.editorStore?.dispatch(.exitSceneEdit)
+        }
+
+        // PR-E: SceneEditBar callbacks
+        editorLayoutContainer.onBackground = { [weak self] in
+            self?.backgroundTapped()
+        }
+
+        editorLayoutContainer.onResetScene = { [weak self] in
+            guard let self = self,
+                  case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+            self.editorStore?.dispatch(.resetSceneState(sceneInstanceId: instanceId))
+        }
+
+        // PR-E: MediaBlockActionBar callbacks
+        editorLayoutContainer.onAddPhoto = { [weak self] blockId in
+            self?.presentMediaPicker(for: blockId, kind: .photo)
+        }
+
+        editorLayoutContainer.onAddVideo = { [weak self] blockId in
+            self?.presentMediaPicker(for: blockId, kind: .video)
+        }
+
+        editorLayoutContainer.onAnimation = { [weak self] blockId in
+            self?.presentVariantPicker(blockId: blockId)
+        }
+
+        editorLayoutContainer.onToggleEnabled = { [weak self] blockId in
+            guard let self = self,
+                  case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+            // Toggle current state
+            let currentPresent = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.userMediaPresent?[blockId] ?? true
+            self.editorStore?.dispatch(.setBlockMediaPresent(
+                sceneInstanceId: instanceId,
+                blockId: blockId,
+                present: !currentPresent
+            ))
+            // Update runtime
+            self.scenePlayer?.setUserMediaPresent(blockId: blockId, present: !currentPresent)
+            self.metalView.setNeedsDisplay()
+            // Refresh MediaBlockActionBar to update Disable/Enable button state
+            self.updateMediaBlockActionBarForSelectedBlock()
+        }
+
+        editorLayoutContainer.onRemove = { [weak self] blockId in
+            guard let self = self,
+                  case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+            // Clear runtime
+            self.userMediaService?.clear(blockId: blockId)
+            // Dispatch to store (sets mediaAssignments = nil, userMediaPresent = false)
+            self.editorStore?.dispatch(.setBlockMedia(
+                sceneInstanceId: instanceId,
+                blockId: blockId,
+                media: nil
+            ))
+            self.metalView.setNeedsDisplay()
+            // Refresh MediaBlockActionBar
+            self.updateMediaBlockActionBarForSelectedBlock()
         }
     }
 
@@ -845,10 +583,9 @@ final class PlayerViewController: UIViewController {
             self.editorLayoutContainer.embedMetalView(self.metalView)
 
             self.dismiss(animated: true) {
-                // Restore position (convert frame to time for time-based API)
+                // PR-E: Restore position
                 self.currentFrameIndex = frame
                 let timeUs = frameToUs(frame, fps: Int(self.sceneFPS))
-                self.editorController.setCurrentTimeUs(timeUs, mode: .playback)
                 self.editorLayoutContainer.setCurrentTimeUs(timeUs)
                 self.metalView.setNeedsDisplay()
             }
@@ -901,8 +638,6 @@ final class PlayerViewController: UIViewController {
     /// Release v1: Uses EditorStore with split callbacks and defaultSceneSequence.
     /// No legacy migrations - schema mismatch creates new project.
     private func configureEditorTimeline() {
-        guard case .editor = presentationMode else { return }
-
         let fps = sceneLibrarySnapshot?.fps ?? Int(sceneFPS)
 
         // Step 1: Ensure we have a draft
@@ -983,13 +718,7 @@ final class PlayerViewController: UIViewController {
         currentProjectDraft = store.currentDraft
         log("[Release v1] Timeline configured: \(store.sceneItems.count) scenes, duration=\(store.projectDurationUs)us")
 
-        // Step 5: Configure editor controller with time parameters
-        let finalDurationUs = store.projectDurationUs
-        editorController.templateFPS = fps
-        editorController.durationUs = finalDurationUs
-        editorController.totalFrames = totalFrames
-
-        // Step 6: Configure timeline UI with scenes from store
+        // PR-E: Configure timeline UI with scenes from store
         let scenes = store.sceneDrafts
         editorLayoutContainer.configure(
             scenes: scenes,
@@ -1127,9 +856,8 @@ final class PlayerViewController: UIViewController {
 
     /// Called when coordinator loads a new scene.
     private func handleCoordinatorSceneLoaded(_ loadedScene: TimelinePlaybackCoordinator.LoadedScene) {
-        // Update current scene player for rendering
+        // PR-E: Update current scene player for rendering
         scenePlayer = loadedScene.player
-        editorController.setPlayer(loadedScene.player)
         compiledScene = loadedScene.compiled
         textureProvider = loadedScene.provider
         currentResolver = loadedScene.resolver
@@ -1152,12 +880,10 @@ final class PlayerViewController: UIViewController {
             }
         }
 
-        // Update canvas size if different
+        // PR-E: Update canvas size if different
         let newCanvasSize = loadedScene.compiled.runtime.canvasSize
         if canvasSize != newCanvasSize {
             canvasSize = newCanvasSize
-            editorController.canvasSize = canvasSize
-            updateMetalViewAspectRatio(width: canvasSize.width, height: canvasSize.height)
         }
 
         log("[Release v1] Coordinator loaded scene: \(loadedScene.sceneTypeId)")
@@ -1380,14 +1106,7 @@ final class PlayerViewController: UIViewController {
         }
 
         // Sync editor controller (for UI frame display - global frame)
-        // DEBUG: DebugSkipEditorControllerTimeUpdate toggle for A/B testing H2
-        #if DEBUG
-        if !ScrubDebugToggles.skipEditorControllerTimeUpdate {
-            editorController.setCurrentTimeUs(timeUs, mode: .ended)
-        }
-        #else
-        editorController.setCurrentTimeUs(timeUs, mode: .ended)
-        #endif
+        // PR-E: Scrub ended (editorController calls removed)
     }
 
     /// Called when selection changes (lightweight, frequent).
@@ -1396,7 +1115,6 @@ final class PlayerViewController: UIViewController {
         let sel = selection ?? .none
         let sceneCount = editorStore?.sceneItems.count ?? 1
         editorLayoutContainer.setTimelineSelection(sel, sceneCount: sceneCount)
-        editorController.selectTimeline(sel)
     }
 
     /// Called when timeline structure changes (heavier, less frequent).
@@ -1405,9 +1123,6 @@ final class PlayerViewController: UIViewController {
         // Update scene clips UI
         let scenes = state.canonicalTimeline.toSceneDrafts()
         editorLayoutContainer.updateScenes(scenes)
-
-        // Sync editor controller duration
-        editorController.durationUs = state.projectDurationUs
 
         // Update coordinator timeline
         playbackCoordinator?.updateSceneTimeline(from: state)
@@ -1423,9 +1138,6 @@ final class PlayerViewController: UIViewController {
         // Update scene clips UI only
         let scenes = state.canonicalTimeline.toSceneDrafts()
         editorLayoutContainer.updateScenes(scenes)
-
-        // Sync editor controller duration (cheap, keeps UI consistent)
-        editorController.durationUs = state.projectDurationUs
 
         // NOTE: Intentionally NOT updating:
         // - playbackCoordinator (expensive O(n) rebuild)
@@ -1461,6 +1173,11 @@ final class PlayerViewController: UIViewController {
             editorLayoutContainer.navBar.setMode(.sceneEdit)
             sceneEditController?.updateOverlay()
 
+            // PR-E: Configure SceneEditBar reset button state
+            let sceneState = editorStore?.state.draft.sceneInstanceStates[sceneId]
+            let canReset = sceneState != nil && sceneState != .empty
+            editorLayoutContainer.configureSceneEditBar(canReset: canReset)
+
             #if DEBUG
             log("[PR-D] Entered Scene Edit for scene: \(sceneId)")
             #endif
@@ -1469,13 +1186,46 @@ final class PlayerViewController: UIViewController {
 
     /// Handles selected block changes in Scene Edit mode.
     /// PR-D: Updates bottom bar and overlay when block selection changes.
+    /// PR-E: Also configures MediaBlockActionBar with block-specific data.
     private func handleSelectedBlockChanged(_ blockId: String?) {
         editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: blockId)
         sceneEditController?.updateOverlay()
 
+        // PR-E: Configure MediaBlockActionBar if block is selected
+        if blockId != nil {
+            updateMediaBlockActionBarForSelectedBlock()
+        }
+
         #if DEBUG
         log("[PR-D] Selected block changed: \(blockId ?? "nil")")
         #endif
+    }
+
+    /// Updates MediaBlockActionBar configuration for currently selected block (PR-E).
+    private func updateMediaBlockActionBarForSelectedBlock() {
+        guard let blockId = editorStore?.state.selectedBlockId,
+              let player = scenePlayer,
+              case .sceneEdit(let instanceId) = editorStore?.state.uiMode else { return }
+
+        // Get block capabilities from ScenePlayer
+        let allowedMedia = player.allowedMedia(blockId: blockId)
+        let variants = player.availableVariants(blockId: blockId)
+        let hasVariants = variants.count > 1
+
+        // Check if block has media assigned
+        let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId]
+        let hasMedia = sceneState?.mediaAssignments?[blockId] != nil
+
+        // Check if block is enabled (userMediaPresent)
+        let isEnabled = sceneState?.userMediaPresent?[blockId] ?? true
+
+        editorLayoutContainer.configureMediaBlockActionBar(
+            blockId: blockId,
+            allowedMedia: allowedMedia,
+            hasVariants: hasVariants,
+            hasMedia: hasMedia,
+            isEnabled: isEnabled
+        )
     }
 
     /// Handles state restoration after undo/redo.
@@ -1500,10 +1250,8 @@ final class PlayerViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        // PR2: Hide system navigation bar in editor mode (we use EditorNavBar)
-        if case .editor = presentationMode {
-            navigationController?.setNavigationBarHidden(true, animated: animated)
-        }
+        // PR-E: Hide system navigation bar (we use EditorNavBar)
+        navigationController?.setNavigationBarHidden(true, animated: animated)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -1570,273 +1318,13 @@ final class PlayerViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        editorController.viewSize = metalView.bounds.size
-        overlayView.canvasToView = editorController.canvasToViewTransform()
-
-        // PR-D: Update Scene Edit mapper with current canvas/view sizes
+        // PR-E: Update Scene Edit mapper with current canvas/view sizes
         sceneEditController?.mapper.canvasSize = canvasSize
         sceneEditController?.mapper.viewSize = metalView.bounds.size
-
-        // Lead fix #5: refresh overlay after layout change to prevent "jump"
-        editorController.refreshOverlayIfNeeded()
 
         // P1-2: Refresh Scene Edit overlay after layout change
         if case .sceneEdit = editorStore?.state.uiMode {
             sceneEditController?.updateOverlay()
-        }
-    }
-
-    /// Main vertical stack for all controls below metalView
-    private lazy var mainControlsStack: UIStackView = {
-        let stack = UIStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .vertical
-        stack.spacing = 8
-        stack.alignment = .fill
-        return stack
-    }()
-
-    /// Container for variant controls (label + picker)
-    private lazy var variantContainer: UIStackView = {
-        let stack = UIStackView(arrangedSubviews: [variantLabel, variantPicker])
-        stack.axis = .vertical
-        stack.spacing = 4
-        return stack
-    }()
-
-    /// Container for toggle controls (label + stack)
-    private lazy var toggleContainer: UIStackView = {
-        let stack = UIStackView(arrangedSubviews: [toggleLabel, toggleStack])
-        stack.axis = .vertical
-        stack.spacing = 4
-        return stack
-    }()
-
-    /// Container for user media controls (label + buttons + status)
-    private lazy var userMediaContainer: UIStackView = {
-        let stack = UIStackView(arrangedSubviews: [userMediaLabel, userMediaStack, userMediaStatusLabel])
-        stack.axis = .vertical
-        stack.spacing = 4
-        return stack
-    }()
-
-    /// Container for playback controls (play/pause + slider + frame label)
-    private lazy var playbackContainer: UIStackView = {
-        let stack = UIStackView(arrangedSubviews: [controlsStack, frameLabel])
-        stack.axis = .vertical
-        stack.spacing = 4
-        return stack
-    }()
-
-    private func setupUI() {
-        view.backgroundColor = .systemBackground
-
-        // Setup scroll view hierarchy
-        view.addSubview(scrollView)
-        scrollView.addSubview(contentView)
-
-        // Add header elements to contentView
-        // Export button is available in both DEBUG and Release
-        contentView.addSubview(exportButton)
-        contentView.addSubview(backgroundButton)  // PR3
-        #if DEBUG
-        [sceneSelector, loadButton, smokeTestButton, smokeTestStatusLabel].forEach { contentView.addSubview($0) }
-        #endif
-        [templateSelector, modeToggle, presetPicker, metalView, overlayView, preparingOverlay, mainControlsStack, logTextView].forEach { contentView.addSubview($0) }
-
-        // Setup mainControlsStack with all control containers
-        [variantContainer, toggleContainer, userMediaContainer, playbackContainer].forEach {
-            mainControlsStack.addArrangedSubview($0)
-        }
-
-        // Initially hide edit-mode containers (shown when block selected)
-        variantContainer.isHidden = true
-        toggleContainer.isHidden = true
-        userMediaContainer.isHidden = true
-
-        // PR-32: Add user media buttons to stack
-        // PR9.1: Video hidden until video persistence is implemented
-        [addPhotoButton, clearMediaButton].forEach { userMediaStack.addArrangedSubview($0) }
-        overlayView.translatesAutoresizingMaskIntoConstraints = false
-        preparingOverlay.translatesAutoresizingMaskIntoConstraints = false
-
-        // ScrollView fills the entire view
-        NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
-
-        // ContentView fills scrollView width, height determined by content
-        NSLayoutConstraint.activate([
-            contentView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
-            contentView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
-            contentView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-            contentView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
-        ])
-
-        // MetalView constraints - full width, aspect ratio height
-        metalViewHeightConstraint = metalView.heightAnchor.constraint(equalTo: metalView.widthAnchor, multiplier: 9.0 / 16.0)
-        metalViewHeightConstraint?.priority = .defaultHigh
-
-        // Fullscreen mode constraints (applied to view, not contentView)
-        metalViewTopToSafeAreaConstraint = metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
-        metalViewTopToSafeAreaConstraint?.isActive = false
-        metalViewBottomConstraint = metalView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
-        metalViewBottomConstraint?.isActive = false
-
-        // Export and Background button constraints (common for DEBUG and Release)
-        NSLayoutConstraint.activate([
-            // Export button - left half
-            exportButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            exportButton.heightAnchor.constraint(equalToConstant: 44),
-
-            // Background button - right half (PR3)
-            backgroundButton.leadingAnchor.constraint(equalTo: exportButton.trailingAnchor, constant: 8),
-            backgroundButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            backgroundButton.heightAnchor.constraint(equalToConstant: 44),
-            backgroundButton.widthAnchor.constraint(equalTo: exportButton.widthAnchor),
-            backgroundButton.centerYAnchor.constraint(equalTo: exportButton.centerYAnchor),
-        ])
-
-        #if DEBUG
-        // DEBUG: sceneSelector and loadButton at top (for test packages)
-        NSLayoutConstraint.activate([
-            sceneSelector.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
-            sceneSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            sceneSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-
-            loadButton.topAnchor.constraint(equalTo: sceneSelector.bottomAnchor, constant: 8),
-            loadButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            loadButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            loadButton.heightAnchor.constraint(equalToConstant: 44),
-
-            // Export button below loadButton in DEBUG
-            exportButton.topAnchor.constraint(equalTo: loadButton.bottomAnchor, constant: 8),
-
-            smokeTestButton.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 8),
-            smokeTestButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            smokeTestButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            smokeTestButton.heightAnchor.constraint(equalToConstant: 44),
-
-            smokeTestStatusLabel.topAnchor.constraint(equalTo: smokeTestButton.bottomAnchor, constant: 4),
-            smokeTestStatusLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            smokeTestStatusLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-
-            templateSelector.topAnchor.constraint(equalTo: smokeTestStatusLabel.bottomAnchor, constant: 8),
-            templateSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            templateSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-
-            modeToggle.topAnchor.constraint(equalTo: templateSelector.bottomAnchor, constant: 8),
-            modeToggle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            modeToggle.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-        ])
-        #else
-        // RELEASE: templateSelector at top, exportButton, then modeToggle
-        // Store switchable constraints for editor mode (PR-Templates)
-        exportButtonTopToTemplateSelectorConstraint = exportButton.topAnchor.constraint(equalTo: templateSelector.bottomAnchor, constant: 8)
-        exportButtonTopToContentViewConstraint = exportButton.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
-
-        NSLayoutConstraint.activate([
-            templateSelector.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
-            templateSelector.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            templateSelector.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-
-            // Export button below templateSelector in Release (default, switched in editor mode)
-            exportButtonTopToTemplateSelectorConstraint!,
-
-            modeToggle.topAnchor.constraint(equalTo: exportButton.bottomAnchor, constant: 8),
-            modeToggle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            modeToggle.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-        ])
-        #endif
-
-        // Store metalView top constraint for normal mode
-        metalViewTopToLoadButtonConstraint = metalView.topAnchor.constraint(equalTo: presetPicker.bottomAnchor, constant: 8)
-
-        NSLayoutConstraint.activate([
-            // presetPicker between modeToggle and metalView
-            presetPicker.topAnchor.constraint(equalTo: modeToggle.bottomAnchor, constant: 6),
-            presetPicker.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            presetPicker.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-
-            // MetalView - full width (no padding), aspect ratio height
-            metalViewTopToLoadButtonConstraint!,
-            metalView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            metalView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            metalViewHeightConstraint!,
-
-            // overlayView pins to metalView
-            overlayView.topAnchor.constraint(equalTo: metalView.topAnchor),
-            overlayView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
-            overlayView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
-            overlayView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-
-            // preparingOverlay pins to metalView
-            preparingOverlay.topAnchor.constraint(equalTo: metalView.topAnchor),
-            preparingOverlay.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
-            preparingOverlay.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
-            preparingOverlay.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-
-            // Main controls stack below metalView
-            mainControlsStack.topAnchor.constraint(equalTo: metalView.bottomAnchor, constant: 12),
-            mainControlsStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            mainControlsStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-
-            // User media stack height
-            userMediaStack.heightAnchor.constraint(equalToConstant: 36),
-            playPauseButton.widthAnchor.constraint(equalToConstant: 80),
-
-            // logTextView with fixed height (scrollable content ends here)
-            logTextView.topAnchor.constraint(equalTo: mainControlsStack.bottomAnchor, constant: 12),
-            logTextView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            logTextView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-        ])
-
-        // Store switchable constraints for editor mode (PR-Templates)
-        logTextViewHeightConstraint = logTextView.heightAnchor.constraint(equalToConstant: 150)
-        logTextViewBottomConstraint = logTextView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16)
-        mainControlsStackBottomConstraint = mainControlsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16)
-
-        // Activate default constraints (dev mode)
-        logTextViewHeightConstraint?.isActive = true
-        logTextViewBottomConstraint?.isActive = true
-
-        // Remove corner radius from metalView (full-width, no rounding)
-        metalView.layer.cornerRadius = 0
-        metalView.clipsToBounds = false
-
-        // PR-19: Tap gesture on metalView for dev mode
-        let metalTapGesture = UITapGestureRecognizer(target: self, action: #selector(metalViewTapped))
-        metalView.addGestureRecognizer(metalTapGesture)
-
-        // PR-D: All transform gestures on overlayView for Scene Edit mode
-        let overlayTapGesture = UITapGestureRecognizer(target: self, action: #selector(overlayViewTapped))
-        overlayView.addGestureRecognizer(overlayTapGesture)
-
-        let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan))
-        let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
-        let rotationGesture = UIRotationGestureRecognizer(target: self, action: #selector(handleRotation))
-        panGesture.delegate = self
-        pinchGesture.delegate = self
-        rotationGesture.delegate = self
-        overlayView.addGestureRecognizer(panGesture)
-        overlayView.addGestureRecognizer(pinchGesture)
-        overlayView.addGestureRecognizer(rotationGesture)
-    }
-
-    /// Wires editor controller callbacks. Called once from viewDidLoad.
-    private func wireEditorController() {
-        editorController.setOverlayView(overlayView)
-
-        editorController.onNeedsDisplay = { [weak self] in
-            self?.requestMetalRender()
-        }
-
-        editorController.onStateChanged = { [weak self] state in
-            self?.syncUIWithState(state)
         }
     }
 
@@ -1857,32 +1345,7 @@ final class PlayerViewController: UIViewController {
         } catch { log("ERROR: MetalRenderer failed: \(error)") }
     }
 
-    // MARK: - Actions
-
-    #if DEBUG
-    @objc private func loadTestPackageTapped() {
-        stopPlayback()
-        renderErrorLogged = false
-        log("---\nLoading scene package...")
-        let sceneNames = ["example_4blocks", "alpha_matte_test", "variant_switch_demo", "polaroid_shared_demo"]
-        let idx = sceneSelector.selectedSegmentIndex
-        let sceneName = idx < sceneNames.count ? sceneNames[idx] : sceneNames[0]
-        let subdir = "TestAssets/ScenePackages/\(sceneName)"
-        guard let url = Bundle.main.url(forResource: "scene", withExtension: "json", subdirectory: subdir) else {
-            log("ERROR: Test package '\(sceneName)' not found"); return
-        }
-        do {
-            try loadAndValidatePackage(from: url.deletingLastPathComponent())
-        } catch {
-            log("ERROR: \(error)")
-            isSceneValid = false
-            isAnimValid = false
-        }
-    }
-
-    #endif
-
-    // MARK: - Export (Release + DEBUG)
+    // MARK: - Export
 
     @objc private func exportTapped() {
         guard !isExporting else {
@@ -1988,211 +1451,6 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    #if DEBUG
-    // MARK: - Smoke Tests (A3)
-
-    @objc private func smokeTestTapped() {
-        guard !isSmokeTestRunning else {
-            log("[SmokeTest] Tests already running")
-            return
-        }
-        guard loadingState == .ready else {
-            log("[SmokeTest] ERROR: Template not ready")
-            return
-        }
-        runSmokeTests()
-    }
-
-    /// Runs 4 sequential export smoke tests on current scene.
-    private func runSmokeTests() {
-        isSmokeTestRunning = true
-        smokeTestResults = []
-        smokeTestButton.isEnabled = false
-        smokeTestStatusLabel.isHidden = false
-        smokeTestStatusLabel.text = "Starting smoke tests..."
-        log("[SmokeTest] === Starting Smoke Tests ===")
-
-        // Define test configurations
-        let tests: [(name: String, config: AudioExportConfig?)] = [
-            ("video-only", nil),
-            ("original-audio-only", AudioExportConfig(
-                music: nil,
-                voiceover: nil,
-                includeOriginalFromVideoSlots: true,
-                originalDefaultVolume: 1.0
-            )),
-            ("music-only", testMusicURL.map { AudioExportConfig(
-                music: AudioTrackConfig(url: $0, startTimeSeconds: 0, volume: 0.7),
-                voiceover: nil,
-                includeOriginalFromVideoSlots: false,
-                originalDefaultVolume: 1.0
-            ) }),
-            ("voiceover+music", {
-                guard let musicURL = testMusicURL, let voiceURL = testVoiceoverURL else { return nil }
-                return AudioExportConfig(
-                    music: AudioTrackConfig(url: musicURL, startTimeSeconds: 0, volume: 0.5),
-                    voiceover: AudioTrackConfig(url: voiceURL, startTimeSeconds: 0, volume: 1.0),
-                    includeOriginalFromVideoSlots: false,
-                    originalDefaultVolume: 1.0
-                )
-            }())
-        ]
-
-        runNextSmokeTest(tests: tests, index: 0)
-    }
-
-    private func runNextSmokeTest(tests: [(name: String, config: AudioExportConfig?)], index: Int) {
-        guard index < tests.count else {
-            // All tests complete
-            finishSmokeTests()
-            return
-        }
-
-        let test = tests[index]
-        smokeTestStatusLabel.text = "Test \(index + 1)/\(tests.count): \(test.name)"
-        log("[SmokeTest] Running test \(index + 1)/\(tests.count): \(test.name)")
-
-        // Skip test if audio config is expected but missing test files
-        if index > 0 && test.config == nil && test.name != "video-only" {
-            log("[SmokeTest] SKIP: \(test.name) - missing test audio files")
-            smokeTestResults.append((name: test.name, result: .skip))
-            runNextSmokeTest(tests: tests, index: index + 1)
-            return
-        }
-
-        runSingleSmokeTest(name: test.name, audioConfig: test.config) { [weak self] success in
-            guard let self = self else { return }
-            self.smokeTestResults.append((name: test.name, result: success ? .pass : .fail))
-            self.log("[SmokeTest] \(test.name): \(success ? "PASS" : "FAIL")")
-
-            // Run next test after short delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                self.runNextSmokeTest(tests: tests, index: index + 1)
-            }
-        }
-    }
-
-    private func runSingleSmokeTest(name: String, audioConfig: AudioExportConfig?, completion: @escaping (Bool) -> Void) {
-        guard let renderer = renderer,
-              let compiled = compiledScene,
-              let player = scenePlayer,
-              let mainTextureProvider = textureProvider,
-              let resolver = currentResolver else {
-            completion(false)
-            return
-        }
-
-        let device = renderer.commandQueue.device
-        let exportTP = ExportTextureProvider(
-            device: device,
-            assetIndex: compiled.mergedAssetIndex,
-            resolver: resolver,
-            bindingAssetIds: compiled.bindingAssetIds
-        )
-        exportTP.preloadAll(commandQueue: renderer.commandQueue)
-        exportTP.injectTextures(from: mainTextureProvider, for: compiled.bindingAssetIds)
-
-        let runtime = compiled.runtime
-        let canvasSize = runtime.canvasSize
-
-        // Unique filename for this test
-        let sceneId = runtime.scene.sceneId ?? "scene"
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
-        let timestamp = dateFormatter.string(from: Date())
-        let filename = "smoke_\(name)_\(sceneId)_\(timestamp).mp4"
-        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-
-        let pixels = Int(canvasSize.width) * Int(canvasSize.height)
-        let bitrate = max(5_000_000, min(25_000_000, 15_000_000 * pixels / 2_073_600))
-
-        let settings = VideoExportSettings(
-            outputURL: outputURL,
-            sizePx: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
-            fps: runtime.fps,
-            bitrate: bitrate,
-            clearColor: .opaqueBlack,
-            audio: audioConfig
-        )
-
-        isExporting = true
-        let exporter = VideoExporter()
-        videoExporter = exporter
-
-        // PR5: Wrap in Task for async preload
-        Task { @MainActor in
-            // Preload background textures into export provider
-            await self.preloadBackgroundTexturesForExport(exportTP: exportTP)
-
-            exporter.exportVideo(
-                compiledScene: compiled,
-                scenePlayer: player,
-                renderer: renderer,
-                textureProvider: exportTP,
-                pathRegistry: compiled.pathRegistry,
-                assetSizes: compiled.mergedAssetIndex.sizeById,
-                userMediaService: self.userMediaService,
-                settings: settings,
-                backgroundState: self.effectiveBackgroundState,
-                progress: { [weak self] progress in
-                    let pct = Int(progress * 100)
-                    self?.smokeTestStatusLabel.text = "\(name): \(pct)%"
-                },
-                completion: { [weak self] result in
-                    self?.isExporting = false
-                    self?.videoExporter = nil
-
-                    switch result {
-                    case .success(let url):
-                        // Clean up temp file
-                        try? FileManager.default.removeItem(at: url)
-                        completion(true)
-                    case .failure(let error):
-                        self?.log("[SmokeTest] \(name) error: \(error.localizedDescription)")
-                        completion(false)
-                    }
-                }
-            )
-        }
-    }
-
-    private func finishSmokeTests() {
-        isSmokeTestRunning = false
-        smokeTestButton.isEnabled = true
-
-        let passed = smokeTestResults.filter { $0.result == .pass }.count
-        let failed = smokeTestResults.filter { $0.result == .fail }.count
-        let skipped = smokeTestResults.filter { $0.result == .skip }.count
-        let allPassed = failed == 0
-
-        if skipped > 0 {
-            smokeTestStatusLabel.text = "Smoke Tests: \(passed) PASSED, \(skipped) SKIPPED"
-        } else {
-            smokeTestStatusLabel.text = "Smoke Tests: \(passed)/\(smokeTestResults.count) PASSED"
-        }
-        smokeTestStatusLabel.textColor = allPassed ? .systemGreen : .systemRed
-
-        log("[SmokeTest] === Results ===")
-        for result in smokeTestResults {
-            let statusStr: String
-            switch result.result {
-            case .pass: statusStr = "PASS"
-            case .fail: statusStr = "FAIL"
-            case .skip: statusStr = "SKIP"
-            }
-            log("[SmokeTest] \(result.name): \(statusStr)")
-        }
-        log("[SmokeTest] Total: \(passed) PASSED, \(failed) FAILED, \(skipped) SKIPPED")
-
-        // Hide status after 5 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            self?.smokeTestStatusLabel.isHidden = true
-            self?.smokeTestStatusLabel.textColor = .systemOrange
-        }
-    }
-
-    #endif
-
     // MARK: - Export Implementation
 
     private func startExport() {
@@ -2271,7 +1529,6 @@ final class PlayerViewController: UIViewController {
             exporter?.cancel()
             // Fix 1: Restore UI state on cancel
             self?.isExporting = false
-            self?.exportButton.isEnabled = true
             self?.videoExporter = nil
             self?.dismiss(animated: true)
         }
@@ -2289,7 +1546,6 @@ final class PlayerViewController: UIViewController {
         }
 
         isExporting = true
-        exportButton.isEnabled = false
 
         present(progressVC, animated: true) { [weak self] in
             guard let self = self else { return }
@@ -2331,7 +1587,6 @@ final class PlayerViewController: UIViewController {
                         }
 
                         self.isExporting = false
-                        self.exportButton.isEnabled = true
                         self.videoExporter = nil
 
                         switch result {
@@ -2351,7 +1606,7 @@ final class PlayerViewController: UIViewController {
 
     private func presentShareSheet(for url: URL) {
         let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        activityVC.popoverPresentationController?.sourceView = exportButton
+        activityVC.popoverPresentationController?.sourceView = view
         present(activityVC, animated: true)
     }
 
@@ -2369,28 +1624,17 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func playPauseTapped() {
+        // PR-E: Simplified - just toggle playback state
         if isPlaying {
             stopPlayback()
-            editorController.setPlaying(false)
         } else {
-            editorController.setPlaying(true)
             startPlayback()
         }
     }
 
-    @objc private func frameSliderChanged() {
-        currentFrameIndex = Int(frameSlider.value)
-        updateFrameLabel()
-        editorController.scrub(to: currentFrameIndex)
-        // PR-33: Update video frames for scrub mode (throttled seek)
-        userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: currentFrameIndex)
-    }
-
     @objc private func metalViewTapped(_ recognizer: UITapGestureRecognizer) {
-        // Tap always does hit-test for block selection (regardless of mode)
-        let point = recognizer.location(in: metalView)
-        print("[TAP] point=\(point), hasPlayer=\(scenePlayer != nil)")
-        editorController.handleTap(viewPoint: point)
+        // PR-E: Block selection via tap is now handled by Scene Edit mode
+        // This handler is legacy dev-UI path - no-op in production
     }
 
     // PR-D: Tap handler for Scene Edit mode (on overlayView)
@@ -2401,42 +1645,30 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        // PR-D: Route to sceneEditController in Scene Edit mode
-        if case .sceneEdit = editorStore?.state.uiMode {
-            sceneEditController?.handlePan(recognizer)
-            persistTransformIfNeededSceneEdit(recognizer)
-        } else {
-            editorController.handlePan(recognizer)
-            persistTransformIfNeeded(recognizer)
-        }
+        // PR-E: Only works in Scene Edit mode (dev-UI path removed)
+        guard case .sceneEdit = editorStore?.state.uiMode else { return }
+        sceneEditController?.handlePan(recognizer)
+        persistTransformIfNeededSceneEdit(recognizer)
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
-        // PR-D: Route to sceneEditController in Scene Edit mode
-        if case .sceneEdit = editorStore?.state.uiMode {
-            sceneEditController?.handlePinch(recognizer)
-            persistTransformIfNeededSceneEdit(recognizer)
-        } else {
-            editorController.handlePinch(recognizer)
-            persistTransformIfNeeded(recognizer)
-        }
+        // PR-E: Only works in Scene Edit mode (dev-UI path removed)
+        guard case .sceneEdit = editorStore?.state.uiMode else { return }
+        sceneEditController?.handlePinch(recognizer)
+        persistTransformIfNeededSceneEdit(recognizer)
     }
 
     @objc private func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
-        // PR-D: Route to sceneEditController in Scene Edit mode
-        if case .sceneEdit = editorStore?.state.uiMode {
-            sceneEditController?.handleRotation(recognizer)
-            persistTransformIfNeededSceneEdit(recognizer)
-        } else {
-            editorController.handleRotation(recognizer)
-            persistTransformIfNeeded(recognizer)
-        }
+        // PR-E: Only works in Scene Edit mode (dev-UI path removed)
+        guard case .sceneEdit = editorStore?.state.uiMode else { return }
+        sceneEditController?.handleRotation(recognizer)
+        persistTransformIfNeededSceneEdit(recognizer)
     }
 
     /// PR9.1: Persists current transform to store for undo/redo and save/load.
     private func persistTransformIfNeeded(_ recognizer: UIGestureRecognizer) {
         guard let instanceId = activeSceneInstanceId,
-              let blockId = editorController.state.selectedBlockId,
+              let blockId = editorStore?.state.selectedBlockId,
               let player = scenePlayer else { return }
 
         let phase: InteractionPhase
@@ -2499,317 +1731,15 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    @objc private func modeToggleChanged() {
-        stopPlayback()
-        if modeToggle.selectedSegmentIndex == 0 {
-            editorController.enterPreview()
-        } else {
-            editorController.enterEdit()
-            // PR-33 Gate 1: Frozen frame update on edit mode entry
-            userMediaService?.updateVideoFramesForFrozen(sceneFrameIndex: ScenePlayer.editFrameIndex)
-        }
-    }
-
-    @objc private func templateSelectorChanged() {
-        let idx = templateSelector.selectedSegmentIndex
-        guard idx >= 0, idx < availableTemplates.count else { return }
-        let templateName = availableTemplates[idx].name
-        loadCompiledTemplateFromBundle(templateName: templateName)
-    }
-
-    // MARK: - Variant Switching Actions (PR-20)
-
-    @objc private func variantPickerChanged() {
-        let idx = variantPicker.selectedSegmentIndex
-        let variants = editorController.selectedBlockVariants()
-        guard idx >= 0, idx < variants.count else { return }
-
-        // Policy: stop playback before switching (frame preserved)
-        if isPlaying { stopPlayback() }
-        editorController.setSelectedVariantForSelectedBlock(variants[idx].id)
-        log("[Variant] block=\(editorController.state.selectedBlockId ?? "?") -> \(variants[idx].id)")
-
-        // PR9.1: Persist variant to store (write-through)
-        guard let instanceId = activeSceneInstanceId,
-              let blockId = editorController.state.selectedBlockId else { return }
-        editorStore?.dispatch(.setBlockVariant(
-            sceneInstanceId: instanceId,
-            blockId: blockId,
-            variantId: variants[idx].id
-        ))
-    }
-
-    @objc private func presetPickerChanged() {
-        let idx = presetPicker.selectedSegmentIndex
-        guard idx >= 0, idx < scenePresets.count else { return }
-
-        // Policy: stop playback before switching (frame preserved)
-        if isPlaying { stopPlayback() }
-        editorController.applyScenePreset(scenePresets[idx].mapping)
-        log("[Preset] \(scenePresets[idx].title)")
-    }
-
-    private func toggleFullscreen() {
-        isFullscreen.toggle()
-
-        if isFullscreen {
-            // Move metalView and overlays to main view for fullscreen
-            metalView.removeFromSuperview()
-            overlayView.removeFromSuperview()
-            preparingOverlay.removeFromSuperview()
-            view.addSubview(metalView)
-            view.addSubview(overlayView)
-            view.addSubview(preparingOverlay)
-
-            // Deactivate contentView constraints
-            metalViewTopToLoadButtonConstraint?.isActive = false
-            metalViewHeightConstraint?.isActive = false
-
-            // Activate fullscreen constraints
-            metalViewTopToSafeAreaConstraint?.isActive = true
-            metalViewBottomConstraint?.isActive = true
-            metalViewLeadingConstraint = metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor)
-            metalViewTrailingConstraint = metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
-            metalViewLeadingConstraint?.isActive = true
-            metalViewTrailingConstraint?.isActive = true
-
-            // Re-pin overlays to metalView
-            NSLayoutConstraint.activate([
-                overlayView.topAnchor.constraint(equalTo: metalView.topAnchor),
-                overlayView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
-                overlayView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
-                overlayView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-                preparingOverlay.topAnchor.constraint(equalTo: metalView.topAnchor),
-                preparingOverlay.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
-                preparingOverlay.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
-                preparingOverlay.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-            ])
-
-            scrollView.isHidden = true
-        } else {
-            // Deactivate fullscreen constraints
-            metalViewTopToSafeAreaConstraint?.isActive = false
-            metalViewBottomConstraint?.isActive = false
-            metalViewLeadingConstraint?.isActive = false
-            metalViewTrailingConstraint?.isActive = false
-
-            // Move metalView and overlays back to contentView
-            metalView.removeFromSuperview()
-            overlayView.removeFromSuperview()
-            preparingOverlay.removeFromSuperview()
-            contentView.addSubview(metalView)
-            contentView.addSubview(overlayView)
-            contentView.addSubview(preparingOverlay)
-
-            // Re-activate contentView constraints
-            metalViewTopToLoadButtonConstraint?.isActive = true
-            metalViewHeightConstraint?.isActive = true
-
-            // Re-pin metalView to contentView (full width)
-            NSLayoutConstraint.activate([
-                metalView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                metalView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                overlayView.topAnchor.constraint(equalTo: metalView.topAnchor),
-                overlayView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
-                overlayView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
-                overlayView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-                preparingOverlay.topAnchor.constraint(equalTo: metalView.topAnchor),
-                preparingOverlay.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
-                preparingOverlay.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
-                preparingOverlay.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
-            ])
-
-            scrollView.isHidden = false
-        }
-
-        UIView.animate(withDuration: 0.3) {
-            self.view.layoutIfNeeded()
-        }
-
-        setNeedsStatusBarAppearanceUpdate()
-    }
-
-    /// Syncs UI controls with editor state (called from controller's onStateChanged callback).
-    private func syncUIWithState(_ state: TemplateEditorState) {
-        let isPreview = state.mode == .preview
-
-        // Playback controls visible only in preview mode
-        playbackContainer.isHidden = !isPreview
-
-        frameLabel.text = "Frame: \(state.currentPreviewFrame) / \(totalFrames)"
-        frameSlider.value = Float(state.currentPreviewFrame)
-
-        overlayView.isHidden = isPreview
-
-        // PR-20: variant picker — only in edit mode with a selected block that has 2+ variants
-        updateVariantPickerUI(state: state)
-
-        // PR-30: toggle UI — only in edit mode with a selected block that has toggles
-        updateToggleUI(state: state)
-
-        // PR-32: user media UI — only in edit mode with a selected block that has binding layer
-        updateUserMediaUI(state: state)
-    }
-
-    /// Rebuilds variant picker segments and selection for current state.
-    private func updateVariantPickerUI(state: TemplateEditorState) {
-        let variants = editorController.selectedBlockVariants()
-        let showPicker = state.mode == .edit
-            && state.selectedBlockId != nil
-            && variants.count > 1
-
-        // Hide entire container (UIStackView auto-collapses)
-        variantContainer.isHidden = !showPicker
-
-        guard showPicker else { return }
-
-        variantLabel.text = "Block: \(state.selectedBlockId ?? "")"
-
-        // Rebuild segments only if variant IDs changed (lead fix #2: compare cached data, not UIKit titles)
-        let newIds = variants.map(\.id)
-        if lastVariantIds != newIds {
-            variantPicker.removeAllSegments()
-            for (i, v) in variants.enumerated() {
-                variantPicker.insertSegment(withTitle: v.id, at: i, animated: false)
-            }
-            lastVariantIds = newIds
-        }
-
-        // Sync selected segment with active variantId (lead fix #1: reset first to avoid stale selection)
-        variantPicker.selectedSegmentIndex = UISegmentedControl.noSegment
-        if let activeId = editorController.selectedBlockVariantId(),
-           let idx = variants.firstIndex(where: { $0.id == activeId }) {
-            variantPicker.selectedSegmentIndex = idx
-        }
-    }
-
-    // MARK: - Layer Toggle UI (PR-30)
-
-    /// Rebuilds toggle switches for current state.
-    private func updateToggleUI(state: TemplateEditorState) {
-        let toggles = editorController.selectedBlockToggles()
-        let showToggles = state.mode == .edit
-            && state.selectedBlockId != nil
-            && !toggles.isEmpty
-
-        // Hide entire container (UIStackView auto-collapses)
-        toggleContainer.isHidden = !showToggles
-
-        guard showToggles else { return }
-
-        // Rebuild UI only if toggle IDs changed
-        let newIds = toggles.map(\.id)
-        if lastToggleIds != newIds {
-            // Clear existing switches
-            toggleStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-
-            // Create switch for each toggle
-            for toggle in toggles {
-                let row = createToggleRow(toggle: toggle)
-                toggleStack.addArrangedSubview(row)
-            }
-            lastToggleIds = newIds
-        }
-
-        // Sync switch states with current values
-        for (idx, toggle) in toggles.enumerated() {
-            if let row = toggleStack.arrangedSubviews[safe: idx] as? UIStackView,
-               let switchControl = row.arrangedSubviews.last as? UISwitch {
-                let enabled = editorController.isToggleEnabled(toggleId: toggle.id) ?? toggle.defaultOn
-                switchControl.isOn = enabled
-            }
-        }
-    }
-
-    /// Creates a row with label + switch for a toggle.
-    private func createToggleRow(toggle: LayerToggle) -> UIStackView {
-        let label = UILabel()
-        label.text = toggle.title
-        label.font = .systemFont(ofSize: 15)
-
-        let switchControl = UISwitch()
-        switchControl.accessibilityIdentifier = toggle.id
-        switchControl.addTarget(self, action: #selector(toggleSwitchChanged(_:)), for: .valueChanged)
-
-        let row = UIStackView(arrangedSubviews: [label, switchControl])
-        row.axis = .horizontal
-        row.distribution = .equalSpacing
-        return row
-    }
-
-    @objc private func toggleSwitchChanged(_ sender: UISwitch) {
-        guard let toggleId = sender.accessibilityIdentifier else { return }
-        editorController.setToggle(toggleId: toggleId, enabled: sender.isOn)
-        log("[Toggle] \(toggleId) = \(sender.isOn ? "ON" : "OFF")")
-
-        // PR9.1: Persist toggle to store (write-through)
-        guard let instanceId = activeSceneInstanceId,
-              let blockId = editorController.state.selectedBlockId else { return }
-        editorStore?.dispatch(.setBlockToggle(
-            sceneInstanceId: instanceId,
-            blockId: blockId,
-            toggleId: toggleId,
-            enabled: sender.isOn
-        ))
-    }
-
-    // MARK: - User Media UI (PR-32)
-
-    /// Shows/hides user media section based on state.
-    private func updateUserMediaUI(state: TemplateEditorState) {
-        // Show user media controls only in edit mode with a selected block that has binding layer
-        let hasBinding: Bool
-        if let blockId = state.selectedBlockId, let player = scenePlayer {
-            hasBinding = player.bindingAssetId(blockId: blockId) != nil
-            print("[updateUserMediaUI] blockId=\(blockId), hasBinding=\(hasBinding), bindingAssetId=\(player.bindingAssetId(blockId: blockId) ?? "nil")")
-        } else {
-            hasBinding = false
-            print("[updateUserMediaUI] no blockId or no player")
-        }
-        let showUserMedia = state.mode == .edit && hasBinding
-        print("[updateUserMediaUI] mode=\(state.mode), showUserMedia=\(showUserMedia)")
-        print("[updateUserMediaUI] BEFORE: userMediaContainer.isHidden=\(userMediaContainer.isHidden), superview=\(userMediaContainer.superview != nil)")
-
-        // Hide entire container (UIStackView auto-collapses)
-        userMediaContainer.isHidden = !showUserMedia
-
-        print("[updateUserMediaUI] AFTER: userMediaContainer.isHidden=\(userMediaContainer.isHidden)")
-        print("[updateUserMediaUI] scrollView.isHidden=\(scrollView.isHidden)")
-        print("[updateUserMediaUI] presentationMode=\(presentationMode)")
-
-        guard showUserMedia else { return }
-
-        updateUserMediaStatusLabel()
-    }
-
-    /// Updates the user media status label with current media state.
-    private func updateUserMediaStatusLabel() {
-        guard let blockId = state.selectedBlockId,
-              let service = userMediaService else {
-            userMediaStatusLabel.text = "No media"
-            return
-        }
-
-        let kind = service.mediaKind(for: blockId)
-        switch kind {
-        case .photo:
-            userMediaStatusLabel.text = "Photo selected"
-        case .video:
-            userMediaStatusLabel.text = "Video selected"
-        case .none:
-            userMediaStatusLabel.text = "No media"
-        }
-    }
-
     // MARK: - User Media Actions (PR-32)
 
     @objc private func addPhotoTapped() {
-        guard state.selectedBlockId != nil else { return }
+        guard editorStore?.state.selectedBlockId != nil else { return }
         presentPhotoPicker(for: .images)
     }
 
     @objc private func clearMediaTapped() {
-        guard let blockId = state.selectedBlockId else { return }
+        guard let blockId = editorStore?.state.selectedBlockId else { return }
 
         // PR9: Clear from runtime service
         userMediaService?.clear(blockId: blockId)
@@ -2823,7 +1753,6 @@ final class PlayerViewController: UIViewController {
             ))
         }
 
-        updateUserMediaStatusLabel()
         metalView.setNeedsDisplay()
         log("[UserMedia] Cleared media for block '\(blockId)'")
     }
@@ -2836,7 +1765,6 @@ final class PlayerViewController: UIViewController {
 
         if !runtimeSuccess {
             log("[UserMedia] Failed to set photo for block '\(blockId)'")
-            updateUserMediaStatusLabel()
             metalView.setNeedsDisplay()
             return
         }
@@ -2846,7 +1774,6 @@ final class PlayerViewController: UIViewController {
         // Step 2: Save to persistent storage and dispatch to store
         guard let instanceId = activeSceneInstanceId else {
             log("[UserMedia] No active scene instance, skipping persistence")
-            updateUserMediaStatusLabel()
             metalView.setNeedsDisplay()
             return
         }
@@ -2857,7 +1784,6 @@ final class PlayerViewController: UIViewController {
 
         guard let jpegData = resizedImage.jpegData(compressionQuality: 0.9) else {
             log("[UserMedia] Failed to create JPEG data for block '\(blockId)'")
-            updateUserMediaStatusLabel()
             metalView.setNeedsDisplay()
             return
         }
@@ -2881,7 +1807,6 @@ final class PlayerViewController: UIViewController {
             log("[UserMedia] Failed to save media: \(error)")
         }
 
-        updateUserMediaStatusLabel()
         metalView.setNeedsDisplay()
     }
 
@@ -2894,7 +1819,6 @@ final class PlayerViewController: UIViewController {
         guard let instanceId = activeSceneInstanceId else {
             log("[UserMedia] No active scene instance, skipping video persistence")
             try? FileManager.default.removeItem(at: tempURL)
-            updateUserMediaStatusLabel()
             metalView.setNeedsDisplay()
             return
         }
@@ -2912,7 +1836,6 @@ final class PlayerViewController: UIViewController {
         } catch {
             log("[UserMedia] Failed to save video: \(error)")
             try? FileManager.default.removeItem(at: tempURL)
-            updateUserMediaStatusLabel()
             metalView.setNeedsDisplay()
             return
         }
@@ -2927,7 +1850,6 @@ final class PlayerViewController: UIViewController {
         if !runtimeSuccess {
             log("[UserMedia] Failed to set video for block '\(blockId)'")
             try? FileManager.default.removeItem(at: tempURL)
-            updateUserMediaStatusLabel()
             metalView.setNeedsDisplay()
             return
         }
@@ -2944,7 +1866,6 @@ final class PlayerViewController: UIViewController {
         // Step 5: Cleanup temp file (already copied to persistent storage)
         try? FileManager.default.removeItem(at: tempURL)
 
-        updateUserMediaStatusLabel()
         metalView.setNeedsDisplay()
     }
 
@@ -2978,6 +1899,80 @@ final class PlayerViewController: UIViewController {
         present(picker, animated: true)
     }
 
+    // MARK: - PR-E: Scene Edit Media Picker
+
+    /// Presents media picker for Scene Edit with deterministic blockId tracking.
+    /// - Parameters:
+    ///   - blockId: The block ID for which media is being picked
+    ///   - kind: Whether to pick photo or video
+    private func presentMediaPicker(for blockId: String, kind: MediaKind) {
+        // Store pending state for picker delegate
+        pendingPickedMediaBlockId = blockId
+        pendingMediaKind = kind
+
+        var config = PHPickerConfiguration()
+        config.filter = (kind == .photo) ? .images : .videos
+        config.selectionLimit = 1
+
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+
+    /// Presents variant picker as action sheet for Scene Edit (PR-E).
+    /// - Parameter blockId: The block ID for which to show variants
+    private func presentVariantPicker(blockId: String) {
+        guard let player = scenePlayer else { return }
+
+        let variants = player.availableVariants(blockId: blockId)
+        guard !variants.isEmpty else { return }
+
+        // Get current variant for checkmark
+        let currentVariantId = player.selectedVariantId(blockId: blockId)
+
+        let alert = UIAlertController(title: "Animation", message: nil, preferredStyle: .actionSheet)
+
+        for variant in variants {
+            let action = UIAlertAction(title: variant.id, style: .default) { [weak self] _ in
+                self?.applyVariant(blockId: blockId, variantId: variant.id)
+            }
+            // Show checkmark for current variant
+            if variant.id == currentVariantId {
+                action.setValue(true, forKey: "checked")
+            }
+            alert.addAction(action)
+        }
+
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+
+        // iPad support: configure popover
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+
+        present(alert, animated: true)
+    }
+
+    /// Applies variant selection to runtime and persists to store (PR-E).
+    private func applyVariant(blockId: String, variantId: String) {
+        // 1. Apply to runtime
+        scenePlayer?.setSelectedVariant(blockId: blockId, variantId: variantId)
+        metalView.setNeedsDisplay()
+
+        // 2. Update overlay
+        sceneEditController?.updateOverlay()
+
+        // 3. Persist to store
+        guard let instanceId = activeSceneInstanceId else { return }
+        editorStore?.dispatch(.setBlockVariant(
+            sceneInstanceId: instanceId,
+            blockId: blockId,
+            variantId: variantId
+        ))
+    }
+
     // MARK: - PR9: Scene Catalog
 
     /// Presents the scene catalog for adding a new scene.
@@ -3008,212 +2003,9 @@ final class PlayerViewController: UIViewController {
         log("[PR9] Added scene: \(sceneTypeId) duration=\(baseDurationUs)us")
     }
 
-    /// Convenience accessor for editor state.
-    private var state: TemplateEditorState {
-        editorController.state
-    }
-
     override var prefersStatusBarHidden: Bool {
-        isFullscreen
+        fullScreenPreviewVC != nil
     }
-
-    private func updateMetalViewAspectRatio(width: Double, height: Double) {
-        guard width > 0, height > 0 else { return }
-
-        // Remove old height constraint
-        metalViewHeightConstraint?.isActive = false
-
-        // Create new constraint with correct aspect ratio (height/width)
-        let aspectRatio = height / width
-        metalViewHeightConstraint = metalView.heightAnchor.constraint(equalTo: metalView.widthAnchor, multiplier: aspectRatio)
-        metalViewHeightConstraint?.priority = .defaultHigh
-        metalViewHeightConstraint?.isActive = true
-
-        view.layoutIfNeeded()
-    }
-
-    // MARK: - Package Loading (DEBUG only)
-
-    #if DEBUG
-    private func loadAndValidatePackage(from rootURL: URL) throws {
-        let package = try loader.load(from: rootURL)
-        currentPackage = package
-        logPackageInfo(package)
-
-        // PR-28: Create resolver early — needed for both validation and texture loading.
-        let localIndex = try LocalAssetsIndex(imagesRootURL: package.imagesRootURL)
-        let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
-        let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
-        currentResolver = resolver
-
-        let sceneReport = sceneValidator.validate(scene: package.scene)
-        logValidationReport(sceneReport, title: "SceneValidation")
-        isSceneValid = !sceneReport.hasErrors
-        guard isSceneValid else { log("Scene invalid"); metalView.setNeedsDisplay(); return }
-        try loadAndValidateAnimations(for: package, resolver: resolver)
-        try compileScene(for: package)
-        metalView.setNeedsDisplay()
-    }
-
-    private func loadAndValidateAnimations(for package: ScenePackage, resolver: CompositeAssetResolver) throws {
-        let loaded = try animLoader.loadAnimations(from: package)
-        loadedAnimations = loaded
-        log("Loaded \(loaded.lottieByAnimRef.count) animations")
-        // PR-28: Pass resolver for basename-based asset validation (TL requirement B)
-        let report = animValidator.validate(scene: package.scene, package: package, loaded: loaded, resolver: resolver)
-        logValidationReport(report, title: "AnimValidation")
-        isAnimValid = !report.hasErrors
-        if report.hasErrors { log("Animations invalid") }
-    }
-
-    private func compileScene(for package: ScenePackage) throws {
-        guard isAnimValid,
-              let loaded = loadedAnimations,
-              let device = metalView.device else { return }
-
-        log("---\nCompiling scene...")
-
-        // PR3: Use SceneCompiler from TVECompilerCore (compile logic moved out of ScenePlayer)
-        let sceneCompiler = SceneCompiler()
-        let compiled = try sceneCompiler.compile(package: package, loadedAnimations: loaded)
-        compiledScene = compiled
-
-        // Create ScenePlayer and load the compiled scene
-        let player = ScenePlayer()
-        player.loadCompiledScene(compiled)
-
-        // PR-19: Store player as property and wire to editor controller
-        scenePlayer = player
-        editorController.setPlayer(player)
-
-        // Store canvas size for render target
-        canvasSize = compiled.runtime.canvasSize
-        editorController.canvasSize = canvasSize
-
-        // Update metalView aspect ratio to match canvas
-        updateMetalViewAspectRatio(width: canvasSize.width, height: canvasSize.height)
-
-        // Store merged asset sizes for renderer
-        mergedAssetSizes = compiled.mergedAssetIndex.sizeById
-
-        // Create texture provider (PR-28: reuse resolver from validation, pass bindingAssetIds)
-        let resolver = currentResolver ?? CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty)
-        let provider = SceneTextureProviderFactory.create(
-            device: device,
-            mergedAssetIndex: compiled.mergedAssetIndex,
-            resolver: resolver,
-            bindingAssetIds: compiled.bindingAssetIds,
-            logger: { [weak self] msg in self?.log(msg) }
-        )
-        textureProvider = provider
-
-        // PR-B: Preload all textures before any draw/play (IO-free runtime invariant)
-        // Alpha Fix: Use commandQueue for premultiplied alpha texture loading
-        if let queue = commandQueue {
-            provider.preloadAll(commandQueue: queue)
-        }
-        if let stats = provider.lastPreloadStats {
-            log(String(format: "[Preload] loaded: %d, missing: %d, skipped: %d, duration: %.1fms",
-                       stats.loadedCount, stats.missingCount, stats.skippedBindingCount, stats.durationMs))
-        }
-
-        // PR-32: Create UserMediaService for photo/video injection
-        if let tp = textureProvider, let queue = commandQueue {
-            userMediaService = UserMediaService(
-                device: device,
-                commandQueue: queue,
-                scenePlayer: player,
-                textureProvider: tp
-            )
-            userMediaService?.setSceneFPS(Double(compiled.runtime.fps))
-            // PR1.1: Wire callback for async updates (poster ready, clear)
-            userMediaService?.onNeedsDisplay = { [weak self] in
-                self?.metalView.setNeedsDisplay()
-            }
-            log("UserMediaService initialized")
-        }
-
-        // Log compilation results
-        let runtime = compiled.runtime
-        let blockCount = runtime.blocks.count
-        let canvasSizeStr = "\(Int(canvasSize.width))x\(Int(canvasSize.height))"
-        log("Scene compiled: \(canvasSizeStr) @ \(runtime.fps)fps, \(runtime.durationFrames) frames, \(blockCount) blocks")
-
-        // Log block details
-        for block in runtime.blocks {
-            let rect = block.rectCanvas
-            let rectStr = "(\(Int(rect.x)),\(Int(rect.y)) \(Int(rect.width))x\(Int(rect.height)))"
-            log("  Block '\(block.blockId)' z=\(block.zIndex) rect=\(rectStr)")
-        }
-
-        // Log asset count
-        log("Merged assets: \(compiled.mergedAssetIndex.byId.count) textures")
-
-        // PR-B: Diagnostic — verify preload coverage (DEBUG only)
-        // After preloadAll(), texture(for:) is IO-free cache lookup
-        #if DEBUG
-        for (assetId, _) in compiled.mergedAssetIndex.byId {
-            if let tex = textureProvider?.texture(for: assetId) {
-                log("Texture: \(assetId) [\(tex.width)x\(tex.height)]")
-            } else {
-                log("WARNING: Texture MISSING after preload: \(assetId)")
-            }
-        }
-        #endif
-
-        // Setup playback controls
-        totalFrames = runtime.durationFrames
-        sceneFPS = Double(runtime.fps)
-        currentFrameIndex = 0
-        frameSlider.maximumValue = Float(max(0, totalFrames - 1))
-        frameSlider.value = 0
-        frameSlider.isEnabled = true
-        playPauseButton.isEnabled = true
-        updateFrameLabel()
-
-        // PR-19: Enable mode toggle and start in preview
-        modeToggle.isEnabled = true
-        modeToggle.selectedSegmentIndex = 0
-        editorController.enterPreview()
-
-        // PR2: Configure timeline for editor mode
-        configureEditorTimeline()
-
-        // PR-20: Setup scene presets
-        setupScenePresets(for: package)
-
-        // PR-A: warmRender removed — was blocking draw via shared renderQueue.
-        // Shader cache priming will be addressed in future PR if needed.
-
-        log("Ready for playback!")
-    }
-
-    /// Configures scene presets based on loaded scene. Only variant_switch_demo has real presets.
-    private func setupScenePresets(for package: ScenePackage) {
-        if package.scene.sceneId == "scene_variant_switch_demo" {
-            scenePresets = [
-                SceneVariantPreset(id: "default", title: "Default", mapping: [:]),
-                SceneVariantPreset(id: "style_a", title: "Style A",
-                                   mapping: ["block_01": "v1", "block_02": "v1"]),
-                SceneVariantPreset(id: "style_b", title: "Style B",
-                                   mapping: ["block_01": "v2", "block_02": "v1"])
-            ]
-        } else {
-            scenePresets = [
-                SceneVariantPreset(id: "default", title: "Default", mapping: [:])
-            ]
-        }
-
-        // Rebuild preset picker segments
-        presetPicker.removeAllSegments()
-        for (i, preset) in scenePresets.enumerated() {
-            presetPicker.insertSegment(withTitle: preset.title, at: i, animated: false)
-        }
-        presetPicker.selectedSegmentIndex = 0
-        // Debug-UI optimisation: hide if only "Default" preset — no useful choice to offer (lead fix #3)
-        presetPicker.isHidden = scenePresets.count <= 1
-    }
-    #endif
 
     // MARK: - Load Pre-Compiled Template (Release Path - PR2)
 
@@ -3222,28 +2014,16 @@ final class PlayerViewController: UIViewController {
         switch loadingState {
         case .idle:
             preparingOverlay.hide()
-            playPauseButton.isEnabled = false
-            frameSlider.isEnabled = false
-            modeToggle.isEnabled = false
 
         case .preparing:
             preparingOverlay.reset()
             preparingOverlay.show(text: "Loading template...")
-            playPauseButton.isEnabled = false
-            frameSlider.isEnabled = false
-            modeToggle.isEnabled = false
 
         case .ready:
             preparingOverlay.hide()
-            playPauseButton.isEnabled = true
-            frameSlider.isEnabled = true
-            modeToggle.isEnabled = true
 
         case .failed(let message):
             preparingOverlay.showError(message)
-            playPauseButton.isEnabled = false
-            frameSlider.isEnabled = false
-            modeToggle.isEnabled = false
         }
     }
 
@@ -3539,17 +2319,14 @@ final class PlayerViewController: UIViewController {
                        stats.loadedCount, stats.missingCount, stats.skippedBindingCount, stats.durationMs))
         }
 
-        // Apply to state
+        // PR-E: Apply to state
         compiledScene = compiled
         scenePlayer = player
-        editorController.setPlayer(player)
         textureProvider = provider
         currentResolver = resolver
 
         // Store canvas size
         canvasSize = compiled.runtime.canvasSize
-        editorController.canvasSize = canvasSize
-        updateMetalViewAspectRatio(width: canvasSize.width, height: canvasSize.height)
 
         // Store merged asset sizes
         mergedAssetSizes = compiled.mergedAssetIndex.sizeById
@@ -3586,15 +2363,6 @@ final class PlayerViewController: UIViewController {
 
         // Setup playback controls
         currentFrameIndex = 0
-        frameSlider.maximumValue = Float(max(0, totalFrames - 1))
-        frameSlider.value = 0
-        frameSlider.isEnabled = true
-        playPauseButton.isEnabled = true
-        updateFrameLabel()
-
-        // Setup mode toggle
-        modeToggle.isEnabled = true
-        modeToggle.selectedSegmentIndex = 0 // Preview mode
 
         // Transition to ready state
         loadingState = .ready
@@ -3624,17 +2392,14 @@ final class PlayerViewController: UIViewController {
                        stats.loadedCount, stats.missingCount, stats.skippedBindingCount, stats.durationMs))
         }
 
-        // Apply to state
+        // PR-E: Apply to state
         compiledScene = compiled
         scenePlayer = player
-        editorController.setPlayer(player)
         textureProvider = provider
         currentResolver = resolver
 
         // Store canvas size
         canvasSize = compiled.runtime.canvasSize
-        editorController.canvasSize = canvasSize
-        updateMetalViewAspectRatio(width: canvasSize.width, height: canvasSize.height)
 
         // Store merged asset sizes
         mergedAssetSizes = compiled.mergedAssetIndex.sizeById
@@ -3666,18 +2431,12 @@ final class PlayerViewController: UIViewController {
         totalFrames = runtime.durationFrames
         sceneFPS = Double(runtime.fps)
         currentFrameIndex = 0
-        frameSlider.maximumValue = Float(max(0, totalFrames - 1))
-        frameSlider.value = 0
-        updateFrameLabel()
 
         // Enter ready state
         loadingState = .ready
         updateLoadingStateUI()
 
-        modeToggle.selectedSegmentIndex = 0
-        editorController.enterPreview()
-
-        // PR2: Configure timeline for editor mode
+        // PR-E: Configure timeline for editor mode
         configureEditorTimeline()
 
         log("Ready for playback!")
@@ -3778,7 +2537,6 @@ final class PlayerViewController: UIViewController {
     private func startPlayback() {
         guard compiledScene != nil else { return }
         isPlaying = true
-        updatePlayPauseButton()
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
         let fps = Float(sceneFPS)
         displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
@@ -3793,10 +2551,8 @@ final class PlayerViewController: UIViewController {
 
     private func stopPlayback() {
         isPlaying = false
-        updatePlayPauseButton()
         displayLink?.invalidate()
         displayLink = nil
-        editorController.setPlaying(false)
         // PR-33: Stop video playback (AVPlayer rate=0)
         userMediaService?.stopVideoPlayback()
         // PR2: Update editor layout play state
@@ -3804,21 +2560,9 @@ final class PlayerViewController: UIViewController {
         fullScreenPreviewVC?.setPlaying(false)
     }
 
-    private func updatePlayPauseButton() {
-        var cfg = playPauseButton.configuration
-        cfg?.title = isPlaying ? "Pause" : "Play"
-        cfg?.baseBackgroundColor = isPlaying ? .systemOrange : .systemGreen
-        playPauseButton.configuration = cfg
-    }
-
     @objc private func displayLinkFired() {
-        // Release v1: Calculate next time and dispatch through store
-        guard let store = editorStore else {
-            // Fallback for preview mode without store
-            editorController.advanceFrame()
-            currentFrameIndex = editorController.state.currentPreviewFrame
-            return
-        }
+        // PR-E: Calculate next time and dispatch through store
+        guard let store = editorStore else { return }
 
         let fps = store.state.templateFPS
         let frameDurationUs: TimeUs = 1_000_000 / TimeUs(fps)
@@ -3831,11 +2575,9 @@ final class PlayerViewController: UIViewController {
         // Global frame for UI (timeline ruler, fullscreen position)
         let globalFrameIndex = Int(nextTimeUs * TimeUs(fps) / 1_000_000)
 
-        // Update timeline/fullscreen position during playback
-        if case .editor = presentationMode {
-            editorLayoutContainer.setCurrentTimeUs(nextTimeUs)
-            fullScreenPreviewVC?.setCurrentFrame(globalFrameIndex)
-        }
+        // PR-E: Update timeline/fullscreen position during playback
+        editorLayoutContainer.setCurrentTimeUs(nextTimeUs)
+        fullScreenPreviewVC?.setCurrentFrame(globalFrameIndex)
 
         // PR-33: Gated video update - use LOCAL frame from coordinator
         let localFrame = playbackCoordinator?.currentLocalFrame ?? globalFrameIndex
@@ -3852,35 +2594,12 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    private func updateFrameLabel() { frameLabel.text = "Frame: \(currentFrameIndex) / \(totalFrames)" }
-
     // MARK: - Logging
 
     private func log(_ message: String) {
         let ts = DateFormatter.logFormatter.string(from: Date())
-        let line = "[\(ts)] \(message)"
-        print(line)  // Console output for Xcode
-        logTextView.text += line + "\n"
-        let loc = max(0, logTextView.text.count - 1)
-        logTextView.scrollRangeToVisible(NSRange(location: loc, length: 1))
+        print("[\(ts)] \(message)")
     }
-
-    #if DEBUG
-    private func logPackageInfo(_ pkg: ScenePackage) {
-        let scene = pkg.scene
-        let canvas = scene.canvas
-        let info = "v\(scene.schemaVersion), \(canvas.width)x\(canvas.height)@\(canvas.fps)fps"
-        log("Scene loaded! \(info), \(canvas.durationFrames)f, \(scene.mediaBlocks.count) blocks")
-    }
-
-    private func logValidationReport(_ report: ValidationReport, title: String) {
-        log("\(title): \(report.errors.count)E, \(report.warnings.count)W")
-        for issue in report.issues {
-            let tag = issue.severity == .error ? "E" : "W"
-            log("[\(tag)] \(issue.code) \(issue.path) — \(issue.message)")
-        }
-    }
-    #endif
 
     // MARK: - Scrub Render Throttle (A/B Testing)
 
@@ -4018,15 +2737,10 @@ extension PlayerViewController: MTKViewDelegate {
                 }
             }
 
-            // Release v1: Get render commands from coordinator (editor mode) or fallback
+            // PR-E: Get render commands from coordinator (single source of truth)
             let commands: [RenderCommand]
-            if case .editor = presentationMode,
-               let coordinatorCommands = playbackCoordinator?.currentRenderCommands(mode: .edit) {
-                // Coordinator is single source of truth for editor mode
+            if let coordinatorCommands = playbackCoordinator?.currentRenderCommands(mode: .edit) {
                 commands = coordinatorCommands
-            } else if let editorCommands = editorController.currentRenderCommands() {
-                // Preview mode: use editor controller
-                commands = editorCommands
             } else {
                 // Fallback: direct scene render
                 commands = compiled.runtime.renderCommands(sceneFrameIndex: currentFrameIndex)
@@ -4176,24 +2890,30 @@ extension PlayerViewController: UIGestureRecognizerDelegate {
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        // Pan/pinch/rotation only work in edit mode WITH a selected block
+        // PR-E: Pan/pinch/rotation only work in Scene Edit mode WITH a selected block
         if gestureRecognizer is UIPanGestureRecognizer ||
            gestureRecognizer is UIPinchGestureRecognizer ||
            gestureRecognizer is UIRotationGestureRecognizer {
-            // Only enable if in edit mode AND block is selected
-            return editorController.state.mode == .edit && editorController.state.selectedBlockId != nil
+            // Only enable if in Scene Edit mode AND block is selected
+            guard case .sceneEdit = editorStore?.state.uiMode else { return false }
+            return editorStore?.state.selectedBlockId != nil
         }
         return true
     }
 }
 
-// MARK: - PHPickerViewControllerDelegate (PR-32)
+// MARK: - PHPickerViewControllerDelegate (PR-32, PR-E)
 
 extension PlayerViewController: PHPickerViewControllerDelegate {
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
 
-        guard let result = results.first else { return }
+        guard let result = results.first else {
+            // User cancelled - clear pending state
+            pendingPickedMediaBlockId = nil
+            pendingMediaKind = nil
+            return
+        }
 
         // PR3: Check if this is a background image picker
         if picker.view.tag == 999, let regionId = pendingBackgroundRegionId {
@@ -4202,11 +2922,45 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
             return
         }
 
-        // User media picker
-        guard let blockId = state.selectedBlockId else { return }
+        // PR-E: Use pending blockId for deterministic tracking
+        // Fall back to state.selectedBlockId for backward compatibility with dev-UI
+        let blockId: String
+        let expectedKind: MediaKind?
 
-        // Check if it's an image or video
-        if result.itemProvider.canLoadObject(ofClass: UIImage.self) {
+        if let pendingBlockId = pendingPickedMediaBlockId {
+            blockId = pendingBlockId
+            expectedKind = pendingMediaKind
+            // Clear pending state
+            pendingPickedMediaBlockId = nil
+            pendingMediaKind = nil
+        } else if let stateBlockId = editorStore?.state.selectedBlockId {
+            // Backward compatibility with dev-UI path
+            blockId = stateBlockId
+            expectedKind = nil
+        } else {
+            return
+        }
+
+        // Determine actual type of picked media
+        let isImage = result.itemProvider.canLoadObject(ofClass: UIImage.self)
+        let isVideo = result.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
+
+        // PR-E: Validate against expected kind (if set)
+        if let expected = expectedKind {
+            switch expected {
+            case .photo where !isImage:
+                showMediaTypeMismatchAlert()
+                return
+            case .video where !isVideo:
+                showMediaTypeMismatchAlert()
+                return
+            default:
+                break
+            }
+        }
+
+        // Process based on actual type
+        if isImage {
             // Load image
             result.itemProvider.loadObject(ofClass: UIImage.self) { [weak self] object, error in
                 guard let self = self,
@@ -4224,7 +2978,7 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
                     self.handleUserMediaImagePicked(blockId: blockId, image: image)
                 }
             }
-        } else if result.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+        } else if isVideo {
             // Load video
             result.itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { [weak self] url, error in
                 guard let self = self,
@@ -4257,6 +3011,17 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
                 }
             }
         }
+    }
+
+    /// Shows alert when picked media type doesn't match expected type (PR-E).
+    private func showMediaTypeMismatchAlert() {
+        let alert = UIAlertController(
+            title: "Wrong Media Type",
+            message: "Please select the correct type of media.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 }
 

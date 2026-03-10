@@ -14,7 +14,7 @@ import os.signpost
 ///
 /// Launch arguments:
 /// - `-DebugSkipScrubVideoUpdates YES` - skip updateVideoFramesForScrub
-/// - `-DebugSkipEditorControllerTimeUpdate YES` - skip editorController.setCurrentTimeUs
+/// - `-DebugSkipEditorControllerTimeUpdate YES` - skip ScenePlayer.setCurrentTimeUs
 /// - `-DebugSkipMetalRender YES` - skip metalView.setNeedsDisplay during scrub
 /// - `-DebugThrottleRender30Hz YES` - throttle render to 30Hz during scrub
 enum ScrubDebugToggles {
@@ -25,7 +25,7 @@ enum ScrubDebugToggles {
         UserDefaults.standard.bool(forKey: "DebugSkipScrubVideoUpdates")
     }
 
-    /// H2: Skip `editorController.setCurrentTimeUs` during drag.
+    /// H2: Skip `ScenePlayer.setCurrentTimeUs` during drag.
     /// Test only if H1 is not confirmed.
     static var skipEditorControllerTimeUpdate: Bool {
         UserDefaults.standard.bool(forKey: "DebugSkipEditorControllerTimeUpdate")
@@ -118,7 +118,7 @@ enum ScrubSignpost {
         os_signpost(.end, log: log, name: updateVideoFramesForScrubName, signpostID: id, "blocks: %d", blockCount)
     }
 
-    // MARK: - TemplateEditorController.setCurrentTimeUs
+    // MARK: - ScenePlayer.setCurrentTimeUs
 
     /// Begin interval for setCurrentTimeUs
     static func beginSetCurrentTimeUs() -> OSSignpostID {
