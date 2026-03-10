@@ -17,7 +17,6 @@
 		1EA1B9C121F589385C6EACB7 /* TimelineEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99082F901FF221848C1D8848 /* TimelineEvents.swift */; };
 		26C0F8F6AB35CD9093B0E789 /* UserMediaTextureFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */; };
 		283620DB39148AB24A06ECC1 /* BundleSceneLibraryLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EADDEDB66974033DE631FC0 /* BundleSceneLibraryLoader.swift */; };
-		2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88357A08E23A0E79039FC032 /* TemplateEditorController.swift */; };
 		2FEAB6533EF1DA415C6FC778 /* TimelineTimeUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 493CBBADF2EADCE826942657 /* TimelineTimeUtils.swift */; };
 		30AF45D83241BE9B59AB781B /* ExportVideoSlotsCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF894A5BD8FDCD16513F4379 /* ExportVideoSlotsCoordinator.swift */; };
 		3467B52EF16555EC8E8BED35 /* SceneEditInteractionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 631D07258A72196FBA9F3CF5 /* SceneEditInteractionController.swift */; };
@@ -155,7 +154,6 @@
 		7F5EF817846AED742165D197 /* EditorReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducer.swift; sourceTree = "<group>"; };
 		84DEF8B8CAB545A1A822FF33 /* FullScreenPreviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullScreenPreviewViewController.swift; sourceTree = "<group>"; };
 		85271CBA652BF18E5476B593 /* PreparingOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparingOverlayView.swift; sourceTree = "<group>"; };
-		88357A08E23A0E79039FC032 /* TemplateEditorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateEditorController.swift; sourceTree = "<group>"; };
 		8CEF30C879280B5B61779F14 /* BackgroundEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundEditorViewController.swift; sourceTree = "<group>"; };
 		931F43B88D909958DFAB035F /* AudioWriterPump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWriterPump.swift; sourceTree = "<group>"; };
 		945142E5769BD54EFED06588 /* EditorOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorOverlayView.swift; sourceTree = "<group>"; };
@@ -385,7 +383,6 @@
 				3601FA3EBE222F831A10F3DB /* SceneTrackSnapshot.swift */,
 				F4613B149DEB66964BDE84F9 /* SceneTrackView.swift */,
 				10365D40F7866CDC3383B1F0 /* ScrubDiagnostics.swift */,
-				88357A08E23A0E79039FC032 /* TemplateEditorController.swift */,
 				99082F901FF221848C1D8848 /* TimelineEvents.swift */,
 				7E20361C384C400823FEDDE1 /* TimelineLayoutContext.swift */,
 				D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */,
@@ -617,7 +614,6 @@
 				F27623BA827E217DDDCC4FF3 /* ScrubDiagnostics.swift in Sources */,
 				DF26CFCE6FDB0C6EA1F0DBD2 /* TemplateCatalog.swift in Sources */,
 				968F63459420D7EAAF660A2C /* TemplateDetailsViewController.swift in Sources */,
-				2AFD8F74F4A597E4D30290B9 /* TemplateEditorController.swift in Sources */,
 				466851FBF16FEB68F8B6CC15 /* TemplateModels.swift in Sources */,
 				6DCCC8529A71ADB91E2B34AF /* TemplatePreviewCell.swift in Sources */,
 				B76A183D3E44848DC6A05679 /* TemplateRecipe.swift in Sources */,

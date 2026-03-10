@@ -6,24 +6,27 @@ import UIKit
 /// Provides block-level actions: Add Photo, Add Video, Animation, Disable/Enable, Remove.
 final class MediaBlockActionBar: UIView {
 
-    // MARK: - Callbacks
+    // MARK: - Callbacks (PR-E: blockId parameter)
 
-    /// Called when Add Photo button is tapped
-    var onAddPhoto: (() -> Void)?
+    /// Called when Add Photo button is tapped. Parameter: blockId.
+    var onAddPhoto: ((String) -> Void)?
 
-    /// Called when Add Video button is tapped
-    var onAddVideo: (() -> Void)?
+    /// Called when Add Video button is tapped. Parameter: blockId.
+    var onAddVideo: ((String) -> Void)?
 
-    /// Called when Animation button is tapped (variant picker)
-    var onAnimation: (() -> Void)?
+    /// Called when Animation button is tapped (variant picker). Parameter: blockId.
+    var onAnimation: ((String) -> Void)?
 
-    /// Called when Disable/Enable button is tapped
-    var onToggleEnabled: (() -> Void)?
+    /// Called when Disable/Enable button is tapped. Parameter: blockId.
+    var onToggleEnabled: ((String) -> Void)?
 
-    /// Called when Remove button is tapped
-    var onRemove: (() -> Void)?
+    /// Called when Remove button is tapped. Parameter: blockId.
+    var onRemove: ((String) -> Void)?
 
     // MARK: - State
+
+    /// Current block ID for callbacks (PR-E)
+    private(set) var blockId: String?
 
     /// Current enabled state of the block
     private var isBlockEnabled: Bool = true
@@ -167,18 +170,21 @@ final class MediaBlockActionBar: UIView {
 
     // MARK: - Public API
 
-    /// Configures the action bar for the given block.
+    /// Configures the action bar for the given block (PR-E: added blockId).
     /// - Parameters:
+    ///   - blockId: The block ID for callback identification
     ///   - allowedMedia: Media types allowed for this block (from MediaInput.allowedMedia)
     ///   - hasVariants: Whether the block has multiple variants (animation picker)
     ///   - hasMedia: Whether the block currently has media assigned
     ///   - isEnabled: Whether the block's binding layer is visible (userMediaPresent)
     func configure(
+        blockId: String,
         allowedMedia: [String]?,
         hasVariants: Bool,
         hasMedia: Bool,
         isEnabled: Bool
     ) {
+        self.blockId = blockId
         // Photo button: shown if allowedMedia contains "photo" or is nil (backward compat)
         let canPhoto = allowedMedia?.contains("photo") ?? true
         addPhotoButton.isHidden = !canPhoto
@@ -219,25 +225,30 @@ final class MediaBlockActionBar: UIView {
         toggleEnabledButton.configuration = config
     }
 
-    // MARK: - Actions
+    // MARK: - Actions (PR-E: pass blockId)
 
     @objc private func addPhotoTapped() {
-        onAddPhoto?()
+        guard let id = blockId else { return }
+        onAddPhoto?(id)
     }
 
     @objc private func addVideoTapped() {
-        onAddVideo?()
+        guard let id = blockId else { return }
+        onAddVideo?(id)
     }
 
     @objc private func animationTapped() {
-        onAnimation?()
+        guard let id = blockId else { return }
+        onAnimation?(id)
     }
 
     @objc private func toggleEnabledTapped() {
-        onToggleEnabled?()
+        guard let id = blockId else { return }
+        onToggleEnabled?(id)
     }
 
     @objc private func removeTapped() {
-        onRemove?()
+        guard let id = blockId else { return }
+        onRemove?(id)
     }
 }

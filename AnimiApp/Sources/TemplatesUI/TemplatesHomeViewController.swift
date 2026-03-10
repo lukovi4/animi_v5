@@ -225,7 +225,7 @@ final class TemplatesHomeViewController: UIViewController {
             let detailsVC = TemplateDetailsViewController(templateId: template.id)
             navigationController?.pushViewController(detailsVC, animated: true)
         case .directToEditor:
-            let editorVC = PlayerViewController(mode: .editor(templateId: template.id))
+            let editorVC = PlayerViewController(templateId: template.id)
             navigationController?.pushViewController(editorVC, animated: true)
         }
     }

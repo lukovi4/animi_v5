@@ -54,6 +54,29 @@ final class EditorLayoutContainerView: UIView {
     /// Called when Done is tapped in Scene Edit mode (PR-C)
     var onDone: (() -> Void)?
 
+    // PR-E: SceneEditBar callbacks
+    /// Called when Background button is tapped
+    var onBackground: (() -> Void)?
+
+    /// Called when Reset Scene button is tapped
+    var onResetScene: (() -> Void)?
+
+    // PR-E: MediaBlockActionBar callbacks (blockId parameter)
+    /// Called when Add Photo button is tapped
+    var onAddPhoto: ((String) -> Void)?
+
+    /// Called when Add Video button is tapped
+    var onAddVideo: ((String) -> Void)?
+
+    /// Called when Animation button is tapped
+    var onAnimation: ((String) -> Void)?
+
+    /// Called when Disable/Enable button is tapped
+    var onToggleEnabled: ((String) -> Void)?
+
+    /// Called when Remove button is tapped
+    var onRemove: ((String) -> Void)?
+
     // MARK: - Subviews
 
     private(set) lazy var navBar = EditorNavBar()
@@ -308,6 +331,31 @@ final class EditorLayoutContainerView: UIView {
         navBar.onDone = { [weak self] in
             self?.onDone?()
         }
+
+        // PR-E: SceneEditBar callbacks
+        sceneEditBar.onBackground = { [weak self] in
+            self?.onBackground?()
+        }
+        sceneEditBar.onResetScene = { [weak self] in
+            self?.onResetScene?()
+        }
+
+        // PR-E: MediaBlockActionBar callbacks (pass blockId)
+        mediaBlockActionBar.onAddPhoto = { [weak self] blockId in
+            self?.onAddPhoto?(blockId)
+        }
+        mediaBlockActionBar.onAddVideo = { [weak self] blockId in
+            self?.onAddVideo?(blockId)
+        }
+        mediaBlockActionBar.onAnimation = { [weak self] blockId in
+            self?.onAnimation?(blockId)
+        }
+        mediaBlockActionBar.onToggleEnabled = { [weak self] blockId in
+            self?.onToggleEnabled?(blockId)
+        }
+        mediaBlockActionBar.onRemove = { [weak self] blockId in
+            self?.onRemove?(blockId)
+        }
     }
 
     // MARK: - Reorder Mode (PR3)
@@ -432,6 +480,36 @@ final class EditorLayoutContainerView: UIView {
         // Hide timeline mode bars
         globalActionBar.isHidden = true
         contextBar.isHidden = true
+    }
+
+    /// Configures the MediaBlockActionBar with block-specific data (PR-E).
+    /// Called by PlayerViewController when block selection changes.
+    /// - Parameters:
+    ///   - blockId: The selected block ID
+    ///   - allowedMedia: Media types allowed for this block
+    ///   - hasVariants: Whether the block has multiple variants
+    ///   - hasMedia: Whether the block currently has media assigned
+    ///   - isEnabled: Whether the block's binding layer is visible
+    func configureMediaBlockActionBar(
+        blockId: String,
+        allowedMedia: [String]?,
+        hasVariants: Bool,
+        hasMedia: Bool,
+        isEnabled: Bool
+    ) {
+        mediaBlockActionBar.configure(
+            blockId: blockId,
+            allowedMedia: allowedMedia,
+            hasVariants: hasVariants,
+            hasMedia: hasMedia,
+            isEnabled: isEnabled
+        )
+    }
+
+    /// Configures the SceneEditBar reset button state (PR-E).
+    /// - Parameter canReset: Whether reset is allowed (false if scene is empty)
+    func configureSceneEditBar(canReset: Bool) {
+        sceneEditBar.setCanReset(canReset)
     }
 
     /// Configures timeline with duration in microseconds and template FPS.
