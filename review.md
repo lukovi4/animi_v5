@@ -1,183 +1,105 @@
-Ок, отвечаю **по реальному коду из snapshot.zip** (AnimiApp + TVECore), по каждому пункту 1–8.
+Провёл аудит **строго по реальному коду из `PR-E-Scene-Edit-Mode-Cleanup-v2.zip`** (только `PlayerViewController.swift` + `ScrubDiagnostics.swift`).
+
+## TL-вердикт
+
+⚠️ **Почти ок, но НЕ “100%”** — есть **1 реальная регрессия в жестах Scene Edit** (делегаты распознавалок не назначены). Это не ломает сборку, но ломает часть ожидаемого поведения (simultaneous pinch+rotate и gating через `gestureRecognizerShouldBegin` фактически не работает).
+
+В остальном: layout теперь действительно **один**, overlay встроен правильно, preparingOverlay перенесён верно, dev-UI удалён.
 
 ---
 
-## 1) BlockVisibilityPolicy vs `mode` в hitTest/overlays — что именно менять?
+## ✅ Что теперь сделано правильно (подтверждено кодом)
 
-**Да, ты понял правильно: нужны оба изменения.**
+### 1) Единственный layout path
 
-### (1) `SceneRenderPlan.renderCommands(...)`
+В `viewDidLoad()` теперь **нет `setupUI()`**, только:
 
-Сейчас в `TVECore/ScenePlayer/SceneRenderPlan.swift` фильтр **всегда** режет блоки по timing:
-`guard block.timing.isVisible(at: sceneFrameIndex) else { continue }` (стр. 49–54).
-➡️ Чтобы обходить это в edit, нужен доп. параметр (visibility или mode). В ТЗ это `BlockVisibilityPolicy` — ок.
+* `setupRenderer()`
+* `setupEditorLayout()`
 
-### (2) `ScenePlayer.hitTest` и `ScenePlayer.overlays`
+Это фиксит прежнюю P0-проблему “два layout-пути”.
 
-Обе функции уже принимают `mode: TemplateMode`, но **в текущем коде mode не влияет на timing**:
+### 2) overlayView корректно embedded в production контейнер
 
-* `hitTest`: `guard block.timing.isVisible(at: frame) else { continue }` на строке ~520
-* `overlays`: `guard block.timing.isVisible(at: frame) else { continue }` на строке ~563
+В `setupEditorLayout()` вызывается:
 
-➡️ Поэтому нужно изменить **именно эти строки** на:
+* `editorLayoutContainer.embedMetalView(metalView)`
+* **`editorLayoutContainer.embedOverlayView(overlayView)`** ✅
 
-* `if mode == .preview { guard timing.isVisible }`
-* а в `.edit` timing не проверять.
+Теперь тап/жесты реально попадают в overlay, а не “под” контейнер.
 
----
+### 3) preparingOverlay переехал в правильный контейнер
 
-## 2) Где применять `userMediaPresent` при восстановлении: внутри applyMediaAssignments или после?
+`preparingOverlay` добавлен как subview `editorLayoutContainer` и pinned “full-edge”. Это устраняет прежний конфликт с переносом `metalView`.
 
-По текущему коду:
+### 4) Playback UI теперь поддерживается через production UI
 
-* `applySceneInstanceState(instanceId:)` (PlayerViewController.swift ~1165+) применяет:
+В `startPlayback()/stopPlayback()` выставляется:
 
-  1. variants
-  2. transforms
-  3. toggles
-  4. `applyMediaAssignments` (сейчас photo-only)
+* `editorLayoutContainer.setPlaying(true/false)` ✅
+  То есть удаление старых `playPauseButton/updatePlayPauseButton` корректно: production UI (MenuStrip) получает состояние.
 
-`applyMediaAssignments(_:)` (стр. 1197–1229) **не знает про SceneState целиком**, только про `[blockId: MediaRef]`.
+### 5) `ScrubDiagnostics.swift` — комментарии обновлены корректно
 
-✅ Канонически (и проще всего) сделать так:
-
-* `applyMediaAssignments(...)` остаётся “чистым” методом назначения медиа (setPhoto/setVideo).
-* **А `userMediaPresent` применять в `applySceneInstanceState` сразу после `applyMediaAssignments`**, потому что только там у нас есть весь `SceneState`.
-
-Порядок правильный:
-
-1. `applyMediaAssignments` → `UserMediaService.setPhoto/setVideo` сами ставят `player.setUserMediaPresent(..., true)` (видео — после poster gating)
-2. затем “перебиваем” persisted override’ом:
-
-   * `for (blockId, present) in state.userMediaPresent { player.setUserMediaPresent(blockId: present) }`
+Упоминания `TemplateEditorController` заменены на `ScenePlayer` в комментариях (сам файл DEBUG-only, функционально не затронут).
 
 ---
 
-## 3) setVideo ownership — это breaking change или extension? (и что делать с cleanup)
+## ❌ Что НЕ верно на 100% (реально по коду)
 
-Строго по текущему `UserMediaService.swift`:
+### P1 (но для “100%” обязателен фикс): Gesture recognizers **без delegate**
 
-* сейчас есть только `setVideo(blockId: tempURL:)` (стр. 289+)
-* temp URL сохраняется в `tempVideoURLByBlockId[blockId] = tempURL` (стр. 306)
-* при cleanup удаляется файл: `FileManager.removeItem(at: tempURL)` внутри `cleanupVideoResources` (видно по реализации clean-up блока)
+В `setupOverlayGestureRecognizers()` вы создаёте tap/pan/pinch/rotation и добавляете на `overlayView`, но **ни одному recognizer’у не назначаете `delegate = self`**.
 
-✅ Поэтому правильная реализация из ТЗ — **это extension API**, не ломая call sites:
+При этом `PlayerViewController` всё ещё реализует `UIGestureRecognizerDelegate`:
 
-1. Добавляем новый метод:
+* `shouldRecognizeSimultaneouslyWith` (для pinch+rotation)
+* `gestureRecognizerShouldBegin` (гейтинг “только в sceneEdit и только при selectedBlockId != nil”)
+
+Но без `recognizer.delegate = self` эти методы **никогда не вызовутся**.
+
+### Минимальный фикс (ровно как было в PR-D)
+
+Добавьте делегат для pan/pinch/rotation (и при желании для tap тоже):
 
 ```swift
-setVideo(blockId: String, url: URL, ownership: MediaOwnership)
+private func setupOverlayGestureRecognizers() {
+    let tapGesture = UITapGestureRecognizer(target: self, action: #selector(overlayViewTapped(_:)))
+    overlayView.addGestureRecognizer(tapGesture)
+
+    let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+    let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+    let rotationGesture = UIRotationGestureRecognizer(target: self, action: #selector(handleRotation(_:)))
+
+    panGesture.delegate = self
+    pinchGesture.delegate = self
+    rotationGesture.delegate = self
+
+    overlayView.addGestureRecognizer(panGesture)
+    overlayView.addGestureRecognizer(pinchGesture)
+    overlayView.addGestureRecognizer(rotationGesture)
+}
 ```
 
-2. Старый `setVideo(blockId:tempURL:)` остаётся как wrapper:
+После этого:
 
-* вызывает новый с `.temporaryOwnedByService`
-
-3. В cleanup удаляем файл **только если ownership == temporary**.
-
-Это полностью согласуется с текущим контрактом “temp управляется сервисом” и решает data-loss для persisted video.
+* снова заработает simultaneous pinch+rotate,
+* `gestureRecognizerShouldBegin` начнёт реально предотвращать “пустые” жесты без выбора блока.
 
 ---
 
-## 4) guardToken helper — это новый функционал или рефакторинг? Есть ли места без проверок?
+## ⚠️ Потенциальное UI-замечание (P2, не блокер)
 
-В текущем `setVideo` уже есть token checks:
+`metalView` в lazy init имеет `cornerRadius = 8` и `clipsToBounds = true`. В fullscreen preview вы переносите **тот же** `metalView` в `FullScreenPreviewViewController`, но нигде не сбрасываете radius → есть риск, что fullscreen будет с закруглениями.
 
-* после `await requestPoster`: guard на строках ~328–333
-* перед “commit” side effects: guard на строках ~355–361
+Если это видно/мешает — лечится в `handleFullScreenPreview()`:
 
-То есть **helper не обязателен для функциональности**, это **рефакторинг для единообразия**.
-
-Но есть важный нюанс по реальному коду:
-
-* после финального guard (стр. ~355–361) дальше идут **синхронные side effects** (mediaState assignment, setTexture, setUserMediaPresent, onNeedsDisplay) без await.
-* если отмена таска (`cancel`) прилетит **после** guard’а, код не проверит `Task.isCancelled` снова и может успеть “закоммитить”.
-
-✅ Самый релизный вариант:
-
-* оставить существующие guards,
-* **и добавить ещё одну проверку прямо перед первой записью в состояние** (перед `mediaState[blockId] = .video(selection)`), чтобы закрыть микро-окно отмены.
-  Helper `guardToken()` — удобный способ не дублировать guard.
+* перед переносом `metalView.layer.cornerRadius = 0`,
+* при возврате в container — восстановить 8 (или пусть previewContainer сам маскирует).
 
 ---
 
-## 5) `SceneState.userMediaPresent`: default false vs “automatic logic” — это не противоречие?
+## Итог
 
-По реальному TVECore `SceneRenderPlan`:
-
-* `hasUserMedia = userMediaPresent[blockId] ?? false` (стр. ~65)
-  То есть если ключ отсутствует — **binding layer скрыт**.
-
-И это корректно.
-
-Фраза “follows automatic logic from UserMediaService” означает следующее (строго по текущей архитектуре):
-
-* `UserMediaService.setPhoto` и `setVideo` **сами вызывают** `player.setUserMediaPresent(blockId: present: true)` (видео — после poster gating)
-* `UserMediaService.clear(blockId:)` ставит present false
-
-То есть “автоматическая логика” — это **runtime side effects**, а не значение по умолчанию в render plan.
-
-✅ Каноническая семантика для persisted `SceneState.userMediaPresent`:
-
-* **ключ отсутствует = нет persisted override**, мы не трогаем present вручную
-* фактический present становится true только если реально применили assignment (`setPhoto/setVideo`)
-* disable/enable — это уже persisted override (true/false)
-
----
-
-## 6) Удаление TemplateEditorController — что делать с `wireEditorController()` / `syncUIWithState`?
-
-По реальному `PlayerViewController.swift`:
-
-* `wireEditorController()` вызывается в `viewDidLoad` (стр. ~517–523)
-* он делает:
-
-  * `editorController.setOverlayView(overlayView)`
-  * `editorController.onNeedsDisplay -> requestMetalRender()`
-  * `editorController.onStateChanged -> syncUIWithState(state)` (стр. 1678–1689)
-* `syncUIWithState(_:)` реально существует (стр. ~2423+) и синхронизирует dev UI (playbackContainer, инспекторы и т.д.)
-
-✅ Ответ:
-
-* Да, **всё это — часть старого редактора**.
-* В PR-E это удаляется целиком: `TemplateEditorController`, `wireEditorController()`, `syncUIWithState`, и вызовы `editorController.setCurrentTimeUs(...)`, `editorController.selectTimeline(...)` (см. handlePlayheadChanged/handleSelectionChanged).
-
-В релизном Scene Edit это заменяется на:
-
-* `SceneEditInteractionController` + embed overlay в `EditorLayoutContainerView` + новое wiring через `EditorStore` callbacks.
-
----
-
-## 7) TimelinePlaybackCoordinator в Scene Edit — flow верный?
-
-Да, flow описан верно и подтверждается текущим кодом `PlayerViewController.handlePlayheadChanged`:
-
-* `EditorStore.onPlayheadChanged` вызывает `handlePlayheadChanged`
-* `handlePlayheadChanged` вызывает:
-
-  * sync path: `coordinator.syncSetGlobalTimeUs(timeUs)` (стр. ~1244)
-  * иначе async: `await coordinator.setGlobalTimeUs(requestedTimeUs)` (стр. ~1275)
-* coordinator при смене сцены вызывает `onActiveSceneChanged`, а `PlayerVC.handleActiveSceneChanged` делает:
-
-  * `resetRuntimeForSceneInstanceChange()`
-  * `applySceneInstanceState(instanceId:)`
-
-✅ Итог:
-
-* Явный “force re-apply” при входе в Scene Edit не нужен.
-* Coordinator остаётся source of truth для renderCommands даже в Scene Edit (`currentRenderCommands(mode:)` в coordinator просто прокидывает `scene.player.renderCommands(mode:sceneFrameIndex:)`).
-
----
-
-## 8) PR-A scope: входит ли расширение `setBlockMedia` для auto userMediaPresent?
-
-Да. Это **изменение модели/редьюсера AnimiApp**, значит логически относится к PR-A:
-
-* `SceneState.userMediaPresent` добавляется в PR-A
-* `EditorReducer.setBlockMedia(...)` сейчас меняет только `mediaAssignments` (стр. 655–683 EditorReducer.swift)
-* расширение “при add -> present=true, при remove -> present=false” должно быть сделано **там же**, иначе:
-
-  * persisted state будет неполным,
-  * disable/enable станет неустойчивым после undo/restore.
-
-✅ Поэтому: **да, в PR-A**.
+* **Ничего критически “лишнего” по функционалу editor mode вы не удалили**: play/pause, scrub, export, background flow — всё осталось в production-пути и wired через `EditorLayoutContainerView`.
+* Но **до “100%” не хватает одного маленького, но важного фикса**: назначить `delegate` у gesture recognizers на overlay.

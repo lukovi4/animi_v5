@@ -1,11 +1,20 @@
 # PR: Scene Edit Mode (Full-screen) + Removal of Dev Editor + Edit Visibility Safety
 
-**Версия:** 2.7 (PR-A, PR-B и PR-C реализованы)
+**Версия:** 2.9 (PR-A, PR-B, PR-C, PR-D реализованы; PR-E специфицирован)
 
 ### Implementation Log:
 - **2026-03-04:** PR-A (Model Layer) — COMPLETED. Архив: `PR-A_SceneEditMode_ModelLayer.zip`
 - **2026-03-05:** PR-B (TVECore Safety) — COMPLETED. Архив: `PR-B_TVECore_Safety.zip`
 - **2026-03-05:** PR-C (UI Layout) — COMPLETED. Архив: `PR-C_UI_Layout.zip`
+- **2026-03-09:** PR-D (Wiring + Interaction + Video Persist) — COMPLETED. Архив: `PR-D-v2-review.zip`
+
+### Changelog v2.9 (PR-E полная спецификация):
+1. ✅ **ADD:** Детальная спецификация PR-E: Фаза 0 (wiring), удаление dev-UI, замена editorController
+2. ✅ **ADD:** Полный grep-чеклист для верификации удаления
+3. ✅ **ADD:** MediaBlockActionBar callbacks с blockId параметром
+4. ✅ **ADD:** Список замен editorController → store/mapper в production path
+5. ✅ **CLARIFY:** ScrubDiagnostics.swift — оставляем (используется в requestMetalRender)
+6. ✅ **CLARIFY:** gestureRecognizerShouldBegin — замена на EditorStore condition
 
 ### Changelog v2.4 (финальный после полного аудита):
 1. ✅ **CLARIFY:** BlockVisibilityPolicy vs TemplateMode — разделение ответственности (см. 6.1, 6.4)
@@ -1511,26 +1520,365 @@ func test_previewMode_hidesBlockBeforeStartFrame() {
 
 **Архив для ревью:** `PR-C_UI_Layout.zip`
 
-### PR-D: Wiring + Interaction + Video Persist
+### PR-D: Wiring + Interaction + Video Persist ✅ COMPLETED (2026-03-09)
 **Файлы:**
 - `EditorCanvasMapper.swift` — новый
 - `SceneEditInteractionController.swift` — новый
-- `UserMediaService.swift` — новый API `setVideo(url:ownership:)`, хранение ownership, cleanup удаляет только temp, добавить `guardToken()` helper для консистентности (см. 8.4)
+- `UserMediaService.swift` — новый API `setVideo(url:ownership:)`, хранение ownership, cleanup удаляет только temp
 - `ProjectStore.swift` — `saveUserVideo(from:sceneInstanceId:blockId:)`
 - `PlayerViewController.swift` — wiring store↔layout, gesture setup, `applyMediaAssignments` с video через extension + ownership
+- `EditorOverlayView.swift` — `isUserInteractionEnabled = true` для gesture pass-through
 
 **Критерий готовности:** Полный flow работает: Edit→tap→select→action→Done, video persist без data loss
 
-> **Из review.md:** В PR-D также добавить `guardToken()` helper в UserMediaService для консистентности
-> стиля и защиты от race conditions при undo/redo (см. раздел 8.4).
+**Что реализовано:**
+- ✅ `EditorCanvasMapper`: pure math struct для canvas ↔ view coordinate transforms (aspect-fit)
+- ✅ `SceneEditInteractionController`: hit testing, selection, gesture handling (pan/pinch/rotate)
+  - Uses existing `InteractionPhase` from `TimelineEvents.swift`
+  - `TransformType` enum for permission checking
+  - Callbacks: `onSelectBlock`, `onTransformChanged`
+- ✅ `MediaOwnership` enum: `.temporary` (delete on cleanup) vs `.persistent` (keep file)
+- ✅ `setVideo(blockId:url:ownership:presentOnReady:)` — новая сигнатура с ownership и presentOnReady
+  - P0-3 fix: `presentOnReady` параметр для сохранения Disable/Enable состояния при restore
+- ✅ `saveUserVideo(from:sceneInstanceId:blockId:)` — копирование через `FileManager.copyItem`
+- ✅ `handleUserMediaVideoPicked(blockId:tempURL:)` — полный persistence flow:
+  1. `saveUserVideo()` → MediaRef
+  2. `absoluteURL(for:)` → persistedURL
+  3. `setVideo(ownership: .persistent)`
+  4. `dispatch(.setBlockMedia(...))`
+  5. Cleanup tempURL
+- ✅ `applyMediaAssignments(_:userMediaPresent:)` — расширена для video + presentOnReady
+- ✅ `applySceneInstanceState()` — правильный порядок: assignments → userMediaPresent overrides → variants → transforms → toggles
+- ✅ Store callbacks wiring: `onUIModeChanged`, `onSelectedBlockChanged`, `onStateRestoredFromUndoRedo`
+- ✅ `sceneEditController` setup и wiring в `configureEditorTimeline()`
+- ✅ Gestures перенесены на `overlayView` с routing по `uiMode`
+- ✅ P1: `clearAll()` использует union ключей для корректной очистки pending tasks
+- ✅ P1: Poster throttling с `AsyncSemaphore(limit: 2)`
+- ✅ P1: `sceneEditController?.updateOverlay()` в `viewDidLayoutSubviews()` для Scene Edit mode
 
-### PR-E: Cleanup
-**Файлы:**
-- Удалить `TemplateEditorController.swift`
-- `PlayerViewController.swift` — удалить dev-UI, `.dev` mode
-- Удалить неиспользуемые dev-компоненты
+**P2 (не блокирующие, можно после мержа):**
+- Orphan persisted file при runtime-fail setVideo
+- `onNeedsDisplay` vs `requestMetalRender` консистентность
 
-**Критерий готовности:** Код чистый, один canonical path, все тесты проходят
+**Архив для ревью:** `PR-D-v2-review.zip`
+
+### PR-E: Cleanup + Wiring Completion
+**Статус:** Специфицирован, готов к реализации
+
+**Цель:** Удалить dev-редактор, оставить один canonical production path (Scene Edit через EditorStore + SceneEditInteractionController + EditorLayoutContainerView).
+
+---
+
+#### Фаза 0: Wiring Callbacks (ОБЯЗАТЕЛЬНО до удаления dev-UI!)
+
+**Проблема:** В PR-C созданы `SceneEditBar` и `MediaBlockActionBar` с callbacks, но они **НЕ подключены** к PlayerViewController. Если удалить dev-UI без wiring — Scene Edit станет "немым".
+
+**0.1 MediaBlockActionBar — добавить blockId:**
+
+Файл: `AnimiApp/Sources/Editor/MediaBlockActionBar.swift`
+
+```swift
+// Добавить хранение blockId
+private(set) var blockId: String?
+
+func configure(blockId: String?) {
+    self.blockId = blockId
+}
+
+// Изменить сигнатуры callbacks
+var onAddPhoto: ((String) -> Void)?   // было: (() -> Void)?
+var onAddVideo: ((String) -> Void)?
+var onAnimation: ((String) -> Void)?
+var onToggleEnabled: ((String) -> Void)?
+var onRemove: ((String) -> Void)?
+
+// В обработчиках кнопок
+@objc private func addPhotoTapped() {
+    guard let id = blockId else { return }
+    onAddPhoto?(id)
+}
+// Аналогично для остальных
+```
+
+**0.2 EditorLayoutContainerView — прокинуть callbacks:**
+
+Файл: `AnimiApp/Sources/Editor/EditorLayoutContainerView.swift`
+
+```swift
+// Публичные callbacks для Scene Edit actions
+var onBackground: (() -> Void)?
+var onResetScene: (() -> Void)?
+var onAddPhoto: ((String) -> Void)?
+var onAddVideo: ((String) -> Void)?
+var onAnimation: ((String) -> Void)?
+var onToggleEnabled: ((String) -> Void)?
+var onRemove: ((String) -> Void)?
+
+// В wireCallbacks() связать с SceneEditBar/MediaBlockActionBar
+private func wireCallbacks() {
+    // ... existing code ...
+
+    // Scene Edit Bar
+    sceneEditBar.onBackground = { [weak self] in self?.onBackground?() }
+    sceneEditBar.onResetScene = { [weak self] in self?.onResetScene?() }
+
+    // Media Block Action Bar
+    mediaBlockActionBar.onAddPhoto = { [weak self] blockId in self?.onAddPhoto?(blockId) }
+    mediaBlockActionBar.onAddVideo = { [weak self] blockId in self?.onAddVideo?(blockId) }
+    mediaBlockActionBar.onAnimation = { [weak self] blockId in self?.onAnimation?(blockId) }
+    mediaBlockActionBar.onToggleEnabled = { [weak self] blockId in self?.onToggleEnabled?(blockId) }
+    mediaBlockActionBar.onRemove = { [weak self] blockId in self?.onRemove?(blockId) }
+}
+
+// В updateSceneEditBottomBar(selectedBlockId:) — передавать blockId
+func updateSceneEditBottomBar(selectedBlockId: String?) {
+    if let blockId = selectedBlockId {
+        mediaBlockActionBar.configure(blockId: blockId)
+        // ... show mediaBlockActionBar ...
+    }
+    // ...
+}
+```
+
+**0.3 PlayerViewController — подключить handlers:**
+
+Файл: `AnimiApp/Sources/Player/PlayerViewController.swift`
+
+В `wireEditorLayoutCallbacks()` (или новом методе):
+
+```swift
+// Scene Edit Bar actions
+editorLayoutContainer.onBackground = { [weak self] in
+    self?.backgroundTapped()
+}
+
+editorLayoutContainer.onResetScene = { [weak self] in
+    guard let self = self,
+          case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+    self.editorStore?.dispatch(.resetSceneState(sceneInstanceId: instanceId))
+}
+
+// Media Block Action Bar actions
+editorLayoutContainer.onAddPhoto = { [weak self] blockId in
+    self?.presentPhotoPicker(for: blockId)
+}
+
+editorLayoutContainer.onAddVideo = { [weak self] blockId in
+    self?.presentVideoPicker(for: blockId)
+}
+
+editorLayoutContainer.onAnimation = { [weak self] blockId in
+    self?.presentVariantPicker(for: blockId)
+}
+
+editorLayoutContainer.onToggleEnabled = { [weak self] blockId in
+    guard let self = self,
+          case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+    // Toggle current state
+    let currentPresent = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.userMediaPresent?[blockId] ?? true
+    self.editorStore?.dispatch(.setBlockMediaPresent(
+        sceneInstanceId: instanceId,
+        blockId: blockId,
+        present: !currentPresent
+    ))
+}
+
+editorLayoutContainer.onRemove = { [weak self] blockId in
+    guard let self = self,
+          case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+    self.userMediaService?.clear(blockId: blockId)
+    self.editorStore?.dispatch(.setBlockMedia(
+        sceneInstanceId: instanceId,
+        blockId: blockId,
+        media: nil
+    ))
+}
+```
+
+---
+
+#### Фаза 1: Удаление файла
+
+**Удалить:**
+- `AnimiApp/Sources/Editor/TemplateEditorController.swift` (включая `TemplateEditorState`)
+
+**Обновить project.pbxproj:**
+- Удалить ссылки на `TemplateEditorController.swift` (строки с fileRef)
+
+---
+
+#### Фаза 2: Build → Fix compilation errors
+
+**Замены editorController в production path:**
+
+| Место | Строка | Было | Стало |
+|-------|--------|------|-------|
+| `viewDidLayoutSubviews()` | ~1573-1574 | `overlayView.canvasToView = editorController.canvasToViewTransform()` | `overlayView.canvasToView = sceneEditController?.mapper.canvasToViewTransform() ?? .identity` |
+| `viewDidLayoutSubviews()` | ~1581 | `editorController.refreshOverlayIfNeeded()` | Удалить (дублируется L1585) |
+| `draw(in:)` | ~4027 | `else if let editorCommands = editorController.currentRenderCommands()` | Удалить всю ветку, оставить только coordinator path |
+| `playPauseTapped()` | ~2374, 2376 | `editorController.setPlaying(...)` | Удалить (не влияет на production) |
+| `frameSliderChanged()` | ~2384 | `editorController.scrub(to:)` | Удалить (dev-only) |
+| `metalViewTapped()` | ~2393 | `editorController.handleTap(viewPoint:)` | Удалить (есть overlayViewTapped) |
+| `gestureRecognizerShouldBegin` | ~4184 | `editorController.state.mode == .edit && editorController.state.selectedBlockId != nil` | См. ниже |
+
+**gestureRecognizerShouldBegin — замена:**
+
+```swift
+func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    if gestureRecognizer is UIPanGestureRecognizer ||
+       gestureRecognizer is UIPinchGestureRecognizer ||
+       gestureRecognizer is UIRotationGestureRecognizer {
+        guard case .sceneEdit = editorStore?.state.uiMode else { return false }
+        return editorStore?.state.selectedBlockId != nil
+    }
+    return true
+}
+```
+
+**handlePan/Pinch/Rotation — удалить else-ветки:**
+
+```swift
+// Было:
+if case .sceneEdit = editorStore?.state.uiMode {
+    sceneEditController?.handlePan(recognizer)
+} else {
+    editorController.handlePan(recognizer)  // ← удалить
+}
+
+// Стало:
+guard case .sceneEdit = editorStore?.state.uiMode else { return }
+sceneEditController?.handlePan(recognizer)
+```
+
+---
+
+#### Фаза 3: Удаление dev-UI properties и methods
+
+**Properties (удалить полностью):**
+
+| Property | Строка | Описание |
+|----------|--------|----------|
+| `enum PlayerPresentationMode` | ~52-55 | Enum с `.dev` case |
+| `presentationMode` | ~81 | Property + inits (~93, ~98) |
+| `scrollView` | ~104-111 | Dev layout container |
+| `contentView` | ~113-124 | Dev layout container |
+| `templateSelector` | ~127-134 | Dev template picker |
+| `sceneSelector` | ~152 | DEBUG scene picker |
+| `loadButton` | ~159 | DEBUG load button |
+| `smokeTestButton` | ~163-165 | DEBUG test button |
+| `smokeTestStatusLabel` | ~167 | DEBUG label |
+| `smokeTestResults` | ~187 | DEBUG array |
+| `logTextView` | ~237-273 | Dev log view |
+| `variantPicker` | ~276-281 | Dev variant picker |
+| `variantLabel` | ~284-308 | Dev label |
+| `presetPicker` | ~294-300 | Dev preset picker |
+| `toggleLabel` | ~311-318 | Dev label |
+| `toggleStack` | ~321-329 | Dev toggle stack |
+| `editorController` | ~439 | `TemplateEditorController()` |
+| `modeToggle` | ~475-481 | Dev Edit/Preview toggle |
+| `logTextViewHeightConstraint` | ~514 | Dev constraint |
+| `logTextViewBottomConstraint` | ~515 | Dev constraint |
+| `mainControlsStackBottomConstraint` | ~516 | Dev constraint |
+| `mainControlsStack` | ~1590 | Dev stack |
+| `userMediaContainer` | ~1616 | Dev container |
+| `playbackContainer` | ~1624 | Dev container |
+| `state` computed property | ~3012-3014 | `editorController.state` wrapper |
+
+**Methods (удалить полностью):**
+
+| Method | Строка | Описание |
+|--------|--------|----------|
+| `wireEditorController()` | ~1831-1841 | Dev wiring |
+| `syncUIWithState(_:)` | ~2633-2652 | Dev state sync |
+| `updateVariantPickerUI(state:)` | ~2655-2686 | Dev UI update |
+| `updateToggleUI(state:)` | ~2689-2743 | Dev UI update |
+| `updateUserMediaUI(state:)` | ~2759-2778 | Dev UI update |
+| `templateSelectorChanged()` | ~2513-2520 | Dev handler |
+| `variantPickerChanged()` | ~2522-2531 | Dev handler |
+| `modeToggleChanged()` | ~2502-2508 | Dev handler |
+| `presetPickerChanged()` | ~2545-2549 | Dev handler |
+| `log(_:)` | ~3862-3866 | Dev logging |
+| `smokeTestTapped()` и smoke test methods | various | DEBUG testing |
+
+**Switch cases (удалить .dev ветки):**
+
+| Место | Строка | Действие |
+|-------|--------|----------|
+| `setupUI()` | ~531-608 | Удалить `case .dev:` блок |
+| `applyPresentationMode()` | ~615-628 | Удалить `case .dev:` блок |
+
+**Layout code (удалить):**
+- Строки ~1635-1805: setup scrollView/contentView/constraints для dev-UI
+
+**Init (упростить):**
+- Оставить только `init(mode: PlayerPresentationMode)` с `case .editor`
+- Удалить `init()` и `init?(coder:)` с `.dev` default
+
+---
+
+#### Фаза 4: Финальный grep-чеклист
+
+**Должно быть 0 вхождений (кроме удалённых файлов и документации):**
+
+```bash
+grep -rn "TemplateEditorController" AnimiApp/Sources/
+grep -rn "editorController" AnimiApp/Sources/
+grep -rn "wireEditorController" AnimiApp/Sources/
+grep -rn "PlayerPresentationMode" AnimiApp/Sources/
+grep -rn "\.dev" AnimiApp/Sources/Player/
+grep -rn "variantPicker" AnimiApp/Sources/
+grep -rn "logTextView" AnimiApp/Sources/
+grep -rn "toggleStack" AnimiApp/Sources/
+grep -rn "templateSelector" AnimiApp/Sources/
+grep -rn "syncUIWithState" AnimiApp/Sources/
+grep -rn "updateUserMediaUI" AnimiApp/Sources/
+grep -rn "userMediaContainer" AnimiApp/Sources/
+grep -rn "scrollView" AnimiApp/Sources/Player/PlayerViewController.swift
+grep -rn "contentView" AnimiApp/Sources/Player/PlayerViewController.swift
+grep -rn "mainControlsStack" AnimiApp/Sources/Player/PlayerViewController.swift
+grep -rn "modeToggle" AnimiApp/Sources/Player/PlayerViewController.swift
+```
+
+---
+
+#### Файлы НЕ удалять:
+
+| Файл | Причина |
+|------|---------|
+| `ScrubDiagnostics.swift` | Используется в `requestMetalRender()` для DEBUG toggles |
+
+**В `ScrubDiagnostics.swift` обновить комментарий:**
+```swift
+// Было: "MARK: - TemplateEditorController.setCurrentTimeUs"
+// Стало: "MARK: - Scrub time update diagnostics"
+```
+
+---
+
+#### Критерий готовности PR-E
+
+1. ✅ `TemplateEditorController.swift` удалён
+2. ✅ `.dev` режим удалён из `PlayerPresentationMode`
+3. ✅ Все dev-UI properties/methods удалены из `PlayerViewController`
+4. ✅ Scene Edit callbacks (`SceneEditBar`, `MediaBlockActionBar`) подключены к handlers
+5. ✅ По grep-чеклисту — 0 вхождений dev-символов
+6. ✅ `xcodebuild build` — успешно (все конфиги)
+7. ✅ `xcodebuild test` — все тесты проходят
+8. ✅ Smoke test: Home → Details → Editor → Scene Edit → все actions работают → Done → Export
+
+---
+
+#### Оценка объёма
+
+| Действие | Примерный объём |
+|----------|-----------------|
+| Фаза 0: Wiring | +80-100 строк |
+| Удалить файл | -1 файл (~300 строк) |
+| Удалить properties | ~20 properties |
+| Удалить methods | ~10 методов |
+| Удалить layout code | ~170 строк |
+| Замены editorController | ~15 мест |
+| **Итого нетто** | **~-600 строк** |
 
 ---
 
