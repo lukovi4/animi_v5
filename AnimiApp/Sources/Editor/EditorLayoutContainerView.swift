@@ -26,6 +26,12 @@ final class EditorLayoutContainerView: UIView {
     /// Called when export button tapped
     var onExport: (() -> Void)?
 
+    /// Called when undo button tapped (PR-F)
+    var onUndo: (() -> Void)?
+
+    /// Called when redo button tapped (PR-F)
+    var onRedo: (() -> Void)?
+
     /// Called when play/pause button tapped
     var onPlayPause: (() -> Void)?
 
@@ -294,6 +300,8 @@ final class EditorLayoutContainerView: UIView {
         // NavBar
         navBar.onClose = { [weak self] in self?.onClose?() }
         navBar.onExport = { [weak self] in self?.onExport?() }
+        navBar.onUndo = { [weak self] in self?.onUndo?() }
+        navBar.onRedo = { [weak self] in self?.onRedo?() }
 
         // MenuStrip
         menuStrip.onPlayPause = { [weak self] in self?.onPlayPause?() }
