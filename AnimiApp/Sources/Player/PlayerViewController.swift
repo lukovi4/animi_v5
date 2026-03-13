@@ -358,6 +358,15 @@ final class PlayerViewController: UIViewController {
             self?.exportTapped()
         }
 
+        // PR-F: Undo/Redo
+        editorLayoutContainer.onUndo = { [weak self] in
+            self?.editorStore?.dispatch(.undo)
+        }
+
+        editorLayoutContainer.onRedo = { [weak self] in
+            self?.editorStore?.dispatch(.redo)
+        }
+
         editorLayoutContainer.onPlayPause = { [weak self] in
             self?.playPauseTapped()
         }
@@ -401,7 +410,26 @@ final class PlayerViewController: UIViewController {
         editorLayoutContainer.onResetScene = { [weak self] in
             guard let self = self,
                   case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
-            self.editorStore?.dispatch(.resetSceneState(sceneInstanceId: instanceId))
+
+            // PR-F: Show confirmation only if scene has state to reset
+            let sceneState = self.editorStore?.state.draft.sceneInstanceStates[instanceId]
+            guard sceneState != nil && sceneState != .empty else { return }
+
+            let alert = UIAlertController(
+                title: "Reset Scene",
+                message: "This will reset all changes to this scene. This action can be undone.",
+                preferredStyle: .alert
+            )
+
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            alert.addAction(UIAlertAction(title: "Reset", style: .destructive) { [weak self] _ in
+                guard let self = self else { return }
+                self.editorStore?.dispatch(.resetSceneState(sceneInstanceId: instanceId))
+                self.reloadRuntimeStateForActiveScene()
+                self.refreshSceneEditBars()
+            })
+
+            self.present(alert, animated: true)
         }
 
         // PR-E: MediaBlockActionBar callbacks
@@ -560,6 +588,13 @@ final class PlayerViewController: UIViewController {
     }
 
     private func handleFullScreenPreview() {
+        // PR-F: Fullscreen preview only allowed in timeline mode
+        let uiMode = editorStore?.state.uiMode ?? .timeline
+        guard case .timeline = uiMode else {
+            assertionFailure("handleFullScreenPreview called outside timeline mode")
+            return
+        }
+
         let fullScreenVC = FullScreenPreviewViewController()
         fullScreenVC.modalPresentationStyle = .fullScreen
         fullScreenPreviewVC = fullScreenVC
@@ -877,6 +912,8 @@ final class PlayerViewController: UIViewController {
             userMediaService?.setSceneFPS(Double(loadedScene.compiled.runtime.fps))
             userMediaService?.onNeedsDisplay = { [weak self] in
                 self?.metalView.setNeedsDisplay()
+                // PR-F: Sync video frame when provider becomes ready after undo/redo
+                self?.syncPausedVideoFrame(force: true)
             }
         }
 
@@ -1104,9 +1141,6 @@ final class PlayerViewController: UIViewController {
             ScrubSignpost.endHandlePlayheadChanged(signpostId, syncPath: false)
             #endif
         }
-
-        // Sync editor controller (for UI frame display - global frame)
-        // PR-E: Scrub ended (editorController calls removed)
     }
 
     /// Called when selection changes (lightweight, frequent).
@@ -1130,6 +1164,9 @@ final class PlayerViewController: UIViewController {
         // Mark draft as dirty for persistence
         currentProjectDraft = state.draft
         draftIsDirty = true
+
+        // PR-F: Refresh bottom bars if in Scene Edit mode
+        refreshSceneEditBars()
     }
 
     /// Called during live-trim preview (lightweight, frequent).
@@ -1145,10 +1182,13 @@ final class PlayerViewController: UIViewController {
     }
 
     /// Called when undo/redo availability changes.
+    /// PR-F: Updates navbar button enabled states.
     private func handleUndoRedoChanged(canUndo: Bool, canRedo: Bool) {
-        // TODO: Update undo/redo buttons in UI when added
+        editorLayoutContainer.navBar.setUndoEnabled(canUndo)
+        editorLayoutContainer.navBar.setRedoEnabled(canRedo)
+
         #if DEBUG
-        log("[PR2] Undo/Redo changed: canUndo=\(canUndo), canRedo=\(canRedo)")
+        log("[PR-F] Undo/Redo changed: canUndo=\(canUndo), canRedo=\(canRedo)")
         #endif
     }
 
@@ -1173,10 +1213,8 @@ final class PlayerViewController: UIViewController {
             editorLayoutContainer.navBar.setMode(.sceneEdit)
             sceneEditController?.updateOverlay()
 
-            // PR-E: Configure SceneEditBar reset button state
-            let sceneState = editorStore?.state.draft.sceneInstanceStates[sceneId]
-            let canReset = sceneState != nil && sceneState != .empty
-            editorLayoutContainer.configureSceneEditBar(canReset: canReset)
+            // PR-F: Configure bottom bars state
+            refreshSceneEditBars()
 
             #if DEBUG
             log("[PR-D] Entered Scene Edit for scene: \(sceneId)")
@@ -1186,15 +1224,13 @@ final class PlayerViewController: UIViewController {
 
     /// Handles selected block changes in Scene Edit mode.
     /// PR-D: Updates bottom bar and overlay when block selection changes.
-    /// PR-E: Also configures MediaBlockActionBar with block-specific data.
+    /// PR-F: Uses refreshSceneEditBars() for consistent bar updates.
     private func handleSelectedBlockChanged(_ blockId: String?) {
         editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: blockId)
         sceneEditController?.updateOverlay()
 
-        // PR-E: Configure MediaBlockActionBar if block is selected
-        if blockId != nil {
-            updateMediaBlockActionBarForSelectedBlock()
-        }
+        // PR-F: Refresh bottom bars state
+        refreshSceneEditBars()
 
         #if DEBUG
         log("[PR-D] Selected block changed: \(blockId ?? "nil")")
@@ -1228,24 +1264,76 @@ final class PlayerViewController: UIViewController {
         )
     }
 
-    /// Handles state restoration after undo/redo.
-    /// PR-D: Re-applies runtime state for active scene instance to sync with restored snapshot.
-    private func handleStateRestoredFromUndoRedo() {
+    /// Refreshes SceneEditBar and MediaBlockActionBar states.
+    /// PR-F: Called after state changes to keep bottom bars in sync.
+    private func refreshSceneEditBars() {
+        guard case .sceneEdit(let instanceId) = editorStore?.state.uiMode else { return }
+
+        // 1. Update SceneEditBar reset button state
+        let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId]
+        let canReset = sceneState != nil && sceneState != .empty
+        editorLayoutContainer.configureSceneEditBar(canReset: canReset)
+
+        // 2. Update MediaBlockActionBar if block is selected
+        if editorStore?.state.selectedBlockId != nil {
+            updateMediaBlockActionBarForSelectedBlock()
+        }
+    }
+
+    /// Reloads runtime state for the active scene instance.
+    /// PR-F: Single sync-point for runtime reload after undo/redo or Reset Scene.
+    /// Order: resetForNewInstance -> clearAll -> applySceneInstanceState -> overlay/redraw -> video sync
+    private func reloadRuntimeStateForActiveScene() {
         guard let instanceId = activeSceneInstanceId else { return }
 
-        // Clear runtime user media to avoid "stale textures" after undo
+        // 1. Reset ScenePlayer mutable state (transforms, variants, toggles, media presence)
+        scenePlayer?.resetForNewInstance()
+
+        // 2. Clear UserMediaService to remove stale textures
         userMediaService?.clearAll()
 
-        // Re-apply full persisted state for active instance
+        // 3. Reset video update gate (PR-F: match canonical path)
+        lastVideoUpdateFrame = -1
+
+        // 4. Re-apply persisted state from store
         applySceneInstanceState(instanceId: instanceId)
 
-        // Refresh overlay and redraw
+        // 5. Refresh overlay and redraw
         sceneEditController?.updateOverlay()
         metalView.setNeedsDisplay()
 
+        // 6. Force video frame sync for already-ready providers (PR-F)
+        syncPausedVideoFrame(force: true)
+
         #if DEBUG
-        log("[PR-D] State restored from undo/redo, re-applied instance: \(instanceId)")
+        log("[PR-F] Runtime state reloaded for instance: \(instanceId)")
         #endif
+    }
+
+    /// Syncs video frames to current playhead when paused.
+    /// PR-F: Used after runtime reload and when video providers become ready.
+    /// - Parameter force: If true, bypasses lastVideoUpdateFrame gate
+    private func syncPausedVideoFrame(force: Bool) {
+        guard !isPlaying else { return }
+
+        let localFrame = playbackCoordinator?.currentLocalFrame ?? currentFrameIndex
+
+        if force {
+            userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+        } else {
+            // Respect lastVideoUpdateFrame gate
+            guard localFrame != lastVideoUpdateFrame else { return }
+            lastVideoUpdateFrame = localFrame
+            userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+        }
+    }
+
+    /// Handles state restoration after undo/redo.
+    /// PR-D: Re-applies runtime state for active scene instance to sync with restored snapshot.
+    /// PR-F: Also refreshes bottom bars.
+    private func handleStateRestoredFromUndoRedo() {
+        reloadRuntimeStateForActiveScene()
+        refreshSceneEditBars()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -2342,6 +2430,8 @@ final class PlayerViewController: UIViewController {
             userMediaService?.setSceneFPS(Double(compiled.runtime.fps))
             userMediaService?.onNeedsDisplay = { [weak self] in
                 self?.metalView.setNeedsDisplay()
+                // PR-F: Sync video frame when provider becomes ready after undo/redo
+                self?.syncPausedVideoFrame(force: true)
             }
             log("UserMediaService initialized")
         }
@@ -2415,6 +2505,8 @@ final class PlayerViewController: UIViewController {
             userMediaService?.setSceneFPS(Double(compiled.runtime.fps))
             userMediaService?.onNeedsDisplay = { [weak self] in
                 self?.metalView.setNeedsDisplay()
+                // PR-F: Sync video frame when provider becomes ready after undo/redo
+                self?.syncPausedVideoFrame(force: true)
             }
             log("UserMediaService initialized")
         }
@@ -2535,6 +2627,12 @@ final class PlayerViewController: UIViewController {
     // MARK: - Playback
 
     private func startPlayback() {
+        // PR-F: Playback only allowed in timeline mode
+        let uiMode = editorStore?.state.uiMode ?? .timeline
+        guard EditorRenderContract.isPlaybackAllowed(in: uiMode) else {
+            assertionFailure("startPlayback called outside timeline mode")
+            return
+        }
         guard compiledScene != nil else { return }
         isPlaying = true
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
@@ -2650,6 +2748,30 @@ extension PlayerViewController: MTKViewDelegate {
         // PR-D.1: No draw while template is loading (prevents race with background preload)
         guard loadingState == .ready else { return }
 
+        // PR-F: Resolve render commands BEFORE GPU setup
+        // Local refs for synchronous resolver (no [weak self] noise)
+        let uiMode = editorStore?.state.uiMode ?? .timeline
+        let coordinator = playbackCoordinator
+        let player = scenePlayer
+        let frameIndex = currentFrameIndex
+
+        guard let resolved = EditorRenderCommandResolver.resolve(
+            uiMode: uiMode,
+            coordinatorLocalFrame: coordinator?.currentLocalFrame,
+            currentFrameIndex: frameIndex,
+            coordinatorCommands: { mode in
+                coordinator?.currentRenderCommands(mode: mode)
+            },
+            scenePlayerCommands: { mode, frame in
+                player?.renderCommands(mode: mode, sceneFrameIndex: frame)
+            }
+        ) else {
+            // No valid commands - keep last valid frame
+            return
+        }
+
+        let commands = resolved.commands
+
         // PR1.5: Split timing - start
         #if DEBUG
         let tSemStart = CACurrentMediaTime()
@@ -2698,7 +2820,7 @@ extension PlayerViewController: MTKViewDelegate {
         let drawT0 = CACurrentMediaTime()
         #endif
 
-        // PR1.5: Split timing - commands generation start
+        // PR1.5: Split timing - commands already resolved above
         #if DEBUG
         var tCmdsEnd: CFAbsoluteTime = tSemEnd
         var tEncodeEnd: CFAbsoluteTime = tSemEnd
@@ -2737,16 +2859,7 @@ extension PlayerViewController: MTKViewDelegate {
                 }
             }
 
-            // PR-E: Get render commands from coordinator (single source of truth)
-            let commands: [RenderCommand]
-            if let coordinatorCommands = playbackCoordinator?.currentRenderCommands(mode: .edit) {
-                commands = coordinatorCommands
-            } else {
-                // Fallback: direct scene render
-                commands = compiled.runtime.renderCommands(sceneFrameIndex: currentFrameIndex)
-            }
-
-            // PR1.5: Split timing - commands generated
+            // PR1.5: Split timing - commands generated (already resolved above)
             #if DEBUG
             tCmdsEnd = CACurrentMediaTime()
             #endif

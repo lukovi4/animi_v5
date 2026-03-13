@@ -3,10 +3,11 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0142D574DD08B1B6E56A32A7 /* EditorRenderCommandResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0067E28489594BF10497D9 /* EditorRenderCommandResolverTests.swift */; };
 		027F8E8E35674B1C890A533E /* MediaBlockActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 341DB1C8476CB51E6A7DF543 /* MediaBlockActionBar.swift */; };
 		0402365D45452BE0FFA85FE7 /* EditorStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17978D254FF4A01AF6C27265 /* EditorStore.swift */; };
 		0D7C19312488787BBA9F8379 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 7AEA66CBE6EB5B30975CB68C /* LaunchScreen.storyboard */; };
@@ -32,12 +33,14 @@
 		5D1EAB0A11774675AA58B727 /* SceneTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4613B149DEB66964BDE84F9 /* SceneTrackView.swift */; };
 		602F7872F888469035DDAD7A /* AudioCompositionBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21BCAE9CA856E61018333E4F /* AudioCompositionBuilder.swift */; };
 		634873BF88B7C4366E03297A /* VideoFrameProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19F78E6B097B29EDF323138 /* VideoFrameProvider.swift */; };
+		6AA26F32304BC9D1BC789001 /* EditorRenderContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3278E8C1C99E800CE83F0D9E /* EditorRenderContract.swift */; };
 		6CB2DC6FA01CA1A1308B6D11 /* SceneEditBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D36D08905D1AEBFD5A46644 /* SceneEditBar.swift */; };
 		6D8ECBA9A63E3BBE961807B1 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D531F2B70470609DAAEC0E92 /* SceneDelegate.swift */; };
 		6DCCC8529A71ADB91E2B34AF /* TemplatePreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9914388A9AC3B6C7D244F116 /* TemplatePreviewCell.swift */; };
 		6F9B9494538317DADF567CBB /* ContextBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D910D732A40F53C827CAF44B /* ContextBar.swift */; };
 		70B4C549F74311F52D1CDA70 /* EditorState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D7B8DBCF6017C4BF93805D7 /* EditorState.swift */; };
 		70F7C5CF6D0F9A28D9BF27D3 /* TestAssets in Resources */ = {isa = PBXBuildFile; fileRef = 2BF0652B3DD5E20359F327E7 /* TestAssets */; };
+		734F24C17C4A667B54C3EB47 /* EditorRenderContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45DE950906DADF0B28261838 /* EditorRenderContractTests.swift */; };
 		73CECF77FB8C3AF12D28CEA6 /* TVECompilerCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1304677CAEF71F6D64A5F398 /* TVECompilerCore */; };
 		765ACCED62853D04AF334A8E /* FullScreenPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84DEF8B8CAB545A1A822FF33 /* FullScreenPreviewViewController.swift */; };
 		77047C61D50F5BC54DE12794 /* SceneClipView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45DB9A7231F7931C434FE7C4 /* SceneClipView.swift */; };
@@ -53,6 +56,7 @@
 		912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945142E5769BD54EFED06588 /* EditorOverlayView.swift */; };
 		921C1521C032FB6559CA59C4 /* ProjectDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24544FC9E0EAD15CABC4A7B4 /* ProjectDraft.swift */; };
 		9456988608740988E5F27700 /* TimeRulerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385E496113EA1117E64E135D /* TimeRulerView.swift */; };
+		966C8DA4FF2B31EC150D26C6 /* EditorRenderCommandResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E5CF4FBEA1672FB8EA7FEEA /* EditorRenderCommandResolver.swift */; };
 		9679197E9E746DC549BDD438 /* SceneLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 278EBCE880F11881818C5A11 /* SceneLibrary.swift */; };
 		968F63459420D7EAAF660A2C /* TemplateDetailsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6B0E0125B6479C561D538B /* TemplateDetailsViewController.swift */; };
 		9B9FA36C978C9DE53E4DBFCD /* GlobalActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25DBB2B5ADE5A32A5283B35D /* GlobalActionBar.swift */; };
@@ -109,6 +113,7 @@
 /* Begin PBXFileReference section */
 		008B456A6D18BC55E52A997F /* EditorReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerTests.swift; sourceTree = "<group>"; };
 		0AD0CC2427FEECE70284560E /* EditorNavBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorNavBar.swift; sourceTree = "<group>"; };
+		0E5CF4FBEA1672FB8EA7FEEA /* EditorRenderCommandResolver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Sources/Player/EditorRenderCommandResolver.swift; sourceTree = "<group>"; };
 		10365D40F7866CDC3383B1F0 /* ScrubDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrubDiagnostics.swift; sourceTree = "<group>"; };
 		1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaTextureFactory.swift; sourceTree = "<group>"; };
 		1696482BFA3E93F558EEE181 /* PlayheadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayheadView.swift; sourceTree = "<group>"; };
@@ -123,6 +128,7 @@
 		2CFCF74F9E5906B8855CBA71 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2EADDEDB66974033DE631FC0 /* BundleSceneLibraryLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleSceneLibraryLoader.swift; sourceTree = "<group>"; };
 		309F76627D024207657CC40A /* PlayerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViewController.swift; sourceTree = "<group>"; };
+		3278E8C1C99E800CE83F0D9E /* EditorRenderContract.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Sources/Player/EditorRenderContract.swift; sourceTree = "<group>"; };
 		3364EA3951160DA864738903 /* CanonicalTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalTimeline.swift; sourceTree = "<group>"; };
 		341DB1C8476CB51E6A7DF543 /* MediaBlockActionBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaBlockActionBar.swift; sourceTree = "<group>"; };
 		3601FA3EBE222F831A10F3DB /* SceneTrackSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneTrackSnapshot.swift; sourceTree = "<group>"; };
@@ -131,6 +137,7 @@
 		405CA61F8D950F938A7C179C /* ExportProgressViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportProgressViewController.swift; sourceTree = "<group>"; };
 		41ECBBE27F729040A4BA24F9 /* VideoExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporter.swift; sourceTree = "<group>"; };
 		45DB9A7231F7931C434FE7C4 /* SceneClipView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneClipView.swift; sourceTree = "<group>"; };
+		45DE950906DADF0B28261838 /* EditorRenderContractTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EditorRenderContractTests.swift; path = Tests/EditorRenderContractTests.swift; sourceTree = "<group>"; };
 		46BEAF44ECC8C85DC84E04B9 /* TemplateRecipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateRecipe.swift; sourceTree = "<group>"; };
 		486CDCFFF485A0C0354A63F5 /* Templates */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Templates; path = Resources/Templates; sourceTree = SOURCE_ROOT; };
 		493CBBADF2EADCE826942657 /* TimelineTimeUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineTimeUtils.swift; sourceTree = "<group>"; };
@@ -164,6 +171,7 @@
 		A19F78E6B097B29EDF323138 /* VideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameProvider.swift; sourceTree = "<group>"; };
 		A929B98AF54DA5E1DF38755B /* EditorCanvasMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorCanvasMapper.swift; sourceTree = "<group>"; };
 		A9681217003171DED246CF7A /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		AA0067E28489594BF10497D9 /* EditorRenderCommandResolverTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EditorRenderCommandResolverTests.swift; path = Tests/EditorRenderCommandResolverTests.swift; sourceTree = "<group>"; };
 		AA4057F5327F4F91E6220168 /* EditorAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorAction.swift; sourceTree = "<group>"; };
 		AB6B0E0125B6479C561D538B /* TemplateDetailsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateDetailsViewController.swift; sourceTree = "<group>"; };
 		ABBDB7457558A6C904FF6AD4 /* BundleTemplateRecipeLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleTemplateRecipeLoader.swift; sourceTree = "<group>"; };
@@ -174,7 +182,7 @@
 		B68FDC0B5B9E176AEECBF7BF /* ProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStore.swift; sourceTree = "<group>"; };
 		B807292DC00C6DF32839947B /* Point2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Point2.swift; sourceTree = "<group>"; };
 		B853898BDFB63E02EA083BD5 /* CategoryTemplatesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryTemplatesViewController.swift; sourceTree = "<group>"; };
-		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC6933EA029405A549FACE1A /* SceneCatalogViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneCatalogViewController.swift; sourceTree = "<group>"; };
 		C1244C22C36801F4B52AFE62 /* ExportVideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProvider.swift; sourceTree = "<group>"; };
 		C463B57720E8B12E559B2CA6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -270,6 +278,15 @@
 			path = Project;
 			sourceTree = "<group>";
 		};
+		1B9C862CDEFABDFE6698E732 /* AnimiApp */ = {
+			isa = PBXGroup;
+			children = (
+				7532778EDFB1429C92246FDC /* Sources */,
+				9D29372D4BA0519FA4D71B4F /* Tests */,
+			);
+			name = AnimiApp;
+			sourceTree = "<group>";
+		};
 		4259EAEAB773C16B536B5172 /* TemplatesUI */ = {
 			isa = PBXGroup;
 			children = (
@@ -295,6 +312,15 @@
 			path = Background;
 			sourceTree = "<group>";
 		};
+		62209ACCDF697B46BFA52BD0 /* Player */ = {
+			isa = PBXGroup;
+			children = (
+				3278E8C1C99E800CE83F0D9E /* EditorRenderContract.swift */,
+				0E5CF4FBEA1672FB8EA7FEEA /* EditorRenderCommandResolver.swift */,
+			);
+			name = Player;
+			sourceTree = "<group>";
+		};
 		6CA488A52B38F2680625E762 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
@@ -310,6 +336,14 @@
 				CD4563A8559BB859E46BEC71 /* UserMedia */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		7532778EDFB1429C92246FDC /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				62209ACCDF697B46BFA52BD0 /* Player */,
+			);
+			name = Sources;
 			sourceTree = "<group>";
 		};
 		8405B0FB569F6CFAD1EB74CF /* Products */ = {
@@ -331,6 +365,15 @@
 				1CBFAA44A3E3195D060D6D72 /* UndoStack.swift */,
 			);
 			path = Store;
+			sourceTree = "<group>";
+		};
+		9D29372D4BA0519FA4D71B4F /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				45DE950906DADF0B28261838 /* EditorRenderContractTests.swift */,
+				AA0067E28489594BF10497D9 /* EditorRenderCommandResolverTests.swift */,
+			);
+			name = Tests;
 			sourceTree = "<group>";
 		};
 		9E265860D86C3AF53EC27331 /* Content */ = {
@@ -410,6 +453,7 @@
 				6CA488A52B38F2680625E762 /* Sources */,
 				0D782A98F5B7B201D779F3B4 /* Tests */,
 				8405B0FB569F6CFAD1EB74CF /* Products */,
+				1B9C862CDEFABDFE6698E732 /* AnimiApp */,
 			);
 			sourceTree = "<group>";
 		};
@@ -478,8 +522,6 @@
 				BCD3BFC2251B7330325FE6C4 /* PBXTargetDependency */,
 			);
 			name = AnimiAppTests;
-			packageProductDependencies = (
-			);
 			productName = AnimiAppTests;
 			productReference = 212495D3F0034E5DF8679EAE /* AnimiAppTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -494,7 +536,6 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					10B17D6EDD6B127CDCBC280E = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					65136F447BC60C8FF7FDE046 = {
@@ -514,9 +555,9 @@
 			mainGroup = CB301D244C5CC9EE6C9D6BA2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "../TVECore" */,
+				94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "TVECore" */,
 			);
-			preferredProjectObjectVersion = 77;
+			productRefGroup = 8405B0FB569F6CFAD1EB74CF /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -550,6 +591,8 @@
 			files = (
 				D2AFCF642E69E8DA0BE06307 /* EditorReducerTests.swift in Sources */,
 				D51C35ED6BE07BBA89EE3CBE /* EditorStoreTimelinePreviewTests.swift in Sources */,
+				734F24C17C4A667B54C3EB47 /* EditorRenderContractTests.swift in Sources */,
+				0142D574DD08B1B6E56A32A7 /* EditorRenderCommandResolverTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -633,6 +676,8 @@
 				26C0F8F6AB35CD9093B0E789 /* UserMediaTextureFactory.swift in Sources */,
 				F69A4CE0C87E4F294A365892 /* VideoExporter.swift in Sources */,
 				634873BF88B7C4366E03297A /* VideoFrameProvider.swift in Sources */,
+				6AA26F32304BC9D1BC789001 /* EditorRenderContract.swift in Sources */,
+				966C8DA4FF2B31EC150D26C6 /* EditorRenderCommandResolver.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -774,7 +819,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = KRX7JQ8GTF;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -817,7 +862,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = KRX7JQ8GTF;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -885,7 +930,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "../TVECore" */ = {
+		94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "TVECore" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../TVECore;
 		};
