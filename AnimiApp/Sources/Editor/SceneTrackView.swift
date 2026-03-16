@@ -23,6 +23,10 @@ final class SceneTrackView: UIView, TrackViewContract {
     /// PR2 fix: Called when a clip view is created (for gesture conflict resolution).
     var onClipCreated: ((SceneClipView) -> Void)?
 
+    /// PR-G: Called when a boundary control is tapped.
+    /// Parameters: fromSceneId, toSceneId, boundary frame in track coordinates.
+    var onTapBoundary: ((UUID, UUID, CGRect) -> Void)?
+
     // MARK: - Data State (PR4: data path)
 
     private var scenes: [SceneDraft] = []
@@ -55,6 +59,10 @@ final class SceneTrackView: UIView, TrackViewContract {
     // MARK: - Clip Views
 
     private var clipViews: [UUID: SceneClipView] = [:]
+
+    // MARK: - Boundary Views (PR-G)
+
+    private var boundaryViews: [TransitionBoundaryView] = []
 
     // MARK: - Initialization
 
@@ -124,6 +132,23 @@ final class SceneTrackView: UIView, TrackViewContract {
             clipViews[id]?.setSelected(id == snapshot.selectedSceneId)
         }
 
+        // PR-G: Rebuild boundary views wholesale
+        for bv in boundaryViews {
+            bv.removeFromSuperview()
+        }
+        boundaryViews.removeAll()
+
+        for boundary in snapshot.boundaries {
+            let bv = TransitionBoundaryView(fromSceneId: boundary.fromSceneId, toSceneId: boundary.toSceneId)
+            bv.configure(transition: boundary.transition)
+            bv.addTarget(self, action: #selector(boundaryTapped(_:)), for: .touchUpInside)
+            // Hide if in reorder mode
+            bv.isHidden = isReorderMode
+            bv.isUserInteractionEnabled = !isReorderMode
+            addSubview(bv)
+            boundaryViews.append(bv)
+        }
+
         // Trigger layout (frames will be set in layoutItems)
         setNeedsLayout()
     }
@@ -138,8 +163,10 @@ final class SceneTrackView: UIView, TrackViewContract {
 
         self.layoutContext = context
         var currentX = context.leftPadding
+        var boundaryIndex = 0
+        let boundarySize = TransitionBoundaryView.visualSize
 
-        for scene in scenes {
+        for (i, scene) in scenes.enumerated() {
             guard let clipView = clipViews[scene.id] else { continue }
 
             let durationSeconds = CGFloat(usToSeconds(scene.durationUs))
@@ -157,6 +184,17 @@ final class SceneTrackView: UIView, TrackViewContract {
             clipView.applyLayout(pxPerSecond: context.pxPerSecond)
 
             currentX += clipWidth
+
+            // PR-G: Position boundary control at seam (between this scene and next)
+            if boundaryIndex < boundaryViews.count && i < scenes.count - 1 {
+                boundaryViews[boundaryIndex].frame = CGRect(
+                    x: currentX - boundarySize / 2,
+                    y: 6,
+                    width: boundarySize,
+                    height: boundarySize
+                )
+                boundaryIndex += 1
+            }
         }
 
         // Update insertion line position if active
@@ -194,6 +232,7 @@ final class SceneTrackView: UIView, TrackViewContract {
     func configure(scenes: [SceneDraft], pxPerSecond: CGFloat, leftPadding: CGFloat, minDurationUs: TimeUs) {
         let snapshot = SceneTrackSnapshot(
             scenes: scenes,
+            boundaries: [],
             selectedSceneId: selectedSceneId,
             minDurationUs: minDurationUs
         )
@@ -214,6 +253,7 @@ final class SceneTrackView: UIView, TrackViewContract {
     func updateScenes(_ scenes: [SceneDraft]) {
         let snapshot = SceneTrackSnapshot(
             scenes: scenes,
+            boundaries: [],
             selectedSceneId: selectedSceneId,
             minDurationUs: minDurationUs
         )
@@ -228,6 +268,11 @@ final class SceneTrackView: UIView, TrackViewContract {
         self.isReorderMode = isReorderMode
         for (_, clipView) in clipViews {
             clipView.setReorderMode(isReorderMode)
+        }
+        // PR-G: Immediately hide/disable boundary views in reorder mode
+        for bv in boundaryViews {
+            bv.isHidden = isReorderMode
+            bv.isUserInteractionEnabled = !isReorderMode
         }
         // Hide insertion line when exiting reorder mode
         if !isReorderMode {
@@ -427,5 +472,13 @@ final class SceneTrackView: UIView, TrackViewContract {
 
         // Bring to front
         bringSubviewToFront(insertionLine)
+    }
+
+    // MARK: - Boundary Tap (PR-G)
+
+    /// Handles boundary control tap.
+    /// Tap on boundary does NOT change selection.
+    @objc private func boundaryTapped(_ sender: TransitionBoundaryView) {
+        onTapBoundary?(sender.fromSceneId, sender.toSceneId, sender.frame)
     }
 }

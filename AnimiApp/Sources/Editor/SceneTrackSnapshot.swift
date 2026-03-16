@@ -9,6 +9,9 @@ struct SceneTrackSnapshot {
     /// Array of scenes to display
     let scenes: [SceneDraft]
 
+    /// Adjacent scene boundaries with transitions (PR-G)
+    let boundaries: [SceneBoundaryDraft]
+
     /// Currently selected scene ID (nil if no selection)
     let selectedSceneId: UUID?
 

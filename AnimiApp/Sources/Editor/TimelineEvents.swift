@@ -21,10 +21,10 @@ public enum TrimEdge: Sendable {
 /// All timeline interactions flow through this single event type.
 public enum TimelineEvent: Sendable {
     /// Scrub event: user is changing playhead position.
-    /// - timeUs: Time in microseconds under playhead
-    /// - quantize: Mode for frame quantization (.dragging for live, .ended for snap)
+    /// Quantize is applied at TimelineView before emitting this event.
+    /// - compressedFrame: Frame index in compressed timeline
     /// - phase: Gesture phase (.began, .changed, .ended)
-    case scrub(timeUs: TimeUs, quantize: QuantizeMode, phase: InteractionPhase)
+    case scrub(compressedFrame: Int, phase: InteractionPhase)
 
     /// Scroll event: timeline offset or scale changed.
     /// Used for ruler synchronization.
@@ -48,4 +48,10 @@ public enum TimelineEvent: Sendable {
     /// - toIndex: Target index in scene sequence
     /// - phase: Gesture phase (.began for lift, .changed for drag, .ended for drop)
     case reorderScene(sceneId: UUID, toIndex: Int, phase: InteractionPhase)
+
+    /// Edit boundary transition event: user tapped a boundary control.
+    /// - fromSceneId: ID of the outgoing scene
+    /// - toSceneId: ID of the incoming scene
+    /// - anchorRect: Rect for popover anchor (in TimelineView coordinates)
+    case editBoundaryTransition(fromSceneId: UUID, toSceneId: UUID, anchorRect: CGRect)
 }
