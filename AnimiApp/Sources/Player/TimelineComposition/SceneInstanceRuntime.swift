@@ -3,6 +3,19 @@ import Metal
 import UIKit
 import TVECore
 
+// MARK: - Scene Media Syncing Protocol (Test Seam)
+
+/// Protocol for media frame synchronization.
+/// Allows test injection for verifying clamped frame forwarding.
+@MainActor
+protocol SceneMediaSyncing: AnyObject {
+    func updateVideoFramesForScrub(sceneFrameIndex: Int)
+    func updateVideoFramesForPlayback(sceneFrameIndex: Int)
+    func startVideoPlayback(sceneFrameIndex: Int)
+}
+
+extension UserMediaService: SceneMediaSyncing {}
+
 // MARK: - Scene Instance Runtime
 
 /// Runtime state for a single scene instance.
@@ -37,6 +50,14 @@ public final class SceneInstanceRuntime {
     /// User media service for this instance.
     /// Video budget is managed by GlobalVideoBudgetCoordinator.
     public let userMediaService: UserMediaService
+
+    /// Injected media syncing service for tests (nil in production).
+    private let injectedMediaSyncing: SceneMediaSyncing?
+
+    /// Media syncing target: injected spy in tests, userMediaService in production.
+    private var mediaSyncing: SceneMediaSyncing {
+        injectedMediaSyncing ?? userMediaService
+    }
 
     // MARK: - State
 
@@ -76,6 +97,7 @@ public final class SceneInstanceRuntime {
         self.sceneInstanceId = sceneInstanceId
         self.sceneTypeId = resources.sceneTypeId
         self.resources = resources
+        self.injectedMediaSyncing = nil
 
         // Create per-instance overlay provider
         self.overlayTextureProvider = InMemoryTextureProvider()
@@ -98,6 +120,59 @@ public final class SceneInstanceRuntime {
             textureProvider: overlayTextureProvider
         )
         userMediaService.setSceneFPS(Double(resources.fps))
+    }
+
+    // MARK: - Test Init (Internal)
+
+    /// Creates a scene instance runtime with injected media syncing for tests.
+    /// - Parameters:
+    ///   - sceneInstanceId: Instance ID.
+    ///   - resources: Shared scene type resources.
+    ///   - device: Metal device.
+    ///   - commandQueue: Metal command queue.
+    ///   - mediaSyncing: Injected media syncing spy for tests.
+    init(
+        sceneInstanceId: UUID,
+        resources: SceneTypeResourcesCache.Resources,
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        mediaSyncing: SceneMediaSyncing
+    ) {
+        self.sceneInstanceId = sceneInstanceId
+        self.sceneTypeId = resources.sceneTypeId
+        self.resources = resources
+        self.injectedMediaSyncing = mediaSyncing
+
+        // Create per-instance overlay provider
+        self.overlayTextureProvider = InMemoryTextureProvider()
+
+        // Create layered provider (base + overlay)
+        self.layeredTextureProvider = LayeredTextureProvider(
+            base: resources.baseTextureProvider,
+            overlay: overlayTextureProvider
+        )
+
+        // Create scene player and load compiled scene
+        self.scenePlayer = ScenePlayer()
+        scenePlayer.loadCompiledScene(resources.compiled)
+
+        // Create user media service for this instance
+        self.userMediaService = UserMediaService(
+            device: device,
+            commandQueue: commandQueue,
+            scenePlayer: scenePlayer,
+            textureProvider: overlayTextureProvider
+        )
+        userMediaService.setSceneFPS(Double(resources.fps))
+    }
+
+    // MARK: - Frame Clamping (Hold Last Frame)
+
+    /// Clamps localFrame to valid range [0, durationFrames - 1].
+    /// Implements "hold last frame" behavior when scene is extended beyond native animation duration.
+    private func clampedLocalFrame(_ localFrame: Int) -> Int {
+        let maxFrame = max(0, resources.durationFrames - 1)
+        return min(max(localFrame, 0), maxFrame)
     }
 
     // MARK: - State Application
@@ -252,18 +327,18 @@ public final class SceneInstanceRuntime {
 
     /// Syncs video frames to specific local frame (for scrubbing).
     public func syncVideoFrame(_ localFrame: Int) {
-        userMediaService.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+        mediaSyncing.updateVideoFramesForScrub(sceneFrameIndex: clampedLocalFrame(localFrame))
     }
 
     /// Syncs video frames for playback tick (gated to video frame rate).
     public func syncPlaybackTick(_ localFrame: Int) {
-        userMediaService.updateVideoFramesForPlayback(sceneFrameIndex: localFrame)
+        mediaSyncing.updateVideoFramesForPlayback(sceneFrameIndex: clampedLocalFrame(localFrame))
     }
 
     /// PR-G: Starts video playback at the given local frame.
     /// Resets tick counter so first tick fires immediately, starts visible providers.
     public func startPlayback(at localFrame: Int) {
-        userMediaService.startVideoPlayback(sceneFrameIndex: localFrame)
+        mediaSyncing.startVideoPlayback(sceneFrameIndex: clampedLocalFrame(localFrame))
     }
 
     /// Pauses playback.
@@ -279,19 +354,20 @@ public final class SceneInstanceRuntime {
     ///   - mode: Template mode (preview or edit).
     /// - Returns: Render commands.
     public func renderCommands(localFrame: Int, mode: TemplateMode) -> [RenderCommand] {
-        scenePlayer.renderCommands(mode: mode, sceneFrameIndex: localFrame)
+        scenePlayer.renderCommands(mode: mode, sceneFrameIndex: clampedLocalFrame(localFrame))
     }
 
     /// Creates scene render context for this instance.
     /// - Parameter localFrame: Frame index within this scene.
-    /// - Returns: Scene render context.
+    /// - Returns: Scene render context with clamped localFrame for hold-last-frame semantics.
     public func makeRenderContext(localFrame: Int) -> SceneRenderContext {
-        SceneRenderContext(
-            commands: renderCommands(localFrame: localFrame, mode: .preview),
+        let clamped = clampedLocalFrame(localFrame)
+        return SceneRenderContext(
+            commands: renderCommands(localFrame: clamped, mode: .preview),
             textureProvider: layeredTextureProvider,
             pathRegistry: resources.pathRegistry,
             assetSizes: resources.assetSizes,
-            localFrame: localFrame,
+            localFrame: clamped,
             canvasSize: resources.canvasSize,
             sceneInstanceId: sceneInstanceId
         )
