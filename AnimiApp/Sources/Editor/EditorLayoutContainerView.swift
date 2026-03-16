@@ -398,6 +398,10 @@ final class EditorLayoutContainerView: UIView {
         case .reorderScene:
             // PR3: Forward to VC for model update
             onTimelineEvent?(event)
+
+        case .editBoundaryTransition:
+            // PR-G: Forward to VC for picker presentation
+            onTimelineEvent?(event)
         }
     }
 
@@ -535,28 +539,41 @@ final class EditorLayoutContainerView: UIView {
     }
 
     /// Configures timeline with scenes array (PR2: Multi-scene support).
+    /// PR-G: Includes boundaries for transition controls.
     /// - Parameters:
     ///   - scenes: Array of SceneDraft objects
+    ///   - boundaries: Adjacent scene boundaries with transitions
     ///   - templateFPS: Template frame rate for quantization
     ///   - minSceneDurationUs: Minimum scene duration for trim (PR2 fix: consistent with model)
-    func configure(scenes: [SceneDraft], templateFPS: Int, minSceneDurationUs: TimeUs = ProjectDraft.minSceneDurationUs) {
+    func configure(scenes: [SceneDraft], boundaries: [SceneBoundaryDraft], templateFPS: Int, minSceneDurationUs: TimeUs = ProjectDraft.minSceneDurationUs) {
         let totalDurationUs = scenes.reduce(0) { $0 + $1.durationUs }
         rulerView.configure(durationUs: totalDurationUs)
-        timelineView.configure(scenes: scenes, templateFPS: templateFPS, minSceneDurationUs: minSceneDurationUs)
+        timelineView.configure(scenes: scenes, boundaries: boundaries, templateFPS: templateFPS, minSceneDurationUs: minSceneDurationUs)
     }
 
     /// Updates scenes (for trim operations, without full reconfigure).
-    func updateScenes(_ scenes: [SceneDraft]) {
+    /// PR-G: Includes boundaries for transition controls.
+    func updateScenes(_ scenes: [SceneDraft], boundaries: [SceneBoundaryDraft]) {
         let totalDurationUs = scenes.reduce(0) { $0 + $1.durationUs }
         rulerView.configure(durationUs: totalDurationUs)
-        timelineView.updateScenes(scenes)
+        timelineView.updateScenes(scenes, boundaries: boundaries)
     }
 
-    /// Updates current time (from playback or scrub).
-    /// - Parameter timeUs: Time in microseconds
-    func setCurrentTimeUs(_ timeUs: TimeUs) {
+    /// Updates current position from compressed frame (from playback or scrub).
+    /// Phase 2.1: Uses mapper for compressed → nominal conversion.
+    /// - Parameters:
+    ///   - compressedFrame: Compressed frame index
+    ///   - mapper: Playhead mapper for coordinate conversion
+    func setCurrentCompressedFrame(_ compressedFrame: Int, mapper: TimelinePlayheadMapper) {
         // PR2.6: Ruler sync happens via onScrollChanged callback from centerOnTimeUs()
-        timelineView.setCurrentTimeUs(timeUs)
+        timelineView.setCurrentCompressedFrame(compressedFrame, mapper: mapper)
+    }
+
+    /// Sets the playhead mapper for timeline.
+    /// Phase 2.1: Mapper must be wired after setup and on timeline changes.
+    /// - Parameter mapper: Playhead mapper for coordinate conversion
+    func setMapper(_ mapper: TimelinePlayheadMapper) {
+        timelineView.setMapper(mapper)
     }
 
     /// Updates play/pause button state
@@ -576,45 +593,35 @@ final class EditorLayoutContainerView: UIView {
         updateBottomBar()
     }
 
-    // MARK: - Timeline State Snapshot/Restore (PR2, Time Refactor)
+    // MARK: - Timeline State Snapshot/Restore (PR2, Time Refactor, Phase 2.1)
 
     /// Creates a snapshot of current timeline state.
-    /// Includes time position, zoom, and selection.
+    /// Phase 2.1: Uses compressed frame as source of truth.
+    /// Includes compressed frame position, zoom, and selection.
     func snapshotTimelineState() -> TimelineState {
-        let (timeUs, zoom) = timelineView.snapshotState()
+        let compressedFrame = timelineView.snapshotCompressedFrame()
         return TimelineState(
-            timeUnderPlayheadUs: timeUs,
-            zoom: zoom,
+            playheadCompressedFrame: compressedFrame,
+            zoom: timelineView.currentZoom,
             selection: currentSelection
         )
     }
 
-    /// Reconfigures timeline with new duration while preserving state.
-    /// Use this instead of configure() when duration changes to maintain playhead position and zoom.
-    /// PR4: Legacy API - uses duration-based configure internally.
+    /// Restores timeline state from snapshot.
+    /// Phase 2.1: Uses mapper for compressed frame positioning.
     /// - Parameters:
-    ///   - durationUs: New duration in microseconds
-    ///   - templateFPS: Template frame rate for quantization
-    @available(*, deprecated, message: "Use configure(scenes:templateFPS:minSceneDurationUs:)")
-    func reconfigureTimelinePreservingState(durationUs: TimeUs, templateFPS: Int) {
-        #if DEBUG
-        assertionFailure("Legacy timeline API. Use configure(scenes:templateFPS:minSceneDurationUs:) via EditorStore snapshot.")
-        #endif
-        // 1. Snapshot current state
-        let state = snapshotTimelineState()
-
-        // 2. Configure with new duration (does NOT reset position)
-        rulerView.configure(durationUs: durationUs)
-        timelineView.configure(durationUs: durationUs, templateFPS: templateFPS)
-
-        // 3. Clamp time if it exceeds new duration
-        let clampedTimeUs = clampTimeUs(state.timeUnderPlayheadUs, maxUs: durationUs)
-
-        // 4. Restore selection (atomic with time/zoom)
+    ///   - state: Timeline state snapshot
+    ///   - mapper: Playhead mapper for coordinate conversion
+    func restoreTimelineState(_ state: TimelineState, mapper: TimelinePlayheadMapper) {
+        // Restore selection
         setTimelineSelection(state.selection)
 
-        // 5. Restore time and zoom
-        timelineView.restoreState(timeUs: clampedTimeUs, zoom: state.zoom)
+        // Restore position and zoom (uses compressed frame)
+        timelineView.restoreState(
+            compressedFrame: state.playheadCompressedFrame,
+            zoom: state.zoom,
+            mapper: mapper
+        )
     }
 
     // MARK: - Private

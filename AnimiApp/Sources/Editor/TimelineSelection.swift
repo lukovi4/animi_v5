@@ -24,13 +24,15 @@ public enum TimelineSelection: Equatable, Sendable {
     }
 }
 
-// MARK: - Timeline State (PR2, Time Refactor)
+// MARK: - Timeline State (PR2, Time Refactor, Phase 2.1)
 
 /// Snapshot of timeline state for preserve/restore during re-configure.
 /// Used to maintain time position, zoom level, and selection when duration changes.
+/// Phase 2.1: Uses playheadCompressedFrame as source of truth (not nominal timeUs).
 public struct TimelineState: Equatable, Sendable {
-    /// Time under playhead in microseconds (source of truth).
-    public let timeUnderPlayheadUs: TimeUs
+    /// Compressed frame under playhead (source of truth).
+    /// Phase 2.1: Replaces timeUnderPlayheadUs.
+    public let playheadCompressedFrame: Int
 
     /// Current zoom level (1.0 = 100%)
     public let zoom: CGFloat
@@ -38,8 +40,8 @@ public struct TimelineState: Equatable, Sendable {
     /// Current selection state
     public let selection: TimelineSelection
 
-    public init(timeUnderPlayheadUs: TimeUs, zoom: CGFloat, selection: TimelineSelection) {
-        self.timeUnderPlayheadUs = timeUnderPlayheadUs
+    public init(playheadCompressedFrame: Int, zoom: CGFloat, selection: TimelineSelection) {
+        self.playheadCompressedFrame = playheadCompressedFrame
         self.zoom = zoom
         self.selection = selection
     }

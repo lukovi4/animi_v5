@@ -25,8 +25,9 @@ public struct EditorState: Equatable, Sendable {
 
     // MARK: - UI Essentials (part of undo snapshot)
 
-    /// Current playhead position in microseconds.
-    public var playheadTimeUs: TimeUs
+    /// Current playhead position in compressed frames.
+    /// This is the single source of truth for timeline mode playhead.
+    public var playheadCompressedFrame: Int
 
     /// Current timeline selection.
     public var selection: TimelineSelection
@@ -47,9 +48,9 @@ public struct EditorState: Equatable, Sendable {
     /// Only relevant when `uiMode == .sceneEdit`.
     public var selectedBlockId: String?
 
-    /// Saved playhead position for returning from scene edit.
+    /// Saved playhead position (compressed frame) for returning from scene edit.
     /// Set when entering scene edit, restored when exiting.
-    public var sceneEditReturnPlayheadUs: TimeUs?
+    public var sceneEditReturnCompressedFrame: Int?
 
     // MARK: - Derived Properties
 
@@ -69,16 +70,45 @@ public struct EditorState: Equatable, Sendable {
         canonicalTimeline.sceneItems
     }
 
+    // MARK: - Timeline Math Helpers
+
+    /// Creates TimelineTransitionMath from current state.
+    /// Pure computation, no engine dependency.
+    public func makeTransitionMath() -> TimelineTransitionMath {
+        TimelineTransitionMath(
+            sceneItems: canonicalTimeline.sceneItems,
+            boundaryTransitions: canonicalTimeline.boundaryTransitions,
+            fps: templateFPS
+        )
+    }
+
+    /// Creates TimelinePlayheadMapper from current state.
+    /// Pure computation, no engine dependency.
+    public func makePlayheadMapper() -> TimelinePlayheadMapper {
+        TimelinePlayheadMapper(math: makeTransitionMath())
+    }
+
+    /// Returns nominal time in microseconds for current playhead position.
+    /// Uses the provided mapper for conversion.
+    public func playheadNominalTimeUs(mapper: TimelinePlayheadMapper) -> TimeUs {
+        mapper.nominalTimeUs(forCompressedFrame: playheadCompressedFrame)
+    }
+
+    /// Total compressed duration in frames.
+    public var compressedDurationFrames: Int {
+        makeTransitionMath().compressedDurationFrames
+    }
+
     // MARK: - Initialization
 
     public init(
         draft: ProjectDraft,
-        playheadTimeUs: TimeUs = 0,
+        playheadCompressedFrame: Int = 0,
         selection: TimelineSelection = .none,
         templateFPS: Int = 30
     ) {
         self.draft = draft
-        self.playheadTimeUs = playheadTimeUs
+        self.playheadCompressedFrame = playheadCompressedFrame
         self.selection = selection
         self.templateFPS = templateFPS
     }
@@ -87,7 +117,7 @@ public struct EditorState: Equatable, Sendable {
     public static func empty() -> EditorState {
         EditorState(
             draft: ProjectDraft.create(for: ""),
-            playheadTimeUs: 0,
+            playheadCompressedFrame: 0,
             selection: .none,
             templateFPS: 30
         )
@@ -103,8 +133,8 @@ public struct EditorSnapshot: Equatable, Sendable {
     /// Canonical timeline (tracks + items + payloads).
     public let canonicalTimeline: CanonicalTimeline
 
-    /// Playhead position at snapshot time.
-    public let playheadTimeUs: TimeUs
+    /// Playhead position at snapshot time (compressed frame).
+    public let playheadCompressedFrame: Int
 
     /// Selection at snapshot time.
     public let selection: TimelineSelection
@@ -112,24 +142,30 @@ public struct EditorSnapshot: Equatable, Sendable {
     /// Per-instance scene states at snapshot time.
     public let sceneInstanceStates: [UUID: SceneState]
 
+    /// Saved scene edit return position (compressed frame).
+    public let sceneEditReturnCompressedFrame: Int?
+
     public init(
         canonicalTimeline: CanonicalTimeline,
-        playheadTimeUs: TimeUs,
+        playheadCompressedFrame: Int,
         selection: TimelineSelection,
-        sceneInstanceStates: [UUID: SceneState] = [:]
+        sceneInstanceStates: [UUID: SceneState] = [:],
+        sceneEditReturnCompressedFrame: Int? = nil
     ) {
         self.canonicalTimeline = canonicalTimeline
-        self.playheadTimeUs = playheadTimeUs
+        self.playheadCompressedFrame = playheadCompressedFrame
         self.selection = selection
         self.sceneInstanceStates = sceneInstanceStates
+        self.sceneEditReturnCompressedFrame = sceneEditReturnCompressedFrame
     }
 
     /// Creates snapshot from current state.
     public init(from state: EditorState) {
         self.canonicalTimeline = state.canonicalTimeline
-        self.playheadTimeUs = state.playheadTimeUs
+        self.playheadCompressedFrame = state.playheadCompressedFrame
         self.selection = state.selection
         self.sceneInstanceStates = state.draft.sceneInstanceStates
+        self.sceneEditReturnCompressedFrame = state.sceneEditReturnCompressedFrame
     }
 }
 
@@ -142,7 +178,8 @@ public extension EditorState {
     mutating func restore(from snapshot: EditorSnapshot) {
         draft.canonicalTimeline = snapshot.canonicalTimeline
         draft.sceneInstanceStates = snapshot.sceneInstanceStates
-        playheadTimeUs = snapshot.playheadTimeUs
+        playheadCompressedFrame = snapshot.playheadCompressedFrame
         selection = snapshot.selection
+        sceneEditReturnCompressedFrame = snapshot.sceneEditReturnCompressedFrame
     }
 }

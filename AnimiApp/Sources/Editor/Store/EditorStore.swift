@@ -21,13 +21,13 @@ public final class EditorStore {
     private var pendingGestureSnapshot: EditorSnapshot?
 
     /// Previous playhead position (for detecting playhead-only changes).
-    private var previousPlayheadTimeUs: TimeUs = 0
+    private var previousPlayheadCompressedFrame: Int = 0
 
     // MARK: - Callbacks (Split for Performance)
 
-    /// Called when playhead position changes.
+    /// Called when playhead position changes (compressed frame).
     /// Use for lightweight UI updates (playhead indicator, current frame).
-    public var onPlayheadChanged: ((TimeUs) -> Void)?
+    public var onPlayheadChanged: ((Int) -> Void)?
 
     /// Called when selection changes.
     /// Use for lightweight UI updates (highlight, handles).
@@ -60,6 +60,10 @@ public final class EditorStore {
     /// PR-F: Called when a scene instance state changes (but not timeline structure).
     /// Use for incremental engine sync instead of full setTimeline().
     public var onSceneStateChanged: ((UUID, SceneState) -> Void)?
+
+    /// Called when reducer emits notices (e.g., boundary transitions reset).
+    /// Use for user-facing feedback like alerts.
+    public var onNotice: ((EditorNotice) -> Void)?
 
     // MARK: - Initialization
 
@@ -110,7 +114,7 @@ public final class EditorStore {
                     // P1 fix: Notify all observers after cancel restore
                     notifyTimelineChanged()
                     notifySelectionChanged()
-                    onPlayheadChanged?(state.playheadTimeUs)
+                    onPlayheadChanged?(state.playheadCompressedFrame)
                     notifyUndoRedoChanged()
                     #if DEBUG
                     print("[EditorStore] Gesture cancelled, restored baseline")
@@ -147,7 +151,7 @@ public final class EditorStore {
         }
 
         // Remember previous state for change detection
-        let oldPlayhead = state.playheadTimeUs
+        let oldPlayhead = state.playheadCompressedFrame
         let oldTimeline = state.canonicalTimeline
         let oldSelection = state.selection
         let oldUIMode = state.uiMode
@@ -166,7 +170,7 @@ public final class EditorStore {
         }
 
         // Notify observers (split for performance)
-        let playheadChanged = state.playheadTimeUs != oldPlayhead
+        let playheadChanged = state.playheadCompressedFrame != oldPlayhead
         let selectionChanged = state.selection != oldSelection
         let structureChanged = state.canonicalTimeline != oldTimeline
 
@@ -182,7 +186,7 @@ public final class EditorStore {
         let sceneStateChangeInfo = extractSceneStateChange(action: action)
 
         if playheadChanged {
-            onPlayheadChanged?(state.playheadTimeUs)
+            onPlayheadChanged?(state.playheadCompressedFrame)
         }
 
         if selectionChanged {
@@ -215,6 +219,11 @@ public final class EditorStore {
         } else if result.shouldPushSnapshot {
             // Other undo-able change - fall back to full sync
             notifyTimelineChanged()
+        }
+
+        // Emit notices after UI has been updated
+        for notice in result.notices {
+            onNotice?(notice)
         }
 
         #if DEBUG
@@ -250,7 +259,7 @@ public final class EditorStore {
         // Notify all observers
         notifyTimelineChanged()
         notifySelectionChanged()
-        onPlayheadChanged?(state.playheadTimeUs)
+        onPlayheadChanged?(state.playheadCompressedFrame)
         notifyUndoRedoChanged()
 
         // PR-A: Notify runtime to re-apply state for active scene instance
@@ -277,7 +286,7 @@ public final class EditorStore {
         // Notify all observers
         notifyTimelineChanged()
         notifySelectionChanged()
-        onPlayheadChanged?(state.playheadTimeUs)
+        onPlayheadChanged?(state.playheadCompressedFrame)
         notifyUndoRedoChanged()
 
         // PR-A: Notify runtime to re-apply state for active scene instance
@@ -300,9 +309,9 @@ public final class EditorStore {
         state.canonicalTimeline
     }
 
-    /// Returns current playhead position.
-    public var playheadTimeUs: TimeUs {
-        state.playheadTimeUs
+    /// Returns current playhead position (compressed frame).
+    public var playheadCompressedFrame: Int {
+        state.playheadCompressedFrame
     }
 
     /// Returns current selection.

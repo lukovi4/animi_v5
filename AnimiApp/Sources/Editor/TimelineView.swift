@@ -39,7 +39,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// Template FPS for frame quantization (used only for derived calculations).
     private var templateFPS: Int = 30
 
-    private var currentZoom: CGFloat = 1.0
+    private(set) var currentZoom: CGFloat = 1.0
 
     /// Current time under playhead in microseconds.
     private var currentTimeUs: TimeUs = 0
@@ -63,8 +63,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// Tracks whether a drag-based scrub session is active.
     private var isScrubSessionActive = false
 
-    /// Last emitted scrub time to avoid redundant .changed events during drag.
-    private var lastEmittedScrubTimeUs: TimeUs?
+    /// Last emitted compressed frame to avoid redundant .changed events during drag.
+    private var lastEmittedCompressedFrame: Int?
+
+    // MARK: - Playhead Mapper (Phase 2.1)
+
+    /// Current playhead mapper for offset ↔ compressed frame conversion.
+    /// Updated when timeline data changes via configure().
+    private var mapper: TimelinePlayheadMapper?
 
     // MARK: - Computed Properties
 
@@ -165,6 +171,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     private lazy var tapGesture: UITapGestureRecognizer = {
         let gesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        gesture.delegate = self
         return gesture
     }()
 
@@ -234,6 +241,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             guard let self = self else { return }
             self.scrollView.panGestureRecognizer.require(toFail: clipView.trailingPanGesture)
             self.scrollView.panGestureRecognizer.require(toFail: clipView.bodyPanGesture)
+        }
+
+        // PR-G: Boundary tap callback
+        sceneTrack.onTapBoundary = { [weak self] fromId, toId, rectInTrack in
+            guard let self = self else { return }
+            // Convert rect from track coordinates to TimelineView coordinates
+            let rectInTimeline = self.sceneTrack.convert(rectInTrack, to: self)
+            self.emitEvent(.editBoundaryTransition(fromSceneId: fromId, toSceneId: toId, anchorRect: rectInTimeline))
         }
     }
 
@@ -312,31 +327,40 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// - Parameters:
     ///   - durationUs: Duration in microseconds (source of truth)
     ///   - templateFPS: Template frame rate for quantization
-    @available(*, deprecated, message: "Use configure(scenes:templateFPS:minSceneDurationUs:)")
+    @available(*, deprecated, message: "Use configure(scenes:boundaries:templateFPS:minSceneDurationUs:)")
     func configure(durationUs: TimeUs, templateFPS: Int) {
         #if DEBUG
-        assertionFailure("Legacy timeline API. Use configure(scenes:templateFPS:minSceneDurationUs:) via EditorStore snapshot.")
+        assertionFailure("Legacy timeline API. Use configure(scenes:boundaries:templateFPS:minSceneDurationUs:) via EditorStore snapshot.")
         #endif
         // Convert to single-scene array for PR4 compatibility
         let singleScene = SceneDraft(id: UUID(), durationUs: durationUs)
-        configure(scenes: [singleScene], templateFPS: templateFPS, minSceneDurationUs: ProjectDraft.minSceneDurationUs)
+        configure(scenes: [singleScene], boundaries: [], templateFPS: templateFPS, minSceneDurationUs: ProjectDraft.minSceneDurationUs)
+    }
+
+    /// Sets the playhead mapper for offset ↔ compressed frame conversion.
+    /// Called by EditorLayoutContainerView when timeline structure changes.
+    func setMapper(_ mapper: TimelinePlayheadMapper) {
+        self.mapper = mapper
     }
 
     /// Configures timeline with scenes array (PR2: Multi-scene support).
     /// PR4: Uses applySnapshot for data, setLayoutContext for layout.
+    /// PR-G: Includes boundaries for transition controls.
     /// - Parameters:
     ///   - scenes: Array of SceneDraft objects
+    ///   - boundaries: Adjacent scene boundaries with transitions
     ///   - templateFPS: Template frame rate for quantization
     ///   - minSceneDurationUs: Minimum scene duration for trim (PR2 fix: consistent with model)
-    func configure(scenes: [SceneDraft], templateFPS: Int, minSceneDurationUs: TimeUs = ProjectDraft.minSceneDurationUs) {
+    func configure(scenes: [SceneDraft], boundaries: [SceneBoundaryDraft], templateFPS: Int, minSceneDurationUs: TimeUs = ProjectDraft.minSceneDurationUs) {
         self.scenes = scenes
         self.durationUs = scenes.reduce(0) { $0 + $1.durationUs }
         self.templateFPS = templateFPS > 0 ? templateFPS : 30
         self.minSceneDurationUs = minSceneDurationUs
 
-        // PR4: Data path - applySnapshot
+        // PR4: Data path - applySnapshot (PR-G: includes boundaries)
         let snapshot = SceneTrackSnapshot(
             scenes: scenes,
+            boundaries: boundaries,
             selectedSceneId: selectedSceneId,
             minDurationUs: minSceneDurationUs
         )
@@ -357,13 +381,15 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// Updates scenes (for trim operations).
     /// PR4: Uses applySnapshot for data (with diff), layout via updateContentSize.
-    func updateScenes(_ scenes: [SceneDraft]) {
+    /// PR-G: Includes boundaries for transition controls.
+    func updateScenes(_ scenes: [SceneDraft], boundaries: [SceneBoundaryDraft]) {
         self.scenes = scenes
         self.durationUs = scenes.reduce(0) { $0 + $1.durationUs }
 
-        // PR4: Data path - applySnapshot (handles diff internally)
+        // PR4: Data path - applySnapshot (handles diff internally, PR-G: includes boundaries)
         let snapshot = SceneTrackSnapshot(
             scenes: scenes,
+            boundaries: boundaries,
             selectedSceneId: selectedSceneId,
             minDurationUs: minSceneDurationUs
         )
@@ -383,13 +409,18 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         updateContentSize()
     }
 
-    /// Updates current time position (from playback).
+    /// Updates current position from compressed frame (from playback).
     /// Skips if user is currently dragging to avoid fighting.
-    /// P1-1: Clamps time to valid range before storing.
-    /// - Parameter timeUs: Time in microseconds
-    func setCurrentTimeUs(_ timeUs: TimeUs) {
+    /// Phase 2.1: Uses mapper for compressed → nominal conversion.
+    /// - Parameters:
+    ///   - compressedFrame: Compressed frame index
+    ///   - mapper: Playhead mapper for coordinate conversion
+    func setCurrentCompressedFrame(_ compressedFrame: Int, mapper: TimelinePlayheadMapper) {
         // Don't interrupt user's drag/decelerate
         guard !scrollView.isDragging && !scrollView.isDecelerating else { return }
+
+        // Convert compressed to nominal timeUs for centering
+        let timeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
 
         // Clamp to valid range [0, durationUs]
         let clamped = clampTimeUs(timeUs, maxUs: durationUs)
@@ -397,36 +428,41 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         centerOnTimeUs(clamped)
     }
 
-    // MARK: - State Snapshot/Restore
+    // MARK: - State Snapshot/Restore (Phase 2.1: Compressed Frame Domain)
 
-    /// Returns current time and zoom for snapshot.
-    func snapshotState() -> (timeUs: TimeUs, zoom: CGFloat) {
-        (timeUnderPlayheadUs(), currentZoom)
+    /// Returns current compressed frame for snapshot.
+    /// Phase 2.1: Returns compressed frame directly, not timeUs.
+    func snapshotCompressedFrame() -> Int {
+        compressedFrameUnderPlayhead(quantize: .ended)
     }
 
-    /// Restores time and zoom from snapshot.
+    /// Restores state from compressed frame and zoom.
     /// Must be called after configure() to set position.
+    /// Phase 2.1: Uses mapper for compressed → nominal conversion.
+    /// Spec section 5: Must apply zoom before centering.
     /// - Parameters:
-    ///   - timeUs: Time in microseconds
+    ///   - compressedFrame: Compressed frame index
     ///   - zoom: Zoom level
-    func restoreState(timeUs: TimeUs, zoom: CGFloat) {
-        // Mark that state was restored (prevents initial positioning override)
+    ///   - mapper: Playhead mapper for coordinate conversion
+    func restoreState(compressedFrame: Int, zoom: CGFloat, mapper: TimelinePlayheadMapper) {
+        // Step 1: Mark that state was restored (prevents initial positioning override)
         stateWasRestored = true
         didInitialPositioning = true
 
-        // Restore zoom
+        // Step 2: Restore zoom
         currentZoom = zoom
 
-        // Update content size with new zoom
+        // Step 3: Update content size with new zoom (MUST be before centering)
         updateContentSize()
 
-        // Clamp time to valid range and center
-        // PR2 fix: centerOnTimeUs sets contentOffset → triggers scrollViewDidScroll → emits .scroll
-        let clampedTimeUs = clampTimeUs(timeUs, maxUs: durationUs)
-        centerOnTimeUs(clampedTimeUs)
+        // Step 4: Convert compressed to nominal timeUs for centering
+        let timeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
+
+        // Step 5: Center on time
+        centerOnTimeUs(timeUs)
 
         // Sync internal state
-        currentTimeUs = clampedTimeUs
+        currentTimeUs = timeUs
     }
 
     // MARK: - Reorder Mode (PR3)
@@ -507,6 +543,28 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         return clampTimeUs(timeUs, maxUs: durationUs)
     }
 
+    /// Returns the compressed frame currently under the playhead.
+    /// Uses mapper for offset → compressed frame conversion.
+    /// Phase 2.1: Fail-loud if mapper not wired (spec section 12).
+    private func compressedFrameUnderPlayhead(quantize: QuantizeMode) -> Int {
+        guard pxPerSecond > 0 else { return 0 }
+
+        if let mapper = mapper {
+            // Use mapper for accurate zone-based conversion
+            return mapper.compressedFrame(
+                forOffsetX: scrollView.contentOffset.x,
+                pxPerSecond: pxPerSecond,
+                quantize: quantize
+            )
+        } else {
+            // Phase 2.1: Fail-loud - mapper must be wired in production
+            assertionFailure("[TimelineView] Mapper not wired - this is a configuration error")
+            // Defensive fallback (not acceptance path)
+            let timeUs = timeUnderPlayheadUs()
+            return quantizeFrame(timeUs: timeUs, fps: templateFPS, mode: quantize)
+        }
+    }
+
     /// Clamps offset to valid range [0, maxOffsetX].
     private func clampOffsetX(_ x: CGFloat) -> CGFloat {
         max(0, min(x, maxOffsetX))
@@ -519,8 +577,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private func emitEvent(_ event: TimelineEvent) {
         #if DEBUG
         switch event {
-        case .scrub(let timeUs, let quantize, let phase):
-            print("[Timeline] scrub: \(timeUs)us, \(quantize), \(phase)")
+        case .scrub(let compressedFrame, let phase):
+            print("[Timeline] scrub: frame=\(compressedFrame), \(phase)")
         case .scroll(let offsetX, let pxPerSecond):
             print("[Timeline] scroll: x=\(Int(offsetX)), pps=\(Int(pxPerSecond))")
         case .selection(let sel):
@@ -529,6 +587,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             print("[Timeline] trimScene: \(sceneId), \(newDurationUs)us, \(edge), \(phase)")
         case .reorderScene(let sceneId, let toIndex, let phase):
             print("[Timeline] reorderScene: \(sceneId), toIndex=\(toIndex), \(phase)")
+        case .editBoundaryTransition(let fromId, let toId, _):
+            print("[Timeline] editBoundaryTransition: \(fromId) → \(toId)")
         }
         #endif
         onEvent?(event)
@@ -571,14 +631,15 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // Emit scrub .changed during drag (with deduplication)
         if scrollView.isDragging {
-            let timeUs = timeUnderPlayheadUs()
-            if timeUs != lastEmittedScrubTimeUs {
-                lastEmittedScrubTimeUs = timeUs
+            let compressedFrame = compressedFrameUnderPlayhead(quantize: .dragging)
+            if compressedFrame != lastEmittedCompressedFrame {
+                lastEmittedCompressedFrame = compressedFrame
                 #if DEBUG
+                let timeUs = timeUnderPlayheadUs()
                 ScrubSignpost.emitScrubChanged(timeUs: timeUs)
                 ScrubCallCounter.shared.recordScrubChanged()
                 #endif
-                emitEvent(.scrub(timeUs: timeUs, quantize: .dragging, phase: .changed))
+                emitEvent(.scrub(compressedFrame: compressedFrame, phase: .changed))
             }
         }
     }
@@ -588,11 +649,11 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // Start new scrub session
         isScrubSessionActive = true
-        lastEmittedScrubTimeUs = nil
+        lastEmittedCompressedFrame = nil
 
         // Emit .began event
-        let timeUs = timeUnderPlayheadUs()
-        emitEvent(.scrub(timeUs: timeUs, quantize: .dragging, phase: .began))
+        let compressedFrame = compressedFrameUnderPlayhead(quantize: .dragging)
+        emitEvent(.scrub(compressedFrame: compressedFrame, phase: .began))
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -613,8 +674,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// Emits final scrub event with .ended phase for snap-to-nearest frame.
     /// Called at end of drag or pinch gestures.
     private func emitFinalScrub() {
-        let timeUs = timeUnderPlayheadUs()
-        emitEvent(.scrub(timeUs: timeUs, quantize: .ended, phase: .ended))
+        let compressedFrame = compressedFrameUnderPlayhead(quantize: .ended)
+        emitEvent(.scrub(compressedFrame: compressedFrame, phase: .ended))
 
         // Reset scrub session (if was active)
         isScrubSessionActive = false
@@ -700,5 +761,18 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             return true
         }
         return false
+    }
+
+    /// PR-G: Prevent tapGesture from blocking UIControl touches (TransitionBoundaryView).
+    /// When tapGesture recognizes, it cancels touches to the hit view by default.
+    /// This allows UIControls to receive their full touch sequence.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if gestureRecognizer == tapGesture {
+            // Don't let tapGesture interfere with UIControl touches
+            if touch.view is UIControl {
+                return false
+            }
+        }
+        return true
     }
 }

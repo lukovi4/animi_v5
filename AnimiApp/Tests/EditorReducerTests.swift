@@ -287,7 +287,8 @@ final class EditorReducerTests: XCTestCase {
         ).state
 
         let sceneBId = state.sceneItems[1].id
-        state.playheadTimeUs = 1_500_000 // 0.5s into scene B
+        // Phase 2.1: Use compressed frame (1.5s = 45 frames at 30fps)
+        state.playheadCompressedFrame = 45 // 0.5s into scene B (which starts at 1s = 30 frames)
 
         // When: move B to start (index 0)
         let result = EditorReducer.reduce(
@@ -295,8 +296,8 @@ final class EditorReducerTests: XCTestCase {
             action: .reorderScene(sceneId: sceneBId, toIndex: 0)
         )
 
-        // Then: playhead follows (0.5s into B at new position)
-        XCTAssertEqual(result.state.playheadTimeUs, 500_000)
+        // Then: playhead follows (0.5s into B at new position = 15 frames)
+        XCTAssertEqual(result.state.playheadCompressedFrame, 15)
     }
 
     // MARK: - 5. addScene, duplicateScene, deleteScene
@@ -1120,16 +1121,16 @@ final class EditorReducerTests: XCTestCase {
 
     /// Test: enterSceneEdit saves current playhead for return.
     func test_enterSceneEdit_savesReturnPlayhead() {
-        // Given: state with playhead at 5_000_000us
+        // Given: state with playhead at frame 150 (5s at 30fps)
         var state = makeStateWithScenes(count: 3)
-        state.playheadTimeUs = 5_000_000
+        state.playheadCompressedFrame = 150 // Phase 2.1: use compressed frame
         let sceneId = state.canonicalTimeline.sceneItems[1].id
 
         // When
         let result = EditorReducer.reduce(state: state, action: .enterSceneEdit(sceneId: sceneId))
 
-        // Then
-        XCTAssertEqual(result.state.sceneEditReturnPlayheadUs, 5_000_000)
+        // Then: return position saved as compressed frame
+        XCTAssertEqual(result.state.sceneEditReturnCompressedFrame, 150)
         XCTAssertEqual(result.state.uiMode, .sceneEdit(sceneInstanceId: sceneId))
         XCTAssertNil(result.state.selectedBlockId)
         XCTAssertFalse(result.shouldPushSnapshot) // UI transition
@@ -1137,32 +1138,32 @@ final class EditorReducerTests: XCTestCase {
 
     /// Test: enterSceneEdit moves playhead to scene start.
     func test_enterSceneEdit_movesPlayheadToSceneStart() {
-        // Given: 3 scenes, each 2 seconds
+        // Given: 3 scenes, each 2 seconds (60 frames at 30fps)
         let state = makeStateWithScenes(count: 3, durationUs: 2_000_000)
-        let sceneId = state.canonicalTimeline.sceneItems[1].id // second scene starts at 2s
+        let sceneId = state.canonicalTimeline.sceneItems[1].id // second scene starts at 2s = frame 60
 
         // When
         let result = EditorReducer.reduce(state: state, action: .enterSceneEdit(sceneId: sceneId))
 
-        // Then
-        XCTAssertEqual(result.state.playheadTimeUs, 2_000_000)
+        // Then: playhead at scene start = compressed frame 60
+        XCTAssertEqual(result.state.playheadCompressedFrame, 60)
     }
 
     /// Test: exitSceneEdit restores playhead to saved position.
     func test_exitSceneEdit_restoresPlayhead() {
-        // Given: state in sceneEdit with saved return playhead
+        // Given: state in sceneEdit with saved return playhead (frame 45 = 1.5s at 30fps)
         var state = makeStateWithScenes(count: 2)
         state.uiMode = .sceneEdit(sceneInstanceId: state.canonicalTimeline.sceneItems[0].id)
-        state.sceneEditReturnPlayheadUs = 1_500_000
-        state.playheadTimeUs = 0
+        state.sceneEditReturnCompressedFrame = 45 // Phase 2.1: use compressed frame
+        state.playheadCompressedFrame = 0
 
         // When
         let result = EditorReducer.reduce(state: state, action: .exitSceneEdit)
 
-        // Then
-        XCTAssertEqual(result.state.playheadTimeUs, 1_500_000)
+        // Then: playhead restored to saved compressed frame
+        XCTAssertEqual(result.state.playheadCompressedFrame, 45)
         XCTAssertEqual(result.state.uiMode, .timeline)
-        XCTAssertNil(result.state.sceneEditReturnPlayheadUs)
+        XCTAssertNil(result.state.sceneEditReturnCompressedFrame)
         XCTAssertNil(result.state.selectedBlockId)
         XCTAssertFalse(result.shouldPushSnapshot)
     }

@@ -503,8 +503,8 @@ final class PlayerViewController: UIViewController {
     /// Scroll events are handled by the container (ruler sync).
     private func handleTimelineEvent(_ event: TimelineEvent) {
         switch event {
-        case .scrub(let timeUs, let quantize, let phase):
-            handleTimelineScrub(timeUs: timeUs, mode: quantize, phase: phase)
+        case .scrub(let compressedFrame, let phase):
+            handleTimelineScrub(compressedFrame: compressedFrame, phase: phase)
 
         case .selection(let selection):
             handleTimelineSelectionChanged(selection)
@@ -518,6 +518,9 @@ final class PlayerViewController: UIViewController {
 
         case .reorderScene(let sceneId, let toIndex, let phase):
             handleReorderScene(sceneId: sceneId, toIndex: toIndex, phase: phase)
+
+        case .editBoundaryTransition(let fromId, let toId, let anchorRect):
+            presentTransitionPicker(fromSceneId: fromId, toSceneId: toId, anchorRect: anchorRect)
         }
     }
 
@@ -592,6 +595,63 @@ final class PlayerViewController: UIViewController {
         store.dispatch(.reorderScene(sceneId: sceneId, toIndex: destIndex))
     }
 
+    // MARK: - PR-G: Transition Picker
+
+    /// Presents transition picker for a scene boundary.
+    /// - Parameters:
+    ///   - fromSceneId: ID of the outgoing scene
+    ///   - toSceneId: ID of the incoming scene
+    ///   - anchorRect: Rect for popover anchor (in TimelineView coordinates)
+    private func presentTransitionPicker(fromSceneId: UUID, toSceneId: UUID, anchorRect: CGRect) {
+        let key = SceneBoundaryKey(fromSceneId, toSceneId)
+        let current = editorStore?.state.canonicalTimeline.boundaryTransitions[key] ?? .none
+
+        let picker = TransitionPickerViewController(currentType: current.type)
+
+        picker.onSelectTransition = { [weak self] transition in
+            // Dispatch AFTER dismiss (completion block)
+            self?.editorStore?.dispatch(.setBoundaryTransition(
+                fromSceneId: fromSceneId,
+                toSceneId: toSceneId,
+                transition: transition
+            ))
+        }
+
+        // Wrap in navigation controller for title/cancel button
+        let nav = UINavigationController(rootViewController: picker)
+
+        // iPad: popover, iPhone: sheet
+        if traitCollection.userInterfaceIdiom == .pad {
+            nav.modalPresentationStyle = .popover
+            if let popover = nav.popoverPresentationController {
+                popover.sourceView = editorLayoutContainer.timelineView
+                popover.sourceRect = anchorRect
+            }
+        } else {
+            nav.modalPresentationStyle = .pageSheet
+            if let sheet = nav.sheetPresentationController {
+                sheet.detents = [.medium()]
+                sheet.prefersGrabberVisible = true
+            }
+        }
+
+        present(nav, animated: true)
+    }
+
+    /// Handles editor notices (e.g., transition reset alerts).
+    private func handleEditorNotice(_ notice: EditorNotice) {
+        switch notice {
+        case .boundaryTransitionsReset:
+            let alert = UIAlertController(
+                title: "Transitions Removed",
+                message: "Some transitions were removed because scene boundaries changed or adjacent scenes are too short.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+        }
+    }
+
     // MARK: - PR2: Editor Callbacks
 
     private func handleEditorClose() {
@@ -617,15 +677,16 @@ final class PlayerViewController: UIViewController {
         fullScreenVC.modalPresentationStyle = .fullScreen
         fullScreenPreviewVC = fullScreenVC
 
-        // Configure with current state
-        fullScreenVC.configure(currentFrame: currentFrameIndex, isPlaying: isPlaying)
+        // Phase 2.1: Use compressed frame from store (not currentFrameIndex)
+        let compressedFrame = editorStore?.playheadCompressedFrame ?? 0
+        fullScreenVC.configure(compressedFrame: compressedFrame, isPlaying: isPlaying)
 
         // Move metalView to fullscreen VC
         metalView.removeFromSuperview()
         fullScreenVC.embedMetalView(metalView)
 
         // Wire callbacks
-        fullScreenVC.onClose = { [weak self] frame in
+        fullScreenVC.onClose = { [weak self] returnedCompressedFrame in
             guard let self = self else { return }
 
             // Clear reference
@@ -636,10 +697,8 @@ final class PlayerViewController: UIViewController {
             self.editorLayoutContainer.embedMetalView(self.metalView)
 
             self.dismiss(animated: true) {
-                // PR-E: Restore position
-                self.currentFrameIndex = frame
-                let timeUs = frameToUs(frame, fps: Int(self.sceneFPS))
-                self.editorLayoutContainer.setCurrentTimeUs(timeUs)
+                // Phase 2.1: Dispatch compressed frame directly (no frameToUs conversion)
+                self.editorStore?.dispatch(.setPlayhead(compressedFrame: returnedCompressedFrame))
                 self.metalView.setNeedsDisplay()
             }
         }
@@ -653,11 +712,11 @@ final class PlayerViewController: UIViewController {
 
     /// Handles timeline scrub events.
     /// Release v1: Routes through EditorStore for single source of truth.
+    /// Phase 2.1: Uses compressed frame directly.
     /// - Parameters:
-    ///   - timeUs: Time in microseconds
-    ///   - mode: Quantize mode for frame calculation
+    ///   - compressedFrame: Compressed frame index (quantize applied at TimelineView)
     ///   - phase: Gesture phase for scrub drag state tracking
-    private func handleTimelineScrub(timeUs: TimeUs, mode: QuantizeMode, phase: InteractionPhase) {
+    private func handleTimelineScrub(compressedFrame: Int, phase: InteractionPhase) {
         // Track scrub drag state for render throttling (A/B testing)
         switch phase {
         case .began:
@@ -679,7 +738,7 @@ final class PlayerViewController: UIViewController {
         }
 
         // Dispatch to store - onPlayheadChanged callback handles coordinator + redraw + currentFrameIndex
-        editorStore?.dispatch(.setPlayhead(timeUs: timeUs, quantize: mode))
+        editorStore?.dispatch(.setPlayhead(compressedFrame: compressedFrame))
     }
 
     private func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
@@ -711,8 +770,8 @@ final class PlayerViewController: UIViewController {
 
         // Step 3: Wire split callbacks (Release v1)
         // onPlayheadChanged: lightweight, frequent updates (scrubbing, playback tick)
-        store.onPlayheadChanged = { [weak self] timeUs in
-            self?.handlePlayheadChanged(timeUs)
+        store.onPlayheadChanged = { [weak self] compressedFrame in
+            self?.handlePlayheadChanged(compressedFrame)
         }
 
         // onSelectionChanged: lightweight updates (highlight, handles)
@@ -752,6 +811,11 @@ final class PlayerViewController: UIViewController {
             self?.handleSceneStateChanged(instanceId: instanceId, sceneState: sceneState)
         }
 
+        // PR-G: Notice callback for user-facing feedback (e.g., transition reset alerts)
+        store.onNotice = { [weak self] notice in
+            self?.handleEditorNotice(notice)
+        }
+
         // PR-D: Setup Scene Edit interaction controller
         let sceneEditCtrl = SceneEditInteractionController()
         sceneEditCtrl.overlayView = overlayView
@@ -776,10 +840,12 @@ final class PlayerViewController: UIViewController {
         currentProjectDraft = store.currentDraft
         log("[Release v1] Timeline configured: \(store.sceneItems.count) scenes, duration=\(store.projectDurationUs)us")
 
-        // PR-E: Configure timeline UI with scenes from store
+        // PR-E: Configure timeline UI with scenes from store (PR-G: includes boundaries)
         let scenes = store.sceneDrafts
+        let boundaries = store.state.canonicalTimeline.toSceneBoundaryDrafts()
         editorLayoutContainer.configure(
             scenes: scenes,
+            boundaries: boundaries,
             templateFPS: fps,
             minSceneDurationUs: ProjectDraft.minSceneDurationUs
         )
@@ -792,7 +858,7 @@ final class PlayerViewController: UIViewController {
 
         // Step 8: PR9.1 - Initial apply SceneState for first scene
         // Without this, activeSceneInstanceId stays nil until first scrub/play
-        handlePlayheadChanged(store.playheadTimeUs)
+        handlePlayheadChanged(store.playheadCompressedFrame)
 
         // PR10: Editor boot invariant - verify wiring is complete
         #if DEBUG
@@ -916,6 +982,10 @@ final class PlayerViewController: UIViewController {
                 log("[TimelineComposition] Failed to create TransitionCompositor: \(error)")
             }
         }
+
+        // Phase 2.1: Wire mapper to timeline UI after engine setup
+        let mapper = store.state.makePlayheadMapper()
+        editorLayoutContainer.setMapper(mapper)
     }
 
     /// Resolves a MediaRef to UIImage for the composition engine.
@@ -1185,7 +1255,8 @@ final class PlayerViewController: UIViewController {
     /// Called when playhead position changes (lightweight, frequent).
     /// Used for scrubbing and playback tick updates.
     /// PR-F: Routes to engine path for timeline mode, coordinator path for sceneEdit mode.
-    private func handlePlayheadChanged(_ timeUs: TimeUs) {
+    /// Phase 2.1: Takes compressed frame directly from store.
+    private func handlePlayheadChanged(_ compressedFrame: Int) {
         let uiMode = editorStore?.state.uiMode ?? .timeline
 
         #if DEBUG
@@ -1196,11 +1267,11 @@ final class PlayerViewController: UIViewController {
         switch uiMode {
         case .timeline:
             // PR-F: Use TimelineCompositionEngine for timeline mode
-            handleTimelineModePlayheadChanged(timeUs)
+            handleTimelineModePlayheadChanged(compressedFrame)
 
         case .sceneEdit:
             // Scene Edit mode: use old coordinator path (single-scene)
-            handleSceneEditModePlayheadChanged(timeUs)
+            handleSceneEditModePlayheadChanged(compressedFrame)
         }
 
         #if DEBUG
@@ -1209,22 +1280,23 @@ final class PlayerViewController: UIViewController {
     }
 
     /// PR-F: Handles playhead changes in timeline mode via TimelineCompositionEngine.
-    private func handleTimelineModePlayheadChanged(_ timeUs: TimeUs) {
+    /// Phase 2.1: Takes compressed frame directly (no conversion needed).
+    private func handleTimelineModePlayheadChanged(_ compressedFrame: Int) {
         // PR-G: Timeline mode is engine-only, no fallback to coordinator path
         guard let engine = timelineCompositionEngine else {
             assertionFailure("handleTimelineModePlayheadChanged requires timelineCompositionEngine")
             return
         }
 
-        // Convert timeUs to compressed frame
-        let compressedFrame = engine.compressedFrame(forTimeUs: timeUs)
+        // Phase 2.1: Compressed frame is now source of truth
         currentCompressedFrame = compressedFrame
 
         // PR-F: Set activeSceneInstanceId SYNCHRONOUSLY for boot invariant.
         activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
 
         // PR-G: Use shared helper with scrub invalidation
-        resolveAndPresentTimelineFrame(timeUs: timeUs, invalidateScrub: true)
+        // Phase 2.1: Pass compressed frame directly (no round-trip conversion)
+        resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: true)
     }
 
     /// PR-G: Refreshes current timeline frame after edits (variant/media/toggle/transform/transition).
@@ -1234,19 +1306,18 @@ final class PlayerViewController: UIViewController {
         guard uiMode == .timeline else { return }
         guard timelineCompositionEngine != nil else { return }
 
-        let timeUs = editorStore?.playheadTimeUs ?? 0
-        resolveAndPresentTimelineFrame(timeUs: timeUs, invalidateScrub: false)
+        // Phase 2.1: Use compressed frame directly from store
+        let compressedFrame = editorStore?.playheadCompressedFrame ?? 0
+        resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: false)
     }
 
     /// PR-G: Shared helper for timeline frame resolution.
     /// Used by both scrub (handleTimelineModePlayheadChanged) and edit refresh (refreshCurrentTimelineFrame).
     /// - Parameters:
-    ///   - timeUs: Playhead position in microseconds
+    ///   - compressedFrame: Playhead position in compressed frames (Phase 2.1)
     ///   - invalidateScrub: If true, invalidates scrub generation for stale detection (used during scrub)
-    private func resolveAndPresentTimelineFrame(timeUs: TimeUs, invalidateScrub: Bool) {
+    private func resolveAndPresentTimelineFrame(compressedFrame: Int, invalidateScrub: Bool) {
         guard let engine = timelineCompositionEngine else { return }
-
-        let compressedFrame = engine.compressedFrame(forTimeUs: timeUs)
 
         // Capture generation for stale detection (only if invalidating)
         var generation: UInt64?
@@ -1306,8 +1377,13 @@ final class PlayerViewController: UIViewController {
     }
 
     /// Handles playhead changes in Scene Edit mode via TimelinePlaybackCoordinator.
-    private func handleSceneEditModePlayheadChanged(_ timeUs: TimeUs) {
+    /// Phase 2.1: Takes compressed frame and converts to nominal timeUs for coordinator.
+    private func handleSceneEditModePlayheadChanged(_ compressedFrame: Int) {
         guard let coordinator = playbackCoordinator else { return }
+
+        // Phase 2.1: Convert compressed frame to nominal timeUs for coordinator
+        let mapper = editorStore?.state.makePlayheadMapper() ?? TimelinePlayheadMapper.empty
+        let timeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
 
         // Try sync path first (same scene, no load needed)
         if let localFrame = coordinator.syncSetGlobalTimeUs(timeUs) {
@@ -1372,9 +1448,10 @@ final class PlayerViewController: UIViewController {
     /// Called when timeline structure changes (heavier, less frequent).
     /// Used for scene add/remove/trim commits.
     private func handleTimelineChanged(_ state: EditorState) {
-        // Update scene clips UI
+        // Update scene clips UI (PR-G: includes boundaries)
         let scenes = state.canonicalTimeline.toSceneDrafts()
-        editorLayoutContainer.updateScenes(scenes)
+        let boundaries = state.canonicalTimeline.toSceneBoundaryDrafts()
+        editorLayoutContainer.updateScenes(scenes, boundaries: boundaries)
 
         // Update coordinator timeline (legacy path for Scene Edit)
         playbackCoordinator?.updateSceneTimeline(from: state)
@@ -1384,6 +1461,10 @@ final class PlayerViewController: UIViewController {
             state.canonicalTimeline,
             sceneStates: state.draft.sceneInstanceStates
         )
+
+        // Phase 2.1: Update mapper in timeline UI after timeline changes
+        let mapper = state.makePlayheadMapper()
+        editorLayoutContainer.setMapper(mapper)
 
         // Mark draft as dirty for persistence
         currentProjectDraft = state.draft
@@ -1420,10 +1501,17 @@ final class PlayerViewController: UIViewController {
 
     /// Called during live-trim preview (lightweight, frequent).
     /// Only updates UI, skips playback coordinator and persistence.
+    /// Phase 2.1: Must update mapper for live trim scrub to work correctly.
     private func handleTimelinePreviewChanged(_ state: EditorState) {
-        // Update scene clips UI only
+        // Update scene clips UI only (PR-G: includes boundaries)
         let scenes = state.canonicalTimeline.toSceneDrafts()
-        editorLayoutContainer.updateScenes(scenes)
+        let boundaries = state.canonicalTimeline.toSceneBoundaryDrafts()
+        editorLayoutContainer.updateScenes(scenes, boundaries: boundaries)
+
+        // Phase 2.1: Update mapper in timeline UI for live trim preview
+        // This is required for scrub/layout to use correct mapping during trim drag
+        let mapper = state.makePlayheadMapper()
+        editorLayoutContainer.setMapper(mapper)
 
         // NOTE: Intentionally NOT updating:
         // - playbackCoordinator (expensive O(n) rebuild)
@@ -3055,7 +3143,8 @@ final class PlayerViewController: UIViewController {
             return
         }
 
-        let compressedFrame = engine.compressedFrame(forTimeUs: editorStore?.playheadTimeUs ?? 0)
+        // Phase 2.1: Use compressed frame directly from store (no conversion needed)
+        let compressedFrame = editorStore?.playheadCompressedFrame ?? 0
         let fps = Float(sceneFPS)
 
         // PR-G: Prewarm scenes BEFORE starting display link
@@ -3113,34 +3202,37 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func displayLinkFired() {
-        // PR-E: Calculate next time and dispatch through store
+        // Phase 2.1: Calculate next frame in compressed domain
         guard let store = editorStore else { return }
 
-        let fps = store.state.templateFPS
-        let frameDurationUs: TimeUs = 1_000_000 / TimeUs(fps)
-        let currentTimeUs = store.playheadTimeUs
-        let nextTimeUs = min(currentTimeUs + frameDurationUs, store.projectDurationUs)
+        // Increment by 1 frame in compressed domain
+        let currentFrame = store.playheadCompressedFrame
+        let maxFrame = store.state.compressedDurationFrames - 1
+        let nextFrame = min(currentFrame + 1, maxFrame)
 
         // Dispatch to store - onPlayheadChanged callback handles coordinator + redraw
-        store.dispatch(.setPlayhead(timeUs: nextTimeUs, quantize: .playback))
+        store.dispatch(.setPlayhead(compressedFrame: nextFrame))
 
-        // Global frame for UI (timeline ruler, fullscreen position)
-        let globalFrameIndex = Int(nextTimeUs * TimeUs(fps) / 1_000_000)
+        // Phase 2.1: Get mapper for UI updates
+        let mapper = store.state.makePlayheadMapper()
 
-        // PR-E: Update timeline/fullscreen position during playback
-        editorLayoutContainer.setCurrentTimeUs(nextTimeUs)
-        fullScreenPreviewVC?.setCurrentFrame(globalFrameIndex)
+        // Phase 2.1: Update timeline with compressed frame directly
+        editorLayoutContainer.setCurrentCompressedFrame(nextFrame, mapper: mapper)
+        fullScreenPreviewVC?.setCurrentCompressedFrame(nextFrame)
 
         // PR-F: Video sync via engine in timeline mode, legacy path in sceneEdit mode
         let uiMode = store.state.uiMode
         switch uiMode {
         case .timeline:
             // Use engine-driven video sync (routes to per-instance UserMediaService)
-            let compressedFrame = timelineCompositionEngine?.compressedFrame(forTimeUs: nextTimeUs) ?? 0
-            timelineCompositionEngine?.syncPlaybackTick(compressedFrame)
+            // Phase 2.1: Use nextFrame directly (already compressed)
+            timelineCompositionEngine?.syncPlaybackTick(nextFrame)
 
         case .sceneEdit:
             // Legacy path - use coordinator's local frame
+            let nextTimeUs = mapper.nominalTimeUs(forCompressedFrame: nextFrame)
+            let fps = store.state.templateFPS
+            let globalFrameIndex = Int(nextTimeUs * TimeUs(fps) / 1_000_000)
             let localFrame = playbackCoordinator?.currentLocalFrame ?? globalFrameIndex
             if let service = userMediaService,
                !service.blockIdsWithVideo.isEmpty,
@@ -3150,8 +3242,8 @@ final class PlayerViewController: UIViewController {
             }
         }
 
-        // Auto-stop at end
-        if nextTimeUs >= store.projectDurationUs {
+        // Auto-stop at end (check using compressed domain)
+        if nextFrame >= maxFrame {
             stopPlayback()
         }
     }

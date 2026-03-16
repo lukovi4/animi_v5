@@ -68,6 +68,21 @@ public struct TimelineTransitionMath: Sendable {
         return uncompressed - compressionFrames
     }
 
+    // MARK: - Scene Start Frames (Nominal)
+
+    /// Returns nominal start frame for scene at index.
+    /// Nominal = sum of preceding scene durations (no compression).
+    /// Scene 0 always starts at frame 0.
+    public func nominalStartFrame(forSceneAt index: Int) -> Int {
+        guard index > 0 && index < sceneItems.count else { return 0 }
+
+        var startFrame = 0
+        for i in 0..<index {
+            startFrame += durationFrames(forSceneAt: i)
+        }
+        return startFrame
+    }
+
     // MARK: - Scene Start Frames (Compressed)
 
     /// Returns compressed start frame for scene at index.

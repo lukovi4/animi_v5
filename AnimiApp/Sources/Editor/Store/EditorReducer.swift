@@ -3,17 +3,26 @@ import TVECore
 
 // MARK: - Editor Reducer (Release v1)
 
+/// Notice emitted by reducer for user-facing feedback.
+public enum EditorNotice: Equatable, Sendable {
+    /// Some boundary transitions were reset due to scene changes or constraints.
+    case boundaryTransitionsReset([SceneBoundaryKey])
+}
+
 /// Result of reducer execution.
-/// Contains updated state and flag indicating if undo snapshot should be pushed.
+/// Contains updated state, flags, and notices for user feedback.
 public struct ReducerResult: Sendable {
     /// Updated state after action.
     public let state: EditorState
     /// Whether to push undo snapshot (only for model-changing actions on commit).
     public let shouldPushSnapshot: Bool
+    /// Notices for user-facing feedback (e.g., alerts).
+    public let notices: [EditorNotice]
 
-    public init(state: EditorState, shouldPushSnapshot: Bool = false) {
+    public init(state: EditorState, shouldPushSnapshot: Bool = false, notices: [EditorNotice] = []) {
         self.state = state
         self.shouldPushSnapshot = shouldPushSnapshot
+        self.notices = notices
     }
 }
 
@@ -46,8 +55,10 @@ public enum EditorReducer {
 
         // MARK: - Playhead
 
-        case .setPlayhead(let timeUs, _):
-            newState.playheadTimeUs = clampTimeUs(timeUs, maxUs: newState.projectDurationUs)
+        case .setPlayhead(let compressedFrame):
+            // Clamp to valid range [0, compressedDurationFrames - 1]
+            let maxFrame = max(0, newState.compressedDurationFrames - 1)
+            newState.playheadCompressedFrame = clampFrame(compressedFrame, totalFrames: maxFrame + 1)
             // Playhead changes don't push snapshot
             return ReducerResult(state: newState, shouldPushSnapshot: false)
 
@@ -203,7 +214,7 @@ private extension EditorReducer {
         // Create initial state
         let state = EditorState(
             draft: newDraft,
-            playheadTimeUs: 0,
+            playheadCompressedFrame: 0,
             selection: .none,
             templateFPS: templateFPS
         )
@@ -264,13 +275,10 @@ private extension EditorReducer {
                 applyShiftLeft(timeline: &newState.canonicalTimeline, deltaUs: delta, newDurationUs: newTotalDuration)
             }
 
-            // Clamp playhead
-            newState.playheadTimeUs = clampTimeUs(newState.playheadTimeUs, maxUs: newTotalDuration)
+            // Apply invariants and build notices
+            let notices = applyInvariantsAndBuildNotices(state: &newState)
 
-            // Ensure invariants
-            ensureTrackInvariants(&newState.draft.canonicalTimeline)
-
-            return ReducerResult(state: newState, shouldPushSnapshot: true)
+            return ReducerResult(state: newState, shouldPushSnapshot: true, notices: notices)
 
         case .cancelled:
             // Revert to original state (no changes)
@@ -284,6 +292,8 @@ private extension EditorReducer {
 private extension EditorReducer {
 
     /// Handles scene reorder action.
+    /// Phase 2.1: Uses nominal roundtrip algorithm to preserve playhead position.
+    /// Playhead follows the moved scene if it was within that scene.
     static func reorderScene(
         state: EditorState,
         sceneId: UUID,
@@ -304,39 +314,54 @@ private extension EditorReducer {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
 
-        // Calculate playhead position relative to moved scene (before reorder)
-        let oldSceneStart = timeline.computedStartUs(forSceneAt: fromIndex)
-        let sceneItem = timeline.sceneItems[fromIndex]
-        let playheadRelativeToScene: TimeUs?
+        // Phase 2.1: Nominal roundtrip algorithm (from spec section 8)
+        // Step 1: Get old mapper and convert to nominal
+        let oldMapper = state.makePlayheadMapper()
+        let nominalPlayhead = oldMapper.nominalFrame(forCompressedFrame: state.playheadCompressedFrame)
 
-        if state.playheadTimeUs >= oldSceneStart &&
-           state.playheadTimeUs < oldSceneStart + sceneItem.durationUs {
-            // Playhead is within this scene - store relative offset
-            playheadRelativeToScene = state.playheadTimeUs - oldSceneStart
-        } else {
-            playheadRelativeToScene = nil
-        }
+        // Step 2: Get nominal start/duration of moved scene
+        let oldMath = state.makeTransitionMath()
+        let oldSceneNominalStart = oldMath.nominalStartFrame(forSceneAt: fromIndex)
+        let oldSceneNominalDuration = oldMath.durationFrames(forSceneAt: fromIndex)
+        let oldSceneNominalEnd = oldSceneNominalStart + oldSceneNominalDuration
 
-        // Perform reorder
+        // Step 3: Check if nominal playhead is within moved scene
+        let playheadInScene = nominalPlayhead >= oldSceneNominalStart && nominalPlayhead < oldSceneNominalEnd
+        let relativeNominal = playheadInScene ? (nominalPlayhead - oldSceneNominalStart) : nil
+
+        // Step 4: Perform reorder
         timeline.reorderScene(from: fromIndex, to: toIndex)
         newState.draft.canonicalTimeline = timeline
 
-        // Update playhead to follow scene (if it was within the moved scene)
-        if let relativeOffset = playheadRelativeToScene {
-            let newSceneStart = newState.canonicalTimeline.computedStartUs(forSceneAt: toIndex)
-            let newPlayhead = newSceneStart + relativeOffset
-            // Clamp within scene bounds and project duration
-            let sceneEnd = newSceneStart + sceneItem.durationUs
-            newState.playheadTimeUs = clampTimeUs(
-                min(newPlayhead, sceneEnd - 1),
-                maxUs: newState.projectDurationUs
-            )
+        // Ensure invariants (may affect transitions) - get reset keys for notices
+        let resetKeys = ensureTrackInvariants(&newState.draft.canonicalTimeline)
+
+        // Step 5: Build new mapper and compute new playhead
+        let newMapper = newState.makePlayheadMapper()
+
+        let newNominalPlayhead: Int
+        if let relNom = relativeNominal {
+            // Playhead was in moved scene - compute new nominal position
+            let newMath = newState.makeTransitionMath()
+            let newSceneNominalStart = newMath.nominalStartFrame(forSceneAt: toIndex)
+            let newSceneNominalDuration = newMath.durationFrames(forSceneAt: toIndex)
+            // Clamp within scene bounds
+            newNominalPlayhead = newSceneNominalStart + min(relNom, newSceneNominalDuration - 1)
+        } else {
+            // Playhead not in moved scene - keep same nominal position
+            // (but may need to clamp if duration changed)
+            newNominalPlayhead = min(nominalPlayhead, newMapper.nominalDurationFrames - 1)
         }
 
-        // Ensure invariants
-        ensureTrackInvariants(&newState.draft.canonicalTimeline)
+        // Step 6: Convert back to compressed with .ended quantize
+        newState.playheadCompressedFrame = newMapper.compressedFrame(
+            forNominalFrame: newNominalPlayhead,
+            quantize: .ended
+        )
 
-        return ReducerResult(state: newState, shouldPushSnapshot: true)
+        // Build notices from reset keys
+        let notices: [EditorNotice] = resetKeys.isEmpty ? [] : [.boundaryTransitionsReset(resetKeys)]
+        return ReducerResult(state: newState, shouldPushSnapshot: true, notices: notices)
     }
 }
 
@@ -366,14 +391,14 @@ private extension EditorReducer {
         // Initialize empty SceneState for new instance
         newState.draft.sceneInstanceStates[newItem.id] = .empty
 
-        // Ensure track invariants (normalize transitions)
-        ensureTrackInvariants(&newState.draft.canonicalTimeline)
+        // Apply invariants and build notices
+        let notices = applyInvariantsAndBuildNotices(state: &newState)
 
         #if DEBUG
         print("[EditorReducer] Added scene: \(sceneTypeId), duration: \(clampedDuration)us")
         #endif
 
-        return ReducerResult(state: newState, shouldPushSnapshot: true)
+        return ReducerResult(state: newState, shouldPushSnapshot: true, notices: notices)
     }
 }
 
@@ -423,14 +448,14 @@ private extension EditorReducer {
         let sourceState = newState.draft.sceneInstanceStates[sceneItemId] ?? .empty
         newState.draft.sceneInstanceStates[newItem.id] = sourceState
 
-        // Ensure track invariants (normalize transitions)
-        ensureTrackInvariants(&newState.draft.canonicalTimeline)
+        // Apply invariants and build notices
+        let notices = applyInvariantsAndBuildNotices(state: &newState)
 
         #if DEBUG
         print("[EditorReducer] Duplicated scene \(sceneItemId) -> \(newItem.id)")
         #endif
 
-        return ReducerResult(state: newState, shouldPushSnapshot: true)
+        return ReducerResult(state: newState, shouldPushSnapshot: true, notices: notices)
     }
 }
 
@@ -464,17 +489,14 @@ private extension EditorReducer {
         // Remove SceneState
         newState.draft.sceneInstanceStates.removeValue(forKey: sceneId)
 
-        // Clamp playhead if needed
-        newState.playheadTimeUs = clampTimeUs(newState.playheadTimeUs, maxUs: newState.projectDurationUs)
-
-        // Ensure track invariants (normalize transitions, remove orphaned)
-        ensureTrackInvariants(&newState.draft.canonicalTimeline)
+        // Apply invariants and build notices (also clamps playhead)
+        let notices = applyInvariantsAndBuildNotices(state: &newState)
 
         #if DEBUG
         print("[EditorReducer] Deleted scene \(sceneId)")
         #endif
 
-        return ReducerResult(state: newState, shouldPushSnapshot: true)
+        return ReducerResult(state: newState, shouldPushSnapshot: true, notices: notices)
     }
 }
 
@@ -511,10 +533,10 @@ private extension EditorReducer {
             #endif
         }
 
-        // Ensure invariants (will validate transition constraints)
-        ensureTrackInvariants(&newState.draft.canonicalTimeline)
+        // Apply invariants and build notices (also clamps playhead)
+        let notices = applyInvariantsAndBuildNotices(state: &newState)
 
-        return ReducerResult(state: newState, shouldPushSnapshot: true)
+        return ReducerResult(state: newState, shouldPushSnapshot: true, notices: notices)
     }
 }
 
@@ -526,7 +548,9 @@ private extension EditorReducer {
     /// - tracks[0] is always sceneSequence and is unique
     /// - TrackKind <-> ItemKind compatibility
     /// - sceneSequence items have startUs = nil
-    static func ensureTrackInvariants(_ timeline: inout CanonicalTimeline) {
+    /// - Returns: Array of boundary keys that were reset during normalization
+    @discardableResult
+    static func ensureTrackInvariants(_ timeline: inout CanonicalTimeline) -> [SceneBoundaryKey] {
 
         // 1. Ensure exactly one sceneSequence track at index 0
         let sceneSequenceTracks = timeline.tracks.enumerated().filter { $0.element.kind == .sceneSequence }
@@ -602,6 +626,23 @@ private extension EditorReducer {
             print("[EditorReducer] Reset \(result.resetBoundaries.count) invalid boundary transitions")
         }
         #endif
+
+        return result.resetBoundaries
+    }
+
+    /// Applies track invariants and builds notices for user feedback.
+    /// Use on all commit paths (trim.ended, reorder, add, duplicate, delete, setBoundaryTransition).
+    /// - Parameter state: Editor state to modify
+    /// - Returns: Notices to emit (empty if no boundaries were reset)
+    static func applyInvariantsAndBuildNotices(state: inout EditorState) -> [EditorNotice] {
+        let resetKeys = ensureTrackInvariants(&state.canonicalTimeline)
+
+        // Clamp playhead to new compressed duration
+        let maxFrame = max(0, state.compressedDurationFrames - 1)
+        state.playheadCompressedFrame = min(state.playheadCompressedFrame, maxFrame)
+
+        guard !resetKeys.isEmpty else { return [] }
+        return [.boundaryTransitionsReset(resetKeys)]
     }
 }
 
@@ -793,6 +834,7 @@ private extension EditorReducer {
 
     /// Enters scene edit mode for a specific scene.
     /// Saves current playhead, moves to scene start, sets UI mode.
+    /// Phase 2.1: Uses mapper.sceneBoundaryCompressedFrame for boundary-preserving entry.
     static func enterSceneEdit(
         state: EditorState,
         sceneId: UUID
@@ -800,16 +842,18 @@ private extension EditorReducer {
         var newState = state
 
         // 1. Save current playhead for return
-        newState.sceneEditReturnPlayheadUs = state.playheadTimeUs
+        newState.sceneEditReturnCompressedFrame = state.playheadCompressedFrame
 
-        // 2. Find scene index and compute its startUs
+        // 2. Find scene index and compute its boundary-preserving compressed start frame
         guard let index = state.canonicalTimeline.sceneItems.firstIndex(where: { $0.id == sceneId }) else {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
-        let startUs = state.canonicalTimeline.computedStartUs(forSceneAt: index)
+        // Phase 2.1: Use mapper.sceneBoundaryCompressedFrame, NOT raw math.compressedStartFrame
+        let mapper = state.makePlayheadMapper()
+        let sceneStartCompressedFrame = mapper.sceneBoundaryCompressedFrame(forSceneAt: index)
 
         // 3. Move playhead to scene start
-        newState.playheadTimeUs = startUs
+        newState.playheadCompressedFrame = sceneStartCompressedFrame
 
         // 4. Set UI mode
         newState.uiMode = .sceneEdit(sceneInstanceId: sceneId)
@@ -827,12 +871,12 @@ private extension EditorReducer {
         var newState = state
 
         // 1. Restore playhead
-        if let returnPlayhead = state.sceneEditReturnPlayheadUs {
-            newState.playheadTimeUs = returnPlayhead
+        if let returnFrame = state.sceneEditReturnCompressedFrame {
+            newState.playheadCompressedFrame = returnFrame
         }
 
         // 2. Clear Scene Edit state
-        newState.sceneEditReturnPlayheadUs = nil
+        newState.sceneEditReturnCompressedFrame = nil
         newState.uiMode = .timeline
         newState.selectedBlockId = nil
 

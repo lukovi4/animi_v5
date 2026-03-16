@@ -1,16 +1,18 @@
 import UIKit
 import MetalKit
 
-// MARK: - Full Screen Preview View Controller (PR2)
+// MARK: - Full Screen Preview View Controller (PR2, Phase 2.1)
 
 /// Full-screen preview without timeline.
 /// Minimal UI: play/pause and close button.
 /// Returns to editor preserving current frame position.
+/// Phase 2.1: Uses compressedFrame as opaque playhead representation.
 final class FullScreenPreviewViewController: UIViewController {
 
     // MARK: - Callbacks
 
-    /// Called when close button tapped. Returns current frame index.
+    /// Called when close button tapped. Returns compressed frame index.
+    /// Phase 2.1: Returns compressed frame as-is (no nominal conversion).
     var onClose: ((Int) -> Void)?
 
     /// Called when play/pause tapped.
@@ -18,7 +20,9 @@ final class FullScreenPreviewViewController: UIViewController {
 
     // MARK: - State
 
-    private var currentFrame: Int = 0
+    /// Current playhead position in compressed frames.
+    /// Phase 2.1: Opaque storage - no nominal conversion inside controller.
+    private var compressedFrame: Int = 0
     private var isPlaying: Bool = false
 
     // MARK: - Subviews
@@ -145,16 +149,18 @@ final class FullScreenPreviewViewController: UIViewController {
         ])
     }
 
-    /// Sets initial state.
-    func configure(currentFrame: Int, isPlaying: Bool) {
-        self.currentFrame = currentFrame
+    /// Sets initial state with compressed frame.
+    /// Phase 2.1: Uses compressedFrame as opaque playhead.
+    func configure(compressedFrame: Int, isPlaying: Bool) {
+        self.compressedFrame = compressedFrame
         self.isPlaying = isPlaying
         updatePlayPauseButton()
     }
 
-    /// Updates current frame (from playback).
-    func setCurrentFrame(_ frame: Int) {
-        currentFrame = frame
+    /// Updates current compressed frame (from playback).
+    /// Phase 2.1: Uses compressed frame directly.
+    func setCurrentCompressedFrame(_ frame: Int) {
+        compressedFrame = frame
     }
 
     /// Updates playing state.
@@ -173,7 +179,7 @@ final class FullScreenPreviewViewController: UIViewController {
     // MARK: - Actions
 
     @objc private func closeTapped() {
-        onClose?(currentFrame)
+        onClose?(compressedFrame)
     }
 
     @objc private func playPauseTapped() {

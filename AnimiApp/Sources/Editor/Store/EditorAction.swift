@@ -20,12 +20,11 @@ public enum EditorAction: Sendable {
 
     // MARK: - Playhead
 
-    /// Sets playhead position.
+    /// Sets playhead position in compressed frames.
     /// Does NOT push undo snapshot.
-    /// - Parameters:
-    ///   - timeUs: Time in microseconds
-    ///   - quantize: Quantize mode for frame calculation
-    case setPlayhead(timeUs: TimeUs, quantize: QuantizeMode)
+    /// Quantize is applied at the call site (TimelineView) before dispatch.
+    /// - Parameter compressedFrame: Frame index in compressed timeline
+    case setPlayhead(compressedFrame: Int)
 
     // MARK: - Selection
 

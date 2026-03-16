@@ -18,6 +18,19 @@ public struct SceneDraft: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Scene Boundary Draft (UI Adapter)
+
+/// Simple struct for passing boundary info to UI components.
+/// Contains scene pair IDs and transition - used by TimelineView, SceneTrackView, etc.
+public struct SceneBoundaryDraft: Equatable, Sendable {
+    /// ID of the outgoing scene (scene A).
+    public let fromSceneId: UUID
+    /// ID of the incoming scene (scene B).
+    public let toSceneId: UUID
+    /// Transition effect for this boundary.
+    public let transition: SceneTransition
+}
+
 // MARK: - Canonical Timeline (v6 Schema)
 
 /// Canonical microseconds-based timeline model.
@@ -275,6 +288,24 @@ public extension CanonicalTimeline {
         sceneItems.map { item in
             SceneDraft(id: item.id, durationUs: item.durationUs)
         }
+    }
+
+    /// Converts adjacent scene boundaries to SceneBoundaryDraft array for UI.
+    /// Returns all boundaries in visual order; missing registry entries default to `.none`.
+    func toSceneBoundaryDrafts() -> [SceneBoundaryDraft] {
+        let items = sceneItems
+        guard items.count > 1 else { return [] }
+        var drafts: [SceneBoundaryDraft] = []
+        for i in 0..<(items.count - 1) {
+            let key = SceneBoundaryKey(items[i].id, items[i + 1].id)
+            let transition = boundaryTransitions[key] ?? .none
+            drafts.append(SceneBoundaryDraft(
+                fromSceneId: items[i].id,
+                toSceneId: items[i + 1].id,
+                transition: transition
+            ))
+        }
+        return drafts
     }
 
     /// Updates a scene item's duration by ID.

@@ -26,6 +26,27 @@ public struct SceneTransition: Codable, Equatable, Sendable {
 
     /// No transition (instant cut).
     public static let none = SceneTransition(type: .none, durationFrames: 0, easingPreset: .linear)
+
+    /// Returns v1 preset for a given transition type.
+    /// - `.none` → instant cut (0 frames)
+    /// - `.fade` → 14 frames + linear
+    /// - `.slide/.push/.dip*` → 14 frames + easeInOut
+    public static func v1Preset(for type: TransitionType) -> SceneTransition {
+        switch type {
+        case .none:
+            return .none
+        case .fade:
+            return SceneTransition(type: .fade, durationFrames: 14, easingPreset: .linear)
+        case .slide(let dir):
+            return SceneTransition(type: .slide(direction: dir), durationFrames: 14, easingPreset: .easeInOut)
+        case .push(let dir):
+            return SceneTransition(type: .push(direction: dir), durationFrames: 14, easingPreset: .easeInOut)
+        case .dipToBlack:
+            return SceneTransition(type: .dipToBlack, durationFrames: 14, easingPreset: .easeInOut)
+        case .dipToWhite:
+            return SceneTransition(type: .dipToWhite, durationFrames: 14, easingPreset: .easeInOut)
+        }
+    }
 }
 
 // MARK: - Transition Type
@@ -34,7 +55,7 @@ public struct SceneTransition: Codable, Equatable, Sendable {
 public enum TransitionType: Codable, Equatable, Sendable {
     /// No transition (instant cut).
     case none
-    /// Cross-fade between scenes.
+    /// Incoming scene fades over outgoing scene.
     case fade
     /// Scene B slides in from direction, A stays in place.
     case slide(direction: TransitionDirection)

@@ -339,18 +339,6 @@ public final class TimelineCompositionEngine {
         }
     }
 
-    // MARK: - Playhead Conversion
-
-    /// Converts microseconds to compressed frame.
-    public func compressedFrame(forTimeUs timeUs: TimeUs) -> Int {
-        Int(timeUs * TimeUs(fps) / 1_000_000)
-    }
-
-    /// Converts compressed frame to microseconds.
-    public func timeUs(forCompressedFrame frame: Int) -> TimeUs {
-        TimeUs(frame) * 1_000_000 / TimeUs(fps)
-    }
-
     // MARK: - Scene Query
 
     /// Returns scene instance ID at given compressed frame.
