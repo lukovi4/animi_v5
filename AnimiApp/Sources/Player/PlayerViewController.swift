@@ -135,6 +135,8 @@ final class PlayerViewController: UIViewController {
     private var lastVideoUpdateFrame: Int = -1
     /// Release v1: Track async playhead task to cancel stale requests
     private var playheadAsyncTask: Task<Void, Never>?
+    /// PR-G: Track async playback start task for cancellation
+    private var playbackStartTask: Task<Void, Never>?
 
     // MARK: - Editor (PR-19)
     private var scenePlayer: ScenePlayer?
@@ -146,6 +148,17 @@ final class PlayerViewController: UIViewController {
     private var sceneLibrarySnapshot: SceneLibrarySnapshot?
     private var playbackCoordinator: TimelinePlaybackCoordinator?
     private var defaultSceneSequence: [SceneTypeDefault] = []
+
+    // MARK: - Multi-Scene Timeline Engine (PR-F)
+    /// Composition engine for multi-scene timeline with transitions.
+    /// Created when timeline has multiple scenes with transitions.
+    private var timelineCompositionEngine: TimelineCompositionEngine?
+    /// Transition compositor for GPU blending during transitions.
+    private var transitionCompositor: TransitionCompositor?
+    /// Cached resolved frame for timeline mode (pre-resolved async before draw).
+    private var cachedTimelineFrame: ResolvedTimelineFrame?
+    /// Current compressed frame for timeline mode (for scrub invalidation).
+    private var currentCompressedFrame: Int = 0
 
     // MARK: - PR9: Active Scene Instance Tracking
     /// Currently active scene instance ID (for per-instance state apply).
@@ -173,6 +186,11 @@ final class PlayerViewController: UIViewController {
     private var currentTemplateId: String?
     private var pendingBackgroundRegionId: String?
     private var lastBackgroundPresetId: String?
+
+    /// PR-G: Shared background texture provider for project-level background images.
+    /// Written by BackgroundTextureService, read by all render paths (preview, transition, export).
+    /// Separate from scene texture providers to ensure background textures are always accessible.
+    private var backgroundTextureProvider: InMemoryTextureProvider?
 
     // PR-E: Pending media picker state (deterministic blockId tracking)
     private var pendingPickedMediaBlockId: String?
@@ -729,6 +747,11 @@ final class PlayerViewController: UIViewController {
             self?.handleStateRestoredFromUndoRedo()
         }
 
+        // PR-F: Scene state change callback for incremental engine sync
+        store.onSceneStateChanged = { [weak self] instanceId, sceneState in
+            self?.handleSceneStateChanged(instanceId: instanceId, sceneState: sceneState)
+        }
+
         // PR-D: Setup Scene Edit interaction controller
         let sceneEditCtrl = SceneEditInteractionController()
         sceneEditCtrl.overlayView = overlayView
@@ -764,20 +787,32 @@ final class PlayerViewController: UIViewController {
         // Step 7: Setup TimelinePlaybackCoordinator (Release v1)
         setupPlaybackCoordinator()
 
+        // Step 7b: Setup TimelineCompositionEngine (PR-F: multi-scene with transitions)
+        setupTimelineCompositionEngine()
+
         // Step 8: PR9.1 - Initial apply SceneState for first scene
         // Without this, activeSceneInstanceId stays nil until first scrub/play
         handlePlayheadChanged(store.playheadTimeUs)
 
         // PR10: Editor boot invariant - verify wiring is complete
         #if DEBUG
+        let bootUIMode = store.state.uiMode
         if activeSceneInstanceId == nil {
             assertionFailure("[PR10] configureEditorTimeline: activeSceneInstanceId is nil after initial apply")
         }
         if scenePlayer == nil {
             assertionFailure("[PR10] configureEditorTimeline: scenePlayer is nil after initial apply")
         }
-        if playbackCoordinator?.currentSceneInstanceId == nil {
-            assertionFailure("[PR10] configureEditorTimeline: playbackCoordinator.currentSceneInstanceId is nil after initial apply")
+        // PR-F: In timeline mode, engine is source of truth; in scene edit mode, coordinator is.
+        switch bootUIMode {
+        case .timeline:
+            if timelineCompositionEngine?.transitionMath == nil {
+                assertionFailure("[PR10] configureEditorTimeline: engine.transitionMath is nil in timeline mode")
+            }
+        case .sceneEdit:
+            if playbackCoordinator?.currentSceneInstanceId == nil {
+                assertionFailure("[PR10] configureEditorTimeline: playbackCoordinator.currentSceneInstanceId is nil in scene edit mode")
+            }
         }
         #endif
     }
@@ -829,6 +864,76 @@ final class PlayerViewController: UIViewController {
         }
 
         self.playbackCoordinator = coordinator
+    }
+
+    /// Sets up the TimelineCompositionEngine for multi-scene rendering with transitions.
+    /// Call this after setupPlaybackCoordinator and when timeline changes.
+    private func setupTimelineCompositionEngine() {
+        guard let device = metalView.device,
+              let queue = commandQueue,
+              let store = editorStore,
+              let library = sceneLibrarySnapshot else {
+            return
+        }
+
+        // Create or reuse engine
+        let engine: TimelineCompositionEngine
+        if let existing = timelineCompositionEngine {
+            engine = existing
+        } else {
+            engine = TimelineCompositionEngine(
+                device: device,
+                commandQueue: queue,
+                fps: library.fps
+            )
+
+            // Configure scene URL provider (captures library by value - it's a struct)
+            engine.resourcesCache.sceneURLProvider = { sceneTypeId in
+                library.scene(byId: sceneTypeId)?.folderURL
+            }
+
+            // PR-F: Set template canvas from library
+            engine.setTemplateCanvas(library.canvas)
+
+            timelineCompositionEngine = engine
+        }
+
+        // Update timeline from store
+        let timeline = store.state.canonicalTimeline
+        let sceneStates = store.state.draft.sceneInstanceStates
+        engine.setTimeline(timeline, sceneStates: sceneStates)
+
+        // PR-G: Create transition compositor unconditionally
+        // Compositor doesn't depend on timeline contents, only on device/pixelFormat
+        // Creating lazily based on boundaryTransitions caused bugs when first transition was added later
+        if transitionCompositor == nil {
+            do {
+                transitionCompositor = try TransitionCompositor(
+                    device: device,
+                    colorPixelFormat: metalView.colorPixelFormat
+                )
+            } catch {
+                log("[TimelineComposition] Failed to create TransitionCompositor: \(error)")
+            }
+        }
+    }
+
+    /// Resolves a MediaRef to UIImage for the composition engine.
+    private func resolveMediaRef(_ mediaRef: MediaRef) async -> UIImage? {
+        // Only handle file-based media refs
+        guard mediaRef.kind == .file else { return nil }
+
+        // Resolve URL from relative path via ProjectStore
+        guard let url = try? ProjectStore.shared.absoluteURL(for: mediaRef) else {
+            return nil
+        }
+
+        // Load image from URL
+        guard let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return image
     }
 
     /// Loads a scene type asynchronously for the coordinator.
@@ -939,6 +1044,10 @@ final class PlayerViewController: UIViewController {
     /// Called when active scene instance changes.
     /// Fires on every instance change, even if sceneTypeId is the same.
     private func handleActiveSceneChanged(_ sceneInfo: TimelinePlaybackCoordinator.SceneTimeInfo) {
+        // PR-G: In timeline mode, engine is source of truth - ignore coordinator callback
+        let uiMode = editorStore?.state.uiMode ?? .timeline
+        guard case .sceneEdit = uiMode else { return }
+
         let previousInstanceId = activeSceneInstanceId
         activeSceneInstanceId = sceneInfo.sceneInstanceId
 
@@ -1075,13 +1184,130 @@ final class PlayerViewController: UIViewController {
 
     /// Called when playhead position changes (lightweight, frequent).
     /// Used for scrubbing and playback tick updates.
+    /// PR-F: Routes to engine path for timeline mode, coordinator path for sceneEdit mode.
     private func handlePlayheadChanged(_ timeUs: TimeUs) {
-        guard let coordinator = playbackCoordinator else { return }
+        let uiMode = editorStore?.state.uiMode ?? .timeline
 
         #if DEBUG
         let signpostId = ScrubSignpost.beginHandlePlayheadChanged()
         ScrubCallCounter.shared.recordHandlePlayheadChanged()
         #endif
+
+        switch uiMode {
+        case .timeline:
+            // PR-F: Use TimelineCompositionEngine for timeline mode
+            handleTimelineModePlayheadChanged(timeUs)
+
+        case .sceneEdit:
+            // Scene Edit mode: use old coordinator path (single-scene)
+            handleSceneEditModePlayheadChanged(timeUs)
+        }
+
+        #if DEBUG
+        ScrubSignpost.endHandlePlayheadChanged(signpostId, syncPath: uiMode != .timeline)
+        #endif
+    }
+
+    /// PR-F: Handles playhead changes in timeline mode via TimelineCompositionEngine.
+    private func handleTimelineModePlayheadChanged(_ timeUs: TimeUs) {
+        // PR-G: Timeline mode is engine-only, no fallback to coordinator path
+        guard let engine = timelineCompositionEngine else {
+            assertionFailure("handleTimelineModePlayheadChanged requires timelineCompositionEngine")
+            return
+        }
+
+        // Convert timeUs to compressed frame
+        let compressedFrame = engine.compressedFrame(forTimeUs: timeUs)
+        currentCompressedFrame = compressedFrame
+
+        // PR-F: Set activeSceneInstanceId SYNCHRONOUSLY for boot invariant.
+        activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
+
+        // PR-G: Use shared helper with scrub invalidation
+        resolveAndPresentTimelineFrame(timeUs: timeUs, invalidateScrub: true)
+    }
+
+    /// PR-G: Refreshes current timeline frame after edits (variant/media/toggle/transform/transition).
+    /// Unlike scrub, this doesn't invalidate generation - just re-resolves current position.
+    private func refreshCurrentTimelineFrame() {
+        let uiMode = editorStore?.state.uiMode ?? .timeline
+        guard uiMode == .timeline else { return }
+        guard timelineCompositionEngine != nil else { return }
+
+        let timeUs = editorStore?.playheadTimeUs ?? 0
+        resolveAndPresentTimelineFrame(timeUs: timeUs, invalidateScrub: false)
+    }
+
+    /// PR-G: Shared helper for timeline frame resolution.
+    /// Used by both scrub (handleTimelineModePlayheadChanged) and edit refresh (refreshCurrentTimelineFrame).
+    /// - Parameters:
+    ///   - timeUs: Playhead position in microseconds
+    ///   - invalidateScrub: If true, invalidates scrub generation for stale detection (used during scrub)
+    private func resolveAndPresentTimelineFrame(timeUs: TimeUs, invalidateScrub: Bool) {
+        guard let engine = timelineCompositionEngine else { return }
+
+        let compressedFrame = engine.compressedFrame(forTimeUs: timeUs)
+
+        // Capture generation for stale detection (only if invalidating)
+        var generation: UInt64?
+        if invalidateScrub {
+            engine.invalidateScrub()
+            generation = engine.currentScrubGeneration
+        }
+
+        // Cancel previous playhead task
+        playheadAsyncTask?.cancel()
+
+        playheadAsyncTask = Task { @MainActor in
+            // Resolve frame via engine (async - may prepare runtimes)
+            guard let resolved = await engine.resolveFrame(compressedFrame, generation: generation) else {
+                // Generation mismatch or failed to prepare - skip
+                return
+            }
+
+            // Check if this task was cancelled
+            guard !Task.isCancelled else { return }
+
+            // Cache resolved frame for draw()
+            self.cachedTimelineFrame = resolved
+
+            // PR-F: Set activeSceneInstanceId from engine (required for controller invariants)
+            // For single: use context's sceneInstanceId
+            // For transition: use primary scene from frameMapping
+            switch resolved {
+            case .single(let ctx):
+                self.activeSceneInstanceId = ctx.sceneInstanceId
+            case .transition:
+                // Use primary scene (frameMapping gives the "current" scene during transition)
+                self.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
+            }
+
+            // Update video frames for scrub based on resolved context
+            if !self.isPlaying {
+                switch resolved {
+                case .single(let ctx):
+                    if let runtime = engine.runtime(for: ctx.sceneInstanceId) {
+                        runtime.syncVideoFrame(ctx.localFrame)
+                    }
+                case .transition(let ctx):
+                    // Sync both scenes in transition
+                    if let runtimeA = engine.runtime(for: ctx.sceneA.sceneInstanceId) {
+                        runtimeA.syncVideoFrame(ctx.sceneA.localFrame)
+                    }
+                    if let runtimeB = engine.runtime(for: ctx.sceneB.sceneInstanceId) {
+                        runtimeB.syncVideoFrame(ctx.sceneB.localFrame)
+                    }
+                }
+            }
+
+            // Trigger redraw
+            self.requestMetalRender()
+        }
+    }
+
+    /// Handles playhead changes in Scene Edit mode via TimelinePlaybackCoordinator.
+    private func handleSceneEditModePlayheadChanged(_ timeUs: TimeUs) {
+        guard let coordinator = playbackCoordinator else { return }
 
         // Try sync path first (same scene, no load needed)
         if let localFrame = coordinator.syncSetGlobalTimeUs(timeUs) {
@@ -1105,10 +1331,6 @@ final class PlayerViewController: UIViewController {
                 #endif
                 lastVideoUpdateFrame = localFrame
             }
-
-            #if DEBUG
-            ScrubSignpost.endHandlePlayheadChanged(signpostId, syncPath: true)
-            #endif
         } else {
             // Scene switch needed - use async path
             // Cancel previous playhead task to avoid stale frame application
@@ -1136,10 +1358,6 @@ final class PlayerViewController: UIViewController {
                     self.lastVideoUpdateFrame = localFrame
                 }
             }
-
-            #if DEBUG
-            ScrubSignpost.endHandlePlayheadChanged(signpostId, syncPath: false)
-            #endif
         }
     }
 
@@ -1158,8 +1376,14 @@ final class PlayerViewController: UIViewController {
         let scenes = state.canonicalTimeline.toSceneDrafts()
         editorLayoutContainer.updateScenes(scenes)
 
-        // Update coordinator timeline
+        // Update coordinator timeline (legacy path for Scene Edit)
         playbackCoordinator?.updateSceneTimeline(from: state)
+
+        // PR-F: Update TimelineCompositionEngine for timeline preview path
+        timelineCompositionEngine?.setTimeline(
+            state.canonicalTimeline,
+            sceneStates: state.draft.sceneInstanceStates
+        )
 
         // Mark draft as dirty for persistence
         currentProjectDraft = state.draft
@@ -1167,6 +1391,31 @@ final class PlayerViewController: UIViewController {
 
         // PR-F: Refresh bottom bars if in Scene Edit mode
         refreshSceneEditBars()
+
+        // PR-G: Refresh current frame to reflect timeline changes
+        refreshCurrentTimelineFrame()
+    }
+
+    /// PR-F: Called when scene state changes (but not timeline structure).
+    /// Routes to engine for incremental sync instead of full setTimeline().
+    private func handleSceneStateChanged(instanceId: UUID, sceneState: SceneState) {
+        // Update engine via incremental path, then refresh current frame
+        Task { @MainActor in
+            await timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId)
+
+            // PR-G: Refresh current frame AFTER engine state is updated
+            self.refreshCurrentTimelineFrame()
+        }
+
+        // PR-G: Sync local draft cache to maintain consistency
+        currentProjectDraft = editorStore?.currentDraft
+
+        // Mark draft as dirty for persistence
+        draftIsDirty = true
+
+        #if DEBUG
+        print("[PR-F] Scene state changed: instanceId=\(instanceId)")
+        #endif
     }
 
     /// Called during live-trim preview (lightweight, frequent).
@@ -1330,10 +1579,25 @@ final class PlayerViewController: UIViewController {
 
     /// Handles state restoration after undo/redo.
     /// PR-D: Re-applies runtime state for active scene instance to sync with restored snapshot.
-    /// PR-F: Also refreshes bottom bars.
+    /// PR-F: Also refreshes bottom bars and syncs TimelineCompositionEngine.
     private func handleStateRestoredFromUndoRedo() {
         reloadRuntimeStateForActiveScene()
         refreshSceneEditBars()
+
+        // PR-F: Sync TimelineCompositionEngine with restored state
+        if let store = editorStore, let engine = timelineCompositionEngine {
+            engine.setTimeline(
+                store.state.canonicalTimeline,
+                sceneStates: store.state.draft.sceneInstanceStates
+            )
+
+            // Re-apply state to loaded runtimes
+            Task { @MainActor in
+                for (instanceId, state) in store.state.draft.sceneInstanceStates {
+                    await engine.updateSceneState(state, for: instanceId)
+                }
+            }
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -1542,6 +1806,19 @@ final class PlayerViewController: UIViewController {
     // MARK: - Export Implementation
 
     private func startExport() {
+        // PR-G: Multi-scene timeline uses timeline export (regardless of transitions)
+        // VideoExporter.exportTimeline handles both .single and .transition frames
+        if let store = editorStore, store.state.sceneItems.count > 1 {
+            guard let engine = timelineCompositionEngine else {
+                assertionFailure("Multi-scene timeline requires timelineCompositionEngine")
+                log("[Export] ERROR: Multi-scene timeline but engine is nil")
+                return
+            }
+            startTimelineExport(engine: engine)
+            return
+        }
+
+        // Single-scene export (only for single-scene projects)
         // 1. Guard dependencies
         guard let renderer = renderer,
               let compiled = compiledScene,
@@ -1648,7 +1925,7 @@ final class PlayerViewController: UIViewController {
             // PR5: Wrap in Task for async preload
             Task { @MainActor in
                 // Preload background textures into export provider
-                await self.preloadBackgroundTexturesForExport(exportTP: exportTP)
+                await self.preloadBackgroundTexturesForExport(provider: exportTP)
 
                 exporter.exportVideo(
                     compiledScene: compiled,
@@ -1692,6 +1969,137 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    /// Exports multi-scene timeline with transitions.
+    /// Uses TimelineCompositionEngine and TransitionCompositor.
+    private func startTimelineExport(engine: TimelineCompositionEngine) {
+        guard let renderer = renderer,
+              let compositor = transitionCompositor else {
+            log("[Export] ERROR: Missing renderer or compositor for timeline export")
+            return
+        }
+
+        guard let transitionMath = engine.transitionMath else {
+            log("[Export] ERROR: No timeline configured")
+            return
+        }
+
+        // Get canvas size from first scene
+        let canvasSize = engine.canvasSize
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            log("[Export] ERROR: Invalid canvas size")
+            return
+        }
+
+        // Configure export settings
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        let timestamp = dateFormatter.string(from: Date())
+        let uuid8 = UUID().uuidString.prefix(8)
+        let filename = "export_timeline_\(timestamp)_\(uuid8).mp4"
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+
+        let bitrate = VideoQualityPreset.high.bitrate(for: (width: Int(canvasSize.width), height: Int(canvasSize.height)))
+
+        // Audio config: include original audio from video slots, no music/voiceover
+        let audioConfig = AudioExportConfig(
+            music: nil,
+            voiceover: nil,
+            includeOriginalFromVideoSlots: true,
+            originalDefaultVolume: 1.0
+        )
+
+        let settings = VideoExporter.TimelineExportSettings(
+            outputURL: outputURL,
+            sizePx: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
+            fps: engine.fps,
+            bitrate: bitrate,
+            audio: audioConfig
+        )
+
+        // Present progress modal
+        let progressVC = ExportProgressViewController()
+        progressVC.modalPresentationStyle = .overFullScreen
+        progressVC.modalTransitionStyle = .crossDissolve
+
+        let exporter = VideoExporter()
+        videoExporter = exporter
+        exportProgressVC = progressVC
+
+        var wasCancelled = false
+
+        progressVC.onCancel = { [weak self, weak exporter] in
+            wasCancelled = true
+            exporter?.cancel()
+            self?.isExporting = false
+            self?.videoExporter = nil
+            self?.dismiss(animated: true)
+        }
+
+        progressVC.onCompleted = { [weak self] url in
+            self?.dismiss(animated: true) {
+                self?.presentShareSheet(for: url)
+            }
+        }
+
+        progressVC.onFailed = { [weak self] error in
+            self?.dismiss(animated: true) {
+                self?.presentExportError(error)
+            }
+        }
+
+        isExporting = true
+
+        present(progressVC, animated: true) { [weak self] in
+            guard let self = self else { return }
+
+            self.log("[Export] Starting timeline export...")
+            self.log("[Export] Output: \(outputURL.lastPathComponent)")
+            self.log("[Export] Size: \(Int(canvasSize.width))x\(Int(canvasSize.height)) @ \(engine.fps)fps")
+            self.log("[Export] Duration: \(transitionMath.compressedDurationFrames) frames")
+
+            progressVC.updateState(.preparing)
+
+            // PR-G: Create thread-safe background provider for export queue
+            Task { @MainActor in
+                let exportBackgroundProvider = ThreadSafeInMemoryTextureProvider()
+                await self.preloadBackgroundTexturesForExport(provider: exportBackgroundProvider)
+
+                exporter.exportTimeline(
+                    engine: engine,
+                    renderer: renderer,
+                    transitionCompositor: compositor,
+                    backgroundState: self.effectiveBackgroundState,
+                    backgroundTextureProvider: exportBackgroundProvider,
+                    settings: settings,
+                    progress: { progress in
+                        guard !wasCancelled else { return }
+                        progressVC.updateState(.rendering(progress: progress))
+                    },
+                    completion: { [weak self] result in
+                        guard let self = self else { return }
+                        guard !wasCancelled else {
+                            self.log("[Export] Completion ignored (was cancelled)")
+                            return
+                        }
+
+                        self.isExporting = false
+                        self.videoExporter = nil
+
+                        switch result {
+                        case .success(let url):
+                            self.log("[Export] SUCCESS: \(url.lastPathComponent)")
+                            progressVC.updateState(.completed(url))
+
+                        case .failure(let error):
+                            self.log("[Export] ERROR: \(error.localizedDescription)")
+                            progressVC.updateState(.failed(error))
+                        }
+                    }
+                )
+            }
+        }
+    }
+
     private func presentShareSheet(for url: URL) {
         let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
         activityVC.popoverPresentationController?.sourceView = view
@@ -1712,8 +2120,10 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func playPauseTapped() {
-        // PR-E: Simplified - just toggle playback state
-        if isPlaying {
+        // PR-G: Check both isPlaying AND pending prewarm task
+        // During prewarm, isPlaying is false but playbackStartTask is active
+        // Tap should cancel prewarm in that case
+        if isPlaying || playbackStartTask != nil {
             stopPlayback()
         } else {
             startPlayback()
@@ -2540,16 +2950,18 @@ final class PlayerViewController: UIViewController {
     /// Sets up background state from template and project override.
     private func setupBackgroundState(compiled: CompiledScene) {
         guard let templateId = currentTemplateId,
-              let tp = textureProvider,
               let device = metalView.device,
               let queue = commandQueue else {
             log("[Background] Skipped: missing dependencies")
             return
         }
 
-        // Create BackgroundTextureService
+        // PR-G: Create shared background texture provider (project-level, not per-scene)
+        backgroundTextureProvider = InMemoryTextureProvider()
+
+        // Create BackgroundTextureService with shared background provider
         backgroundTextureService = BackgroundTextureService(
-            textureProvider: tp,
+            textureProvider: backgroundTextureProvider!,
             device: device,
             commandQueue: queue
         )
@@ -2599,7 +3011,7 @@ final class PlayerViewController: UIViewController {
     /// PR5: Called before export to ensure background images are available.
     @MainActor
     private func preloadBackgroundTexturesForExport(
-        exportTP: ExportTextureProvider
+        provider: MutableTextureProvider
     ) async {
         guard let override = projectBackgroundOverride,
               let state = effectiveBackgroundState,
@@ -2608,7 +3020,7 @@ final class PlayerViewController: UIViewController {
         let presetId = state.preset.presetId
         let device = queue.device
         let service = BackgroundTextureService(
-            textureProvider: exportTP,
+            textureProvider: provider,
             device: device,
             commandQueue: queue
         )
@@ -2633,26 +3045,68 @@ final class PlayerViewController: UIViewController {
             assertionFailure("startPlayback called outside timeline mode")
             return
         }
-        guard compiledScene != nil else { return }
-        isPlaying = true
-        displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
+
+        // PR-G: Guard re-entry - don't start another if already starting
+        guard playbackStartTask == nil else { return }
+
+        // PR-G: Timeline mode requires engine (not legacy compiledScene)
+        guard let engine = timelineCompositionEngine else {
+            assertionFailure("startPlayback requires timelineCompositionEngine")
+            return
+        }
+
+        let compressedFrame = engine.compressedFrame(forTimeUs: editorStore?.playheadTimeUs ?? 0)
         let fps = Float(sceneFPS)
-        displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
-        displayLink?.add(to: .main, forMode: .common)
-        // PR-33: Start video playback - use LOCAL frame from coordinator
-        let localFrame = playbackCoordinator?.currentLocalFrame ?? currentFrameIndex
-        userMediaService?.startVideoPlayback(sceneFrameIndex: localFrame)
-        // PR2: Update editor layout play state
-        editorLayoutContainer.setPlaying(true)
-        fullScreenPreviewVC?.setPlaying(true)
+
+        // PR-G: Prewarm scenes BEFORE starting display link
+        // This ensures pinned + warm runtimes are ready before first playback tick
+        playbackStartTask = Task { @MainActor in
+            // Step 1: Prewarm (awaited)
+            await engine.prepareForPlayback(startingAt: compressedFrame)
+
+            // Check if playback was cancelled during prewarm
+            guard !Task.isCancelled else {
+                self.playbackStartTask = nil
+                return
+            }
+
+            // Step 2: Start playback state
+            self.isPlaying = true
+
+            // Step 3: Create and start display link
+            self.displayLink = CADisplayLink(target: self, selector: #selector(self.displayLinkFired))
+            self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
+            self.displayLink?.add(to: .main, forMode: .common)
+
+            // Step 4: Start video playback through engine
+            engine.startPlayback(at: compressedFrame)
+
+            // PR2: Update editor layout play state
+            self.editorLayoutContainer.setPlaying(true)
+            self.fullScreenPreviewVC?.setPlaying(true)
+
+            // Clear task reference
+            self.playbackStartTask = nil
+        }
     }
 
     private func stopPlayback() {
+        // PR-G: Cancel pending playback start task (if prewarm is in progress)
+        playbackStartTask?.cancel()
+        playbackStartTask = nil
+
         isPlaying = false
         displayLink?.invalidate()
         displayLink = nil
-        // PR-33: Stop video playback (AVPlayer rate=0)
-        userMediaService?.stopVideoPlayback()
+
+        // PR-G: Stop video playback through engine for timeline mode
+        if timelineCompositionEngine != nil {
+            timelineCompositionEngine?.stopPlayback()
+        } else {
+            // Fallback: legacy path for sceneEdit mode
+            userMediaService?.stopVideoPlayback()
+        }
+
         // PR2: Update editor layout play state
         editorLayoutContainer.setPlaying(false)
         fullScreenPreviewVC?.setPlaying(false)
@@ -2677,13 +3131,23 @@ final class PlayerViewController: UIViewController {
         editorLayoutContainer.setCurrentTimeUs(nextTimeUs)
         fullScreenPreviewVC?.setCurrentFrame(globalFrameIndex)
 
-        // PR-33: Gated video update - use LOCAL frame from coordinator
-        let localFrame = playbackCoordinator?.currentLocalFrame ?? globalFrameIndex
-        if let service = userMediaService,
-           !service.blockIdsWithVideo.isEmpty,
-           localFrame != lastVideoUpdateFrame {
-            service.updateVideoFramesForPlayback(sceneFrameIndex: localFrame)
-            lastVideoUpdateFrame = localFrame
+        // PR-F: Video sync via engine in timeline mode, legacy path in sceneEdit mode
+        let uiMode = store.state.uiMode
+        switch uiMode {
+        case .timeline:
+            // Use engine-driven video sync (routes to per-instance UserMediaService)
+            let compressedFrame = timelineCompositionEngine?.compressedFrame(forTimeUs: nextTimeUs) ?? 0
+            timelineCompositionEngine?.syncPlaybackTick(compressedFrame)
+
+        case .sceneEdit:
+            // Legacy path - use coordinator's local frame
+            let localFrame = playbackCoordinator?.currentLocalFrame ?? globalFrameIndex
+            if let service = userMediaService,
+               !service.blockIdsWithVideo.isEmpty,
+               localFrame != lastVideoUpdateFrame {
+                service.updateVideoFramesForPlayback(sceneFrameIndex: localFrame)
+                lastVideoUpdateFrame = localFrame
+            }
         }
 
         // Auto-stop at end
@@ -2748,15 +3212,298 @@ extension PlayerViewController: MTKViewDelegate {
         // PR-D.1: No draw while template is loading (prevents race with background preload)
         guard loadingState == .ready else { return }
 
-        // PR-F: Resolve render commands BEFORE GPU setup
-        // Local refs for synchronous resolver (no [weak self] noise)
+        // PR-F: Route to appropriate render path based on UI mode
         let uiMode = editorStore?.state.uiMode ?? .timeline
+
+        switch uiMode {
+        case .timeline:
+            drawTimelineMode(in: view)
+        case .sceneEdit:
+            drawSceneEditMode(in: view)
+        }
+    }
+
+    /// PR-F: Renders timeline mode using TimelineCompositionEngine.
+    /// Handles single scene and transition rendering.
+    /// PR-G: Uses split-pass architecture - background pre-pass with backgroundTextureProvider,
+    /// then scene pass with scene provider using initialLoadAction: .load.
+    private func drawTimelineMode(in view: MTKView) {
+        // Use cached timeline frame from async resolve
+        guard let resolvedFrame = cachedTimelineFrame else {
+            // PR-G: No cached frame yet - skip rendering, keep last valid frame
+            // Timeline mode NEVER calls drawSceneEditMode() to maintain render contract separation
+            return
+        }
+
+        switch resolvedFrame {
+        case .single(let ctx):
+            // PR-G: Split-pass rendering for single scene
+            drawTimelineSingleScene(in: view, context: ctx)
+        case .transition:
+            // Transition rendering requires compositor - handle separately
+            drawTimelineTransition(in: view, context: resolvedFrame)
+        }
+    }
+
+    /// PR-G: Renders single scene in timeline mode using split-pass architecture.
+    /// Pass 1: Background pre-pass with backgroundTextureProvider
+    /// Pass 2: Scene pass with scene provider (preserves background via initialLoadAction: .load)
+    private func drawTimelineSingleScene(in view: MTKView, context ctx: SceneRenderContext) {
+        guard ctx.canvasSize.width > 0 else { return }
+        guard let renderer = renderer,
+              let cmdQueue = commandQueue else { return }
+
+        // PR-A: Non-blocking wait for in-flight frame slot
+        let semResult = inFlightSemaphore.wait(timeout: .now())
+        if semResult == .timedOut {
+            #if DEBUG
+            perfLogger.recordDroppedFrame()
+            #endif
+            return
+        }
+
+        guard let drawable = view.currentDrawable,
+              let cmdBuf = cmdQueue.makeCommandBuffer() else {
+            inFlightSemaphore.signal()
+            return
+        }
+
+        cmdBuf.addCompletedHandler { [weak self] _ in
+            self?.inFlightSemaphore.signal()
+        }
+
+        #if DEBUG
+        perfLogger.recordFrame()
+        #endif
+
+        let target = RenderTarget(
+            texture: drawable.texture,
+            drawableScale: Double(view.contentScaleFactor),
+            animSize: ctx.canvasSize
+        )
+
+        do {
+            // PR-G: Pass 1 - Background pre-pass (always prepare target)
+            let bgProvider: TextureProvider = backgroundTextureProvider ?? InMemoryTextureProvider()
+            if let bg = effectiveBackgroundState {
+                try renderer.draw(
+                    commands: [],
+                    target: target,
+                    textureProvider: bgProvider,
+                    commandBuffer: cmdBuf,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: bg,
+                    initialLoadAction: .clear
+                )
+            } else {
+                // Clear target even without background
+                try renderer.draw(
+                    commands: [],
+                    target: target,
+                    textureProvider: bgProvider,
+                    commandBuffer: cmdBuf,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: nil,
+                    initialLoadAction: .clear
+                )
+            }
+
+            // PR-G: Pass 2 - Scene pass (preserves background)
+            try renderer.draw(
+                commands: ctx.commands,
+                target: target,
+                textureProvider: ctx.textureProvider,
+                commandBuffer: cmdBuf,
+                assetSizes: ctx.assetSizes,
+                pathRegistry: ctx.pathRegistry,
+                backgroundState: nil,  // Already rendered in pass 1
+                initialLoadAction: .load  // Preserve background
+            )
+        } catch {
+            if !renderErrorLogged {
+                renderErrorLogged = true
+                log("Render error: \(error)")
+            }
+        }
+
+        cmdBuf.present(drawable)
+        cmdBuf.commit()
+    }
+
+    /// PR-F: Renders transition between two scenes using TexturePool and single commandBuffer.
+    /// Contract: Offscreen scenes rendered with backgroundState=nil, background drawn once to final target.
+    private func drawTimelineTransition(in view: MTKView, context: ResolvedTimelineFrame) {
+        guard case .transition(let transCtx) = context else { return }
+        guard let renderer = renderer,
+              let cmdQueue = commandQueue,
+              let compositor = transitionCompositor else {
+            // Fallback: render scene B only (instant cut behavior)
+            drawWithParams(
+                in: view,
+                commands: transCtx.sceneB.commands,
+                textureProvider: transCtx.sceneB.textureProvider,
+                pathRegistry: transCtx.sceneB.pathRegistry,
+                assetSizes: transCtx.sceneB.assetSizes,
+                animSize: transCtx.sceneB.canvasSize
+            )
+            return
+        }
+
+        // PR-A: Non-blocking wait for in-flight frame slot
+        let semResult = inFlightSemaphore.wait(timeout: .now())
+        if semResult == .timedOut {
+            #if DEBUG
+            perfLogger.recordDroppedFrame()
+            #endif
+            return
+        }
+
+        guard let drawable = view.currentDrawable,
+              let cmdBuf = cmdQueue.makeCommandBuffer() else {
+            inFlightSemaphore.signal()
+            return
+        }
+
+        cmdBuf.addCompletedHandler { [weak self] _ in
+            self?.inFlightSemaphore.signal()
+        }
+
+        #if DEBUG
+        perfLogger.recordFrame()
+        #endif
+
+        // Calculate texture size for offscreen render
+        let scale = view.contentScaleFactor
+        let texWidth = Int(transCtx.sceneA.canvasSize.width * scale)
+        let texHeight = Int(transCtx.sceneA.canvasSize.height * scale)
+        let sizePx = (width: texWidth, height: texHeight)
+
+        // Acquire offscreen textures from pool (non-blocking)
+        let texturePool = renderer.texturePool
+        guard let textureA = texturePool.acquireColorTexture(size: sizePx),
+              let textureB = texturePool.acquireColorTexture(size: sizePx) else {
+            inFlightSemaphore.signal()
+            if !renderErrorLogged {
+                renderErrorLogged = true
+                log("[PR-F] Failed to acquire offscreen textures from pool")
+            }
+            return
+        }
+
+        defer {
+            texturePool.release(textureA)
+            texturePool.release(textureB)
+        }
+
+        do {
+            // Render scene A to offscreen texture (transparent, no background)
+            let targetA = RenderTarget(
+                texture: textureA,
+                drawableScale: 1.0,
+                animSize: transCtx.sceneA.canvasSize
+            )
+            try renderer.draw(
+                commands: transCtx.sceneA.commands,
+                target: targetA,
+                clearColor: .transparentBlack,
+                textureProvider: transCtx.sceneA.textureProvider,
+                commandBuffer: cmdBuf,
+                assetSizes: transCtx.sceneA.assetSizes,
+                pathRegistry: transCtx.sceneA.pathRegistry,
+                backgroundState: nil  // No background for offscreen scenes
+            )
+
+            // Render scene B to offscreen texture (transparent, no background)
+            let targetB = RenderTarget(
+                texture: textureB,
+                drawableScale: 1.0,
+                animSize: transCtx.sceneB.canvasSize
+            )
+            try renderer.draw(
+                commands: transCtx.sceneB.commands,
+                target: targetB,
+                clearColor: .transparentBlack,
+                textureProvider: transCtx.sceneB.textureProvider,
+                commandBuffer: cmdBuf,
+                assetSizes: transCtx.sceneB.assetSizes,
+                pathRegistry: transCtx.sceneB.pathRegistry,
+                backgroundState: nil
+            )
+
+            // Prepare final target (drawable) with background
+            let finalTarget = RenderTarget(
+                texture: drawable.texture,
+                drawableScale: Double(view.contentScaleFactor),
+                animSize: transCtx.sceneA.canvasSize
+            )
+
+            // PR-G: Render background to final target using shared backgroundTextureProvider
+            // Background pre-pass doesn't need scene assets - only background texture slots
+            let bgProvider: TextureProvider = backgroundTextureProvider ?? InMemoryTextureProvider()
+            if let bg = effectiveBackgroundState {
+                try renderer.draw(
+                    commands: [],
+                    target: finalTarget,
+                    clearColor: .transparentBlack,
+                    textureProvider: bgProvider,
+                    commandBuffer: cmdBuf,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: bg,
+                    initialLoadAction: .clear
+                )
+            } else {
+                // PR-G: Clear target even without background to avoid stale pixels
+                try renderer.draw(
+                    commands: [],
+                    target: finalTarget,
+                    clearColor: .transparentBlack,
+                    textureProvider: bgProvider,
+                    commandBuffer: cmdBuf,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: nil,
+                    initialLoadAction: .clear
+                )
+            }
+
+            // Convert SceneTransition to TransitionParams
+            let transitionParams = TransitionParams(
+                type: transCtx.transition.type.toTVECoreType(),
+                easing: transCtx.transition.easing.toTVECoreType()
+            )
+
+            // Composite A + B to drawable (loadAction: .load preserves background)
+            try compositor.composite(
+                sceneA: textureA,
+                sceneB: textureB,
+                transition: transitionParams,
+                progress: transCtx.progress,
+                canvasSize: transCtx.sceneA.canvasSize,
+                target: drawable.texture,
+                commandBuffer: cmdBuf
+            )
+        } catch {
+            if !renderErrorLogged {
+                renderErrorLogged = true
+                log("[PR-F] Transition render error: \(error)")
+            }
+        }
+
+        cmdBuf.present(drawable)
+        cmdBuf.commit()
+    }
+
+    /// PR-F: Renders Scene Edit mode using EditorRenderCommandResolver (legacy path).
+    private func drawSceneEditMode(in view: MTKView) {
         let coordinator = playbackCoordinator
         let player = scenePlayer
         let frameIndex = currentFrameIndex
 
         guard let resolved = EditorRenderCommandResolver.resolve(
-            uiMode: uiMode,
+            uiMode: .sceneEdit(sceneInstanceId: activeSceneInstanceId ?? UUID()),
             coordinatorLocalFrame: coordinator?.currentLocalFrame,
             currentFrameIndex: frameIndex,
             coordinatorCommands: { mode in
@@ -2770,7 +3517,29 @@ extension PlayerViewController: MTKViewDelegate {
             return
         }
 
-        let commands = resolved.commands
+        guard let compiled = compiledScene,
+              let provider = textureProvider else { return }
+
+        drawWithParams(
+            in: view,
+            commands: resolved.commands,
+            textureProvider: provider,
+            pathRegistry: compiled.pathRegistry,
+            assetSizes: mergedAssetSizes,
+            animSize: canvasSize
+        )
+    }
+
+    /// PR-F: Common render path with resolved parameters.
+    private func drawWithParams(
+        in view: MTKView,
+        commands: [RenderCommand],
+        textureProvider provider: TextureProvider,
+        pathRegistry: PathRegistry,
+        assetSizes: [String: AssetSize],
+        animSize: SizeD
+    ) {
+        guard animSize.width > 0 else { return }
 
         // PR1.5: Split timing - start
         #if DEBUG
@@ -2778,10 +3547,8 @@ extension PlayerViewController: MTKViewDelegate {
         #endif
 
         // PR-A: Non-blocking wait for in-flight frame slot
-        // If slot not available, drop frame to keep UI responsive
         let semResult = inFlightSemaphore.wait(timeout: .now())
         if semResult == .timedOut {
-            // Frame drop: GPU is overloaded, skip this frame
             #if DEBUG
             perfLogger.recordDroppedFrame()
             #endif
@@ -2799,12 +3566,9 @@ extension PlayerViewController: MTKViewDelegate {
             return
         }
 
-        // Signal semaphore when GPU finishes this frame
-        // PR1.3: Combined handler for semaphore + perf logging
         cmdBuf.addCompletedHandler { [weak self] cb in
             self?.inFlightSemaphore.signal()
             #if DEBUG
-            // Capture GPU time for perf stats
             if let s = GPUFrameTime.fromCompleted(commandBuffer: cb) {
                 self?.perfLogger.recordGPUSample(s.gpuMs)
             }
@@ -2813,128 +3577,33 @@ extension PlayerViewController: MTKViewDelegate {
 
         #if DEBUG
         perfLogger.recordFrame()
-        #endif
-
-        // PR1.4: Measure draw CPU encode time
-        #if DEBUG
         let drawT0 = CACurrentMediaTime()
-        #endif
-
-        // PR1.5: Split timing - commands already resolved above
-        #if DEBUG
-        var tCmdsEnd: CFAbsoluteTime = tSemEnd
         var tEncodeEnd: CFAbsoluteTime = tSemEnd
         #endif
 
-        if let renderer = renderer,
-           let compiled = compiledScene,
-           let provider = textureProvider,
-           canvasSize.width > 0 {
-            // Use canvas size for RenderTarget (not individual anim size)
+        if let renderer = renderer {
             let target = RenderTarget(
                 texture: drawable.texture,
                 drawableScale: Double(view.contentScaleFactor),
-                animSize: canvasSize
+                animSize: animSize
             )
 
-            // DIAGNOSTIC: Device header (one-time log per review.md section 5)
-            // PR1.3: Guarded by kEnableRenderDiagnostics to avoid DRAW CPU spikes
-            if kEnableRenderDiagnostics, !deviceHeaderLogged {
-                deviceHeaderLogged = true
-                let bounds = view.bounds
-                let safe = view.safeAreaInsets
-                let drawableSize = view.drawableSize
-                let texW = drawable.texture.width
-                let texH = drawable.texture.height
-                DispatchQueue.main.async { [weak self] in
-                    self?.log("--- DEVICE DIAGNOSTIC HEADER ---")
-                    self?.log("view.bounds: \(Int(bounds.width))x\(Int(bounds.height))")
-                    self?.log("safeAreaInsets: T=\(safe.top) B=\(safe.bottom) L=\(safe.left) R=\(safe.right)")
-                    self?.log("drawableSize: \(Int(drawableSize.width))x\(Int(drawableSize.height))")
-                    self?.log("texture size: \(texW)x\(texH)")
-                    self?.log("canvasSize: \(Int(self?.canvasSize.width ?? 0))x\(Int(self?.canvasSize.height ?? 0))")
-                    self?.log("target.animSize: \(Int(target.animSize.width))x\(Int(target.animSize.height))")
-                    self?.log("contentScaleFactor: \(view.contentScaleFactor)")
-                    self?.log("--- END DEVICE HEADER ---")
-                }
-            }
-
-            // PR1.5: Split timing - commands generated (already resolved above)
-            #if DEBUG
-            tCmdsEnd = CACurrentMediaTime()
-            #endif
-
-            // PR-30 DEBUG: Log layer visibility and render commands for polaroid_shared_demo
-            // PR1.3: Guarded by kEnableRenderDiagnostics to avoid DRAW CPU spikes
-            if kEnableRenderDiagnostics, currentFrameIndex == 0, compiled.runtime.scene.sceneId == "polaroid_shared_demo" {
-                var debugLines: [String] = ["--- PR-30 DEBUG: Layer visibility ---"]
-                for block in compiled.runtime.blocks {
-                    if let variant = block.selectedVariant {
-                        let animIR = variant.animIR
-                        for (compId, comp) in animIR.comps {
-                            for layer in comp.layers {
-                                let hasMatte = layer.matte != nil
-                                debugLines.append("[\(compId)] \(layer.name): isHidden=\(layer.isHidden), isMatteSource=\(layer.isMatteSource), hasMatte=\(hasMatte), toggleId=\(layer.toggleId ?? "nil")")
-                            }
-                        }
-                    }
-                }
-                // Log render commands
-                debugLines.append("--- RENDER COMMANDS ---")
-                for (idx, cmd) in commands.enumerated() {
-                    debugLines.append("[\(idx)] \(cmd)")
-                }
-                debugLines.append("--- END DEBUG ---")
-                DispatchQueue.main.async { [weak self] in
-                    debugLines.forEach { self?.log($0) }
-                }
-            }
-
-            // DIAGNOSTIC: Log matte/shape commands every 30 frames (per review.md)
-            // PR1.3: Guarded by kEnableRenderDiagnostics to avoid DRAW CPU spikes
-            if kEnableRenderDiagnostics, currentFrameIndex % 30 == 0 {
-                let hasMatteCommands = commands.contains { cmd in
-                    if case .beginMatte = cmd { return true }
-                    return false
-                }
-                let drawShapeFrames = commands.compactMap { cmd -> Double? in
-                    if case .drawShape(_, _, _, _, let frame) = cmd { return frame }
-                    return nil
-                }
-                let pathRegistryCount = compiled.pathRegistry.count
-                let frameForLog = currentFrameIndex
-
-                // Deep diagnostic: check if paths are actually animated
-                var pathDiagnostics: [String] = []
-                let registry = compiled.pathRegistry
-                for cmd in commands {
-                    if case .drawShape(let pathId, _, _, _, _) = cmd {
-                        if let resource = registry.path(for: pathId) {
-                            let animated = resource.isAnimated ? "ANIM" : "STATIC"
-                            let kfCount = resource.keyframeCount
-                            let times = resource.keyframeTimes
-                            pathDiagnostics.append("pathId=\(pathId.value) \(animated) kf=\(kfCount) times=\(times)")
-                        } else {
-                            pathDiagnostics.append("pathId=\(pathId.value) NOT_FOUND")
-                        }
-                    }
-                }
-
-                DispatchQueue.main.async { [weak self] in
-                    self?.log("[DIAG] frame=\(frameForLog), hasMatte=\(hasMatteCommands), " +
-                              "drawShapeFrames=\(drawShapeFrames), pathRegistry.count=\(pathRegistryCount)")
-                    for diag in pathDiagnostics {
-                        self?.log("[DIAG-PATH] \(diag)")
-                    }
-                }
-            }
-
-            // PR-A: Direct renderer call (no renderQueue.sync needed after warmRender removal)
-            // dispatchPrecondition(.onQueue(.main)) at top ensures no reentrancy
-            let assetSizes = mergedAssetSizes
-            let pathRegistry = compiled.pathRegistry
-
             do {
+                // PR-G: Split-pass architecture (same as timeline single-scene path)
+                // Pass 1: Background pre-pass with backgroundTextureProvider
+                let bgProvider: TextureProvider = backgroundTextureProvider ?? InMemoryTextureProvider()
+                try renderer.draw(
+                    commands: [],
+                    target: target,
+                    textureProvider: bgProvider,
+                    commandBuffer: cmdBuf,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: effectiveBackgroundState,
+                    initialLoadAction: .clear
+                )
+
+                // Pass 2: Scene pass (preserves background)
                 try renderer.draw(
                     commands: commands,
                     target: target,
@@ -2942,36 +3611,31 @@ extension PlayerViewController: MTKViewDelegate {
                     commandBuffer: cmdBuf,
                     assetSizes: assetSizes,
                     pathRegistry: pathRegistry,
-                    backgroundState: effectiveBackgroundState  // PR3
+                    backgroundState: nil,
+                    initialLoadAction: .load
                 )
-                // PR1.5: Split timing - encode done
                 #if DEBUG
                 tEncodeEnd = CACurrentMediaTime()
                 #endif
             } catch {
                 if !renderErrorLogged {
                     renderErrorLogged = true
-                    DispatchQueue.main.async { [weak self] in
-                        self?.log("Render error: \(error)")
-                    }
+                    log("Render error: \(error)")
                 }
             }
         } else if let desc = view.currentRenderPassDescriptor,
                   let enc = cmdBuf.makeRenderCommandEncoder(descriptor: desc) {
             enc.endEncoding()
         }
+
         cmdBuf.present(drawable)
 
-        // PR1.4: Record draw CPU encode time
         #if DEBUG
         let drawDtMs = (CACurrentMediaTime() - drawT0) * 1000.0
         perfLogger.recordDrawCPU(ms: drawDtMs)
-
-        // PR1.5: Record split timing
         let semMs = (tSemEnd - tSemStart) * 1000.0
-        let cmdsMs = (tCmdsEnd - tSemEnd) * 1000.0
-        let encodeMs = (tEncodeEnd - tCmdsEnd) * 1000.0
-        perfLogger.recordSplitTiming(semaphoreMs: semMs, commandsMs: cmdsMs, encodeMs: encodeMs)
+        let encodeMs = (tEncodeEnd - tSemEnd) * 1000.0
+        perfLogger.recordSplitTiming(semaphoreMs: semMs, commandsMs: 0, encodeMs: encodeMs)
         #endif
 
         cmdBuf.commit()

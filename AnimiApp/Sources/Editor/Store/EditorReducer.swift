@@ -81,6 +81,14 @@ public enum EditorReducer {
         case .deleteScene(let sceneId):
             return deleteScene(state: newState, sceneId: sceneId)
 
+        case .setBoundaryTransition(let fromSceneId, let toSceneId, let transition):
+            return setBoundaryTransition(
+                state: newState,
+                fromSceneId: fromSceneId,
+                toSceneId: toSceneId,
+                transition: transition
+            )
+
         // MARK: - Scene Instance State (PR9)
 
         case .setBlockTransform(let sceneInstanceId, let blockId, let transform, let phase):
@@ -358,6 +366,9 @@ private extension EditorReducer {
         // Initialize empty SceneState for new instance
         newState.draft.sceneInstanceStates[newItem.id] = .empty
 
+        // Ensure track invariants (normalize transitions)
+        ensureTrackInvariants(&newState.draft.canonicalTimeline)
+
         #if DEBUG
         print("[EditorReducer] Added scene: \(sceneTypeId), duration: \(clampedDuration)us")
         #endif
@@ -412,6 +423,9 @@ private extension EditorReducer {
         let sourceState = newState.draft.sceneInstanceStates[sceneItemId] ?? .empty
         newState.draft.sceneInstanceStates[newItem.id] = sourceState
 
+        // Ensure track invariants (normalize transitions)
+        ensureTrackInvariants(&newState.draft.canonicalTimeline)
+
         #if DEBUG
         print("[EditorReducer] Duplicated scene \(sceneItemId) -> \(newItem.id)")
         #endif
@@ -453,9 +467,52 @@ private extension EditorReducer {
         // Clamp playhead if needed
         newState.playheadTimeUs = clampTimeUs(newState.playheadTimeUs, maxUs: newState.projectDurationUs)
 
+        // Ensure track invariants (normalize transitions, remove orphaned)
+        ensureTrackInvariants(&newState.draft.canonicalTimeline)
+
         #if DEBUG
         print("[EditorReducer] Deleted scene \(sceneId)")
         #endif
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+}
+
+// MARK: - Set Boundary Transition
+
+private extension EditorReducer {
+
+    /// Sets or removes a boundary transition between two adjacent scenes.
+    /// - transition.type == .none → removes the transition
+    /// - otherwise → sets the transition for the boundary
+    static func setBoundaryTransition(
+        state: EditorState,
+        fromSceneId: UUID,
+        toSceneId: UUID,
+        transition: SceneTransition
+    ) -> ReducerResult {
+        var newState = state
+
+        let key = SceneBoundaryKey(fromSceneId, toSceneId)
+
+        if transition.type == .none {
+            // Remove transition (instant cut)
+            newState.canonicalTimeline.boundaryTransitions.removeValue(forKey: key)
+
+            #if DEBUG
+            print("[EditorReducer] Removed boundary transition: \(fromSceneId) → \(toSceneId)")
+            #endif
+        } else {
+            // Set transition
+            newState.canonicalTimeline.boundaryTransitions[key] = transition
+
+            #if DEBUG
+            print("[EditorReducer] Set boundary transition: \(fromSceneId) → \(toSceneId), type: \(transition.type)")
+            #endif
+        }
+
+        // Ensure invariants (will validate transition constraints)
+        ensureTrackInvariants(&newState.draft.canonicalTimeline)
 
         return ReducerResult(state: newState, shouldPushSnapshot: true)
     }
@@ -532,6 +589,19 @@ private extension EditorReducer {
                 }
             }
         }
+
+        // 5. Normalize boundary transitions (v6 Schema)
+        // Remove invalid transitions (non-adjacent scenes, scene too short)
+        // v1: fps is fixed at 30
+        let fps = 30
+        let result = TimelineTransitionValidator.normalize(timeline: timeline, fps: fps)
+        timeline.boundaryTransitions = result.boundaryTransitions
+
+        #if DEBUG
+        if !result.resetBoundaries.isEmpty {
+            print("[EditorReducer] Reset \(result.resetBoundaries.count) invalid boundary transitions")
+        }
+        #endif
     }
 }
 

@@ -397,3 +397,59 @@ fragment float4 bg_image_fragment(
     // Apply mask to premultiplied image color
     return imageColor * maskAlpha;
 }
+
+// MARK: - Transition Shaders (v6 Schema)
+
+/// Uniforms for dip-to-color transition effect.
+/// Used for dipToBlack and dipToWhite transitions.
+struct TransitionDipUniforms {
+    float4x4 mvp;
+    float progress;      // Transition progress (0.0 to 1.0)
+    float3 _padding1;
+    float4 dipColor;     // Color to dip to (black or white, RGBA)
+};
+
+/// Vertex output for dip transition
+struct DipTransitionVertexOut {
+    float4 position [[position]];
+    float2 texCoord;
+};
+
+/// Dip transition vertex shader
+vertex DipTransitionVertexOut dip_transition_vertex(
+    QuadVertexIn in [[stage_in]],
+    constant TransitionDipUniforms& uniforms [[buffer(1)]]
+) {
+    DipTransitionVertexOut out;
+    out.position = uniforms.mvp * float4(in.position, 0.0, 1.0);
+    out.texCoord = in.texCoord;
+    return out;
+}
+
+/// Dip transition fragment shader
+/// Composites scene A and B through a dip color (black or white).
+/// First half: A fades to dipColor
+/// Second half: dipColor fades to B
+fragment float4 dip_transition_fragment(
+    DipTransitionVertexOut in [[stage_in]],
+    texture2d<float> sceneATex [[texture(0)]],
+    texture2d<float> sceneBTex [[texture(1)]],
+    sampler samp [[sampler(0)]],
+    constant TransitionDipUniforms& uniforms [[buffer(1)]]
+) {
+    float4 colorA = sceneATex.sample(samp, in.texCoord);
+    float4 colorB = sceneBTex.sample(samp, in.texCoord);
+    float4 dip = uniforms.dipColor;
+
+    float progress = uniforms.progress;
+
+    if (progress < 0.5) {
+        // Phase 1: A -> dipColor
+        float t = progress * 2.0;  // 0.0 to 1.0 during first half
+        return mix(colorA, dip, t);
+    } else {
+        // Phase 2: dipColor -> B
+        float t = (progress - 0.5) * 2.0;  // 0.0 to 1.0 during second half
+        return mix(dip, colorB, t);
+    }
+}

@@ -73,6 +73,16 @@ public enum EditorAction: Sendable {
     /// - Parameter sceneId: ID of the scene to delete
     case deleteScene(sceneId: UUID)
 
+    /// Sets a boundary transition between two adjacent scenes.
+    /// Pushes undo snapshot.
+    /// - When transition.type == .none, removes the transition (instant cut).
+    /// - Otherwise, sets the transition for the boundary.
+    /// - Parameters:
+    ///   - fromSceneId: ID of the outgoing scene (scene A)
+    ///   - toSceneId: ID of the incoming scene (scene B)
+    ///   - transition: The transition to apply
+    case setBoundaryTransition(fromSceneId: UUID, toSceneId: UUID, transition: SceneTransition)
+
     // MARK: - Scene Instance State (PR9)
 
     /// Sets a block transform for a scene instance.

@@ -57,6 +57,10 @@ public final class EditorStore {
     /// and must be explicitly re-applied for the active scene instance.
     public var onStateRestoredFromUndoRedo: (() -> Void)?
 
+    /// PR-F: Called when a scene instance state changes (but not timeline structure).
+    /// Use for incremental engine sync instead of full setTimeline().
+    public var onSceneStateChanged: ((UUID, SceneState) -> Void)?
+
     // MARK: - Initialization
 
     public init(initialState: EditorState = .empty()) {
@@ -164,7 +168,7 @@ public final class EditorStore {
         // Notify observers (split for performance)
         let playheadChanged = state.playheadTimeUs != oldPlayhead
         let selectionChanged = state.selection != oldSelection
-        let timelineChanged = state.canonicalTimeline != oldTimeline || result.shouldPushSnapshot
+        let structureChanged = state.canonicalTimeline != oldTimeline
 
         // Determine if this is a trim preview action (.began/.changed)
         let isTrimPreview: Bool = {
@@ -173,6 +177,9 @@ public final class EditorStore {
             }
             return false
         }()
+
+        // PR-F: Determine if this is a scene-state-only change (not structural)
+        let sceneStateChangeInfo = extractSceneStateChange(action: action)
 
         if playheadChanged {
             onPlayheadChanged?(state.playheadTimeUs)
@@ -192,12 +199,22 @@ public final class EditorStore {
             onSelectedBlockChanged?(state.selectedBlockId)
         }
 
-        if timelineChanged {
+        // PR-F: Route to appropriate callback based on change type
+        if structureChanged {
+            // Timeline structure changed - full sync
             if isTrimPreview {
                 notifyTimelinePreviewChanged()
             } else {
                 notifyTimelineChanged()
             }
+        } else if let (instanceId, _) = sceneStateChangeInfo, result.shouldPushSnapshot {
+            // Scene state changed (not structure) - incremental sync
+            if let sceneState = state.draft.sceneInstanceStates[instanceId] {
+                onSceneStateChanged?(instanceId, sceneState)
+            }
+        } else if result.shouldPushSnapshot {
+            // Other undo-able change - fall back to full sync
+            notifyTimelineChanged()
         }
 
         #if DEBUG
@@ -325,6 +342,27 @@ public final class EditorStore {
 
     private func notifyUndoRedoChanged() {
         onUndoRedoChanged?(canUndo, canRedo)
+    }
+
+    /// PR-F: Extracts scene instance ID from scene-state-only actions.
+    /// Returns nil for structural timeline changes or non-scene-state actions.
+    private func extractSceneStateChange(action: EditorAction) -> (UUID, String)? {
+        switch action {
+        case .setBlockTransform(let instanceId, let blockId, _, .ended):
+            return (instanceId, blockId)
+        case .setBlockVariant(let instanceId, let blockId, _):
+            return (instanceId, blockId)
+        case .setBlockToggle(let instanceId, let blockId, _, _):
+            return (instanceId, blockId)
+        case .setBlockMedia(let instanceId, let blockId, _):
+            return (instanceId, blockId)
+        case .setBlockMediaPresent(let instanceId, let blockId, _):
+            return (instanceId, blockId)
+        case .resetSceneState(let instanceId):
+            return (instanceId, "")
+        default:
+            return nil
+        }
     }
 
     #if DEBUG

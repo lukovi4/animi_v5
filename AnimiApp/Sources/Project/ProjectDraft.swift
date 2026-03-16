@@ -9,8 +9,8 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
 
     // MARK: - Constants
 
-    /// Current schema version (release v1 - no legacy migrations).
-    public static let currentSchemaVersion: Int = 5
+    /// Current schema version (v6: boundary transitions).
+    public static let currentSchemaVersion: Int = 6
 
     /// Minimum scene duration in microseconds (0.1 seconds).
     public static let minSceneDurationUs: TimeUs = 100_000

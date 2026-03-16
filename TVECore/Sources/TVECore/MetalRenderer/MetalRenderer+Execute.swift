@@ -192,6 +192,18 @@ extension MetalRenderer {
         let animToViewport = overrideAnimToViewport ?? GeometryMapping.animToInputContain(animSize: target.animSize, inputRect: targetRect)
         let viewportToNDC = GeometryMapping.viewportToNDC(width: targetRect.width, height: targetRect.height)
 
+        // PR-G: Unconditional clear when no background and no commands
+        // This fixes stale-pixel bug when split-pass calls draw(commands: [], backgroundState: nil, initialLoadAction: .clear)
+        if backgroundState == nil && commands.isEmpty {
+            if renderPassDescriptor.colorAttachments[0].loadAction == .clear {
+                guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+                    throw MetalRendererError.failedToCreateRenderEncoder
+                }
+                encoder.endEncoding()
+                return
+            }
+        }
+
         // Process commands in segments separated by mask/matte scopes
         var index = 0
         var isFirstPass = true

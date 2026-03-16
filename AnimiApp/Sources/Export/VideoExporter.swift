@@ -920,4 +920,688 @@ public final class VideoExporter {
             }
         }
     }
+
+    // MARK: - Timeline Export (v6 Schema)
+
+    /// Settings for timeline export with transitions.
+    public struct TimelineExportSettings: Sendable {
+        /// Output file URL
+        public let outputURL: URL
+
+        /// Output size in pixels
+        public let sizePx: (width: Int, height: Int)
+
+        /// Frame rate
+        public let fps: Int
+
+        /// Target average bitrate in bps
+        public let bitrate: Int
+
+        /// GOP length in seconds
+        public let gopSeconds: Int
+
+        /// Clear color for each frame
+        public let clearColor: ClearColor
+
+        /// Timeout for writer backpressure wait in seconds
+        public let backpressureTimeoutSeconds: Double
+
+        /// Audio export configuration
+        public let audio: AudioExportConfig?
+
+        public init(
+            outputURL: URL,
+            sizePx: (width: Int, height: Int),
+            fps: Int = 30,
+            bitrate: Int = 10_000_000,
+            gopSeconds: Int = 2,
+            clearColor: ClearColor = .opaqueBlack,
+            backpressureTimeoutSeconds: Double = 3.0,
+            audio: AudioExportConfig? = nil
+        ) {
+            self.outputURL = outputURL
+            self.sizePx = sizePx
+            self.fps = fps
+            self.bitrate = bitrate
+            self.gopSeconds = gopSeconds
+            self.clearColor = clearColor
+            self.backpressureTimeoutSeconds = backpressureTimeoutSeconds
+            self.audio = audio
+        }
+    }
+
+    /// Exports a multi-scene timeline with transitions to video.
+    ///
+    /// Uses TimelineCompositionEngine to resolve frames and TransitionCompositor
+    /// for transition effects. Produces frame-identical output to preview.
+    ///
+    /// - Parameters:
+    ///   - engine: TimelineCompositionEngine with configured timeline
+    ///   - renderer: MetalRenderer for GPU rendering
+    ///   - transitionCompositor: TransitionCompositor for transition effects
+    ///   - backgroundState: Background state for rendering
+    ///   - settings: Export configuration
+    ///   - progress: Progress callback (0.0 - 1.0), called on main queue
+    ///   - completion: Completion callback, called on main queue
+    @MainActor
+    public func exportTimeline(
+        engine: TimelineCompositionEngine,
+        renderer: MetalRenderer,
+        transitionCompositor: TransitionCompositor,
+        backgroundState: EffectiveBackgroundState?,
+        backgroundTextureProvider: TextureProvider,
+        settings: TimelineExportSettings,
+        progress: @escaping (Double) -> Void,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        guard let transitionMath = engine.transitionMath else {
+            completion(.failure(VideoExportError.renderError(TimelineExportError.noTimeline)))
+            return
+        }
+
+        // Validate FPS match
+        guard settings.fps == engine.fps else {
+            completion(.failure(VideoExportError.fpsMismatch(
+                settingsFps: settings.fps,
+                runtimeFps: engine.fps
+            )))
+            return
+        }
+
+        // Capture necessary data for background thread
+        let totalFrames = transitionMath.compressedDurationFrames
+        let canvasSize = engine.canvasSize
+
+        // Reset state
+        resetState()
+
+        // Prepare engine and build audio pipeline
+        Task {
+            await engine.prepareForPlayback(startingAt: 0)
+
+            // Build audio pipeline if configured
+            var audioPipeline: BuiltAudioPipeline?
+            if let audioConfig = settings.audio {
+                do {
+                    let sceneData = await engine.prepareAudioExportData()
+                    let builder = AudioCompositionBuilder()
+                    audioPipeline = try builder.buildTimeline(
+                        sceneData: sceneData,
+                        transitionMath: transitionMath,
+                        fps: settings.fps,
+                        config: audioConfig
+                    )
+                } catch {
+                    DispatchQueue.main.async {
+                        completion(.failure(VideoExportError.failedToBuildAudioPipeline(error)))
+                    }
+                    return
+                }
+            }
+
+            // Run export on background queue
+            exportQueue.async { [weak self] in
+                guard let self else {
+                    DispatchQueue.main.async {
+                        completion(.failure(VideoExportError.cancelled))
+                    }
+                    return
+                }
+
+                self.runTimelineExportLoop(
+                    engine: engine,
+                    renderer: renderer,
+                    transitionCompositor: transitionCompositor,
+                    totalFrames: totalFrames,
+                    canvasSize: canvasSize,
+                    backgroundState: backgroundState,
+                    backgroundTextureProvider: backgroundTextureProvider,
+                    audioPipeline: audioPipeline,
+                    settings: settings,
+                    progress: progress,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    // MARK: - Timeline Export Loop
+
+    private func runTimelineExportLoop(
+        engine: TimelineCompositionEngine,
+        renderer: MetalRenderer,
+        transitionCompositor: TransitionCompositor,
+        totalFrames: Int,
+        canvasSize: SizeD,
+        backgroundState: EffectiveBackgroundState?,
+        backgroundTextureProvider: TextureProvider,
+        audioPipeline: BuiltAudioPipeline?,
+        settings: TimelineExportSettings,
+        progress: @escaping (Double) -> Void,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        // Delete existing file
+        try? FileManager.default.removeItem(at: settings.outputURL)
+
+        // 1. Create AVAssetWriter
+        let writer: AVAssetWriter
+        do {
+            writer = try AVAssetWriter(outputURL: settings.outputURL, fileType: .mp4)
+        } catch {
+            DispatchQueue.main.async {
+                completion(.failure(VideoExportError.failedToCreateWriter(error)))
+            }
+            return
+        }
+
+        // 2. Configure video input
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: settings.sizePx.width,
+            AVVideoHeightKey: settings.sizePx.height,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: settings.bitrate,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoMaxKeyFrameIntervalKey: settings.fps * settings.gopSeconds,
+                AVVideoExpectedSourceFrameRateKey: settings.fps
+            ]
+        ]
+
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        videoInput.expectsMediaDataInRealTime = false
+
+        guard writer.canAdd(videoInput) else {
+            DispatchQueue.main.async {
+                completion(.failure(VideoExportError.cannotAddVideoInput))
+            }
+            return
+        }
+        writer.add(videoInput)
+
+        // 2b. Configure audio input (if audio pipeline provided)
+        var audioInput: AVAssetWriterInput?
+        var audioPump: AudioWriterPump?
+        if audioPipeline != nil {
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44100,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 128000
+            ]
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            input.expectsMediaDataInRealTime = false
+
+            if writer.canAdd(input) {
+                writer.add(input)
+                audioInput = input
+                audioPump = AudioWriterPump()
+            }
+        }
+
+        // 3. Create pixel buffer adaptor
+        let pixelBufferAttributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+            kCVPixelBufferWidthKey as String: settings.sizePx.width,
+            kCVPixelBufferHeightKey as String: settings.sizePx.height,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: videoInput,
+            sourcePixelBufferAttributes: pixelBufferAttributes
+        )
+
+        // 4. Start writing (timeline export)
+        guard writer.startWriting() else {
+            DispatchQueue.main.async {
+                completion(.failure(VideoExportError.writerStartFailed(writer.error)))
+            }
+            return
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        // 5. Create CVMetalTextureCache
+        let metalDevice = renderer.commandQueue.device
+        var textureCache: CVMetalTextureCache?
+        let cacheStatus = CVMetalTextureCacheCreate(
+            kCFAllocatorDefault,
+            nil,
+            metalDevice,
+            nil,
+            &textureCache
+        )
+
+        guard cacheStatus == kCVReturnSuccess, let textureCache else {
+            writer.cancelWriting()
+            DispatchQueue.main.async {
+                completion(.failure(VideoExportError.failedToCreateTextureCache))
+            }
+            return
+        }
+
+        // 6. Setup synchronization
+        let maxInFlight = renderer.maxFramesInFlight
+        let semaphore = DispatchSemaphore(value: maxInFlight)
+        let videoGroup = DispatchGroup()
+        let audioGroup = DispatchGroup()
+        let backpressureTimeout = settings.backpressureTimeoutSeconds
+
+        // 6b. Start audio pump in parallel (if configured)
+        if let pipeline = audioPipeline,
+           let input = audioInput,
+           let pump = audioPump {
+            audioGroup.enter()
+            pump.start(
+                composition: pipeline.composition,
+                audioMix: pipeline.audioMix,
+                audioInput: input,
+                writerQueue: writerQueue,
+                backpressureTimeout: backpressureTimeout,
+                cancelCheck: { [weak self] in self?.isCancelled() ?? true },
+                errorCheck: { [weak self] in self?.exportError() },
+                setExportErrorOnce: { [weak self] in self?.setExportErrorOnce($0) },
+                completion: { audioGroup.leave() }
+            )
+        }
+
+        // 7. Video export loop
+        for frameIndex in 0..<totalFrames {
+            // Check cancellation
+            if isCancelled() { break }
+            if exportError() != nil { break }
+
+            // Wait for in-flight slot
+            semaphore.wait()
+            videoGroup.enter()
+
+            autoreleasepool {
+                // Get pixel buffer from pool
+                guard let pool = adaptor.pixelBufferPool else {
+                    setExportErrorOnce(VideoExportError.noPixelBufferPool)
+                    videoGroup.leave()
+                    semaphore.signal()
+                    return
+                }
+
+                var pixelBuffer: CVPixelBuffer?
+                let pbStatus = CVPixelBufferPoolCreatePixelBuffer(
+                    kCFAllocatorDefault,
+                    pool,
+                    &pixelBuffer
+                )
+
+                guard pbStatus == kCVReturnSuccess, let pixelBuffer else {
+                    setExportErrorOnce(VideoExportError.failedToCreatePixelBuffer(pbStatus))
+                    videoGroup.leave()
+                    semaphore.signal()
+                    return
+                }
+
+                // Create Metal texture from pixel buffer
+                var cvMetalTexture: CVMetalTexture?
+                let texStatus = CVMetalTextureCacheCreateTextureFromImage(
+                    kCFAllocatorDefault,
+                    textureCache,
+                    pixelBuffer,
+                    nil,
+                    .bgra8Unorm,
+                    settings.sizePx.width,
+                    settings.sizePx.height,
+                    0,
+                    &cvMetalTexture
+                )
+
+                guard texStatus == kCVReturnSuccess,
+                      let cvMetalTexture,
+                      let targetTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
+                    setExportErrorOnce(VideoExportError.failedToCreateMetalTexture(texStatus))
+                    videoGroup.leave()
+                    semaphore.signal()
+                    return
+                }
+
+                // Create presentation time
+                let pts = CMTime(value: CMTimeValue(frameIndex), timescale: CMTimeScale(settings.fps))
+
+                // Create in-flight frame holder
+                let inFlightFrame = InFlightFrame(
+                    pixelBuffer: pixelBuffer,
+                    cvMetalTexture: cvMetalTexture,
+                    mtlTexture: targetTexture,
+                    presentationTime: pts
+                )
+
+                // Resolve frame on main actor
+                Task { @MainActor in
+                    do {
+                        guard let resolved = await engine.resolveFrame(frameIndex) else {
+                            throw TimelineExportError.frameResolutionFailed(frameIndex)
+                        }
+
+                        // Render frame
+                        try self.renderTimelineFrame(
+                            resolved: resolved,
+                            target: targetTexture,
+                            renderer: renderer,
+                            transitionCompositor: transitionCompositor,
+                            canvasSize: canvasSize,
+                            clearColor: settings.clearColor,
+                            backgroundState: backgroundState,
+                            backgroundTextureProvider: backgroundTextureProvider
+                        )
+
+                        // Append on writer queue after render
+                        self.writerQueue.async {
+                            defer {
+                                videoGroup.leave()
+                                semaphore.signal()
+                            }
+
+                            if self.isCancelled() { return }
+                            if self.exportError() != nil { return }
+
+                            if writer.status != .writing {
+                                self.setExportErrorOnce(VideoExportError.writerNotWriting(writer.error))
+                                return
+                            }
+
+                            // Bounded wait for readiness
+                            let deadline = Date().addingTimeInterval(backpressureTimeout)
+                            while !videoInput.isReadyForMoreMediaData {
+                                if self.isCancelled() { return }
+                                if self.exportError() != nil { return }
+                                if Date() > deadline {
+                                    self.setExportErrorOnce(VideoExportError.writerBackpressureTimeout)
+                                    return
+                                }
+                                Thread.sleep(forTimeInterval: 0.002)
+                            }
+
+                            let ok = adaptor.append(
+                                inFlightFrame.pixelBuffer,
+                                withPresentationTime: inFlightFrame.presentationTime
+                            )
+                            if !ok {
+                                self.setExportErrorOnce(VideoExportError.appendFailed(writer.error))
+                            }
+                        }
+                    } catch {
+                        self.setExportErrorOnce(VideoExportError.renderError(error))
+                        videoGroup.leave()
+                        semaphore.signal()
+                    }
+                }
+            }
+
+            // Report progress
+            let progressValue = Double(frameIndex + 1) / Double(totalFrames)
+            DispatchQueue.main.async {
+                progress(progressValue)
+            }
+        }
+
+        // 8. Wait for all video frames
+        videoGroup.wait()
+
+        // 8b. Wait for audio pump
+        audioGroup.wait()
+
+        // 9. Finalization
+        writerQueue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async {
+                    completion(.failure(VideoExportError.cancelled))
+                }
+                return
+            }
+
+            if self.isCancelled() {
+                writer.cancelWriting()
+                try? FileManager.default.removeItem(at: settings.outputURL)
+                DispatchQueue.main.async {
+                    completion(.failure(VideoExportError.cancelled))
+                }
+                return
+            }
+
+            if let error = self.exportError() {
+                writer.cancelWriting()
+                try? FileManager.default.removeItem(at: settings.outputURL)
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+                return
+            }
+
+            videoInput.markAsFinished()
+            audioInput?.markAsFinished()
+
+            writer.finishWriting {
+                if writer.status == .completed {
+                    DispatchQueue.main.async {
+                        completion(.success(settings.outputURL))
+                    }
+                } else {
+                    try? FileManager.default.removeItem(at: settings.outputURL)
+                    DispatchQueue.main.async {
+                        completion(.failure(VideoExportError.finishFailed(writer.error)))
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Timeline Frame Rendering
+
+    @MainActor
+    private func renderTimelineFrame(
+        resolved: ResolvedTimelineFrame,
+        target: MTLTexture,
+        renderer: MetalRenderer,
+        transitionCompositor: TransitionCompositor,
+        canvasSize: SizeD,
+        clearColor: ClearColor,
+        backgroundState: EffectiveBackgroundState?,
+        backgroundTextureProvider: TextureProvider
+    ) throws {
+        let commandQueue = renderer.commandQueue
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            throw VideoExportError.failedToCreateCommandBuffer
+        }
+
+        switch resolved {
+        case .single(let context):
+            // PR-G: Single scene with split-pass architecture
+            // Pass 1: Background pre-pass with backgroundTextureProvider
+            // Pass 2: Scene pass with scene provider (initialLoadAction: .load)
+            let renderTarget = RenderTarget(
+                texture: target,
+                drawableScale: 1.0,
+                animSize: context.canvasSize
+            )
+
+            // Pass 1: Background pre-pass (always prepare target)
+            if let bg = backgroundState {
+                try renderer.draw(
+                    commands: [],
+                    target: renderTarget,
+                    clearColor: clearColor,
+                    textureProvider: backgroundTextureProvider,
+                    commandBuffer: commandBuffer,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: bg,
+                    initialLoadAction: .clear
+                )
+            } else {
+                // Clear target even without background
+                try renderer.draw(
+                    commands: [],
+                    target: renderTarget,
+                    clearColor: clearColor,
+                    textureProvider: backgroundTextureProvider,
+                    commandBuffer: commandBuffer,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: nil,
+                    initialLoadAction: .clear
+                )
+            }
+
+            // Pass 2: Scene pass (preserves background)
+            try renderer.draw(
+                commands: context.commands,
+                target: renderTarget,
+                clearColor: clearColor,
+                textureProvider: context.textureProvider,
+                commandBuffer: commandBuffer,
+                assetSizes: context.assetSizes,
+                pathRegistry: context.pathRegistry,
+                backgroundState: nil,  // Already rendered in pass 1
+                initialLoadAction: .load  // Preserve background
+            )
+
+        case .transition(let context):
+            // Transition: render both scenes offscreen, then composite
+            let texturePool = renderer.texturePool
+            let sizePx = (width: target.width, height: target.height)
+
+            // Acquire offscreen textures for scenes A and B
+            guard let textureA = texturePool.acquireColorTexture(size: sizePx),
+                  let textureB = texturePool.acquireColorTexture(size: sizePx) else {
+                throw TimelineExportError.failedToAcquireOffscreenTexture
+            }
+
+            defer {
+                texturePool.release(textureA)
+                texturePool.release(textureB)
+            }
+
+            // Render scene A to offscreen (transparent background)
+            let targetA = RenderTarget(
+                texture: textureA,
+                drawableScale: 1.0,
+                animSize: context.sceneA.canvasSize
+            )
+            try renderer.draw(
+                commands: context.sceneA.commands,
+                target: targetA,
+                clearColor: .transparentBlack,
+                textureProvider: context.sceneA.textureProvider,
+                commandBuffer: commandBuffer,
+                assetSizes: context.sceneA.assetSizes,
+                pathRegistry: context.sceneA.pathRegistry,
+                backgroundState: nil  // No background for offscreen scenes
+            )
+
+            // Render scene B to offscreen (transparent background)
+            let targetB = RenderTarget(
+                texture: textureB,
+                drawableScale: 1.0,
+                animSize: context.sceneB.canvasSize
+            )
+            try renderer.draw(
+                commands: context.sceneB.commands,
+                target: targetB,
+                clearColor: .transparentBlack,
+                textureProvider: context.sceneB.textureProvider,
+                commandBuffer: commandBuffer,
+                assetSizes: context.sceneB.assetSizes,
+                pathRegistry: context.sceneB.pathRegistry,
+                backgroundState: nil
+            )
+
+            // Clear target with background
+            let finalTarget = RenderTarget(
+                texture: target,
+                drawableScale: 1.0,
+                animSize: canvasSize
+            )
+
+            // PR-G: Always prepare final target before compositor
+            // Background pre-pass uses shared backgroundTextureProvider (not EmptyTextureProvider)
+            if let bg = backgroundState {
+                try renderer.draw(
+                    commands: [],
+                    target: finalTarget,
+                    clearColor: clearColor,
+                    textureProvider: backgroundTextureProvider,
+                    commandBuffer: commandBuffer,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: bg,
+                    initialLoadAction: .clear
+                )
+            } else {
+                // PR-G: Clear target even without background to avoid stale pixels
+                try renderer.draw(
+                    commands: [],
+                    target: finalTarget,
+                    clearColor: clearColor,
+                    textureProvider: backgroundTextureProvider,
+                    commandBuffer: commandBuffer,
+                    assetSizes: [:],
+                    pathRegistry: PathRegistry(),
+                    backgroundState: nil,
+                    initialLoadAction: .clear
+                )
+            }
+
+            // Convert SceneTransition to TransitionParams for TVECore
+            let params = convertToTransitionParams(context.transition)
+
+            // Composite A and B with transition effect
+            try transitionCompositor.composite(
+                sceneA: textureA,
+                sceneB: textureB,
+                transition: params,
+                progress: context.progress,
+                canvasSize: canvasSize,
+                target: target,
+                commandBuffer: commandBuffer
+            )
+        }
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+    }
+
+    /// Converts AnimiApp SceneTransition to TVECore TransitionParams.
+    /// PR-F: Uses extension methods from SceneTransition for type conversion.
+    private func convertToTransitionParams(_ transition: SceneTransition) -> TransitionParams {
+        TransitionParams(
+            type: transition.type.toTVECoreType(),
+            easing: transition.easingPreset.toTVECoreType()
+        )
+    }
+}
+
+// MARK: - Timeline Export Errors
+
+public enum TimelineExportError: Error, LocalizedError {
+    case noTimeline
+    case frameResolutionFailed(Int)
+    case failedToAcquireOffscreenTexture
+
+    public var errorDescription: String? {
+        switch self {
+        case .noTimeline:
+            return "No timeline configured in composition engine"
+        case .frameResolutionFailed(let frame):
+            return "Failed to resolve frame \(frame)"
+        case .failedToAcquireOffscreenTexture:
+            return "Failed to acquire offscreen texture from pool"
+        }
+    }
+}
+
+// MARK: - Empty Texture Provider
+
+/// Empty texture provider for background-only renders.
+private final class EmptyTextureProvider: TextureProvider {
+    func texture(for assetId: String) -> MTLTexture? {
+        nil
+    }
 }

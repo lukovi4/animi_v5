@@ -25,7 +25,7 @@ struct TexturePoolKey: Hashable {
 
 /// Manages reusable Metal textures to avoid per-frame allocations.
 /// Textures are pooled by (width, height, pixelFormat) key.
-final class TexturePool {
+public final class TexturePool {
     private let device: MTLDevice
     private var available: [TexturePoolKey: [MTLTexture]] = [:]
     private var inUse: Set<ObjectIdentifier> = []
@@ -38,7 +38,7 @@ final class TexturePool {
     /// - Parameter size: Texture dimensions in pixels
     /// - Returns: A texture configured for render target and shader read
     /// - Note: PR1 — uses `.private` storage for GPU-only access (no CPU read/write)
-    func acquireColorTexture(size: (width: Int, height: Int)) -> MTLTexture? {
+    public func acquireColorTexture(size: (width: Int, height: Int)) -> MTLTexture? {
         acquire(
             size: size,
             pixelFormat: .bgra8Unorm,
@@ -86,7 +86,7 @@ final class TexturePool {
 
     /// Releases a texture back to the pool for reuse.
     /// - Parameter texture: The texture to release
-    func release(_ texture: MTLTexture) {
+    public func release(_ texture: MTLTexture) {
         let identifier = ObjectIdentifier(texture)
         guard inUse.contains(identifier) else { return }
 

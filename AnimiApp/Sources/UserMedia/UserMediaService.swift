@@ -3,6 +3,61 @@ import Metal
 import AVFoundation
 import TVECore
 
+// MARK: - Video Setup Provider Protocol (P0 Testing Seam)
+
+/// Protocol for video frame provider.
+/// Internal seam for dependency injection in tests.
+protocol VideoSetupProviding: AnyObject {
+    // Setup phase
+    func requestPoster(at time: Double) async throws -> MTLTexture
+    var duration: CMTime { get }
+    func release()
+
+    // State
+    var isReady: Bool { get }
+    var state: VideoProviderState { get }
+    var isPlaybackActive: Bool { get }
+
+    // Playback
+    func startPlayback(atSceneFrame sceneFrameIndex: Int)
+    func stopPlayback(flush: Bool)
+    func frameTextureForPlayback(sceneFrameIndex: Int) -> MTLTexture?
+    func frameTextureForScrub(sceneFrameIndex: Int) -> MTLTexture?
+    func frameTextureForFrozen(sceneFrameIndex: Int) -> MTLTexture?
+}
+
+/// Conform VideoFrameProvider to protocol.
+extension VideoFrameProvider: VideoSetupProviding {}
+
+/// Factory type for creating video setup providers.
+typealias VideoSetupProviderFactory = (MTLDevice, MTLCommandQueue, URL, Double) -> VideoSetupProviding
+
+// MARK: - Scene Player Protocol (P0 Testing Seam)
+
+/// Protocol for scene player interactions used by UserMediaService.
+/// Internal seam for dependency injection in tests.
+@MainActor
+protocol ScenePlayerForMedia: AnyObject {
+    func bindingAssetIdsByVariant(blockId: String) -> [String: String]
+    func setUserMediaPresent(blockId: String, present: Bool)
+    func blockTiming(for blockId: String) -> BlockTiming?
+    func blockPriorityInfo(blockId: String, at sceneFrameIndex: Int) -> BlockPriorityInfo?
+}
+
+/// Conform ScenePlayer to protocol.
+extension ScenePlayer: ScenePlayerForMedia {}
+
+// MARK: - Texture Factory Protocol (P0 Testing Seam)
+
+/// Protocol for texture factory used by UserMediaService.
+/// Internal seam for dependency injection in tests.
+protocol TextureFactoryForMedia {
+    func makeTexture(from image: UIImage) -> MTLTexture?
+}
+
+/// Conform UserMediaTextureFactory to protocol.
+extension UserMediaTextureFactory: TextureFactoryForMedia {}
+
 // MARK: - Async Semaphore (P1: Poster Throttling)
 
 /// Simple async semaphore for limiting concurrent operations.
@@ -208,14 +263,21 @@ public final class UserMediaService {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private weak var scenePlayer: ScenePlayer?
-    private let textureProvider: MutableTextureProvider
-    private let textureFactory: UserMediaTextureFactory
+    private weak var scenePlayerForTest: (any ScenePlayerForMedia)?
+    private let textureProvider: any MutableTextureProvider
+    private var textureFactory: (any TextureFactoryForMedia)?
 
     /// Current media state per block
     private var mediaState: [String: UserMediaKind] = [:]
 
     /// Video frame providers per block (for video media)
-    private var videoProviders: [String: VideoFrameProvider] = [:]
+    private var videoProviders: [String: VideoSetupProviding] = [:]
+
+    /// P0 Testing Seam: Factory for creating video providers.
+    /// Default creates real VideoFrameProvider. Tests can inject fake.
+    var makeVideoProvider: VideoSetupProviderFactory = { device, queue, url, fps in
+        VideoFrameProvider(device: device, commandQueue: queue, url: url, sceneFPS: fps)
+    }
 
     /// Temp video file URLs per block (PR1: for cleanup)
     private var tempVideoURLByBlockId: [String: URL] = [:]
@@ -238,6 +300,22 @@ public final class UserMediaService {
 
     /// Active video setup tasks per blockId (for cancellation on replace/cleanup).
     private var videoSetupTasksByBlock: [String: Task<Void, Never>] = [:]
+
+    // MARK: - Block Readiness State (P0 Readiness Contract)
+
+    /// Per-block readiness state for video restore.
+    /// Source of truth for scene-level readiness check.
+    private enum BlockReadinessState: Equatable {
+        case pending
+        case ready
+        case failed(reason: String)
+    }
+
+    /// Readiness state per blockId.
+    /// - `.pending`: setup task in progress
+    /// - `.ready`: poster injected, userMediaPresent applied
+    /// - `.failed`: setup failed, resources cleaned up
+    private var blockReadinessState: [String: BlockReadinessState] = [:]
 
     // MARK: - Poster Throttling (P1)
 
@@ -272,13 +350,38 @@ public final class UserMediaService {
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
         scenePlayer: ScenePlayer,
-        textureProvider: MutableTextureProvider
+        textureProvider: any MutableTextureProvider
     ) {
         self.device = device
         self.commandQueue = commandQueue
         self.scenePlayer = scenePlayer
+        self.scenePlayerForTest = nil
         self.textureProvider = textureProvider
         self.textureFactory = UserMediaTextureFactory(device: device, commandQueue: commandQueue)
+    }
+
+    /// Internal initializer for testing.
+    /// P0 Testing Seam: Allows injecting protocol-based fakes for ScenePlayer and TextureFactory.
+    init(
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        scenePlayerForTest: any ScenePlayerForMedia,
+        textureProvider: any MutableTextureProvider,
+        textureFactory: any TextureFactoryForMedia
+    ) {
+        self.device = device
+        self.commandQueue = commandQueue
+        self.scenePlayer = nil
+        self.scenePlayerForTest = scenePlayerForTest
+        self.textureProvider = textureProvider
+        self.textureFactory = textureFactory
+    }
+
+    // MARK: - Player Access
+
+    /// Returns the active scene player (production or test).
+    private var activePlayer: (any ScenePlayerForMedia)? {
+        scenePlayer ?? scenePlayerForTest
     }
 
     // MARK: - Configuration
@@ -297,19 +400,34 @@ public final class UserMediaService {
     /// Creates a Metal texture from the image and injects it into ALL variant
     /// binding asset IDs, ensuring the photo persists across variant switches.
     ///
+    /// P0 Readiness Contract: Updates `blockReadinessState` on success/failure.
+    /// Photo failures now affect scene-level readiness like video failures.
+    ///
     /// - Parameters:
     ///   - blockId: Identifier of the media block
     ///   - image: User-selected photo
+    ///   - presentOnReady: Value for `userMediaPresent` after texture injection (default: `true`)
     /// - Returns: `true` if successful, `false` if texture creation failed
     @discardableResult
-    public func setPhoto(blockId: String, image: UIImage) -> Bool {
-        guard let player = scenePlayer else { return false }
+    public func setPhoto(blockId: String, image: UIImage, presentOnReady: Bool = true) -> Bool {
+        guard let player = activePlayer else {
+            // P0: Mark as failed - no player available
+            blockReadinessState[blockId] = .failed(reason: "no scene player")
+            return false
+        }
+        guard let factory = textureFactory else {
+            // P0: Mark as failed - no texture factory (test-only case)
+            blockReadinessState[blockId] = .failed(reason: "no texture factory")
+            return false
+        }
 
         // PR1: Clean up any existing video provider and temp file
         cleanupVideoResources(for: blockId)
 
         // Create texture from image
-        guard let texture = textureFactory.makeTexture(from: image) else {
+        guard let texture = factory.makeTexture(from: image) else {
+            // P0: Mark as failed - texture creation failed
+            blockReadinessState[blockId] = .failed(reason: "texture creation failed")
             return false
         }
 
@@ -321,7 +439,12 @@ public final class UserMediaService {
 
         // Update state (lightweight marker, no UIImage storage)
         mediaState[blockId] = .photo
-        player.setUserMediaPresent(blockId: blockId, present: true)
+
+        // P0: Mark as ready - photo successfully injected
+        blockReadinessState[blockId] = .ready
+
+        // Apply visibility (respects presentOnReady for restore semantics)
+        player.setUserMediaPresent(blockId: blockId, present: presentOnReady)
 
         return true
     }
@@ -346,7 +469,9 @@ public final class UserMediaService {
     /// - Returns: `true` if video accepted (async poster generation started), `false` on validation error
     @discardableResult
     public func setVideo(blockId: String, url: URL, ownership: MediaOwnership = .temporary, presentOnReady: Bool = true) -> Bool {
-        guard let player = scenePlayer else {
+        guard let player = activePlayer else {
+            // P0: Mark as failed - no player available (symmetric with setPhoto)
+            blockReadinessState[blockId] = .failed(reason: "no scene player")
             print("[UserMediaService] setVideo failed: no scene player")
             return false
         }
@@ -365,9 +490,12 @@ public final class UserMediaService {
         tempVideoURLByBlockId[blockId] = url
         videoOwnershipByBlockId[blockId] = ownership
 
-        // Create video frame provider with scene FPS
-        let provider = VideoFrameProvider(device: device, commandQueue: commandQueue, url: url, sceneFPS: sceneFPS)
+        // Create video frame provider with scene FPS (uses injectable factory)
+        let provider = makeVideoProvider(device, commandQueue, url, sceneFPS)
         videoProviders[blockId] = provider
+
+        // P0: Mark block as pending (setup task in progress)
+        blockReadinessState[blockId] = .pending
 
         // PR1: Store state immediately but userMediaPresent = false (poster gating)
         // We'll set the proper VideoSelection after we know the duration
@@ -392,6 +520,10 @@ public final class UserMediaService {
                     #if DEBUG
                     print("[UserMediaService] setVideo: stale task ignored for blockId=\(blockId)")
                     #endif
+                    // P0: Token-safe remove task (only if we're still current generation)
+                    if self.videoSetupGenerationByBlock[blockId] == token {
+                        self.videoSetupTasksByBlock.removeValue(forKey: blockId)
+                    }
                     await self.posterSemaphore.release()
                     return
                 }
@@ -401,8 +533,8 @@ public final class UserMediaService {
 
                 // Validate duration
                 guard duration > Self.epsilon else {
-                    print("[UserMediaService] setVideo failed: video duration too short (\(duration)s)")
-                    self.clear(blockId: blockId)
+                    // P0: Use failure helper to preserve failure state
+                    self.markVideoSetupFailed(blockId: blockId, reason: "video duration too short (\(duration)s)", token: token)
                     await self.posterSemaphore.release()
                     return
                 }
@@ -412,8 +544,8 @@ public final class UserMediaService {
 
                 // Validate selection
                 guard selection.isValid else {
-                    print("[UserMediaService] setVideo failed: invalid selection (winEnd <= winStart)")
-                    self.clear(blockId: blockId)
+                    // P0: Use failure helper to preserve failure state
+                    self.markVideoSetupFailed(blockId: blockId, reason: "invalid selection (winEnd <= winStart)", token: token)
                     await self.posterSemaphore.release()
                     return
                 }
@@ -423,6 +555,10 @@ public final class UserMediaService {
                     #if DEBUG
                     print("[UserMediaService] setVideo: stale task ignored (pre-commit) for blockId=\(blockId)")
                     #endif
+                    // P0: Token-safe remove task (only if we're still current generation)
+                    if self.videoSetupGenerationByBlock[blockId] == token {
+                        self.videoSetupTasksByBlock.removeValue(forKey: blockId)
+                    }
                     await self.posterSemaphore.release()
                     return
                 }
@@ -441,6 +577,14 @@ public final class UserMediaService {
                 // P0-3 fix: Use presentOnReady instead of hardcoded true
                 player.setUserMediaPresent(blockId: blockId, present: presentOnReady)
 
+                // P0: Mark block as ready (poster injected, userMediaPresent applied)
+                self.blockReadinessState[blockId] = .ready
+
+                // P0: Token-safe remove task from task map
+                if self.videoSetupGenerationByBlock[blockId] == token {
+                    self.videoSetupTasksByBlock.removeValue(forKey: blockId)
+                }
+
                 // PR1.1: Trigger redraw after async poster injection
                 self.onNeedsDisplay?()
 
@@ -456,16 +600,19 @@ public final class UserMediaService {
                 #if DEBUG
                 print("[UserMediaService] setVideo: cancelled for blockId=\(blockId)")
                 #endif
+                // P0: Token-safe remove task (only if we're still current generation)
+                if self.videoSetupGenerationByBlock[blockId] == token {
+                    self.videoSetupTasksByBlock.removeValue(forKey: blockId)
+                }
                 await self.posterSemaphore.release()
             } catch {
-                // PR-async-race: Only clear if still current
+                // PR-async-race: Only mark failed if still current generation
                 guard self.videoSetupGenerationByBlock[blockId] == token else {
                     await self.posterSemaphore.release()
                     return
                 }
-                // PR1: On poster error, log and clear
-                print("[UserMediaService] setVideo failed: poster generation error - \(error.localizedDescription)")
-                self.clear(blockId: blockId)
+                // P0: Use failure helper to preserve failure state
+                self.markVideoSetupFailed(blockId: blockId, reason: "poster generation error - \(error.localizedDescription)", token: token)
                 await self.posterSemaphore.release()
             }
         }
@@ -495,7 +642,7 @@ public final class UserMediaService {
     ///
     /// - Parameter sceneFrameIndex: Current scene frame to sync to
     public func startVideoPlayback(sceneFrameIndex: Int) {
-        guard let player = scenePlayer else { return }
+        guard let player = activePlayer else { return }
 
         // PR-F: Reset tick counter so first updateVideoFramesForPlayback() fires immediately
         // (divider - 1) means next increment will be divisible by divider
@@ -552,14 +699,14 @@ public final class UserMediaService {
     ///
     /// - Parameter sceneFrameIndex: Current scene frame (for drift detection)
     public func updateVideoFramesForPlayback(sceneFrameIndex: Int) {
-        guard let player = scenePlayer else { return }
+        guard let player = activePlayer else { return }
 
         // PR-F: Frame divider — skip video texture updates on non-update ticks
         tickCounter += 1
         let shouldUpdateTextures = (tickCounter % UInt64(budgetPolicy.updateDivider)) == 0
 
         // Collect video candidates with priority info
-        var candidates: [(blockId: String, selection: VideoSelection, provider: VideoFrameProvider, priority: BlockPriorityInfo)] = []
+        var candidates: [(blockId: String, selection: VideoSelection, provider: VideoSetupProviding, priority: BlockPriorityInfo)] = []
 
         for (blockId, kind) in mediaState {
             guard case .video(let selection) = kind,
@@ -659,7 +806,7 @@ public final class UserMediaService {
     ///
     /// - Parameter sceneFrameIndex: Target scene frame
     public func updateVideoFramesForScrub(sceneFrameIndex: Int) {
-        guard let player = scenePlayer else { return }
+        guard let player = activePlayer else { return }
 
         #if DEBUG
         let signpostId = ScrubSignpost.beginUpdateVideoFramesForScrub()
@@ -706,7 +853,7 @@ public final class UserMediaService {
     ///
     /// - Parameter sceneFrameIndex: Edit frame index
     public func updateVideoFramesForFrozen(sceneFrameIndex: Int) {
-        guard let player = scenePlayer else { return }
+        guard let player = activePlayer else { return }
 
         for (blockId, kind) in mediaState {
             guard case .video(let selection) = kind,
@@ -746,7 +893,7 @@ public final class UserMediaService {
     private func computeSyntheticSceneFrame(sceneFrameIndex: Int, blockId: String, selection: VideoSelection) -> Int {
         // Get block timing (startFrame)
         let blockStartFrame: Int
-        if let timing = scenePlayer?.blockTiming(for: blockId) {
+        if let timing = activePlayer?.blockTiming(for: blockId) {
             blockStartFrame = timing.startFrame
         } else {
             blockStartFrame = 0
@@ -786,7 +933,7 @@ public final class UserMediaService {
     ///
     /// - Parameter blockId: Identifier of the media block
     public func clear(blockId: String) {
-        guard let player = scenePlayer else { return }
+        guard let player = activePlayer else { return }
 
         // PR1: Clean up video resources (provider + temp file)
         cleanupVideoResources(for: blockId)
@@ -801,6 +948,9 @@ public final class UserMediaService {
         mediaState.removeValue(forKey: blockId)
         player.setUserMediaPresent(blockId: blockId, present: false)
 
+        // P0: Remove readiness state (user explicitly cleared media)
+        blockReadinessState.removeValue(forKey: blockId)
+
         // PR1.1: Trigger redraw after clear
         onNeedsDisplay?()
     }
@@ -808,13 +958,63 @@ public final class UserMediaService {
     /// Clears all user media for all blocks.
     public func clearAll() {
         // P1-1 fix: Use union of all keys to catch pending tasks during poster gating
+        // P0: Include blockReadinessState.keys for failed blocks
         let allBlockIds = Set(mediaState.keys)
             .union(tempVideoURLByBlockId.keys)
             .union(videoProviders.keys)
             .union(videoSetupTasksByBlock.keys)
+            .union(blockReadinessState.keys)
         for blockId in allBlockIds {
             clear(blockId: blockId)
         }
+    }
+
+    // MARK: - Restore Failure Marking
+
+    /// Marks a block as failed during media restore.
+    ///
+    /// This API is for failures that occur before entering `setPhoto`/`setVideo`,
+    /// such as missing files, unresolved paths, or unsupported media types.
+    ///
+    /// Behavior:
+    /// 1. Cleans up any stale video resources for the block
+    /// 2. Removes injected textures for all asset IDs
+    /// 3. Clears media state
+    /// 4. Sets visibility to false (safe state)
+    /// 5. Records failure in readiness state
+    /// 6. Triggers redraw
+    ///
+    /// - Parameters:
+    ///   - blockId: Identifier of the media block
+    ///   - reason: Human-readable failure reason for debugging
+    @MainActor
+    internal func markRestoreFailed(blockId: String, reason: String) {
+        // 1. Clean up any stale video resources
+        cleanupVideoResources(for: blockId)
+
+        // 2. Remove injected textures for all asset IDs
+        if let player = activePlayer {
+            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+            for (_, assetId) in assetIds {
+                textureProvider.removeTexture(for: assetId)
+            }
+
+            // 3. Set visibility to safe state
+            player.setUserMediaPresent(blockId: blockId, present: false)
+        }
+
+        // 4. Clear media state
+        mediaState.removeValue(forKey: blockId)
+
+        // 5. Record failure in readiness state
+        blockReadinessState[blockId] = .failed(reason: reason)
+
+        #if DEBUG
+        print("[UserMediaService] markRestoreFailed: blockId=\(blockId), reason=\(reason)")
+        #endif
+
+        // 6. Trigger redraw
+        onNeedsDisplay?()
     }
 
     // MARK: - Private Cleanup
@@ -853,6 +1053,68 @@ public final class UserMediaService {
                 #endif
             }
         }
+    }
+
+    /// Marks video setup as failed for a block.
+    /// P0 Readiness Contract: Preserves failure state while cleaning up resources.
+    ///
+    /// Unlike `clear(blockId:)`, this helper:
+    /// - Keeps `blockReadinessState[blockId] = .failed(reason)` so scene readiness detects failure
+    /// - Does NOT remove readiness state entry
+    ///
+    /// - Parameters:
+    ///   - blockId: Block identifier
+    ///   - reason: Failure reason for diagnostics
+    ///   - token: Generation token for race protection
+    private func markVideoSetupFailed(blockId: String, reason: String, token: UInt64) {
+        guard let player = activePlayer else { return }
+
+        // Token check - abort if generation changed (new setup in progress)
+        guard videoSetupGenerationByBlock[blockId] == token else {
+            #if DEBUG
+            print("[UserMediaService] markVideoSetupFailed: stale token for blockId=\(blockId)")
+            #endif
+            return
+        }
+
+        // Cancel and remove in-flight task (token-safe)
+        videoSetupTasksByBlock[blockId]?.cancel()
+        videoSetupTasksByBlock.removeValue(forKey: blockId)
+
+        // Release provider
+        if let provider = videoProviders.removeValue(forKey: blockId) {
+            provider.release()
+        }
+
+        // Remove injected textures for all variant assetIds
+        let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+        for (_, assetId) in assetIds {
+            textureProvider.removeTexture(for: assetId)
+        }
+
+        // Clear media state
+        mediaState.removeValue(forKey: blockId)
+
+        // Update scene player state
+        player.setUserMediaPresent(blockId: blockId, present: false)
+
+        // Mark as failed (preserves failure state for readiness check)
+        blockReadinessState[blockId] = .failed(reason: reason)
+
+        // Clean up temp file (use ownership check)
+        let ownership = videoOwnershipByBlockId.removeValue(forKey: blockId) ?? .temporary
+        if let fileURL = tempVideoURLByBlockId.removeValue(forKey: blockId) {
+            if ownership == .temporary {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+        }
+
+        // Trigger redraw
+        onNeedsDisplay?()
+
+        #if DEBUG
+        print("[UserMediaService] markVideoSetupFailed: blockId=\(blockId), reason=\(reason)")
+        #endif
     }
 
     deinit {
@@ -895,6 +1157,56 @@ public final class UserMediaService {
     /// Returns whether any video provider is ready for playback.
     public var hasReadyVideos: Bool {
         videoProviders.values.contains { $0.isReady }
+    }
+
+    /// Returns whether all video providers have finished loading (ready or failed, not loading).
+    /// Note: This only checks provider state, not poster injection completion.
+    public var areAllVideoProvidersSettled: Bool {
+        for provider in videoProviders.values {
+            switch provider.state {
+            case .loading:
+                return false
+            case .idle, .ready, .failed:
+                continue
+            }
+        }
+        return true
+    }
+
+    /// Returns whether scene is fully ready for rendering.
+    /// P0 Readiness Contract: Uses blockReadinessState as source of truth.
+    ///
+    /// Ready when:
+    /// - All video blocks have state `.ready`
+    /// - Or no video blocks at all
+    ///
+    /// Not ready when:
+    /// - Any video block has state `.pending` (still loading)
+    /// - Any video block has state `.failed` (cannot render)
+    public var isSceneMediaReady: Bool {
+        for (_, state) in blockReadinessState {
+            switch state {
+            case .pending:
+                return false // Still loading
+            case .failed:
+                return false // Failed cannot be ready
+            case .ready:
+                continue // This block is ready
+            }
+        }
+        // All blocks ready or no video blocks at all
+        return true
+    }
+
+    /// Returns whether any video restore has failed.
+    /// P0 Readiness Contract: Uses blockReadinessState as source of truth.
+    /// Returns whether any media restore has failed (photo or video).
+    /// P0 Readiness Contract: Uses blockReadinessState as source of truth.
+    public var hasFailedMedia: Bool {
+        blockReadinessState.values.contains { state in
+            if case .failed = state { return true }
+            return false
+        }
     }
 
     /// Returns all block IDs that have video media (for render-tick updates).

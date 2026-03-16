@@ -86,3 +86,51 @@ public final class InMemoryTextureProvider: MutableTextureProvider {
         textures.removeValue(forKey: assetId)
     }
 }
+
+// MARK: - Thread-Safe In-Memory Texture Provider (PR-G)
+
+/// Thread-safe texture provider for background queue usage (e.g., export).
+///
+/// Unlike `InMemoryTextureProvider`, this class:
+/// - Has NO `dispatchPrecondition(.main)` assertions
+/// - Uses NSLock for thread-safe cache access
+/// - Safe for use on export queue or any background thread
+///
+/// Use this for background texture providers passed to VideoExporter.
+/// Preview/playback providers on main thread can use regular `InMemoryTextureProvider`.
+public final class ThreadSafeInMemoryTextureProvider: MutableTextureProvider {
+    private let lock = NSLock()
+    private var textures: [String: MTLTexture] = [:]
+
+    public init() {}
+
+    /// Registers a texture for an asset ID (thread-safe).
+    public func register(_ texture: MTLTexture, for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        textures[assetId] = texture
+    }
+
+    /// Returns the registered texture for the given asset ID (thread-safe).
+    public func texture(for assetId: String) -> MTLTexture? {
+        lock.lock()
+        defer { lock.unlock() }
+        return textures[assetId]
+    }
+
+    // MARK: - MutableTextureProvider
+
+    /// Injects a texture for runtime use (thread-safe).
+    public func setTexture(_ texture: MTLTexture, for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        textures[assetId] = texture
+    }
+
+    /// Removes an injected texture (thread-safe).
+    public func removeTexture(for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        textures.removeValue(forKey: assetId)
+    }
+}

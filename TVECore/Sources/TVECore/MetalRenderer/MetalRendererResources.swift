@@ -97,6 +97,42 @@ struct MaskCombineParams {
     }
 }
 
+// MARK: - Transition Dip Uniforms (v6 Schema)
+
+/// Uniform buffer structure for dip-to-color transition effect.
+/// Layout must match Metal shader struct exactly.
+///
+/// Metal layout:
+///   float4x4 mvp:      64 bytes (offset 0)
+///   float progress:     4 bytes (offset 64)
+///   float3 _padding1:  12 bytes (offset 68)
+///   float4 dipColor:   16 bytes (offset 80)
+///   Total: 96 bytes
+public struct TransitionDipUniforms {
+    var mvp: simd_float4x4          // 64 bytes
+    var progress: Float             // 4 bytes
+    var _pad0: Float = 0            // 4 bytes
+    var _pad1: Float = 0            // 4 bytes
+    var _pad2: Float = 0            // 4 bytes (total _padding1 = 12 bytes)
+    var dipColor: SIMD4<Float>      // 16 bytes
+
+    public init(mvp: simd_float4x4, progress: Float, dipColor: SIMD4<Float>) {
+        self.mvp = mvp
+        self.progress = progress
+        self.dipColor = dipColor
+    }
+
+    /// Dip to black preset
+    public static func dipToBlack(mvp: simd_float4x4, progress: Float) -> TransitionDipUniforms {
+        TransitionDipUniforms(mvp: mvp, progress: progress, dipColor: SIMD4<Float>(0, 0, 0, 1))
+    }
+
+    /// Dip to white preset
+    public static func dipToWhite(mvp: simd_float4x4, progress: Float) -> TransitionDipUniforms {
+        TransitionDipUniforms(mvp: mvp, progress: progress, dipColor: SIMD4<Float>(1, 1, 1, 1))
+    }
+}
+
 // MARK: - Metal Renderer Resources
 
 /// Manages Metal resources for quad rendering.
@@ -138,6 +174,11 @@ final class MetalRendererResources {
     /// Compute pipeline for boolean mask combination (add/subtract/intersect)
     let maskCombineComputePipeline: MTLComputePipelineState
 
+    // MARK: - Transition Resources (v6 Schema)
+
+    /// Pipeline for dip-to-color transition effect (dipToBlack, dipToWhite)
+    let dipTransitionPipelineState: MTLRenderPipelineState
+
     init(device: MTLDevice, colorPixelFormat: MTLPixelFormat) throws {
         let library = try Self.makeShaderLibrary(device: device)
         pipelineState = try Self.makePipelineState(device: device, library: library, colorPixelFormat: colorPixelFormat)
@@ -177,6 +218,13 @@ final class MetalRendererResources {
         maskCombineComputePipeline = try Self.makeMaskCombineComputePipeline(
             device: device,
             library: library
+        )
+
+        // Transition resources (v6 Schema)
+        dipTransitionPipelineState = try Self.makeDipTransitionPipeline(
+            device: device,
+            library: library,
+            colorPixelFormat: colorPixelFormat
         )
     }
 
@@ -493,6 +541,38 @@ extension MetalRendererResources {
             return try device.makeComputePipelineState(function: kernelFunc)
         } catch {
             let msg = "Mask combine compute pipeline failed: \(error.localizedDescription)"
+            throw MetalRendererError.failedToCreatePipeline(reason: msg)
+        }
+    }
+}
+
+// MARK: - Transition Pipeline Creation (v6 Schema)
+
+extension MetalRendererResources {
+    /// Creates pipeline for dip-to-color transition effect.
+    /// Used for dipToBlack and dipToWhite transitions.
+    private static func makeDipTransitionPipeline(
+        device: MTLDevice,
+        library: MTLLibrary,
+        colorPixelFormat: MTLPixelFormat
+    ) throws -> MTLRenderPipelineState {
+        guard let vertexFunc = library.makeFunction(name: "dip_transition_vertex") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "dip_transition_vertex not found")
+        }
+        guard let fragmentFunc = library.makeFunction(name: "dip_transition_fragment") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "dip_transition_fragment not found")
+        }
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertexFunc
+        descriptor.fragmentFunction = fragmentFunc
+        descriptor.vertexDescriptor = makeVertexDescriptor()
+        configureBlending(descriptor.colorAttachments[0], pixelFormat: colorPixelFormat)
+
+        do {
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            let msg = "Dip transition pipeline failed: \(error.localizedDescription)"
             throw MetalRendererError.failedToCreatePipeline(reason: msg)
         }
     }

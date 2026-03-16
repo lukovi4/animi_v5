@@ -160,7 +160,7 @@ public final class MetalRenderer {
     let device: MTLDevice
     let resources: MetalRendererResources
     let options: MetalRendererOptions
-    let texturePool: TexturePool
+    public let texturePool: TexturePool
     let maskCache: MaskCache
     let shapeCache: ShapeCache
     private let logger: TVELogger?
@@ -402,6 +402,8 @@ public final class MetalRenderer {
     ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
     ///   - pathRegistry: Registry of path resources for GPU rendering
     ///   - backgroundState: Optional background state for background preset rendering (PR2)
+    ///   - initialLoadAction: Load action for render pass (.clear or .load). Default is .clear.
+    ///     Use .load to preserve existing target contents (PR-G split-pass architecture).
     /// - Throws: MetalRendererError if rendering fails
     public func draw(
         commands: [RenderCommand],
@@ -410,7 +412,8 @@ public final class MetalRenderer {
         commandBuffer: MTLCommandBuffer,
         assetSizes: [String: AssetSize] = [:],
         pathRegistry: PathRegistry,
-        backgroundState: EffectiveBackgroundState? = nil
+        backgroundState: EffectiveBackgroundState? = nil,
+        initialLoadAction: MTLLoadAction = .clear
     ) throws {
         // PR-C3: Rotate to next buffer in ring for in-flight frame safety
         vertexUploadPool.beginFrame()
@@ -439,14 +442,17 @@ public final class MetalRenderer {
 
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = target.texture
-        renderPassDescriptor.colorAttachments[0].loadAction = .clear
+        renderPassDescriptor.colorAttachments[0].loadAction = initialLoadAction
         renderPassDescriptor.colorAttachments[0].storeAction = .store
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(
-            red: options.clearColor.red,
-            green: options.clearColor.green,
-            blue: options.clearColor.blue,
-            alpha: options.clearColor.alpha
-        )
+        // PR-G: Only set clearColor when loadAction is .clear
+        if initialLoadAction == .clear {
+            renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(
+                red: options.clearColor.red,
+                green: options.clearColor.green,
+                blue: options.clearColor.blue,
+                alpha: options.clearColor.alpha
+            )
+        }
 
         try drawInternal(
             commands: commands,
@@ -497,6 +503,8 @@ public final class MetalRenderer {
     ///   - assetSizes: Asset sizes from AnimIR for correct quad geometry
     ///   - pathRegistry: Registry of path resources for GPU rendering
     ///   - backgroundState: Optional background state for background preset rendering (PR2)
+    ///   - initialLoadAction: Load action for render pass (.clear or .load). Default is .clear.
+    ///     Use .load to preserve existing target contents (PR-G split-pass architecture).
     /// - Throws: MetalRendererError if rendering fails
     public func draw(
         commands: [RenderCommand],
@@ -506,7 +514,8 @@ public final class MetalRenderer {
         commandBuffer: MTLCommandBuffer,
         assetSizes: [String: AssetSize] = [:],
         pathRegistry: PathRegistry,
-        backgroundState: EffectiveBackgroundState? = nil
+        backgroundState: EffectiveBackgroundState? = nil,
+        initialLoadAction: MTLLoadAction = .clear
     ) throws {
         // PR-C3: Rotate to next buffer in ring for in-flight frame safety
         vertexUploadPool.beginFrame()
@@ -534,14 +543,17 @@ public final class MetalRenderer {
 
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = target.texture
-        renderPassDescriptor.colorAttachments[0].loadAction = .clear
+        renderPassDescriptor.colorAttachments[0].loadAction = initialLoadAction
         renderPassDescriptor.colorAttachments[0].storeAction = .store
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(
-            red: clearColor.red,
-            green: clearColor.green,
-            blue: clearColor.blue,
-            alpha: clearColor.alpha
-        )
+        // PR-G: Only set clearColor when loadAction is .clear
+        if initialLoadAction == .clear {
+            renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(
+                red: clearColor.red,
+                green: clearColor.green,
+                blue: clearColor.blue,
+                alpha: clearColor.alpha
+            )
+        }
 
         try drawInternal(
             commands: commands,

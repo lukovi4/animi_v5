@@ -82,17 +82,27 @@ public final class AudioCompositionBuilder {
     ///   - fps: Scene FPS
     ///   - videoSelectionsByBlockId: Video selections snapshot (for original audio)
     ///   - config: Audio export configuration
+    ///   - transitionMath: Timeline transition math for multi-scene export (optional)
+    ///   - sceneIndex: Index of this scene in timeline (required if transitionMath provided)
     /// - Returns: Built audio pipeline with composition and optional mix
     public func build(
         runtime: SceneRuntime,
         fps: Int,
         videoSelectionsByBlockId: [String: VideoSelection],
-        config: AudioExportConfig
+        config: AudioExportConfig,
+        transitionMath: TimelineTransitionMath? = nil,
+        sceneIndex: Int = 0
     ) throws -> BuiltAudioPipeline {
         let composition = AVMutableComposition()
         var mixParameters: [AVMutableAudioMixInputParameters] = []
 
-        let projectDuration = Double(runtime.durationFrames) / Double(fps)
+        // For multi-scene export with transitions, use compressed duration
+        let projectDuration: Double
+        if let math = transitionMath {
+            projectDuration = Double(math.compressedDurationFrames) / Double(fps)
+        } else {
+            projectDuration = Double(runtime.durationFrames) / Double(fps)
+        }
         let projectDurationTime = CMTime(seconds: projectDuration, preferredTimescale: Self.timescale)
 
         // 1. Add music track (if configured)
@@ -130,7 +140,9 @@ public final class AudioCompositionBuilder {
                     into: composition,
                     fps: fps,
                     projectDuration: projectDuration,
-                    defaultVolume: config.originalDefaultVolume
+                    defaultVolume: config.originalDefaultVolume,
+                    transitionMath: transitionMath,
+                    sceneIndex: sceneIndex
                 )
                 if let params { mixParameters.append(params) }
             }
@@ -212,15 +224,21 @@ public final class AudioCompositionBuilder {
     ///
     /// Uses the canonical formula:
     /// - sourceStart = selection.winStart
-    /// - insertAt = blockStartTime = block.timing.startFrame / fps
+    /// - insertAt = blockStartTime (compressed if transitionMath provided)
     /// - insertDuration = min(windowDuration, availableProject, blockVisibility)
+    ///
+    /// For multi-scene export with transitions:
+    /// - blockStartTime is computed using TimelineTransitionMath.compressedFrame()
+    /// - This ensures audio is placed at correct position in compressed timeline
     private func insertVideoSlotAudio(
         selection: VideoSelection,
         block: BlockRuntime,
         into composition: AVMutableComposition,
         fps: Int,
         projectDuration: Double,
-        defaultVolume: Float
+        defaultVolume: Float,
+        transitionMath: TimelineTransitionMath? = nil,
+        sceneIndex: Int = 0
     ) throws -> AVMutableAudioMixInputParameters? {
         let asset = AVURLAsset(url: selection.url)
 
@@ -241,7 +259,19 @@ public final class AudioCompositionBuilder {
         }
 
         // Calculate timing using canonical formula
-        let blockStartTime = Double(block.timing.startFrame) / Double(fps)
+        // For multi-scene: use compressed frame mapping
+        let blockStartTime: Double
+        if let math = transitionMath {
+            // Convert scene-local frame to compressed global frame
+            let compressedFrame = math.compressedFrame(
+                forUncompressedFrame: block.timing.startFrame,
+                inSceneAt: sceneIndex
+            )
+            blockStartTime = Double(compressedFrame) / Double(fps)
+        } else {
+            // Single-scene: use local frame directly
+            blockStartTime = Double(block.timing.startFrame) / Double(fps)
+        }
         let blockVisibility = Double(block.timing.endFrame - block.timing.startFrame) / Double(fps)
         let windowDuration = max(0, selection.winEnd - selection.winStart)
         let availableProject = max(0, projectDuration - blockStartTime)
@@ -273,5 +303,87 @@ public final class AudioCompositionBuilder {
         params.setVolume(volume, at: .zero)
 
         return params
+    }
+
+    // MARK: - Timeline Build (Multi-Scene)
+
+    /// Builds audio composition for multi-scene timeline export.
+    ///
+    /// Uses hard-cut semantics (no audio crossfade during transitions).
+    /// Each scene's audio is placed at its compressed start time.
+    ///
+    /// - Parameters:
+    ///   - sceneData: Audio export data for each scene (from TimelineCompositionEngine)
+    ///   - transitionMath: Timeline transition math for compressed timing
+    ///   - fps: Timeline FPS
+    ///   - config: Audio export configuration
+    /// - Returns: Built audio pipeline with composition and optional mix
+    public func buildTimeline(
+        sceneData: [TimelineCompositionEngine.SceneAudioExportData],
+        transitionMath: TimelineTransitionMath,
+        fps: Int,
+        config: AudioExportConfig
+    ) throws -> BuiltAudioPipeline {
+        let composition = AVMutableComposition()
+        var mixParameters: [AVMutableAudioMixInputParameters] = []
+
+        let projectDuration = Double(transitionMath.compressedDurationFrames) / Double(fps)
+        let projectDurationTime = CMTime(seconds: projectDuration, preferredTimescale: Self.timescale)
+
+        // 1. Add music track (if configured) - spans entire project
+        if let musicConfig = config.music {
+            let params = try insertAudioTrack(
+                config: musicConfig,
+                into: composition,
+                projectDuration: projectDuration,
+                label: "music"
+            )
+            if let params { mixParameters.append(params) }
+        }
+
+        // 2. Add voiceover track (if configured) - spans entire project
+        if let voiceoverConfig = config.voiceover {
+            let params = try insertAudioTrack(
+                config: voiceoverConfig,
+                into: composition,
+                projectDuration: projectDuration,
+                label: "voiceover"
+            )
+            if let params { mixParameters.append(params) }
+        }
+
+        // 3. Add original audio from video slots for each scene (if enabled)
+        if config.includeOriginalFromVideoSlots {
+            for data in sceneData {
+                // Process each block in this scene
+                for block in data.runtime.blocks {
+                    guard let selection = data.videoSelections[block.blockId] else { continue }
+                    guard selection.isValid else { continue }
+                    guard !selection.isMuted else { continue }
+
+                    let params = try insertVideoSlotAudio(
+                        selection: selection,
+                        block: block,
+                        into: composition,
+                        fps: fps,
+                        projectDuration: projectDuration,
+                        defaultVolume: config.originalDefaultVolume,
+                        transitionMath: transitionMath,
+                        sceneIndex: data.sceneIndex
+                    )
+                    if let params { mixParameters.append(params) }
+                }
+            }
+        }
+
+        // 4. Build audio mix (if we have any volume parameters)
+        var audioMix: AVAudioMix?
+        if !mixParameters.isEmpty {
+            let mix = AVMutableAudioMix()
+            mix.inputParameters = mixParameters
+            audioMix = mix
+        }
+
+        return BuiltAudioPipeline(composition: composition, audioMix: audioMix)
     }
 }

@@ -18,12 +18,12 @@ public struct SceneDraft: Codable, Equatable, Sendable {
     }
 }
 
-// MARK: - Canonical Timeline (v4 Schema)
+// MARK: - Canonical Timeline (v6 Schema)
 
 /// Canonical microseconds-based timeline model.
 /// Single source of truth for all timeline data in the project.
 /// Replaces frame-based Timeline and parallel scenes array.
-public struct CanonicalTimeline: Codable, Equatable, Sendable {
+public struct CanonicalTimeline: Equatable, Sendable {
 
     /// Ordered tracks. Index determines z-order (lower = back, higher = front).
     /// tracks[0] is always sceneSequence track (invariant enforced by Store).
@@ -32,9 +32,31 @@ public struct CanonicalTimeline: Codable, Equatable, Sendable {
     /// Payload registry. Maps payloadId to payload data.
     public var payloads: [UUID: TimelinePayload]
 
-    public init(tracks: [Track] = [], payloads: [UUID: TimelinePayload] = [:]) {
+    // MARK: - Boundary Transitions (v6 Schema)
+
+    /// Transition registry for scene boundaries.
+    /// Key: boundary between two adjacent scenes.
+    /// Value: transition effect for that boundary.
+    public var boundaryTransitions: [SceneBoundaryKey: SceneTransition]
+
+    /// Intro transition (before first scene). v1: schema only, no runtime/UI.
+    public var introTransition: SceneTransition?
+
+    /// Outro transition (after last scene). v1: schema only, no runtime/UI.
+    public var outroTransition: SceneTransition?
+
+    public init(
+        tracks: [Track] = [],
+        payloads: [UUID: TimelinePayload] = [:],
+        boundaryTransitions: [SceneBoundaryKey: SceneTransition] = [:],
+        introTransition: SceneTransition? = nil,
+        outroTransition: SceneTransition? = nil
+    ) {
         self.tracks = tracks
         self.payloads = payloads
+        self.boundaryTransitions = boundaryTransitions
+        self.introTransition = introTransition
+        self.outroTransition = outroTransition
     }
 
     /// Creates an empty timeline with a single sceneSequence track.
@@ -336,5 +358,56 @@ public extension CanonicalTimeline {
 
         let item = tracks[0].items.remove(at: fromIndex)
         tracks[0].items.insert(item, at: toIndex)
+    }
+}
+
+// MARK: - Custom Codable (v6 Schema)
+
+extension CanonicalTimeline: Codable {
+    enum CodingKeys: String, CodingKey {
+        case tracks
+        case payloads
+        case boundaryTransitions
+        case introTransition
+        case outroTransition
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        tracks = try container.decode([Track].self, forKey: .tracks)
+        payloads = try container.decode([UUID: TimelinePayload].self, forKey: .payloads)
+
+        // Decode boundaryTransitions from array of records
+        let records = try container.decodeIfPresent([BoundaryTransitionRecord].self, forKey: .boundaryTransitions) ?? []
+        var transitions: [SceneBoundaryKey: SceneTransition] = [:]
+        for record in records {
+            let key = SceneBoundaryKey(record.fromSceneInstanceId, record.toSceneInstanceId)
+            transitions[key] = record.transition
+        }
+        boundaryTransitions = transitions
+
+        introTransition = try container.decodeIfPresent(SceneTransition.self, forKey: .introTransition)
+        outroTransition = try container.decodeIfPresent(SceneTransition.self, forKey: .outroTransition)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        try container.encode(tracks, forKey: .tracks)
+        try container.encode(payloads, forKey: .payloads)
+
+        // Encode boundaryTransitions as array of records
+        let records = boundaryTransitions.map { (key, transition) in
+            BoundaryTransitionRecord(
+                fromSceneInstanceId: key.fromSceneInstanceId,
+                toSceneInstanceId: key.toSceneInstanceId,
+                transition: transition
+            )
+        }
+        try container.encode(records, forKey: .boundaryTransitions)
+
+        try container.encodeIfPresent(introTransition, forKey: .introTransition)
+        try container.encodeIfPresent(outroTransition, forKey: .outroTransition)
     }
 }
