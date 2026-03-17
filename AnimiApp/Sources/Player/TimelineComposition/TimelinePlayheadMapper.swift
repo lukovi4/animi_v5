@@ -171,8 +171,38 @@ public struct TimelinePlayheadMapper: Sendable {
 
     // MARK: - UI Offset Mapping
 
+    /// Converts UI offset to nominal frame directly, without TimeUs intermediate.
+    /// TT-01: This is the acceptance path for timeline scrub/playback.
+    /// - Parameters:
+    ///   - offsetX: Scroll offset in points
+    ///   - pxPerSecond: Current zoom level (pixels per second)
+    ///   - quantize: Quantization mode for frame boundary handling
+    /// - Returns: Nominal frame index (clamped to valid range)
+    public func nominalFrame(
+        forOffsetX offsetX: CGFloat,
+        pxPerSecond: CGFloat,
+        quantize: QuantizeMode
+    ) -> Int {
+        guard pxPerSecond > 0, math.fps > 0 else { return 0 }
+
+        // Direct frame calculation without TimeUs roundtrip
+        let exactNominal = Double(offsetX) * Double(math.fps) / Double(pxPerSecond)
+        let epsilon = 1e-9  // Machine noise protection only
+
+        let rawFrame: Int
+        switch quantize {
+        case .dragging, .playback:
+            rawFrame = Int(floor(exactNominal + epsilon))
+        case .ended:
+            rawFrame = Int((exactNominal + epsilon).rounded())
+        }
+
+        // Clamp to valid nominal range (consistent with other mapping APIs)
+        return clampFrame(rawFrame, totalFrames: _nominalDurationFrames)
+    }
+
     /// Maps UI scroll offset to compressed frame.
-    /// offsetX = scrollView.contentOffset.x (time under playhead in pixels)
+    /// TT-01: Uses direct frame path without TimeUs roundtrip.
     /// - Parameters:
     ///   - offsetX: Scroll offset in pixels
     ///   - pxPerSecond: Pixels per second (zoom level)
@@ -185,25 +215,23 @@ public struct TimelinePlayheadMapper: Sendable {
     ) -> Int {
         guard pxPerSecond > 0 else { return 0 }
 
-        // Convert offsetX to nominal time
-        let timeSeconds = Double(offsetX) / Double(pxPerSecond)
-        let timeUs = secondsToUs(timeSeconds)
-
-        return compressedFrame(forTimeUs: timeUs, quantize: quantize)
+        // TT-01: Direct frame path without TimeUs roundtrip
+        let nominal = nominalFrame(forOffsetX: offsetX, pxPerSecond: pxPerSecond, quantize: quantize)
+        return compressedFrame(forNominalFrame: nominal, quantize: quantize)
     }
 
     /// Maps compressed frame to UI scroll offset.
-    /// Uses continuous inverse for smooth positioning.
+    /// TT-01: Uses direct frame path without nominalTimeUs roundtrip.
     /// - Parameters:
     ///   - frame: Compressed frame index
     ///   - pxPerSecond: Pixels per second (zoom level)
     /// - Returns: Scroll offset in pixels
     public func offsetX(forCompressedFrame frame: Int, pxPerSecond: CGFloat) -> CGFloat {
-        // Get nominal time for this compressed frame
-        let nominalTimeUs = nominalTimeUs(forCompressedFrame: frame)
-        let timeSeconds = usToSeconds(nominalTimeUs)
+        guard math.fps > 0 else { return 0 }
 
-        return CGFloat(timeSeconds) * pxPerSecond
+        // TT-01: Direct frame path without nominalTimeUs roundtrip
+        let nominal = nominalFrame(forCompressedFrame: frame)
+        return CGFloat(nominal) * pxPerSecond / CGFloat(math.fps)
     }
 
     // MARK: - Scene Boundary

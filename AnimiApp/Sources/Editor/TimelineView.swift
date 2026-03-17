@@ -41,9 +41,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     private(set) var currentZoom: CGFloat = 1.0
 
-    /// Current time under playhead in microseconds.
-    private var currentTimeUs: TimeUs = 0
-
     /// Currently selected scene ID (for trim handles).
     private var selectedSceneId: UUID?
 
@@ -65,6 +62,15 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// Last emitted compressed frame to avoid redundant .changed events during drag.
     private var lastEmittedCompressedFrame: Int?
+
+    // MARK: - Authoritative Frame State (TT-01 Phase 2)
+
+    /// Authoritative compressed frame for session-correct scrubbing.
+    /// Updated by setCurrentCompressedFrame, restoreState, and emitFinalScrub.
+    private var currentCompressedFrame: Int = 0
+
+    /// Last known scroll offset for directional clamp during scrub.
+    private var lastScrubOffsetX: CGFloat?
 
     // MARK: - Playhead Mapper (Phase 2.1)
 
@@ -410,22 +416,22 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     /// Updates current position from compressed frame (from playback).
-    /// Skips if user is currently dragging to avoid fighting.
-    /// Phase 2.1: Uses mapper for compressed → nominal conversion.
+    /// Skips scroll update if user is currently dragging to avoid fighting.
+    /// TT-01 Phase 2: Always updates authoritative frame for session-correct scrubbing.
     /// - Parameters:
     ///   - compressedFrame: Compressed frame index
     ///   - mapper: Playhead mapper for coordinate conversion
     func setCurrentCompressedFrame(_ compressedFrame: Int, mapper: TimelinePlayheadMapper) {
+        // TT-01 Phase 2: Always update authoritative frame (even during drag)
+        // This syncs store echo to local state without interrupting scroll
+        currentCompressedFrame = compressedFrame
+
         // Don't interrupt user's drag/decelerate
         guard !scrollView.isDragging && !scrollView.isDecelerating else { return }
 
-        // Convert compressed to nominal timeUs for centering
-        let timeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
-
-        // Clamp to valid range [0, durationUs]
-        let clamped = clampTimeUs(timeUs, maxUs: durationUs)
-        currentTimeUs = clamped
-        centerOnTimeUs(clamped)
+        // TT-01: Direct frame-based positioning without TimeUs roundtrip
+        let offsetX = mapper.offsetX(forCompressedFrame: compressedFrame, pxPerSecond: pxPerSecond)
+        centerOnOffsetX(offsetX)
     }
 
     // MARK: - State Snapshot/Restore (Phase 2.1: Compressed Frame Domain)
@@ -438,13 +444,16 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// Restores state from compressed frame and zoom.
     /// Must be called after configure() to set position.
-    /// Phase 2.1: Uses mapper for compressed → nominal conversion.
+    /// TT-01 Phase 2: Uses direct frame-based positioning and updates authoritative frame.
     /// Spec section 5: Must apply zoom before centering.
     /// - Parameters:
     ///   - compressedFrame: Compressed frame index
     ///   - zoom: Zoom level
     ///   - mapper: Playhead mapper for coordinate conversion
     func restoreState(compressedFrame: Int, zoom: CGFloat, mapper: TimelinePlayheadMapper) {
+        // TT-01 Phase 2: Update authoritative frame
+        currentCompressedFrame = compressedFrame
+
         // Step 1: Mark that state was restored (prevents initial positioning override)
         stateWasRestored = true
         didInitialPositioning = true
@@ -455,14 +464,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // Step 3: Update content size with new zoom (MUST be before centering)
         updateContentSize()
 
-        // Step 4: Convert compressed to nominal timeUs for centering
-        let timeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
-
-        // Step 5: Center on time
-        centerOnTimeUs(timeUs)
-
-        // Sync internal state
-        currentTimeUs = timeUs
+        // Step 4: TT-01: Direct frame-based positioning without TimeUs roundtrip
+        let offsetX = mapper.offsetX(forCompressedFrame: compressedFrame, pxPerSecond: pxPerSecond)
+        centerOnOffsetX(offsetX)
     }
 
     // MARK: - Reorder Mode (PR3)
@@ -517,20 +521,23 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         #endif
     }
 
+    /// Centers the timeline on a specific X offset.
+    /// TT-01: This is the acceptance path for playhead positioning.
+    /// - Parameter offsetX: X offset in pixels
+    private func centerOnOffsetX(_ offsetX: CGFloat) {
+        let clampedX = clampOffsetX(offsetX)
+        let currentY = scrollView.contentOffset.y
+        scrollView.contentOffset = CGPoint(x: clampedX, y: currentY)
+    }
+
     /// Centers the given time under the playhead.
-    /// PR2 fix: setting contentOffset triggers scrollViewDidScroll which emits .scroll
+    /// TT-01: Thin wrapper for non-acceptance paths.
     /// - Parameter timeUs: Time in microseconds
     private func centerOnTimeUs(_ timeUs: TimeUs) {
         guard durationUs > 0 else { return }
-
-        // offsetX = timeSeconds * pxPerSecond
         let timeSeconds = usToSeconds(timeUs)
         let offsetX = CGFloat(timeSeconds) * pxPerSecond
-        let clampedX = clampOffsetX(offsetX)
-
-        // PR2 v7: Preserve Y position when centering X
-        let currentY = scrollView.contentOffset.y
-        scrollView.contentOffset = CGPoint(x: clampedX, y: currentY)
+        centerOnOffsetX(offsetX)
     }
 
     /// Returns the time currently under the playhead in microseconds.
@@ -629,17 +636,28 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // Emit scroll event for ruler sync
         emitScrollEvent()
 
-        // Emit scrub .changed during drag (with deduplication)
+        // Emit scrub .changed during drag (with deduplication + directional clamp)
         if scrollView.isDragging {
-            let compressedFrame = compressedFrameUnderPlayhead(quantize: .dragging)
-            if compressedFrame != lastEmittedCompressedFrame {
-                lastEmittedCompressedFrame = compressedFrame
+            let currentOffsetX = scrollView.contentOffset.x
+            let candidate = compressedFrameUnderPlayhead(quantize: .dragging)
+
+            // TT-01 Phase 2: Directional clamp - prevent backward rollback
+            let resolved = resolveScrubFrame(
+                candidate: candidate,
+                currentOffsetX: currentOffsetX
+            )
+
+            // Update authoritative state
+            currentCompressedFrame = resolved
+
+            if resolved != lastEmittedCompressedFrame {
+                lastEmittedCompressedFrame = resolved
                 #if DEBUG
                 let timeUs = timeUnderPlayheadUs()
                 ScrubSignpost.emitScrubChanged(timeUs: timeUs)
                 ScrubCallCounter.shared.recordScrubChanged()
                 #endif
-                emitEvent(.scrub(compressedFrame: compressedFrame, phase: .changed))
+                emitEvent(.scrub(compressedFrame: resolved, phase: .changed))
             }
         }
     }
@@ -649,11 +667,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // Start new scrub session
         isScrubSessionActive = true
-        lastEmittedCompressedFrame = nil
 
-        // Emit .began event
-        let compressedFrame = compressedFrameUnderPlayhead(quantize: .dragging)
-        emitEvent(.scrub(compressedFrame: compressedFrame, phase: .began))
+        // TT-01 Phase 2: Use authoritative frame, not offset recalculation
+        // This prevents rollback in scaled zone where round() vs floor() asymmetry exists
+        lastScrubOffsetX = scrollView.contentOffset.x
+        lastEmittedCompressedFrame = currentCompressedFrame
+
+        // Emit .began event with authoritative frame (no rollback)
+        emitEvent(.scrub(compressedFrame: currentCompressedFrame, phase: .began))
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -674,12 +695,111 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// Emits final scrub event with .ended phase for snap-to-nearest frame.
     /// Called at end of drag or pinch gestures.
     private func emitFinalScrub() {
+        // Final snap uses .ended quantization (round)
         let compressedFrame = compressedFrameUnderPlayhead(quantize: .ended)
+
+        // TT-01 Phase 2: Update authoritative frame and clear scrub state
+        currentCompressedFrame = compressedFrame
+        lastScrubOffsetX = nil
+
         emitEvent(.scrub(compressedFrame: compressedFrame, phase: .ended))
 
         // Reset scrub session (if was active)
         isScrubSessionActive = false
     }
+
+    // MARK: - Scrub Frame Resolution (TT-01 Phase 2)
+
+    /// Sub-pixel tolerance for directional clamp.
+    /// At default zoom (20 px/s, 30 fps), one frame ≈ 0.67 px.
+    /// Using 0.5 px allows small deltas to accumulate before triggering frame change.
+    private static let scrubEpsilon: CGFloat = 0.5
+
+    /// Resolves scrub frame with directional clamp to prevent rollback in scaled zones.
+    /// Instance method that updates lastScrubOffsetX state.
+    /// - Parameters:
+    ///   - candidate: Frame calculated from current offset via mapper
+    ///   - currentOffsetX: Current scroll offset
+    /// - Returns: Resolved frame respecting directional constraints
+    func resolveScrubFrame(candidate: Int, currentOffsetX: CGFloat) -> Int {
+        guard let lastOffset = lastScrubOffsetX else {
+            // First callback in session - use candidate directly
+            lastScrubOffsetX = currentOffsetX
+            return candidate
+        }
+
+        let result = Self.resolveScrubFramePure(
+            candidate: candidate,
+            currentFrame: currentCompressedFrame,
+            deltaX: currentOffsetX - lastOffset,
+            epsilon: Self.scrubEpsilon
+        )
+
+        // Only update lastScrubOffsetX when movement is meaningful
+        if result.shouldUpdateOffset {
+            lastScrubOffsetX = currentOffsetX
+        }
+
+        return result.frame
+    }
+
+    /// Pure static function for directional clamp logic. Testable without instance state.
+    /// - Parameters:
+    ///   - candidate: Frame calculated from current offset via mapper
+    ///   - currentFrame: Current authoritative frame
+    ///   - deltaX: Change in offset since last meaningful movement
+    ///   - epsilon: Sub-pixel tolerance threshold
+    /// - Returns: Tuple of (resolved frame, whether offset should be updated)
+    static func resolveScrubFramePure(
+        candidate: Int,
+        currentFrame: Int,
+        deltaX: CGFloat,
+        epsilon: CGFloat
+    ) -> (frame: Int, shouldUpdateOffset: Bool) {
+        if deltaX > epsilon {
+            // Moving right: never go backward
+            return (max(candidate, currentFrame), true)
+        } else if deltaX < -epsilon {
+            // Moving left: never go forward
+            return (min(candidate, currentFrame), true)
+        } else {
+            // Minimal movement: keep current frame, don't update offset
+            return (currentFrame, false)
+        }
+    }
+
+    // MARK: - Test Helpers (TT-01 Phase 2)
+
+    #if DEBUG
+    /// Simulates begin dragging for testing.
+    /// - Note: For unit tests only.
+    func simulateBeginDragging() {
+        scrollViewWillBeginDragging(scrollView)
+    }
+
+    /// Simulates scroll by delta for testing.
+    /// - Parameter deltaX: Horizontal scroll delta in points
+    func simulateScrollDelta(_ deltaX: CGFloat) {
+        scrollView.contentOffset.x += deltaX
+        scrollViewDidScroll(scrollView)
+    }
+
+    /// Simulates end dragging for testing.
+    func simulateEndDragging() {
+        scrollViewDidEndDragging(scrollView, willDecelerate: false)
+    }
+
+    /// Returns current scroll offset for testing.
+    var testCurrentOffsetX: CGFloat {
+        scrollView.contentOffset.x
+    }
+
+    /// Sets absolute scroll offset for testing.
+    /// Use this to position scroll at exact offset (e.g., between frames).
+    func setTestScrollOffset(_ offset: CGFloat) {
+        scrollView.contentOffset.x = offset
+    }
+    #endif
 
     // MARK: - Gesture Handlers
 

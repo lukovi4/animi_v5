@@ -1,5 +1,18 @@
 import Foundation
 
+// MARK: - TT-01 Guardrail
+// These functions are used legitimately for:
+// - Timeline layout/sizing (durationUs → contentWidth)
+// - Ruler drawing (time labels)
+// - Clip width calculations
+//
+// WARNING: Do NOT use TimeUs roundtrip for playhead/frame quantization
+// on the acceptance path (scrub, play, restore). This causes drift.
+// For playhead positioning, use TimelinePlayheadMapper's frame-based methods:
+// - nominalFrame(forOffsetX:pxPerSecond:quantize:)
+// - compressedFrame(forOffsetX:pxPerSecond:quantize:)
+// - offsetX(forCompressedFrame:pxPerSecond:)
+
 // MARK: - Timeline Time Model (Time Refactor PR)
 
 /// Microseconds as the canonical time unit for timeline.
