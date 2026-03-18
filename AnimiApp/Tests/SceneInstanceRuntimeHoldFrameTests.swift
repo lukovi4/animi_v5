@@ -66,6 +66,7 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
     /// Spy to capture sceneFrameIndex values passed to media syncing methods.
     /// TT-02: Added frozenFrames, isSceneMediaReady, hasFailedMedia for readiness testing.
+    /// TT-03: Added budget-aware tracking fields.
     @MainActor
     final class MediaSyncingSpy: SceneMediaSyncing {
         var scrubFrames: [Int] = []
@@ -76,6 +77,14 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         // TT-02: Controllable readiness flags for tests
         var isSceneMediaReady: Bool = false
         var hasFailedMedia: Bool = false
+
+        // TT-03: Budget-aware tracking
+        var playbackCandidatesByFrame: [Int: [PlaybackVideoCandidate]] = [:]
+        var budgetedStartCalls: [(frame: Int, granted: Set<String>)] = []
+        var budgetedTickCalls: [(frame: Int, granted: Set<String>)] = []
+
+        // TT-03 Completion: Soft-stop tracking
+        var softStopPreservingTexturesCalls: Int = 0
 
         func updateVideoFramesForScrub(sceneFrameIndex: Int) {
             scrubFrames.append(sceneFrameIndex)
@@ -91,6 +100,24 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
         func startVideoPlayback(sceneFrameIndex: Int) {
             startPlaybackFrames.append(sceneFrameIndex)
+        }
+
+        // TT-03: Budget-aware API implementations
+        func playbackCandidates(sceneFrameIndex: Int) -> [PlaybackVideoCandidate] {
+            playbackCandidatesByFrame[sceneFrameIndex] ?? []
+        }
+
+        func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>) {
+            budgetedStartCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
+        }
+
+        func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>) {
+            budgetedTickCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
+        }
+
+        // TT-03 Completion: Soft-stop implementation
+        func stopVideoPlaybackPreservingTextures() {
+            softStopPreservingTexturesCalls += 1
         }
     }
 
@@ -429,5 +456,197 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         // Then: localFrame should be clamped to 299 (hold last frame)
         XCTAssertEqual(context.localFrame, 299, "Extended scene should hold last frame")
         XCTAssertLessThan(context.localFrame, nativeDuration, "localFrame must be < nativeDuration")
+    }
+
+    // MARK: - TT-03: Budget-Aware API Tests
+
+    /// Behavior: playbackCandidates(at: 350) passes clamped frame 299 to media service.
+    @MainActor
+    func testPlaybackCandidates_beyondDuration_passesClampedFrame() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let durationFrames = 300
+        let resources = makeMinimalResources(durationFrames: durationFrames)
+        let spy = MediaSyncingSpy()
+
+        // Configure spy to return candidates for specific frame
+        let expectedCandidates = [
+            PlaybackVideoCandidate(
+                blockId: "test-block",
+                priority: BlockPriorityInfo(isVisible: true, area: 1000, zIndex: 1)
+            )
+        ]
+        spy.playbackCandidatesByFrame[299] = expectedCandidates
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // When: Get playback candidates for frame 350 (beyond duration)
+        let candidates = runtime.playbackCandidates(at: 350)
+
+        // Then: Should receive candidates for clamped frame 299
+        XCTAssertEqual(candidates.count, expectedCandidates.count)
+        XCTAssertEqual(candidates.first?.blockId, "test-block")
+    }
+
+    /// Behavior: budget-aware startPlayback(at: 350, grantedBlockIds:) passes clamped frame + grants.
+    @MainActor
+    func testBudgetAwareStartPlayback_beyondDuration_passesClampedFrameAndGrants() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let durationFrames = 300
+        let resources = makeMinimalResources(durationFrames: durationFrames)
+        let spy = MediaSyncingSpy()
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // When: Start playback with grants at frame 350 (beyond duration)
+        let grantedBlocks: Set<String> = ["block-a", "block-b"]
+        runtime.startPlayback(at: 350, grantedBlockIds: grantedBlocks)
+
+        // Then: Spy should receive clamped frame 299 with correct grants
+        XCTAssertEqual(spy.budgetedStartCalls.count, 1)
+        XCTAssertEqual(spy.budgetedStartCalls[0].frame, 299)
+        XCTAssertEqual(spy.budgetedStartCalls[0].granted, grantedBlocks)
+    }
+
+    /// Behavior: budget-aware syncPlaybackTick(350, grantedBlockIds:) passes clamped frame + grants.
+    @MainActor
+    func testBudgetAwareSyncPlaybackTick_beyondDuration_passesClampedFrameAndGrants() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let durationFrames = 300
+        let resources = makeMinimalResources(durationFrames: durationFrames)
+        let spy = MediaSyncingSpy()
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // When: Sync playback tick with grants at frame 350 (beyond duration)
+        let grantedBlocks: Set<String> = ["block-c"]
+        runtime.syncPlaybackTick(350, grantedBlockIds: grantedBlocks)
+
+        // Then: Spy should receive clamped frame 299 with correct grants
+        XCTAssertEqual(spy.budgetedTickCalls.count, 1)
+        XCTAssertEqual(spy.budgetedTickCalls[0].frame, 299)
+        XCTAssertEqual(spy.budgetedTickCalls[0].granted, grantedBlocks)
+    }
+
+    /// Behavior: empty granted set still passes through to media service.
+    @MainActor
+    func testBudgetAwarePlayback_emptyGrantSet_stillCallsMediaService() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let durationFrames = 300
+        let resources = makeMinimalResources(durationFrames: durationFrames)
+        let spy = MediaSyncingSpy()
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // When: Start/tick playback with empty grants
+        runtime.startPlayback(at: 100, grantedBlockIds: [])
+        runtime.syncPlaybackTick(150, grantedBlockIds: [])
+
+        // Then: Spy should receive both calls with empty sets
+        XCTAssertEqual(spy.budgetedStartCalls.count, 1)
+        XCTAssertEqual(spy.budgetedStartCalls[0].frame, 100)
+        XCTAssertTrue(spy.budgetedStartCalls[0].granted.isEmpty)
+
+        XCTAssertEqual(spy.budgetedTickCalls.count, 1)
+        XCTAssertEqual(spy.budgetedTickCalls[0].frame, 150)
+        XCTAssertTrue(spy.budgetedTickCalls[0].granted.isEmpty)
+    }
+
+    // MARK: - TT-03 Completion: Deactivate Playback Tests
+
+    /// Behavior: deactivatePlaybackPreservingTextures() delegates to media service.
+    @MainActor
+    func testDeactivatePlaybackPreservingTextures_delegatesToMediaService() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        let spy = MediaSyncingSpy()
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // Given: No calls yet
+        XCTAssertEqual(spy.softStopPreservingTexturesCalls, 0)
+
+        // When: Deactivate playback preserving textures
+        runtime.deactivatePlaybackPreservingTextures()
+
+        // Then: Spy should receive exactly one call
+        XCTAssertEqual(spy.softStopPreservingTexturesCalls, 1)
+    }
+
+    /// Behavior: Multiple deactivate calls increment counter.
+    @MainActor
+    func testDeactivatePlaybackPreservingTextures_multipleCalls() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        let spy = MediaSyncingSpy()
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // When: Call multiple times (simulates multiple ticks while warm)
+        runtime.deactivatePlaybackPreservingTextures()
+        runtime.deactivatePlaybackPreservingTextures()
+        runtime.deactivatePlaybackPreservingTextures()
+
+        // Then: All calls should be tracked
+        XCTAssertEqual(spy.softStopPreservingTexturesCalls, 3)
     }
 }

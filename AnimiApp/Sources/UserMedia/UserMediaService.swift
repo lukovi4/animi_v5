@@ -231,6 +231,15 @@ public struct VideoBudgetPolicy {
     }
 }
 
+// MARK: - Playback Video Candidate (TT-03)
+
+/// Represents a ready video candidate for budget allocation.
+/// Used by engine to collect candidates across scenes for global priority ordering.
+struct PlaybackVideoCandidate: Sendable {
+    let blockId: String
+    let priority: BlockPriorityInfo
+}
+
 // MARK: - User Media Service
 
 /// Coordinates user media (photo/video) injection into template binding layers.
@@ -631,47 +640,181 @@ public final class UserMediaService {
         return destURL
     }
 
-    // MARK: - Playback Control
+    // MARK: - TT-03 Budget-Aware Playback API
 
-    /// Starts video playback for visible video providers.
+    /// Returns sorted playback candidates for budget allocation.
+    /// Used by engine to collect candidates across scenes for global priority ordering.
     ///
-    /// PR1 FIX: Computes syntheticFrame for each block to account for blockTiming + trim/offset.
-    /// PR1.2: Respects playback gating — only starts providers for blocks visible at sceneFrameIndex.
-    /// PR1.2.1: Safe default (false) for missing timing.
-    /// PR-F: Resets tick counter so first update tick fires immediately.
+    /// - Parameter sceneFrameIndex: Current scene frame for priority calculation
+    /// - Returns: Sorted candidates (visible first, then area desc, zIndex desc, blockId asc)
+    func playbackCandidates(sceneFrameIndex: Int) -> [PlaybackVideoCandidate] {
+        guard let player = activePlayer else { return [] }
+
+        var candidates: [PlaybackVideoCandidate] = []
+        for (blockId, kind) in mediaState {
+            guard case .video = kind,
+                  let provider = videoProviders[blockId],
+                  provider.isReady else { continue }
+
+            let priority = player.blockPriorityInfo(blockId: blockId, at: sceneFrameIndex)
+                ?? BlockPriorityInfo(isVisible: false, area: 0, zIndex: 0)
+            candidates.append(PlaybackVideoCandidate(blockId: blockId, priority: priority))
+        }
+
+        // Sort: isVisible desc → area desc → zIndex desc → blockId asc
+        candidates.sort { a, b in
+            if a.priority.isVisible != b.priority.isVisible { return a.priority.isVisible }
+            if a.priority.area != b.priority.area { return a.priority.area > b.priority.area }
+            if a.priority.zIndex != b.priority.zIndex { return a.priority.zIndex > b.priority.zIndex }
+            return a.blockId < b.blockId
+        }
+        return candidates
+    }
+
+    /// Starts video playback for granted blocks only (engine-owned budget).
     ///
-    /// - Parameter sceneFrameIndex: Current scene frame to sync to
-    public func startVideoPlayback(sceneFrameIndex: Int) {
+    /// TT-03: Budget-aware variant. Engine determines which blocks get decoder slots.
+    /// Non-granted ready providers are soft-stopped (hold-last).
+    ///
+    /// - Parameters:
+    ///   - sceneFrameIndex: Current scene frame to sync to
+    ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
+    func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>) {
         guard let player = activePlayer else { return }
 
-        // PR-F: Reset tick counter so first updateVideoFramesForPlayback() fires immediately
-        // (divider - 1) means next increment will be divisible by divider
+        // Reset tick counter so first updateVideoFramesForPlayback() fires immediately
         tickCounter = UInt64(budgetPolicy.updateDivider - 1)
 
         for (blockId, kind) in mediaState {
             guard case .video(let selection) = kind,
                   let provider = videoProviders[blockId] else { continue }
 
-            // PR1.2.1: Safe default — if timing unknown, don't start (gating will handle later)
+            // Non-granted ready providers: soft-stop (hold-last)
+            guard grantedBlockIds.contains(blockId) else {
+                if provider.isReady && provider.isPlaybackActive {
+                    provider.stopPlayback(flush: false)
+                }
+                continue
+            }
+
+            // Granted block: check visibility gating
             let timing = player.blockTiming(for: blockId)
             let isVisible = timing?.isVisible(at: sceneFrameIndex) ?? false
 
             guard isVisible else {
-                #if DEBUG
-                print("[UserMediaService] startVideoPlayback: skipped '\(blockId)' (not visible at frame \(sceneFrameIndex))")
-                #endif
+                if provider.isPlaybackActive {
+                    provider.stopPlayback(flush: false)
+                }
                 continue
             }
 
-            // Compute synthetic frame for this block
+            // Compute synthetic frame and start playback
+            let syntheticFrame = computeSyntheticSceneFrame(
+                sceneFrameIndex: sceneFrameIndex,
+                blockId: blockId,
+                selection: selection
+            )
+            provider.startPlayback(atSceneFrame: syntheticFrame)
+        }
+
+        // Update active set for diagnostics
+        activeVideoBlockIds = grantedBlockIds.intersection(Set(videoProviders.keys))
+    }
+
+    /// Updates video textures for granted blocks only (engine-owned budget).
+    ///
+    /// TT-03: Budget-aware variant. Engine determines which blocks get decoder slots.
+    /// Non-granted ready providers are soft-stopped (hold-last), textures preserved.
+    ///
+    /// - Parameters:
+    ///   - sceneFrameIndex: Current scene frame for sync
+    ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
+    func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>) {
+        guard let player = activePlayer else { return }
+
+        // Frame divider — skip video texture updates on non-update ticks
+        tickCounter += 1
+        let shouldUpdateTextures = (tickCounter % UInt64(budgetPolicy.updateDivider)) == 0
+
+        for (blockId, kind) in mediaState {
+            guard case .video(let selection) = kind,
+                  let provider = videoProviders[blockId],
+                  provider.isReady else { continue }
+
+            // Non-granted ready providers: soft-stop (hold-last), preserve texture
+            guard grantedBlockIds.contains(blockId) else {
+                if provider.isPlaybackActive {
+                    provider.stopPlayback(flush: false)
+                }
+                continue
+            }
+
+            // Granted block: check visibility gating
+            let priority = player.blockPriorityInfo(blockId: blockId, at: sceneFrameIndex)
+                ?? BlockPriorityInfo(isVisible: false, area: 0, zIndex: 0)
+
+            if !priority.isVisible {
+                if provider.isPlaybackActive {
+                    provider.stopPlayback(flush: false)
+                }
+                continue
+            }
+
+            // Compute synthetic frame
             let syntheticFrame = computeSyntheticSceneFrame(
                 sceneFrameIndex: sceneFrameIndex,
                 blockId: blockId,
                 selection: selection
             )
 
-            provider.startPlayback(atSceneFrame: syntheticFrame)
+            // Ensure playback is running
+            if !provider.isPlaybackActive {
+                provider.startPlayback(atSceneFrame: syntheticFrame)
+            }
+
+            // Only update texture on divider ticks
+            guard shouldUpdateTextures else { continue }
+
+            // Get frame texture using playback mode (drift correction, no seek per tick)
+            guard let texture = provider.frameTextureForPlayback(sceneFrameIndex: syntheticFrame) else { continue }
+
+            // Update texture in all variant binding asset IDs
+            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+            for (_, assetId) in assetIds {
+                textureProvider.setTexture(texture, for: assetId)
+            }
         }
+
+        // Update active set for diagnostics
+        activeVideoBlockIds = grantedBlockIds.intersection(Set(videoProviders.keys))
+    }
+
+    // MARK: - Playback Control (Legacy Wrappers)
+
+    /// Starts video playback for visible video providers.
+    ///
+    /// Legacy wrapper: Uses local `budgetPolicy.maxActiveProviders` limit.
+    /// Used by scene edit path and non-engine callers.
+    ///
+    /// - Parameter sceneFrameIndex: Current scene frame to sync to
+    public func startVideoPlayback(sceneFrameIndex: Int) {
+        // Build local grant set from top candidates
+        let candidates = playbackCandidates(sceneFrameIndex: sceneFrameIndex)
+        let grantedBlockIds = Set(candidates.prefix(budgetPolicy.maxActiveProviders).map(\.blockId))
+        startVideoPlayback(sceneFrameIndex: sceneFrameIndex, grantedBlockIds: grantedBlockIds)
+    }
+
+    /// Updates video textures for playback mode.
+    ///
+    /// Legacy wrapper: Uses local `budgetPolicy.maxActiveProviders` limit.
+    /// Used by scene edit path and non-engine callers.
+    ///
+    /// - Parameter sceneFrameIndex: Current scene frame (for drift detection)
+    public func updateVideoFramesForPlayback(sceneFrameIndex: Int) {
+        // Build local grant set from top candidates
+        let candidates = playbackCandidates(sceneFrameIndex: sceneFrameIndex)
+        let grantedBlockIds = Set(candidates.prefix(budgetPolicy.maxActiveProviders).map(\.blockId))
+        updateVideoFramesForPlayback(sceneFrameIndex: sceneFrameIndex, grantedBlockIds: grantedBlockIds)
     }
 
     /// Stops video playback for all video providers.
@@ -688,116 +831,27 @@ public final class UserMediaService {
         activeVideoBlockIds.removeAll()
     }
 
-    // MARK: - Frame Update API
-
-    /// Updates video textures for playback mode (NO seek per frame).
+    /// TT-03 Completion: Stops all active video playback while preserving textures.
     ///
-    /// PR1 FIX: Uses syntheticFrame + frameTextureForPlayback to preserve NO-seek behavior.
-    /// PR1.2: Playback gating — only decode videos for blocks that are visible by timing.
-    /// PR1.2.1: Soft stop (no flush) on gating, safe default (false) for missing timing.
-    /// PR-F: Video budget — limits active providers to N, uses frame divider for update cadence.
+    /// Used when runtime transitions from active to warm state.
+    /// Implements hold-last semantics: decoders stop but last textures remain.
     ///
-    /// - Parameter sceneFrameIndex: Current scene frame (for drift detection)
-    public func updateVideoFramesForPlayback(sceneFrameIndex: Int) {
-        guard let player = activePlayer else { return }
-
-        // PR-F: Frame divider — skip video texture updates on non-update ticks
-        tickCounter += 1
-        let shouldUpdateTextures = (tickCounter % UInt64(budgetPolicy.updateDivider)) == 0
-
-        // Collect video candidates with priority info
-        var candidates: [(blockId: String, selection: VideoSelection, provider: VideoSetupProviding, priority: BlockPriorityInfo)] = []
-
-        for (blockId, kind) in mediaState {
-            guard case .video(let selection) = kind,
-                  let provider = videoProviders[blockId],
-                  provider.isReady else { continue }
-
-            // Get priority info from ScenePlayer
-            let priorityInfo = player.blockPriorityInfo(blockId: blockId, at: sceneFrameIndex)
-                ?? BlockPriorityInfo(isVisible: false, area: 0, zIndex: 0)
-
-            candidates.append((blockId, selection, provider, priorityInfo))
+    /// Contract:
+    /// - Iterates ready video providers
+    /// - Calls `stopPlayback(flush: false)` on active providers
+    /// - Does NOT clear textures (hold-last)
+    /// - Clears `activeVideoBlockIds`
+    /// - Does NOT affect scrub/frozen/readiness behavior
+    func stopVideoPlaybackPreservingTextures() {
+        for (_, provider) in videoProviders {
+            guard provider.isReady, provider.isPlaybackActive else { continue }
+            provider.stopPlayback(flush: false)
         }
-
-        // PR-F: Sort by priority (visible first, then by area desc, then by zIndex desc, then by blockId for determinism)
-        candidates.sort { a, b in
-            // 1. Visibility: visible > not visible
-            if a.priority.isVisible != b.priority.isVisible {
-                return a.priority.isVisible
-            }
-            // 2. Area: larger > smaller
-            if a.priority.area != b.priority.area {
-                return a.priority.area > b.priority.area
-            }
-            // 3. zIndex: higher > lower
-            if a.priority.zIndex != b.priority.zIndex {
-                return a.priority.zIndex > b.priority.zIndex
-            }
-            // 4. Deterministic tiebreaker: alphabetical by blockId
-            return a.blockId < b.blockId
-        }
-
-        // PR-F: Select top-N as active
-        let activeCount = min(candidates.count, budgetPolicy.maxActiveProviders)
-        let activeCandidates = Array(candidates.prefix(activeCount))
-        let inactiveCandidates = Array(candidates.dropFirst(activeCount))
-
-        // Update active set for diagnostics
-        activeVideoBlockIds = Set(activeCandidates.map(\.blockId))
-
-        // Process inactive videos first — stop playback, keep last texture
-        for (blockId, _, provider, _) in inactiveCandidates {
-            if provider.isPlaybackActive {
-                provider.stopPlayback(flush: false)
-                #if DEBUG
-                print("[UserMediaService] PR-F Budget: deactivated '\(blockId)' (over limit)")
-                #endif
-            }
-            // Texture stays as-is in textureProvider (holdLastFrame behavior)
-        }
-
-        // Process active videos
-        for (blockId, selection, provider, priority) in activeCandidates {
-            // Check visibility gating (even active videos skip if not visible)
-            if !priority.isVisible {
-                if provider.isPlaybackActive {
-                    provider.stopPlayback(flush: false)
-                    #if DEBUG
-                    print("[UserMediaService] Gating: soft-stopped playback for '\(blockId)' (not visible)")
-                    #endif
-                }
-                continue
-            }
-
-            // Compute syntheticFrame for this block
-            let syntheticFrame = computeSyntheticSceneFrame(
-                sceneFrameIndex: sceneFrameIndex,
-                blockId: blockId,
-                selection: selection
-            )
-
-            // Ensure playback is running
-            if !provider.isPlaybackActive {
-                provider.startPlayback(atSceneFrame: syntheticFrame)
-                #if DEBUG
-                print("[UserMediaService] Gating: started playback for '\(blockId)' at frame \(sceneFrameIndex)")
-                #endif
-            }
-
-            // PR-F: Only update texture on divider ticks
-            guard shouldUpdateTextures else { continue }
-
-            // Get frame texture using playback mode (drift correction, no seek per tick)
-            guard let texture = provider.frameTextureForPlayback(sceneFrameIndex: syntheticFrame) else { continue }
-
-            // Update texture in all variant binding asset IDs
-            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
-            for (_, assetId) in assetIds {
-                textureProvider.setTexture(texture, for: assetId)
-            }
-        }
+        // Clear active set but preserve textures
+        activeVideoBlockIds.removeAll()
     }
+
+    // MARK: - Frame Update API (Scrub/Frozen)
 
     /// Updates video textures for scrub mode (throttled seek).
     ///

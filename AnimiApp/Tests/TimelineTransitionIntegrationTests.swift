@@ -464,4 +464,115 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
         // This check would fail if we were setting to .none instead of removing
         XCTAssertEqual(result.boundaryTransitions.count, 0)
     }
+
+    // MARK: - 9. TT-03 Deterministic Ordering Tests
+
+    /// Test: prioritizedInstances returns deterministic order with sceneIndex and UUID tiebreaker.
+    @MainActor
+    func testBudgetCoordinator_prioritizedInstances_deterministicTieBreak() {
+        // Given: 5 scenes with fixed UUIDs
+        let id0 = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        let id1 = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let id2 = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let id3 = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let id4 = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+
+        let durationUs: TimeUs = 30 * usPerFrame  // 30 frames per scene
+        let sceneItems: [TimelineItem] = [
+            TimelineItem(id: id0, payloadId: UUID(), kind: .scene, durationUs: durationUs),
+            TimelineItem(id: id1, payloadId: UUID(), kind: .scene, durationUs: durationUs),
+            TimelineItem(id: id2, payloadId: UUID(), kind: .scene, durationUs: durationUs),
+            TimelineItem(id: id3, payloadId: UUID(), kind: .scene, durationUs: durationUs),
+            TimelineItem(id: id4, payloadId: UUID(), kind: .scene, durationUs: durationUs)
+        ]
+
+        let math = TimelineTransitionMath(
+            sceneItems: sceneItems,
+            boundaryTransitions: [:],
+            fps: fps
+        )
+        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+
+        // When: update at scene 2 (middle) - frame 60 is start of scene 2
+        coordinator.update(transitionMath: math, compressedFrame: 60)
+
+        // Expect: pinned=id2, warm=id1+id3, evictable=id0+id4
+        XCTAssertEqual(coordinator.pinnedInstanceIds, [id2])
+        XCTAssertEqual(coordinator.warmInstanceIds, [id1, id3])
+
+        // When: get prioritized instances
+        let prioritized = coordinator.prioritizedInstances(
+            from: Set([id0, id1, id2, id3, id4]),
+            sceneItems: sceneItems
+        )
+
+        // Then: exact deterministic order
+        // tier 0: id2 (pinned)
+        // tier 1: id1, id3 (warm, same distance=1, id1 < id3 by sceneIndex)
+        // tier 2: id0, id4 (evictable, same distance=2, id0 < id4 by sceneIndex)
+        XCTAssertEqual(prioritized, [id2, id1, id3, id0, id4])
+    }
+
+    /// Test: instancesToEvictOrdered returns farthest-first with deterministic tiebreaker.
+    @MainActor
+    func testBudgetCoordinator_instancesToEvictOrdered_farthestFirstDeterministic() {
+        // Given: 7 scenes with fixed UUIDs
+        let ids = (0..<7).map { i in
+            UUID(uuidString: "\(String(repeating: String(i), count: 8))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 12))")!
+        }
+
+        let durationUs: TimeUs = 30 * usPerFrame  // 30 frames per scene
+        let sceneItems: [TimelineItem] = ids.map { id in
+            TimelineItem(id: id, payloadId: UUID(), kind: .scene, durationUs: durationUs)
+        }
+
+        let math = TimelineTransitionMath(
+            sceneItems: sceneItems,
+            boundaryTransitions: [:],
+            fps: fps
+        )
+        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+
+        // When: update at scene 3 (center) - frame 90 is start of scene 3
+        coordinator.update(transitionMath: math, compressedFrame: 90)
+
+        // Expect: pinned=ids[3], warm=ids[2]+ids[4]
+        XCTAssertEqual(coordinator.pinnedInstanceIds, [ids[3]])
+        XCTAssertEqual(coordinator.warmInstanceIds, [ids[2], ids[4]])
+
+        // When: get eviction order
+        let toEvict = coordinator.instancesToEvictOrdered(
+            from: Set(ids),
+            sceneItems: sceneItems
+        )
+
+        // Then: evictable only (ids[0,1,5,6]), farthest first, sceneIndex tiebreak
+        // distances: id0=3, id1=2, id5=2, id6=3
+        // order: id0(dist=3), id6(dist=3 but sceneIndex 6 > 0), id1(dist=2), id5(dist=2 but sceneIndex 5 > 1)
+        // But since distance desc, farthest first: dist=3 before dist=2
+        // dist=3: id0(sceneIndex=0), id6(sceneIndex=6) → id0 before id6
+        // dist=2: id1(sceneIndex=1), id5(sceneIndex=5) → id1 before id5
+        XCTAssertEqual(toEvict, [ids[0], ids[6], ids[1], ids[5]])
+    }
+
+    /// Test: transition mode keeps currentSceneIndex as aIndex.
+    @MainActor
+    func testBudgetCoordinator_transitionMode_currentSceneIndexIsA() {
+        // Given: 3 scenes with transition between 0 and 1
+        var timeline = makeTimeline(sceneDurationFrames: [30, 30, 30])
+        addFadeTransition(to: &timeline, fromIndex: 0, toIndex: 1)
+
+        let math = TimelineTransitionMath(
+            sceneItems: timeline.sceneItems,
+            boundaryTransitions: timeline.boundaryTransitions,
+            fps: fps
+        )
+        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+
+        // When: update at transition frame (e.g., frame 25)
+        coordinator.update(transitionMath: math, compressedFrame: 25)
+
+        // Then: currentSceneIndex should be aIndex (0), not bIndex (1) or midpoint
+        XCTAssertEqual(coordinator.currentSceneIndex, 0)
+    }
 }

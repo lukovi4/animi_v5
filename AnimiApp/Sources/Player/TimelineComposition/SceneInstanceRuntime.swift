@@ -9,12 +9,28 @@ import TVECore
 /// Allows test injection for verifying clamped frame forwarding and readiness state.
 @MainActor
 protocol SceneMediaSyncing: AnyObject {
+    // MARK: Frame Update APIs
     func updateVideoFramesForScrub(sceneFrameIndex: Int)
     func updateVideoFramesForPlayback(sceneFrameIndex: Int)
     func updateVideoFramesForFrozen(sceneFrameIndex: Int)
     func startVideoPlayback(sceneFrameIndex: Int)
+
+    // MARK: Readiness APIs (TT-02)
     var isSceneMediaReady: Bool { get }
     var hasFailedMedia: Bool { get }
+
+    // MARK: TT-03 Budget-Aware APIs
+    func playbackCandidates(sceneFrameIndex: Int) -> [PlaybackVideoCandidate]
+    func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>)
+    func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>)
+
+    // MARK: TT-03 Completion: Soft-Stop for Warm Runtimes
+    /// Stops all active video playback while preserving textures (hold-last).
+    /// Used when runtime transitions from active to warm state.
+    /// - Does NOT clear textures (hold-last semantics)
+    /// - Clears activeVideoBlockIds
+    /// - Does NOT affect scrub/frozen/readiness behavior
+    func stopVideoPlaybackPreservingTextures()
 }
 
 extension UserMediaService: SceneMediaSyncing {}
@@ -408,7 +424,7 @@ public final class SceneInstanceRuntime {
         }
     }
 
-    // MARK: - Playback
+    // MARK: - Playback (Legacy Compatibility)
 
     /// Syncs video frames to specific local frame (for scrubbing).
     public func syncVideoFrame(_ localFrame: Int) {
@@ -416,12 +432,13 @@ public final class SceneInstanceRuntime {
     }
 
     /// Syncs video frames for playback tick (gated to video frame rate).
+    /// Legacy wrapper: uses local budget policy. For engine-owned budget use budget-aware variant.
     public func syncPlaybackTick(_ localFrame: Int) {
         mediaSyncing.updateVideoFramesForPlayback(sceneFrameIndex: clampedLocalFrame(localFrame))
     }
 
-    /// PR-G: Starts video playback at the given local frame.
-    /// Resets tick counter so first tick fires immediately, starts visible providers.
+    /// Starts video playback at the given local frame.
+    /// Legacy wrapper: uses local budget policy. For engine-owned budget use budget-aware variant.
     public func startPlayback(at localFrame: Int) {
         mediaSyncing.startVideoPlayback(sceneFrameIndex: clampedLocalFrame(localFrame))
     }
@@ -429,6 +446,54 @@ public final class SceneInstanceRuntime {
     /// Pauses playback.
     public func pause() {
         userMediaService.stopVideoPlayback()
+    }
+
+    /// TT-03 Completion: Deactivates playback while preserving textures (hold-last).
+    ///
+    /// Used when runtime transitions from active to warm state.
+    /// Unlike `pause()`, this does NOT flush textures - it keeps the last frame visible.
+    ///
+    /// Contract:
+    /// - Stops all active video decoders
+    /// - Preserves last textures (hold-last semantics)
+    /// - Runtime remains resident and ready for quick reactivation
+    func deactivatePlaybackPreservingTextures() {
+        mediaSyncing.stopVideoPlaybackPreservingTextures()
+    }
+
+    // MARK: - TT-03 Budget-Aware Playback
+
+    /// Returns sorted playback candidates for budget allocation.
+    /// Used by engine to collect candidates across scenes for global priority ordering.
+    ///
+    /// - Parameter localFrame: Local frame for priority calculation (clamped to valid range)
+    /// - Returns: Sorted candidates (visible first, then area desc, zIndex desc, blockId asc)
+    func playbackCandidates(at localFrame: Int) -> [PlaybackVideoCandidate] {
+        mediaSyncing.playbackCandidates(sceneFrameIndex: clampedLocalFrame(localFrame))
+    }
+
+    /// Starts video playback for granted blocks only (engine-owned budget).
+    ///
+    /// - Parameters:
+    ///   - localFrame: Local frame to sync to (clamped to valid range)
+    ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
+    func startPlayback(at localFrame: Int, grantedBlockIds: Set<String>) {
+        mediaSyncing.startVideoPlayback(
+            sceneFrameIndex: clampedLocalFrame(localFrame),
+            grantedBlockIds: grantedBlockIds
+        )
+    }
+
+    /// Syncs video frames for playback tick with engine-owned budget.
+    ///
+    /// - Parameters:
+    ///   - localFrame: Local frame for sync (clamped to valid range)
+    ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
+    func syncPlaybackTick(_ localFrame: Int, grantedBlockIds: Set<String>) {
+        mediaSyncing.updateVideoFramesForPlayback(
+            sceneFrameIndex: clampedLocalFrame(localFrame),
+            grantedBlockIds: grantedBlockIds
+        )
     }
 
     // MARK: - Rendering

@@ -121,14 +121,55 @@ public final class GlobalVideoBudgetCoordinator {
     /// Returns scene instance IDs that should be evicted (farthest from current).
     /// - Parameter allInstanceIds: All currently loaded scene instance IDs.
     /// - Returns: Set of instance IDs to evict.
+    /// - Note: Compatibility wrapper; prefer `instancesToEvictOrdered` for deterministic ordering.
     public func instancesToEvict(from allInstanceIds: Set<UUID>, sceneItems: [TimelineItem]) -> Set<UUID> {
-        // Keep pinned + warm, evict the rest
-        let keepSet = pinnedInstanceIds.union(warmInstanceIds)
-        return allInstanceIds.subtracting(keepSet)
+        Set(instancesToEvictOrdered(from: allInstanceIds, sceneItems: sceneItems))
+    }
+
+    /// Returns ordered list of scene instances to evict.
+    /// Only includes evictable instances, sorted by: distance desc → sceneIndex asc → UUID.uuidString asc
+    /// - Parameters:
+    ///   - allInstanceIds: All currently loaded scene instance IDs.
+    ///   - sceneItems: Timeline scene items for index lookup.
+    /// - Returns: Ordered array of evictable instance IDs (farthest first).
+    public func instancesToEvictOrdered(
+        from allInstanceIds: Set<UUID>,
+        sceneItems: [TimelineItem]
+    ) -> [UUID] {
+        // Build index map
+        var indexMap: [UUID: Int] = [:]
+        for (index, item) in sceneItems.enumerated() {
+            indexMap[item.id] = index
+        }
+
+        // Filter to only evictable instances
+        let evictableIds = allInstanceIds.filter { instanceId in
+            allocationTier(for: instanceId) == .evictable
+        }
+
+        // Sort by: distance desc → sceneIndex asc → UUID.uuidString asc
+        return evictableIds.sorted { a, b in
+            // Distance descending (farther scenes first)
+            let distA = abs((indexMap[a] ?? 0) - currentSceneIndex)
+            let distB = abs((indexMap[b] ?? 0) - currentSceneIndex)
+            if distA != distB {
+                return distA > distB  // desc
+            }
+
+            // Same distance - sort by sceneIndex ascending
+            let indexA = indexMap[a] ?? 0
+            let indexB = indexMap[b] ?? 0
+            if indexA != indexB {
+                return indexA < indexB
+            }
+
+            // All else equal - sort by UUID string
+            return a.uuidString < b.uuidString
+        }
     }
 
     /// Returns prioritized list of scene instances for decoder allocation.
-    /// Pinned scenes first, then warm, then others by distance.
+    /// Sort order: tier asc → distance asc → sceneIndex asc → UUID.uuidString asc
     public func prioritizedInstances(
         from availableInstanceIds: Set<UUID>,
         sceneItems: [TimelineItem]
@@ -139,19 +180,30 @@ public final class GlobalVideoBudgetCoordinator {
             indexMap[item.id] = index
         }
 
-        // Sort by tier, then by distance from current
+        // Sort by: tier asc → distance asc → sceneIndex asc → UUID.uuidString asc
         return availableInstanceIds.sorted { a, b in
             let tierA = allocationTier(for: a)
             let tierB = allocationTier(for: b)
-
             if tierA != tierB {
                 return tierA < tierB
             }
 
-            // Same tier - sort by distance from current
+            // Same tier - sort by distance from current (ascending)
             let distA = abs((indexMap[a] ?? 0) - currentSceneIndex)
             let distB = abs((indexMap[b] ?? 0) - currentSceneIndex)
-            return distA < distB
+            if distA != distB {
+                return distA < distB
+            }
+
+            // Same distance - sort by sceneIndex ascending
+            let indexA = indexMap[a] ?? 0
+            let indexB = indexMap[b] ?? 0
+            if indexA != indexB {
+                return indexA < indexB
+            }
+
+            // All else equal - sort by UUID string for determinism
+            return a.uuidString < b.uuidString
         }
     }
 }
