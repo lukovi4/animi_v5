@@ -994,11 +994,6 @@ public final class VideoExporter {
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        guard let transitionMath = engine.transitionMath else {
-            completion(.failure(VideoExportError.renderError(TimelineExportError.noTimeline)))
-            return
-        }
-
         // Validate FPS match
         guard settings.fps == engine.fps else {
             completion(.failure(VideoExportError.fpsMismatch(
@@ -1008,26 +1003,32 @@ public final class VideoExporter {
             return
         }
 
-        // Capture necessary data for background thread
-        let totalFrames = transitionMath.compressedDurationFrames
-        let canvasSize = engine.canvasSize
-
         // Reset state
         resetState()
 
-        // Prepare engine and build audio pipeline
+        // TT-05: Build immutable export session on MainActor, then dispatch to background
         Task {
-            await engine.prepareForPlayback(startingAt: 0)
+            let session: TimelineCompositionEngine.TimelineExportSession
+            do {
+                session = try await engine.buildExportSession()
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(VideoExportError.renderError(error)))
+                }
+                return
+            }
+
+            let totalFrames = session.transitionMath.compressedDurationFrames
+            let canvasSize = session.canvasSize
 
             // Build audio pipeline if configured
             var audioPipeline: BuiltAudioPipeline?
             if let audioConfig = settings.audio {
                 do {
-                    let sceneData = await engine.prepareAudioExportData()
                     let builder = AudioCompositionBuilder()
                     audioPipeline = try builder.buildTimeline(
-                        sceneData: sceneData,
-                        transitionMath: transitionMath,
+                        sceneData: session.audioSceneData,
+                        transitionMath: session.transitionMath,
                         fps: settings.fps,
                         config: audioConfig
                     )
@@ -1039,6 +1040,15 @@ public final class VideoExporter {
                 }
             }
 
+            // Capture for background handoff — these are handed off to exportQueue
+            // and not accessed concurrently; nonisolated(unsafe) silences sendability warnings.
+            let device = engine.device
+            nonisolated(unsafe) let exportSession = session
+            nonisolated(unsafe) let exportRenderer = renderer
+            nonisolated(unsafe) let exportCompositor = transitionCompositor
+            nonisolated(unsafe) let exportBgProvider = backgroundTextureProvider
+            nonisolated(unsafe) let exportAudioPipeline = audioPipeline
+
             // Run export on background queue
             exportQueue.async { [weak self] in
                 guard let self else {
@@ -1049,14 +1059,15 @@ public final class VideoExporter {
                 }
 
                 self.runTimelineExportLoop(
-                    engine: engine,
-                    renderer: renderer,
-                    transitionCompositor: transitionCompositor,
+                    session: exportSession,
+                    device: device,
+                    renderer: exportRenderer,
+                    transitionCompositor: exportCompositor,
                     totalFrames: totalFrames,
                     canvasSize: canvasSize,
                     backgroundState: backgroundState,
-                    backgroundTextureProvider: backgroundTextureProvider,
-                    audioPipeline: audioPipeline,
+                    backgroundTextureProvider: exportBgProvider,
+                    audioPipeline: exportAudioPipeline,
                     settings: settings,
                     progress: progress,
                     completion: completion
@@ -1068,7 +1079,8 @@ public final class VideoExporter {
     // MARK: - Timeline Export Loop
 
     private func runTimelineExportLoop(
-        engine: TimelineCompositionEngine,
+        session: TimelineCompositionEngine.TimelineExportSession,
+        device: MTLDevice,
         renderer: MetalRenderer,
         transitionCompositor: TransitionCompositor,
         totalFrames: Int,
@@ -1181,9 +1193,6 @@ public final class VideoExporter {
         }
 
         // 6. Setup synchronization
-        let maxInFlight = renderer.maxFramesInFlight
-        let semaphore = DispatchSemaphore(value: maxInFlight)
-        let videoGroup = DispatchGroup()
         let audioGroup = DispatchGroup()
         let backpressureTimeout = settings.backpressureTimeoutSeconds
 
@@ -1205,13 +1214,32 @@ public final class VideoExporter {
             )
         }
 
-        // 7. Video export loop
+        // TT-05: Create TimelineExportRuntime on export queue
+        let exportRuntime: TimelineExportRuntime
+        do {
+            exportRuntime = try TimelineExportRuntime(
+                session: session,
+                textureCache: textureCache,
+                coordinatorFactory: TimelineExportRuntime.makeDefaultFactory(device: device)
+            )
+        } catch {
+            writer.cancelWriting()
+            DispatchQueue.main.async {
+                completion(.failure(VideoExportError.renderError(error)))
+            }
+            return
+        }
+
+        // 7. TT-05: Video export loop — resolve+render on exportQueue, append on writerQueue
+        let semaphore = DispatchSemaphore(value: renderer.maxFramesInFlight)
+        let videoGroup = DispatchGroup()
+
         for frameIndex in 0..<totalFrames {
             // Check cancellation
             if isCancelled() { break }
             if exportError() != nil { break }
 
-            // Wait for in-flight slot
+            // Wait for in-flight slot (backpressure from writerQueue append)
             semaphore.wait()
             videoGroup.enter()
 
@@ -1261,84 +1289,59 @@ public final class VideoExporter {
                     return
                 }
 
-                // Create presentation time
+                // TT-05: Resolve and render entirely on export queue (no MainActor)
+                do {
+                    let resolved = try exportRuntime.resolveFrame(frameIndex)
+
+                    try renderTimelineFrame(
+                        resolved: resolved,
+                        target: targetTexture,
+                        renderer: renderer,
+                        transitionCompositor: transitionCompositor,
+                        canvasSize: canvasSize,
+                        clearColor: settings.clearColor,
+                        backgroundState: backgroundState,
+                        backgroundTextureProvider: backgroundTextureProvider
+                    )
+                } catch {
+                    setExportErrorOnce(VideoExportError.renderError(error))
+                    videoGroup.leave()
+                    semaphore.signal()
+                    return
+                }
+
+                // Append on writerQueue — preserves audio/video writer synchronization contract
                 let pts = CMTime(value: CMTimeValue(frameIndex), timescale: CMTimeScale(settings.fps))
-
-                // Create in-flight frame holder
-                let inFlightFrame = InFlightFrame(
-                    pixelBuffer: pixelBuffer,
-                    cvMetalTexture: cvMetalTexture,
-                    mtlTexture: targetTexture,
-                    presentationTime: pts
-                )
-
-                // Resolve frame on main actor
-                Task { @MainActor in
-                    do {
-                        // TT-02: Use export policy and explicit resolution handling
-                        let resolution = await engine.resolveFrame(frameIndex, policy: .export)
-
-                        // TT-02: Check for export errors via mapping helper
-                        if let error = Self.mapResolutionToExportError(resolution, frameIndex: frameIndex) {
-                            throw error
-                        }
-
-                        guard case .resolved(let resolved) = resolution else {
-                            // Should not reach here if mapResolutionToExportError is correct
-                            throw TimelineExportError.frameResolutionFailed(frame: frameIndex, reason: "unexpected")
-                        }
-
-                        // Render frame
-                        try self.renderTimelineFrame(
-                            resolved: resolved,
-                            target: targetTexture,
-                            renderer: renderer,
-                            transitionCompositor: transitionCompositor,
-                            canvasSize: canvasSize,
-                            clearColor: settings.clearColor,
-                            backgroundState: backgroundState,
-                            backgroundTextureProvider: backgroundTextureProvider
-                        )
-
-                        // Append on writer queue after render
-                        self.writerQueue.async {
-                            defer {
-                                videoGroup.leave()
-                                semaphore.signal()
-                            }
-
-                            if self.isCancelled() { return }
-                            if self.exportError() != nil { return }
-
-                            if writer.status != .writing {
-                                self.setExportErrorOnce(VideoExportError.writerNotWriting(writer.error))
-                                return
-                            }
-
-                            // Bounded wait for readiness
-                            let deadline = Date().addingTimeInterval(backpressureTimeout)
-                            while !videoInput.isReadyForMoreMediaData {
-                                if self.isCancelled() { return }
-                                if self.exportError() != nil { return }
-                                if Date() > deadline {
-                                    self.setExportErrorOnce(VideoExportError.writerBackpressureTimeout)
-                                    return
-                                }
-                                Thread.sleep(forTimeInterval: 0.002)
-                            }
-
-                            let ok = adaptor.append(
-                                inFlightFrame.pixelBuffer,
-                                withPresentationTime: inFlightFrame.presentationTime
-                            )
-                            if !ok {
-                                self.setExportErrorOnce(VideoExportError.appendFailed(writer.error))
-                            }
-                        }
-                    } catch {
-                        self.setExportErrorOnce(VideoExportError.renderError(error))
+                self.writerQueue.async { [weak self] in
+                    defer {
                         videoGroup.leave()
                         semaphore.signal()
+                    }
+
+                    guard let self else { return }
+                    if self.isCancelled() { return }
+                    if self.exportError() != nil { return }
+
+                    if writer.status != .writing {
+                        self.setExportErrorOnce(VideoExportError.writerNotWriting(writer.error))
+                        return
+                    }
+
+                    // Bounded wait for readiness
+                    let deadline = Date().addingTimeInterval(backpressureTimeout)
+                    while !videoInput.isReadyForMoreMediaData {
+                        if self.isCancelled() { return }
+                        if self.exportError() != nil { return }
+                        if Date() > deadline {
+                            self.setExportErrorOnce(VideoExportError.writerBackpressureTimeout)
+                            return
+                        }
+                        Thread.sleep(forTimeInterval: 0.002)
+                    }
+
+                    let ok = adaptor.append(pixelBuffer, withPresentationTime: pts)
+                    if !ok {
+                        self.setExportErrorOnce(VideoExportError.appendFailed(writer.error))
                     }
                 }
             }
@@ -1350,14 +1353,21 @@ public final class VideoExporter {
             }
         }
 
-        // 8. Wait for all video frames
+        // 8. Wait for all video frames to finish appending
         videoGroup.wait()
+
+        // 8a. Finalize export runtime
+        if isCancelled() || exportError() != nil {
+            exportRuntime.cancel()
+        } else {
+            exportRuntime.finish()
+        }
 
         // 8b. Wait for audio pump
         audioGroup.wait()
 
-        // 9. Finalization
-        writerQueue.async { [weak self] in
+        // 9. Finalization on writerQueue — same queue as audio/video appends
+        writerQueue.sync { [weak self] in
             guard let self else {
                 DispatchQueue.main.async {
                     completion(.failure(VideoExportError.cancelled))
@@ -1403,7 +1413,8 @@ public final class VideoExporter {
 
     // MARK: - Timeline Frame Rendering
 
-    @MainActor
+    /// TT-05: Removed @MainActor — runs serial on exportQueue.
+    /// TexturePool is not thread-safe, so render remains serial (not concurrent).
     private func renderTimelineFrame(
         resolved: ResolvedTimelineFrame,
         target: MTLTexture,
@@ -1583,6 +1594,192 @@ public final class VideoExporter {
         TransitionParams(
             type: transition.type.toTVECoreType(),
             easing: transition.easingPreset.toTVECoreType()
+        )
+    }
+}
+
+// MARK: - TT-05: Timeline Export Video Coordinating Protocol
+
+/// Testability seam for video slot coordination in timeline export.
+internal protocol TimelineExportVideoCoordinating: AnyObject {
+    var providerError: ExportVideoFrameProviderError? { get }
+    func updateTextures(forSceneFrameIndex: Int)
+    func finish()
+    func cancel()
+}
+
+extension ExportVideoSlotsCoordinator: TimelineExportVideoCoordinating {}
+
+/// Factory for creating video coordinators from scene snapshots.
+internal typealias TimelineExportCoordinatorFactory =
+    (TimelineCompositionEngine.TimelineExportSceneSnapshot, CVMetalTextureCache, Int) throws -> TimelineExportVideoCoordinating?
+
+// MARK: - TT-05: Timeline Export Runtime
+
+/// Pure export-side resolver that works entirely on exportQueue.
+/// After buildExportSession(), per-frame loop never touches engine/runtime.
+internal final class TimelineExportRuntime {
+
+    let session: TimelineCompositionEngine.TimelineExportSession
+    private var videoCoordinatorsByInstanceId: [UUID: TimelineExportVideoCoordinating]
+
+    init(
+        session: TimelineCompositionEngine.TimelineExportSession,
+        textureCache: CVMetalTextureCache,
+        coordinatorFactory: @escaping TimelineExportCoordinatorFactory
+    ) throws {
+        self.session = session
+        self.videoCoordinatorsByInstanceId = [:]
+
+        for (instanceId, snapshot) in session.scenesByInstanceId {
+            if let coordinator = try coordinatorFactory(snapshot, textureCache, session.fps) {
+                videoCoordinatorsByInstanceId[instanceId] = coordinator
+            }
+        }
+    }
+
+    /// Default factory that creates ExportVideoSlotsCoordinator when video selections exist.
+    static func makeDefaultFactory(device: MTLDevice) -> TimelineExportCoordinatorFactory {
+        return { snapshot, textureCache, fps in
+            guard !snapshot.videoSelections.isEmpty else { return nil }
+
+            let coordinator = ExportVideoSlotsCoordinator(
+                device: device,
+                textureCache: textureCache,
+                runtime: snapshot.runtime,
+                sceneFPS: Double(fps),
+                exportTextureProvider: snapshot.textureProvider
+            )
+            coordinator.configure(videoSelectionsByBlockId: snapshot.videoSelections)
+            try coordinator.prepareAll()
+            return coordinator
+        }
+    }
+
+    func resolveFrame(_ compressedFrame: Int) throws -> ResolvedTimelineFrame {
+        guard let mode = session.transitionMath.renderMode(for: compressedFrame) else {
+            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "no_render_mode")
+        }
+
+        switch mode {
+        case .single(let sceneIndex, let localFrame):
+            return try resolveSingle(sceneIndex: sceneIndex, localFrame: localFrame, compressedFrame: compressedFrame)
+
+        case .transition(let aIndex, let frameA, let bIndex, let frameB, let transition, let progress):
+            return try resolveTransition(
+                aIndex: aIndex, frameA: frameA,
+                bIndex: bIndex, frameB: frameB,
+                transition: transition, progress: progress,
+                compressedFrame: compressedFrame
+            )
+        }
+    }
+
+    func finish() {
+        for coordinator in videoCoordinatorsByInstanceId.values {
+            coordinator.finish()
+        }
+    }
+
+    func cancel() {
+        for coordinator in videoCoordinatorsByInstanceId.values {
+            coordinator.cancel()
+        }
+    }
+
+    // MARK: - Private
+
+    private func resolveSingle(sceneIndex: Int, localFrame: Int, compressedFrame: Int) throws -> ResolvedTimelineFrame {
+        let math = session.transitionMath
+        guard sceneIndex < math.sceneItems.count else {
+            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "invalid_scene_index")
+        }
+
+        let instanceId = math.sceneItems[sceneIndex].id
+        guard let snapshot = session.scenesByInstanceId[instanceId] else {
+            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot:\(instanceId)")
+        }
+
+        // Update video coordinator if present
+        if let coordinator = videoCoordinatorsByInstanceId[instanceId] {
+            coordinator.updateTextures(forSceneFrameIndex: localFrame)
+            if let error = coordinator.providerError {
+                throw error
+            }
+        }
+
+        let context = makeRenderContext(snapshot: snapshot, localFrame: localFrame)
+        return .single(context)
+    }
+
+    private func resolveTransition(
+        aIndex: Int, frameA: Int,
+        bIndex: Int, frameB: Int,
+        transition: SceneTransition,
+        progress: Double,
+        compressedFrame: Int
+    ) throws -> ResolvedTimelineFrame {
+        let math = session.transitionMath
+        guard aIndex < math.sceneItems.count, bIndex < math.sceneItems.count else {
+            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "invalid_scene_index")
+        }
+
+        let instanceIdA = math.sceneItems[aIndex].id
+        let instanceIdB = math.sceneItems[bIndex].id
+
+        guard let snapshotA = session.scenesByInstanceId[instanceIdA] else {
+            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot:\(instanceIdA)")
+        }
+        guard let snapshotB = session.scenesByInstanceId[instanceIdB] else {
+            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot:\(instanceIdB)")
+        }
+
+        // Update coordinators
+        if let coordA = videoCoordinatorsByInstanceId[instanceIdA] {
+            coordA.updateTextures(forSceneFrameIndex: frameA)
+            if let error = coordA.providerError {
+                throw error
+            }
+        }
+        if let coordB = videoCoordinatorsByInstanceId[instanceIdB] {
+            coordB.updateTextures(forSceneFrameIndex: frameB)
+            if let error = coordB.providerError {
+                throw error
+            }
+        }
+
+        let contextA = makeRenderContext(snapshot: snapshotA, localFrame: frameA)
+        let contextB = makeRenderContext(snapshot: snapshotB, localFrame: frameB)
+
+        return .transition(TransitionRenderContext(
+            sceneA: contextA,
+            sceneB: contextB,
+            transition: transition,
+            progress: progress
+        ))
+    }
+
+    private func makeRenderContext(
+        snapshot: TimelineCompositionEngine.TimelineExportSceneSnapshot,
+        localFrame: Int
+    ) -> SceneRenderContext {
+        let commands = SceneRenderPlan.renderCommands(
+            for: snapshot.runtime,
+            sceneFrameIndex: localFrame,
+            userTransforms: snapshot.renderState.userTransforms,
+            variantOverrides: snapshot.renderState.variantOverrides,
+            userMediaPresent: snapshot.renderState.userMediaPresent,
+            layerToggleState: snapshot.renderState.layerToggleState
+        )
+
+        return SceneRenderContext(
+            commands: commands,
+            textureProvider: snapshot.textureProvider,
+            pathRegistry: snapshot.pathRegistry,
+            assetSizes: snapshot.assetSizes,
+            localFrame: localFrame,
+            canvasSize: snapshot.sceneCanvasSize,
+            sceneInstanceId: snapshot.instanceId
         )
     }
 }

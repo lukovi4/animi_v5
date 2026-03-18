@@ -871,8 +871,7 @@ public final class TimelineCompositionEngine {
         public let videoSelections: [String: VideoSelection]
     }
 
-    /// Prepares all scenes for export and returns audio export data.
-    /// Must call `prepareForPlayback` first to ensure all runtimes are loaded.
+    /// Compatibility helper — timeline export after TT-05 uses session.audioSceneData instead.
     public func prepareAudioExportData() async -> [SceneAudioExportData] {
         guard let math = transitionMath else { return [] }
 
@@ -896,5 +895,110 @@ public final class TimelineCompositionEngine {
         }
 
         return result
+    }
+
+    // MARK: - TT-05 Export Session
+
+    /// Error when building an immutable export session.
+    internal enum TimelineExportSessionBuildError: Error, Sendable, Equatable {
+        case noTimeline
+        case missingRuntime(UUID)
+    }
+
+    /// Immutable snapshot of a single scene for export.
+    internal struct TimelineExportSceneSnapshot {
+        let sceneIndex: Int
+        let instanceId: UUID
+        let runtime: SceneRuntime
+        let renderState: SceneRenderStateSnapshot
+        let videoSelections: [String: VideoSelection]
+        let textureProvider: ExportTextureProvider
+        let pathRegistry: PathRegistry
+        let assetSizes: [String: AssetSize]
+        let sceneCanvasSize: SizeD
+    }
+
+    /// Immutable export session built once before the export loop.
+    internal struct TimelineExportSession {
+        let transitionMath: TimelineTransitionMath
+        let canvasSize: SizeD
+        let fps: Int
+        let scenesByInstanceId: [UUID: TimelineExportSceneSnapshot]
+        let audioSceneData: [SceneAudioExportData]
+    }
+
+    /// TT-05: Builds an immutable export session from current engine state.
+    /// Must be called on MainActor. Does NOT call resolveFrame, prepareForPlayback,
+    /// or touch TT-03 budget/eviction path.
+    internal func buildExportSession() async throws -> TimelineExportSession {
+        guard let math = transitionMath, templateCanvas != nil else {
+            throw TimelineExportSessionBuildError.noTimeline
+        }
+
+        var scenesByInstanceId: [UUID: TimelineExportSceneSnapshot] = [:]
+        var audioSceneData: [SceneAudioExportData] = []
+
+        for (index, item) in math.sceneItems.enumerated() {
+            let instanceId = item.id
+
+            guard let instanceRuntime = await getOrCreateRuntime(for: instanceId) else {
+                throw TimelineExportSessionBuildError.missingRuntime(instanceId)
+            }
+
+            // Build render state snapshot from sceneStates
+            let state = sceneStates[instanceId] ?? .empty
+            let renderState = SceneRenderStateSnapshot(
+                userTransforms: state.userTransforms,
+                variantOverrides: state.variantOverrides,
+                userMediaPresent: state.userMediaPresent ?? [:],
+                layerToggleState: state.layerToggles
+            )
+
+            // Freeze video selections
+            let videoSelections = instanceRuntime.userMediaService.exportVideoSelectionsSnapshot()
+
+            // Create export-safe texture provider
+            let compiled = instanceRuntime.resources.compiled
+            let exportTP = ExportTextureProvider(
+                device: device,
+                assetIndex: compiled.mergedAssetIndex,
+                resolver: instanceRuntime.resources.resolver,
+                bindingAssetIds: compiled.bindingAssetIds
+            )
+            exportTP.preloadAll(commandQueue: commandQueue)
+
+            // Inject current binding textures from live provider
+            exportTP.injectTextures(
+                from: instanceRuntime.layeredTextureProvider,
+                for: compiled.bindingAssetIds
+            )
+
+            let snapshot = TimelineExportSceneSnapshot(
+                sceneIndex: index,
+                instanceId: instanceId,
+                runtime: compiled.runtime,
+                renderState: renderState,
+                videoSelections: videoSelections,
+                textureProvider: exportTP,
+                pathRegistry: instanceRuntime.resources.pathRegistry,
+                assetSizes: instanceRuntime.resources.assetSizes,
+                sceneCanvasSize: instanceRuntime.resources.canvasSize
+            )
+            scenesByInstanceId[instanceId] = snapshot
+
+            audioSceneData.append(SceneAudioExportData(
+                sceneIndex: index,
+                runtime: compiled.runtime,
+                videoSelections: videoSelections
+            ))
+        }
+
+        return TimelineExportSession(
+            transitionMath: math,
+            canvasSize: canvasSize,
+            fps: fps,
+            scenesByInstanceId: scenesByInstanceId,
+            audioSceneData: audioSceneData
+        )
     }
 }

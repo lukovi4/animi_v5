@@ -20,6 +20,8 @@
 		7A8B9C0D1E2F3A4B5C6D7E8F /* SceneInstanceRuntimeReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */; };
 		8B9C0D1E2F3A4B5C6D7E8F9A /* TimelineCompositionEngineReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */; };
 		9C0D1E2F3A4B5C6D7E8F9A0B /* VideoExporterTimelineResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B8C9D0E1F2A3B4C5D6E7F8A /* VideoExporterTimelineResolutionTests.swift */; };
+		A10D1E2F3A4B5C6D7E8F9A10 /* TimelineCompositionEngineExportSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20D1E2F3A4B5C6D7E8F9A11 /* TimelineCompositionEngineExportSessionTests.swift */; };
+		A30D1E2F3A4B5C6D7E8F9A12 /* VideoExporterTimelineExportSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40D1E2F3A4B5C6D7E8F9A13 /* VideoExporterTimelineExportSessionTests.swift */; };
 		18CBB8DC59767967525874C6 /* PreviewVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EF91B900FF78191D281BB73 /* PreviewVideoView.swift */; };
 		1E5BA0CCE5E033BDC0F1023A /* Templates in Resources */ = {isa = PBXBuildFile; fileRef = 486CDCFFF485A0C0354A63F5 /* Templates */; };
 		1EA1B9C121F589385C6EACB7 /* TimelineEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99082F901FF221848C1D8848 /* TimelineEvents.swift */; };
@@ -146,6 +148,8 @@
 		5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInstanceRuntimeReadinessTests.swift; sourceTree = "<group>"; };
 		6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineCompositionEngineReadinessTests.swift; sourceTree = "<group>"; };
 		7B8C9D0E1F2A3B4C5D6E7F8A /* VideoExporterTimelineResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporterTimelineResolutionTests.swift; sourceTree = "<group>"; };
+		A20D1E2F3A4B5C6D7E8F9A11 /* TimelineCompositionEngineExportSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineCompositionEngineExportSessionTests.swift; sourceTree = "<group>"; };
+		A40D1E2F3A4B5C6D7E8F9A13 /* VideoExporterTimelineExportSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporterTimelineExportSessionTests.swift; sourceTree = "<group>"; };
 		10365D40F7866CDC3383B1F0 /* ScrubDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrubDiagnostics.swift; sourceTree = "<group>"; };
 		1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaTextureFactory.swift; sourceTree = "<group>"; };
 		1696482BFA3E93F558EEE181 /* PlayheadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayheadView.swift; sourceTree = "<group>"; };
@@ -299,6 +303,8 @@
 				5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */,
 				6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */,
 				7B8C9D0E1F2A3B4C5D6E7F8A /* VideoExporterTimelineResolutionTests.swift */,
+				A20D1E2F3A4B5C6D7E8F9A11 /* TimelineCompositionEngineExportSessionTests.swift */,
+				A40D1E2F3A4B5C6D7E8F9A13 /* VideoExporterTimelineExportSessionTests.swift */,
 				BE83C97F893ECB40F45E4309 /* UserMediaServiceReadinessTests.swift */,
 				CB0D1E2F3A4B5C6D7E8F9A0D /* UserMediaServiceBudgetTests.swift */,
 				CD0D1E2F3A4B5C6D7E8F9A0F /* TimelineCompositionEngineBudgetTests.swift */,
@@ -655,6 +661,8 @@
 				7A8B9C0D1E2F3A4B5C6D7E8F /* SceneInstanceRuntimeReadinessTests.swift in Sources */,
 				8B9C0D1E2F3A4B5C6D7E8F9A /* TimelineCompositionEngineReadinessTests.swift in Sources */,
 				9C0D1E2F3A4B5C6D7E8F9A0B /* VideoExporterTimelineResolutionTests.swift in Sources */,
+				A10D1E2F3A4B5C6D7E8F9A10 /* TimelineCompositionEngineExportSessionTests.swift in Sources */,
+				A30D1E2F3A4B5C6D7E8F9A12 /* VideoExporterTimelineExportSessionTests.swift in Sources */,
 				B9DE907658522310F2EC88E3 /* UserMediaServiceReadinessTests.swift in Sources */,
 				CA0D1E2F3A4B5C6D7E8F9A0C /* UserMediaServiceBudgetTests.swift in Sources */,
 				CC0D1E2F3A4B5C6D7E8F9A0E /* TimelineCompositionEngineBudgetTests.swift in Sources */,

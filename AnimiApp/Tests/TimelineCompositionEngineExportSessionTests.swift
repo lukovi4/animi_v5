@@ -1,0 +1,350 @@
+import XCTest
+import Metal
+@testable import AnimiApp
+@testable import TVECore
+
+/// TT-05: Tests for TimelineCompositionEngine.buildExportSession().
+final class TimelineCompositionEngineExportSessionTests: XCTestCase {
+
+    // MARK: - Test Infrastructure
+
+    @MainActor
+    private func makeMinimalResources(durationFrames: Int, fps: Int = 30, sceneTypeId: String = "test-scene-type") -> SceneTypeResourcesCache.Resources {
+        let canvas = Canvas(width: 1080, height: 1920, fps: fps, durationFrames: durationFrames)
+        let scene = Scene(
+            schemaVersion: "1.0",
+            sceneId: "test-scene",
+            canvas: canvas,
+            background: nil,
+            mediaBlocks: []
+        )
+        let runtime = SceneRuntime(
+            scene: scene,
+            canvas: canvas,
+            blocks: [],
+            durationFrames: durationFrames,
+            fps: fps
+        )
+        let compiled = CompiledScene(
+            runtime: runtime,
+            mergedAssetIndex: AssetIndexIR(),
+            pathRegistry: PathRegistry(),
+            bindingAssetIds: []
+        )
+        let resolver = CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty)
+        let baseProvider = InMemoryTextureProvider()
+
+        return SceneTypeResourcesCache.Resources(
+            sceneTypeId: sceneTypeId,
+            compiled: compiled,
+            resolver: resolver,
+            baseTextureProvider: baseProvider,
+            assetSizes: [:],
+            pathRegistry: PathRegistry(),
+            canvasSize: SizeD(width: Double(canvas.width), height: Double(canvas.height)),
+            fps: fps,
+            durationFrames: durationFrames
+        )
+    }
+
+    private func framesToUs(_ frames: Int, fps: Int = 30) -> TimeUs {
+        Int64(frames) * 1_000_000 / Int64(fps)
+    }
+
+    @MainActor
+    private func makeMinimalTimeline(sceneCount: Int, framesPerScene: Int = 100) -> (CanonicalTimeline, [SceneTypeResourcesCache.Resources]) {
+        var items: [TimelineItem] = []
+        var payloads: [UUID: TimelinePayload] = [:]
+        var resources: [SceneTypeResourcesCache.Resources] = []
+
+        for i in 0..<sceneCount {
+            let instanceId = UUID()
+            let payloadId = UUID()
+            let sceneTypeId = "scene-type-\(i)"
+
+            let durationUs = framesToUs(framesPerScene)
+            let item = TimelineItem(
+                id: instanceId,
+                payloadId: payloadId,
+                kind: .scene,
+                startUs: nil,
+                durationUs: durationUs
+            )
+            items.append(item)
+
+            let scenePayload = ScenePayload(sceneTypeId: sceneTypeId)
+            payloads[payloadId] = .scene(scenePayload)
+
+            let res = makeMinimalResources(durationFrames: framesPerScene, sceneTypeId: sceneTypeId)
+            resources.append(res)
+        }
+
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: items)
+        let timeline = CanonicalTimeline(
+            tracks: [sceneTrack],
+            payloads: payloads,
+            boundaryTransitions: [:]
+        )
+
+        return (timeline, resources)
+    }
+
+    @MainActor
+    private func makeEngine(
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        timeline: CanonicalTimeline,
+        resources: [SceneTypeResourcesCache.Resources],
+        sceneStates: [UUID: SceneState] = [:]
+    ) -> TimelineCompositionEngine {
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources {
+            cache.addToCache(res)
+        }
+
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+
+        engine.setTemplateCanvas(CanvasConfig(width: 1080, height: 1920))
+        engine.setTimeline(timeline, sceneStates: sceneStates)
+
+        return engine
+    }
+
+    // MARK: - Tests
+
+    /// buildExportSession() builds snapshots for ALL sceneItems.
+    @MainActor
+    func testBuildExportSessionSnapshotsAllScenes() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 3, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let session = try await engine.buildExportSession()
+
+        // All 3 scenes present in snapshot
+        XCTAssertEqual(session.scenesByInstanceId.count, 3)
+        for item in timeline.sceneItems {
+            XCTAssertNotNil(session.scenesByInstanceId[item.id], "Missing snapshot for scene \(item.id)")
+        }
+    }
+
+    /// session.canvasSize matches engine.canvasSize (template source of truth).
+    @MainActor
+    func testSessionCanvasSizeMatchesEngine() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let session = try await engine.buildExportSession()
+
+        XCTAssertEqual(session.canvasSize.width, engine.canvasSize.width)
+        XCTAssertEqual(session.canvasSize.height, engine.canvasSize.height)
+    }
+
+    /// Per-scene sceneCanvasSize matches runtime resources canvasSize.
+    @MainActor
+    func testPerSceneCanvasSizeMatchesResources() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 2, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let session = try await engine.buildExportSession()
+
+        for item in timeline.sceneItems {
+            guard let snapshot = session.scenesByInstanceId[item.id] else {
+                XCTFail("Missing snapshot for \(item.id)")
+                continue
+            }
+            let runtime = engine.runtime(for: item.id)!
+            XCTAssertEqual(snapshot.sceneCanvasSize.width, runtime.resources.canvasSize.width)
+            XCTAssertEqual(snapshot.sceneCanvasSize.height, runtime.resources.canvasSize.height)
+        }
+    }
+
+    /// renderState matches sceneStates[instanceId] ?? .empty
+    @MainActor
+    func testRenderStateMatchesSceneStates() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 2, framesPerScene: 60)
+        let firstId = timeline.sceneItems[0].id
+        let secondId = timeline.sceneItems[1].id
+
+        let states: [UUID: SceneState] = [
+            firstId: SceneState(
+                variantOverrides: ["block1": "variantA"],
+                userTransforms: ["block1": .identity],
+                layerToggles: ["block1": ["toggle1": false]],
+                mediaAssignments: nil,
+                userMediaPresent: ["block1": true]
+            )
+            // secondId intentionally missing -> .empty
+        ]
+
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources, sceneStates: states)
+
+        let session = try await engine.buildExportSession()
+
+        // First scene: matches provided state
+        let snap1 = session.scenesByInstanceId[firstId]!
+        XCTAssertEqual(snap1.renderState.variantOverrides, ["block1": "variantA"])
+        XCTAssertEqual(snap1.renderState.userMediaPresent, ["block1": true])
+        XCTAssertEqual(snap1.renderState.layerToggleState, ["block1": ["toggle1": false]])
+
+        // Second scene: empty state
+        let snap2 = session.scenesByInstanceId[secondId]!
+        XCTAssertTrue(snap2.renderState.variantOverrides.isEmpty)
+        XCTAssertTrue(snap2.renderState.userMediaPresent.isEmpty)
+        XCTAssertTrue(snap2.renderState.layerToggleState.isEmpty)
+    }
+
+    /// Snapshot texture provider is ExportTextureProvider (not LayeredTextureProvider).
+    @MainActor
+    func testTextureProviderIsExportType() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let session = try await engine.buildExportSession()
+
+        let snapshot = session.scenesByInstanceId.values.first!
+        XCTAssertTrue(snapshot.textureProvider is ExportTextureProvider)
+    }
+
+    /// audioSceneData contains data for all scenes.
+    @MainActor
+    func testAudioSceneDataCoversAllScenes() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 3, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let session = try await engine.buildExportSession()
+
+        XCTAssertEqual(session.audioSceneData.count, 3)
+        for (index, data) in session.audioSceneData.enumerated() {
+            XCTAssertEqual(data.sceneIndex, index)
+        }
+    }
+
+    /// buildExportSession throws noTimeline when no timeline is set.
+    @MainActor
+    func testBuildExportSessionThrowsWithoutTimeline() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let engine = TimelineCompositionEngine(device: device, commandQueue: commandQueue)
+
+        do {
+            _ = try await engine.buildExportSession()
+            XCTFail("Expected noTimeline error")
+        } catch let error as TimelineCompositionEngine.TimelineExportSessionBuildError {
+            XCTAssertEqual(error, .noTimeline)
+        }
+    }
+
+    /// buildExportSession throws noTimeline when templateCanvas is not set.
+    @MainActor
+    func testBuildExportSessionThrowsWithoutCanvas() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources { cache.addToCache(res) }
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            resourcesCache: cache,
+            runtimeFactory: { id, res, dev, queue in
+                SceneInstanceRuntime(sceneInstanceId: id, resources: res, device: dev, commandQueue: queue)
+            }
+        )
+        // Set timeline but NOT templateCanvas
+        engine.setTimeline(timeline, sceneStates: [:])
+
+        do {
+            _ = try await engine.buildExportSession()
+            XCTFail("Expected noTimeline error")
+        } catch let error as TimelineCompositionEngine.TimelineExportSessionBuildError {
+            XCTAssertEqual(error, .noTimeline)
+        }
+    }
+
+    /// session.fps matches engine fps.
+    @MainActor
+    func testSessionFpsMatchesEngine() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let session = try await engine.buildExportSession()
+        XCTAssertEqual(session.fps, 30)
+    }
+
+    /// transitionMath in session is consistent with engine.
+    @MainActor
+    func testSessionTransitionMathConsistent() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 2, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let session = try await engine.buildExportSession()
+        XCTAssertEqual(session.transitionMath.compressedDurationFrames, engine.compressedDurationFrames)
+    }
+}
