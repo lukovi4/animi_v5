@@ -77,7 +77,7 @@ public final class TransitionCompositor {
             try drawTexturedQuad(
                 texture: sceneB,
                 opacity: 1.0,
-                transform: matrix_identity_float4x4,
+                transform: .identity,
                 target: target,
                 commandBuffer: commandBuffer,
                 canvasSize: canvasSize,
@@ -92,7 +92,7 @@ public final class TransitionCompositor {
             try drawTexturedQuad(
                 texture: sceneA,
                 opacity: 1.0,
-                transform: matrix_identity_float4x4,
+                transform: .identity,
                 target: target,
                 commandBuffer: commandBuffer,
                 canvasSize: canvasSize,
@@ -103,7 +103,7 @@ public final class TransitionCompositor {
             try drawTexturedQuad(
                 texture: sceneB,
                 opacity: easedProgress,
-                transform: matrix_identity_float4x4,
+                transform: .identity,
                 target: target,
                 commandBuffer: commandBuffer,
                 canvasSize: canvasSize,
@@ -118,7 +118,7 @@ public final class TransitionCompositor {
             try drawTexturedQuad(
                 texture: sceneA,
                 opacity: 1.0,
-                transform: matrix_identity_float4x4,
+                transform: .identity,
                 target: target,
                 commandBuffer: commandBuffer,
                 canvasSize: canvasSize,
@@ -203,19 +203,16 @@ public final class TransitionCompositor {
     private func drawTexturedQuad(
         texture: MTLTexture,
         opacity: Float,
-        transform: simd_float4x4,
+        transform: Matrix2D,
         target: MTLTexture,
         commandBuffer: MTLCommandBuffer,
         canvasSize: SizeD,
-        loadAction: MTLLoadAction = .clear
+        loadAction: MTLLoadAction = .load
     ) throws {
         let passDescriptor = MTLRenderPassDescriptor()
         passDescriptor.colorAttachments[0].texture = target
         passDescriptor.colorAttachments[0].loadAction = loadAction
         passDescriptor.colorAttachments[0].storeAction = .store
-        if loadAction == .clear {
-            passDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-        }
 
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else {
             throw TransitionCompositorError.failedToCreateEncoder
@@ -223,9 +220,9 @@ public final class TransitionCompositor {
 
         encoder.setRenderPipelineState(resources.quadPipelineState)
 
-        // Create full-screen quad vertices
-        let width = Float(target.width)
-        let height = Float(target.height)
+        // TT-04: Build quad in canvas local space, not target fullscreen space
+        let width = Float(canvasSize.width)
+        let height = Float(canvasSize.height)
         let vertices: [QuadVertex] = [
             QuadVertex(position: SIMD2<Float>(0, 0), texCoord: SIMD2<Float>(0, 0)),
             QuadVertex(position: SIMD2<Float>(width, 0), texCoord: SIMD2<Float>(1, 0)),
@@ -239,9 +236,20 @@ public final class TransitionCompositor {
             options: .storageModeShared
         )
 
-        // Create projection matrix
-        let projection = orthographicProjection(width: width, height: height)
-        let mvp = projection * transform
+        // TT-04: Use same contain mapping as MetalRenderer
+        // Build MVP through Matrix2D.concatenating() - canonical order from renderer
+        let targetRect = RectD(x: 0, y: 0, width: Double(target.width), height: Double(target.height))
+        let animToViewport = GeometryMapping.animToInputContain(animSize: canvasSize, inputRect: targetRect)
+        let viewportToNDC = GeometryMapping.viewportToNDC(width: targetRect.width, height: targetRect.height)
+
+        // Canonical composition: transform in canvas space, then contain mapping, then NDC
+        let fullTransform = animToViewport.concatenating(transform)
+        let mvp = viewportToNDC.concatenating(fullTransform).toFloat4x4()
+
+        // TT-04: Set scissor to contained rect to prevent drawing outside it
+        // This ensures slide/push don't render into letterbox/pillarbox areas
+        let scissor = containedScissorRect(canvasSize: canvasSize, targetWidth: target.width, targetHeight: target.height)
+        encoder.setScissorRect(scissor)
 
         var uniforms = QuadUniforms(mvp: mvp, opacity: opacity)
 
@@ -283,9 +291,9 @@ public final class TransitionCompositor {
 
         encoder.setRenderPipelineState(resources.dipTransitionPipelineState)
 
-        // Create full-screen quad vertices
-        let width = Float(target.width)
-        let height = Float(target.height)
+        // TT-04: Build quad in canvas local space, not target fullscreen space
+        let width = Float(canvasSize.width)
+        let height = Float(canvasSize.height)
         let vertices: [QuadVertex] = [
             QuadVertex(position: SIMD2<Float>(0, 0), texCoord: SIMD2<Float>(0, 0)),
             QuadVertex(position: SIMD2<Float>(width, 0), texCoord: SIMD2<Float>(1, 0)),
@@ -299,11 +307,21 @@ public final class TransitionCompositor {
             options: .storageModeShared
         )
 
-        // Create projection matrix
-        let projection = orthographicProjection(width: width, height: height)
+        // TT-04: Use same contain mapping as MetalRenderer
+        let targetRect = RectD(x: 0, y: 0, width: Double(target.width), height: Double(target.height))
+        let animToViewport = GeometryMapping.animToInputContain(animSize: canvasSize, inputRect: targetRect)
+        let viewportToNDC = GeometryMapping.viewportToNDC(width: targetRect.width, height: targetRect.height)
+
+        // Canonical composition: identity transform (dip has no spatial transform), then contain mapping, then NDC
+        let fullTransform = animToViewport.concatenating(.identity)
+        let mvp = viewportToNDC.concatenating(fullTransform).toFloat4x4()
+
+        // TT-04: Set scissor to contained rect to prevent dip affecting letterbox/pillarbox
+        let scissor = containedScissorRect(canvasSize: canvasSize, targetWidth: target.width, targetHeight: target.height)
+        encoder.setScissorRect(scissor)
 
         var uniforms = TransitionDipUniforms(
-            mvp: projection,
+            mvp: mvp,
             progress: Float(progress),
             dipColor: dipColor
         )
@@ -326,107 +344,114 @@ public final class TransitionCompositor {
         encoder.endEncoding()
     }
 
-    // MARK: - Transform Helpers
+    // MARK: - Scissor Helper
 
-    private func orthographicProjection(width: Float, height: Float) -> simd_float4x4 {
-        // Standard orthographic projection for 2D rendering
-        // Maps (0,0)-(width,height) to clip space (-1,-1)-(1,1)
-        let sx = 2.0 / width
-        let sy = -2.0 / height  // Flip Y for Metal coordinates
-        let tx = -1.0 as Float
-        let ty = 1.0 as Float
+    /// Computes the scissor rect for the contained area (where canvas maps to in target).
+    /// This prevents rendering outside the letterbox/pillarbox areas.
+    private func containedScissorRect(canvasSize: SizeD, targetWidth: Int, targetHeight: Int) -> MTLScissorRect {
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            return MTLScissorRect(x: 0, y: 0, width: targetWidth, height: targetHeight)
+        }
 
-        return simd_float4x4(columns: (
-            SIMD4<Float>(sx, 0, 0, 0),
-            SIMD4<Float>(0, sy, 0, 0),
-            SIMD4<Float>(0, 0, 1, 0),
-            SIMD4<Float>(tx, ty, 0, 1)
-        ))
+        let targetW = Double(targetWidth)
+        let targetH = Double(targetHeight)
+
+        // Same math as animToInputContain
+        let scaleX = targetW / canvasSize.width
+        let scaleY = targetH / canvasSize.height
+        let scale = min(scaleX, scaleY)
+
+        let scaledWidth = canvasSize.width * scale
+        let scaledHeight = canvasSize.height * scale
+
+        let offsetX = (targetW - scaledWidth) / 2.0
+        let offsetY = (targetH - scaledHeight) / 2.0
+
+        // Convert to integer pixel coordinates using floor(min) / ceil(max) to avoid
+        // off-by-one errors on fractional contained rects (e.g. canvas 100x100 -> target 101x100
+        // gives rect 0.5...100.5, scissor must be 0...101 not 1...100)
+        let minX = offsetX
+        let minY = offsetY
+        let maxX = offsetX + scaledWidth
+        let maxY = offsetY + scaledHeight
+
+        let x = max(0, Int(floor(minX)))
+        let y = max(0, Int(floor(minY)))
+        let w = min(targetWidth, Int(ceil(maxX))) - x
+        let h = min(targetHeight, Int(ceil(maxY))) - y
+
+        return MTLScissorRect(x: x, y: y, width: max(0, w), height: max(0, h))
     }
+
+    // MARK: - Transform Helpers
 
     private func slideTransform(
         direction: TransitionDirection,
         progress: Double,
         canvasSize: SizeD
-    ) -> simd_float4x4 {
+    ) -> Matrix2D {
         // Slide: B enters from direction
         // At progress=0: B is fully off-screen
         // At progress=1: B is fully on-screen
         let remaining = 1.0 - progress
 
-        var tx: Float = 0
-        var ty: Float = 0
+        var tx: Double = 0
+        var ty: Double = 0
 
         switch direction {
         case .left:
             // B enters from left, so starts at -width and moves to 0
-            tx = Float(-canvasSize.width * remaining)
+            tx = -canvasSize.width * remaining
         case .right:
             // B enters from right, so starts at +width and moves to 0
-            tx = Float(canvasSize.width * remaining)
+            tx = canvasSize.width * remaining
         case .up:
             // B enters from top (up in screen coords), so starts at -height and moves to 0
-            ty = Float(-canvasSize.height * remaining)
+            ty = -canvasSize.height * remaining
         case .down:
             // B enters from bottom, so starts at +height and moves to 0
-            ty = Float(canvasSize.height * remaining)
+            ty = canvasSize.height * remaining
         }
 
-        return simd_float4x4(columns: (
-            SIMD4<Float>(1, 0, 0, 0),
-            SIMD4<Float>(0, 1, 0, 0),
-            SIMD4<Float>(0, 0, 1, 0),
-            SIMD4<Float>(tx, ty, 0, 1)
-        ))
+        return Matrix2D.translation(x: tx, y: ty)
     }
 
     private func pushTransforms(
         direction: TransitionDirection,
         progress: Double,
         canvasSize: SizeD
-    ) -> (simd_float4x4, simd_float4x4) {
+    ) -> (Matrix2D, Matrix2D) {
         // Push: A and B move together
         // A moves out in opposite direction of where B comes from
         // At progress=0: A at 0, B off-screen
         // At progress=1: A off-screen, B at 0
 
-        var txA: Float = 0
-        var tyA: Float = 0
-        var txB: Float = 0
-        var tyB: Float = 0
+        var txA: Double = 0
+        var tyA: Double = 0
+        var txB: Double = 0
+        var tyB: Double = 0
 
         switch direction {
         case .left:
             // B enters from left, pushes A to the right
-            txA = Float(canvasSize.width * progress)
-            txB = Float(-canvasSize.width * (1.0 - progress))
+            txA = canvasSize.width * progress
+            txB = -canvasSize.width * (1.0 - progress)
         case .right:
             // B enters from right, pushes A to the left
-            txA = Float(-canvasSize.width * progress)
-            txB = Float(canvasSize.width * (1.0 - progress))
+            txA = -canvasSize.width * progress
+            txB = canvasSize.width * (1.0 - progress)
         case .up:
             // B enters from top, pushes A down
-            tyA = Float(canvasSize.height * progress)
-            tyB = Float(-canvasSize.height * (1.0 - progress))
+            tyA = canvasSize.height * progress
+            tyB = -canvasSize.height * (1.0 - progress)
         case .down:
             // B enters from bottom, pushes A up
-            tyA = Float(-canvasSize.height * progress)
-            tyB = Float(canvasSize.height * (1.0 - progress))
+            tyA = -canvasSize.height * progress
+            tyB = canvasSize.height * (1.0 - progress)
         }
 
-        let transformA = simd_float4x4(columns: (
-            SIMD4<Float>(1, 0, 0, 0),
-            SIMD4<Float>(0, 1, 0, 0),
-            SIMD4<Float>(0, 0, 1, 0),
-            SIMD4<Float>(txA, tyA, 0, 1)
-        ))
-
-        let transformB = simd_float4x4(columns: (
-            SIMD4<Float>(1, 0, 0, 0),
-            SIMD4<Float>(0, 1, 0, 0),
-            SIMD4<Float>(0, 0, 1, 0),
-            SIMD4<Float>(txB, tyB, 0, 1)
-        ))
+        let transformA = Matrix2D.translation(x: txA, y: tyA)
+        let transformB = Matrix2D.translation(x: txB, y: tyB)
 
         return (transformA, transformB)
     }
