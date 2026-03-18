@@ -65,11 +65,17 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
     // MARK: - Media Syncing Spy
 
     /// Spy to capture sceneFrameIndex values passed to media syncing methods.
+    /// TT-02: Added frozenFrames, isSceneMediaReady, hasFailedMedia for readiness testing.
     @MainActor
     final class MediaSyncingSpy: SceneMediaSyncing {
         var scrubFrames: [Int] = []
         var playbackFrames: [Int] = []
+        var frozenFrames: [Int] = []
         var startPlaybackFrames: [Int] = []
+
+        // TT-02: Controllable readiness flags for tests
+        var isSceneMediaReady: Bool = false
+        var hasFailedMedia: Bool = false
 
         func updateVideoFramesForScrub(sceneFrameIndex: Int) {
             scrubFrames.append(sceneFrameIndex)
@@ -77,6 +83,10 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
         func updateVideoFramesForPlayback(sceneFrameIndex: Int) {
             playbackFrames.append(sceneFrameIndex)
+        }
+
+        func updateVideoFramesForFrozen(sceneFrameIndex: Int) {
+            frozenFrames.append(sceneFrameIndex)
         }
 
         func startVideoPlayback(sceneFrameIndex: Int) {

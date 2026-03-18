@@ -5,16 +5,34 @@ import TVECore
 
 // MARK: - Scene Media Syncing Protocol (Test Seam)
 
-/// Protocol for media frame synchronization.
-/// Allows test injection for verifying clamped frame forwarding.
+/// Protocol for media frame synchronization and readiness inspection.
+/// Allows test injection for verifying clamped frame forwarding and readiness state.
 @MainActor
 protocol SceneMediaSyncing: AnyObject {
     func updateVideoFramesForScrub(sceneFrameIndex: Int)
     func updateVideoFramesForPlayback(sceneFrameIndex: Int)
+    func updateVideoFramesForFrozen(sceneFrameIndex: Int)
     func startVideoPlayback(sceneFrameIndex: Int)
+    var isSceneMediaReady: Bool { get }
+    var hasFailedMedia: Bool { get }
 }
 
 extension UserMediaService: SceneMediaSyncing {}
+
+// MARK: - Test Configuration (Internal)
+
+/// TT-02: Configuration for preparation timing, used by test seam.
+/// Internal to allow fast timeout testing without waiting 5 seconds.
+struct PreparationTimingConfig {
+    let maxWaitMs: Int
+    let pollIntervalMs: UInt64
+
+    /// Production defaults: 5000ms max wait, 50ms poll interval.
+    static let production = PreparationTimingConfig(maxWaitMs: 5000, pollIntervalMs: 50)
+
+    /// Fast config for timeout tests: 100ms max wait, 10ms poll interval.
+    static let fastForTesting = PreparationTimingConfig(maxWaitMs: 100, pollIntervalMs: 10)
+}
 
 // MARK: - Scene Instance Runtime
 
@@ -59,22 +77,32 @@ public final class SceneInstanceRuntime {
         injectedMediaSyncing ?? userMediaService
     }
 
+    /// TT-02: Timing config for preparation loop. Production by default.
+    private let timingConfig: PreparationTimingConfig
+
     // MARK: - State
 
-    /// Readiness state for scene rendering.
+    /// TT-02: Readiness state for scene rendering.
+    /// States with targetLocalFrame track the frame used for first-frame warmup.
     public enum ReadinessState: Equatable, Sendable {
-        case notReady
-        case ready
+        case created
+        case preparing(targetLocalFrame: Int)
+        case ready(targetLocalFrame: Int)
         case failed(reason: String)
-        case timedOut
+        case timedOut(targetLocalFrame: Int)
     }
 
     /// Current readiness state.
-    public private(set) var readinessState: ReadinessState = .notReady
+    public private(set) var readinessState: ReadinessState = .created
+
+    /// TT-02: Single in-flight preparation task.
+    /// Used to ensure only one prepare attempt runs at a time.
+    private var preparationTask: Task<Void, Never>?
 
     /// Convenience: whether this instance is ready for rendering.
     public var isReady: Bool {
-        readinessState == .ready
+        if case .ready = readinessState { return true }
+        return false
     }
 
     /// Currently applied scene state.
@@ -98,6 +126,7 @@ public final class SceneInstanceRuntime {
         self.sceneTypeId = resources.sceneTypeId
         self.resources = resources
         self.injectedMediaSyncing = nil
+        self.timingConfig = .production
 
         // Create per-instance overlay provider
         self.overlayTextureProvider = InMemoryTextureProvider()
@@ -131,17 +160,20 @@ public final class SceneInstanceRuntime {
     ///   - device: Metal device.
     ///   - commandQueue: Metal command queue.
     ///   - mediaSyncing: Injected media syncing spy for tests.
+    ///   - timingConfig: Optional timing config for fast timeout testing.
     init(
         sceneInstanceId: UUID,
         resources: SceneTypeResourcesCache.Resources,
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
-        mediaSyncing: SceneMediaSyncing
+        mediaSyncing: SceneMediaSyncing,
+        timingConfig: PreparationTimingConfig = .production
     ) {
         self.sceneInstanceId = sceneInstanceId
         self.sceneTypeId = resources.sceneTypeId
         self.resources = resources
         self.injectedMediaSyncing = mediaSyncing
+        self.timingConfig = timingConfig
 
         // Create per-instance overlay provider
         self.overlayTextureProvider = InMemoryTextureProvider()
@@ -179,7 +211,12 @@ public final class SceneInstanceRuntime {
 
     /// Resets runtime state before applying new state.
     /// Clears all overrides to ensure clean re-application.
+    /// TT-02: Cancels in-flight preparation and resets to .created.
     public func resetState() {
+        // TT-02: Cancel in-flight preparation
+        preparationTask?.cancel()
+        preparationTask = nil
+
         // Reset ScenePlayer state
         scenePlayer.resetForNewInstance()
 
@@ -188,7 +225,7 @@ public final class SceneInstanceRuntime {
 
         // Clear applied state
         appliedState = nil
-        readinessState = .notReady
+        readinessState = .created
 
         #if DEBUG
         print("[SceneInstanceRuntime] Reset state for instance: \(sceneInstanceId)")
@@ -236,94 +273,142 @@ public final class SceneInstanceRuntime {
 
     /// Reloads state from scratch (reset + apply).
     /// Use this after undo/redo or when state needs full refresh.
+    /// TT-02: No auto-prepare — caller controls readiness via startPreparingForPresentation.
     public func reloadState(_ state: SceneState) async {
-        resetState()
+        resetState()  // Sets readinessState = .created, cancels preparationTask
         await applyState(state)
-        await prepareForPlayback()
+        // NO auto-prepare
     }
 
-    // MARK: - Playback
+    // MARK: - TT-02: Readiness State Machine
 
-    /// Prepares instance for playback.
-    /// Warms video providers and syncs paused frame for prewarmed incoming scenes.
-    /// Waits for scene to be fully ready (provider + poster injected + not failed).
-    public func prepareForPlayback() async {
-        // Sync video frames to frame 0 for prewarmed incoming scene
-        // This ensures first transition frame is ready
-        userMediaService.updateVideoFramesForScrub(sceneFrameIndex: 0)
+    /// TT-02: Internal helper to sync frozen frame with clamping.
+    private func syncFrozenFrame(_ localFrame: Int) {
+        mediaSyncing.updateVideoFramesForFrozen(sceneFrameIndex: clampedLocalFrame(localFrame))
+    }
 
-        // Wait for scene-level readiness (all setup tasks complete, all textures injected)
-        let result = await waitForSceneMediaReady()
+    /// TT-02: Starts preparing runtime for presentation at specific local frame.
+    /// Uses frozen-frame API for exact first-frame warmup.
+    ///
+    /// STATE MACHINE RULES:
+    /// - From .created: start new preparation
+    /// - From .preparing(_): no-op (let current task finish)
+    /// - From .ready(_): no-op (already scene-ready)
+    /// - From .failed/.timedOut: no-op (retry via resetState/reloadState only)
+    ///
+    /// Does NOT block - use waitUntilReadyForPresentation to await completion.
+    public func startPreparingForPresentation(at localFrame: Int) {
+        let targetFrame = clampedLocalFrame(localFrame)
 
-        switch result {
+        switch readinessState {
         case .ready:
-            readinessState = .ready
-            #if DEBUG
-            print("[SceneInstanceRuntime] Ready for playback: \(sceneInstanceId)")
-            #endif
+            // Already scene-ready. Do NOT downgrade to .preparing.
+            return
 
-        case .failed(let reason):
-            readinessState = .failed(reason: reason)
-            #if DEBUG
-            print("[SceneInstanceRuntime] Failed to prepare: \(sceneInstanceId) - \(reason)")
-            #endif
+        case .preparing:
+            // Already preparing. Let it finish.
+            return
 
-        case .timedOut:
-            readinessState = .timedOut
-            #if DEBUG
-            print("[SceneInstanceRuntime] Timed out preparing: \(sceneInstanceId)")
-            #endif
+        case .failed, .timedOut:
+            // Terminal failure. Retry only via resetState()/reloadState().
+            // This is intentional: preview gets explicit failure, not infinite hold/retry loop.
+            return
+
+        case .created:
+            // Start new preparation
+            break
+        }
+
+        readinessState = .preparing(targetLocalFrame: targetFrame)
+
+        // Initial frozen sync
+        syncFrozenFrame(targetFrame)
+
+        // Start single in-flight preparation task
+        preparationTask = Task { @MainActor [weak self] in
+            await self?.runPreparationLoop(targetFrame: targetFrame)
         }
     }
 
-    /// Result of waiting for scene media readiness.
-    private enum WaitResult {
-        case ready
-        case failed(String)
-        case timedOut
-    }
-
-    /// Waits for all scene media to be ready.
-    /// Returns `.ready` when all setup tasks complete and all media ready.
-    /// Returns `.failed` if any media restore failed (photo, video, or unsupported assignment).
-    /// Returns `.timedOut` after max wait exceeded.
-    private func waitForSceneMediaReady() async -> WaitResult {
-        // Poll with short interval until scene is ready
-        // Max wait: 5 seconds to prevent infinite hang
-        let maxWaitMs = 5000
-        let pollIntervalMs: UInt64 = 50
+    /// TT-02: Internal preparation loop. Only called from startPreparingForPresentation.
+    private func runPreparationLoop(targetFrame: Int) async {
+        let maxWaitMs = timingConfig.maxWaitMs
+        let pollIntervalMs = timingConfig.pollIntervalMs
         var elapsed = 0
 
-        while !userMediaService.isSceneMediaReady && elapsed < maxWaitMs {
-            // Check for failures early - no point waiting if already failed
-            if userMediaService.hasFailedMedia {
+        while elapsed < maxWaitMs {
+            // Check for external state changes (reset, reload, cancel)
+            guard case .preparing(let current) = readinessState, current == targetFrame else {
+                return  // State changed externally, abort this loop
+            }
+
+            // Check for failures early
+            if mediaSyncing.hasFailedMedia {
+                readinessState = .failed(reason: "Media restore failed")
+                return
+            }
+
+            // Check if ready
+            if mediaSyncing.isSceneMediaReady {
+                // Final frozen sync before marking ready
+                syncFrozenFrame(targetFrame)
+                readinessState = .ready(targetLocalFrame: targetFrame)
                 #if DEBUG
-                print("[SceneInstanceRuntime] Waited \(elapsed)ms, detected failed media")
+                print("[SceneInstanceRuntime] Ready for presentation at frame \(targetFrame): \(sceneInstanceId)")
                 #endif
-                return .failed("Media restore failed")
+                return
             }
 
             try? await Task.sleep(nanoseconds: pollIntervalMs * 1_000_000)
             elapsed += Int(pollIntervalMs)
+
+            // Re-sync frozen frame during poll
+            syncFrozenFrame(targetFrame)
         }
 
+        // Timeout
+        readinessState = .timedOut(targetLocalFrame: targetFrame)
         #if DEBUG
-        if elapsed > 0 {
-            print("[SceneInstanceRuntime] Waited \(elapsed)ms for scene media ready")
-        }
+        print("[SceneInstanceRuntime] Timed out preparing at frame \(targetFrame): \(sceneInstanceId)")
         #endif
-
-        // Final state check
-        if userMediaService.hasFailedMedia {
-            return .failed("Media restore failed")
-        }
-
-        if userMediaService.isSceneMediaReady {
-            return .ready
-        }
-
-        return .timedOut
     }
+
+    /// TT-02: Waits until runtime reaches terminal state.
+    /// Delegates all state decisions to startPreparingForPresentation.
+    /// Does NOT have own timeout policy - just polls until terminal.
+    public func waitUntilReadyForPresentation(at localFrame: Int) async -> ReadinessState {
+        // If created, delegate to single owner
+        if case .created = readinessState {
+            startPreparingForPresentation(at: localFrame)
+        }
+
+        // If already terminal, return immediately
+        switch readinessState {
+        case .ready, .failed, .timedOut:
+            return readinessState
+        case .created, .preparing:
+            break
+        }
+
+        // Poll until terminal state (no own timeout)
+        let pollIntervalMs: UInt64 = 50
+
+        while true {
+            switch readinessState {
+            case .ready, .failed, .timedOut:
+                return readinessState
+            case .created:
+                // Unexpected - should not happen after startPreparing
+                return readinessState
+            case .preparing:
+                break
+            }
+
+            try? await Task.sleep(nanoseconds: pollIntervalMs * 1_000_000)
+        }
+    }
+
+    // MARK: - Playback
 
     /// Syncs video frames to specific local frame (for scrubbing).
     public func syncVideoFrame(_ localFrame: Int) {

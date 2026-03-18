@@ -51,6 +51,10 @@ public final class TimelineCompositionEngine {
     /// Incremented on each playhead change to invalidate stale async results.
     private var scrubGeneration: UInt64 = 0
 
+    /// TT-02: Factory for creating SceneInstanceRuntime. Non-optional.
+    /// Public init provides production closure, internal init for tests.
+    private let runtimeFactory: (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime
+
     // MARK: - Init
 
     public init(
@@ -64,6 +68,32 @@ public final class TimelineCompositionEngine {
         self.fps = fps
         self.budgetCoordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: maxActiveDecoders)
         self.resourcesCache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        // TT-02: Production factory
+        self.runtimeFactory = { instanceId, resources, dev, queue in
+            SceneInstanceRuntime(
+                sceneInstanceId: instanceId,
+                resources: resources,
+                device: dev,
+                commandQueue: queue
+            )
+        }
+    }
+
+    /// TT-02: Internal init for tests with injected runtime factory.
+    init(
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        fps: Int = 30,
+        maxActiveDecoders: Int = 3,
+        resourcesCache: SceneTypeResourcesCache,
+        runtimeFactory: @escaping (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime
+    ) {
+        self.device = device
+        self.commandQueue = commandQueue
+        self.fps = fps
+        self.budgetCoordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: maxActiveDecoders)
+        self.resourcesCache = resourcesCache
+        self.runtimeFactory = runtimeFactory
     }
 
     // MARK: - Configuration
@@ -142,17 +172,24 @@ public final class TimelineCompositionEngine {
         TimeUs(compressedDurationFrames) * 1_000_000 / TimeUs(fps)
     }
 
-    /// Resolves render context for a compressed frame.
+    /// TT-02: Resolves render context for a compressed frame.
     /// - Parameters:
     ///   - compressedFrame: Frame index in compressed timeline.
     ///   - generation: Optional generation token to validate against (for scrub cancellation).
-    /// - Returns: Resolved frame context, or nil if not ready or generation mismatch.
-    public func resolveFrame(_ compressedFrame: Int, generation: UInt64? = nil) async -> ResolvedTimelineFrame? {
-        guard let math = transitionMath else { return nil }
+    ///   - policy: Resolution policy (.presentation or .export).
+    /// - Returns: Resolution result (resolved, hold, staleGeneration, or failed).
+    public func resolveFrame(
+        _ compressedFrame: Int,
+        generation: UInt64? = nil,
+        policy: TimelineResolvePolicy = .presentation
+    ) async -> TimelineFrameResolution {
+        guard let math = transitionMath else {
+            return .failed(.invalidTimeline)
+        }
 
-        // Validate generation if provided (for fast scrub cancellation)
+        // Check generation BEFORE any work
         if let gen = generation, gen != scrubGeneration {
-            return nil
+            return .staleGeneration
         }
 
         // Update budget coordinator
@@ -160,67 +197,242 @@ public final class TimelineCompositionEngine {
 
         // Get render mode (nil for empty timeline)
         guard let mode = math.renderMode(for: compressedFrame) else {
-            return nil
+            return .failed(.invalidTimeline)
         }
 
         switch mode {
         case .single(let sceneIndex, let localFrame):
-            guard sceneIndex < math.sceneItems.count else { return nil }
-            let instanceId = math.sceneItems[sceneIndex].id
-
-            guard let runtime = await getOrPrepareRuntime(for: instanceId) else {
-                return nil
-            }
-
-            // Readiness gate: scene must be fully ready before rendering
-            guard runtime.isReady else {
-                return nil
-            }
-
-            // Re-validate generation after async work
-            if let gen = generation, gen != scrubGeneration {
-                return nil
-            }
-
-            return .single(runtime.makeRenderContext(localFrame: localFrame))
+            return await resolveSingleFrame(
+                math: math,
+                sceneIndex: sceneIndex,
+                localFrame: localFrame,
+                generation: generation,
+                policy: policy
+            )
 
         case .transition(let aIndex, let frameA, let bIndex, let frameB, let transition, let progress):
-            guard aIndex < math.sceneItems.count,
-                  bIndex < math.sceneItems.count else { return nil }
-
-            let instanceIdA = math.sceneItems[aIndex].id
-            let instanceIdB = math.sceneItems[bIndex].id
-
-            // Prepare both runtimes (in parallel)
-            async let runtimeATask = getOrPrepareRuntime(for: instanceIdA)
-            async let runtimeBTask = getOrPrepareRuntime(for: instanceIdB)
-
-            guard let runtimeA = await runtimeATask,
-                  let runtimeB = await runtimeBTask else {
-                return nil
-            }
-
-            // Readiness gate: both scenes must be fully ready for transition
-            guard runtimeA.isReady && runtimeB.isReady else {
-                return nil
-            }
-
-            // Re-validate generation after async work
-            if let gen = generation, gen != scrubGeneration {
-                return nil
-            }
-
-            return .transition(TransitionRenderContext(
-                sceneA: runtimeA.makeRenderContext(localFrame: frameA),
-                sceneB: runtimeB.makeRenderContext(localFrame: frameB),
+            return await resolveTransitionFrame(
+                math: math,
+                aIndex: aIndex, frameA: frameA,
+                bIndex: bIndex, frameB: frameB,
                 transition: transition,
-                progress: progress
-            ))
+                progress: progress,
+                generation: generation,
+                policy: policy
+            )
         }
     }
 
-    /// Gets or prepares a runtime for the given instance ID.
-    private func getOrPrepareRuntime(for instanceId: UUID) async -> SceneInstanceRuntime? {
+    /// TT-02: Resolves single scene frame with explicit state branching.
+    private func resolveSingleFrame(
+        math: TimelineTransitionMath,
+        sceneIndex: Int,
+        localFrame: Int,
+        generation: UInt64?,
+        policy: TimelineResolvePolicy
+    ) async -> TimelineFrameResolution {
+        guard sceneIndex < math.sceneItems.count else {
+            return .failed(.invalidTimeline)
+        }
+
+        let instanceId = math.sceneItems[sceneIndex].id
+
+        guard let runtime = await getOrCreateRuntime(for: instanceId) else {
+            return .failed(.missingDependency(instanceId))
+        }
+
+        // Check generation after async create
+        if let gen = generation, gen != scrubGeneration {
+            return .staleGeneration
+        }
+
+        switch policy {
+        case .presentation:
+            // Explicit state branching
+            switch runtime.readinessState {
+            case .created:
+                runtime.startPreparingForPresentation(at: localFrame)
+                // Check generation before returning hold
+                if let gen = generation, gen != scrubGeneration {
+                    return .staleGeneration
+                }
+                return .hold
+
+            case .preparing:
+                if let gen = generation, gen != scrubGeneration {
+                    return .staleGeneration
+                }
+                return .hold
+
+            case .ready:
+                let context = runtime.makeRenderContext(localFrame: localFrame)
+                return .resolved(.single(context))
+
+            case .failed(let reason):
+                return .failed(.dependencyFailed(instanceId, reason: reason))
+
+            case .timedOut:
+                return .failed(.dependencyTimedOut(instanceId))
+            }
+
+        case .export:
+            let state = await runtime.waitUntilReadyForPresentation(at: localFrame)
+
+            // Check generation after async wait
+            if let gen = generation, gen != scrubGeneration {
+                return .staleGeneration
+            }
+
+            switch state {
+            case .ready:
+                let context = runtime.makeRenderContext(localFrame: localFrame)
+                return .resolved(.single(context))
+            case .failed(let reason):
+                return .failed(.dependencyFailed(instanceId, reason: reason))
+            case .timedOut:
+                return .failed(.dependencyTimedOut(instanceId))
+            case .created, .preparing:
+                // Contract violation
+                return .failed(.dependencyTimedOut(instanceId))
+            }
+        }
+    }
+
+    /// TT-02: Resolves transition frame - both scenes must be ready.
+    private func resolveTransitionFrame(
+        math: TimelineTransitionMath,
+        aIndex: Int, frameA: Int,
+        bIndex: Int, frameB: Int,
+        transition: SceneTransition,
+        progress: Double,
+        generation: UInt64?,
+        policy: TimelineResolvePolicy
+    ) async -> TimelineFrameResolution {
+        guard aIndex < math.sceneItems.count,
+              bIndex < math.sceneItems.count else {
+            return .failed(.invalidTimeline)
+        }
+
+        let instanceIdA = math.sceneItems[aIndex].id
+        let instanceIdB = math.sceneItems[bIndex].id
+
+        // Create both runtimes in parallel
+        async let runtimeATask = getOrCreateRuntime(for: instanceIdA)
+        async let runtimeBTask = getOrCreateRuntime(for: instanceIdB)
+
+        guard let runtimeA = await runtimeATask else {
+            return .failed(.missingDependency(instanceIdA))
+        }
+        guard let runtimeB = await runtimeBTask else {
+            return .failed(.missingDependency(instanceIdB))
+        }
+
+        // Check generation after async create
+        if let gen = generation, gen != scrubGeneration {
+            return .staleGeneration
+        }
+
+        switch policy {
+        case .presentation:
+            // Check both states, collect results
+            let stateA = runtimeA.readinessState
+            let stateB = runtimeB.readinessState
+
+            // Start preparing if needed
+            if case .created = stateA {
+                runtimeA.startPreparingForPresentation(at: frameA)
+            }
+            if case .created = stateB {
+                runtimeB.startPreparingForPresentation(at: frameB)
+            }
+
+            // Check for terminal failures first
+            if case .failed(let reason) = stateA {
+                return .failed(.dependencyFailed(instanceIdA, reason: reason))
+            }
+            if case .failed(let reason) = stateB {
+                return .failed(.dependencyFailed(instanceIdB, reason: reason))
+            }
+            if case .timedOut = stateA {
+                return .failed(.dependencyTimedOut(instanceIdA))
+            }
+            if case .timedOut = stateB {
+                return .failed(.dependencyTimedOut(instanceIdB))
+            }
+
+            // Check if both ready (re-check state after potential startPreparing)
+            guard case .ready = runtimeA.readinessState,
+                  case .ready = runtimeB.readinessState else {
+                // At least one is created/preparing
+                if let gen = generation, gen != scrubGeneration {
+                    return .staleGeneration
+                }
+                return .hold
+            }
+
+            // Both ready
+            let contextA = runtimeA.makeRenderContext(localFrame: frameA)
+            let contextB = runtimeB.makeRenderContext(localFrame: frameB)
+            let transitionContext = TransitionRenderContext(
+                sceneA: contextA,
+                sceneB: contextB,
+                transition: transition,
+                progress: progress
+            )
+            return .resolved(.transition(transitionContext))
+
+        case .export:
+            // Wait for both in parallel
+            async let stateATask = runtimeA.waitUntilReadyForPresentation(at: frameA)
+            async let stateBTask = runtimeB.waitUntilReadyForPresentation(at: frameB)
+
+            let resultA = await stateATask
+            let resultB = await stateBTask
+
+            // Check generation after async wait
+            if let gen = generation, gen != scrubGeneration {
+                return .staleGeneration
+            }
+
+            // Check A
+            switch resultA {
+            case .ready:
+                break
+            case .failed(let reason):
+                return .failed(.dependencyFailed(instanceIdA, reason: reason))
+            case .timedOut:
+                return .failed(.dependencyTimedOut(instanceIdA))
+            case .created, .preparing:
+                return .failed(.dependencyTimedOut(instanceIdA))
+            }
+
+            // Check B
+            switch resultB {
+            case .ready:
+                break
+            case .failed(let reason):
+                return .failed(.dependencyFailed(instanceIdB, reason: reason))
+            case .timedOut:
+                return .failed(.dependencyTimedOut(instanceIdB))
+            case .created, .preparing:
+                return .failed(.dependencyTimedOut(instanceIdB))
+            }
+
+            let contextA = runtimeA.makeRenderContext(localFrame: frameA)
+            let contextB = runtimeB.makeRenderContext(localFrame: frameB)
+            let transitionContext = TransitionRenderContext(
+                sceneA: contextA,
+                sceneB: contextB,
+                transition: transition,
+                progress: progress
+            )
+            return .resolved(.transition(transitionContext))
+        }
+    }
+
+    /// TT-02: Gets or creates a runtime for the given instance ID.
+    /// Does NOT wait for readiness - caller controls readiness via policy.
+    private func getOrCreateRuntime(for instanceId: UUID) async -> SceneInstanceRuntime? {
         // Already loaded?
         if let existing = instanceRuntimes[instanceId] {
             return existing
@@ -262,21 +474,15 @@ public final class TimelineCompositionEngine {
             }
         }
 
-        // Create instance runtime
-        let runtime = SceneInstanceRuntime(
-            sceneInstanceId: instanceId,
-            resources: resources,
-            device: device,
-            commandQueue: commandQueue
-        )
+        // TT-02: Create instance runtime via factory
+        let runtime = runtimeFactory(instanceId, resources, device, commandQueue)
 
         // Apply state if available
         if let state = sceneStates[instanceId] {
             await runtime.applyState(state)
         }
 
-        // Mark as ready
-        await runtime.prepareForPlayback()
+        // TT-02: NO readiness wait here - caller controls via policy
 
         // Cache it
         instanceRuntimes[instanceId] = runtime
@@ -361,23 +567,50 @@ public final class TimelineCompositionEngine {
 
     // MARK: - Resource Management
 
-    /// Prepares scene resources for playback.
-    /// Should be called before starting timeline playback.
-    /// Preloads pinned and warm scenes based on current position.
+    /// TT-02: Prepares scene resources for playback.
+    /// PHASE 1: Awaits exact readiness for active mode (single or both transition scenes).
+    /// PHASE 2: Opportunistic create for warm scenes (no readiness wait).
     public func prepareForPlayback(startingAt compressedFrame: Int = 0) async {
         guard let math = transitionMath else { return }
 
-        // Update budget coordinator
         budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
 
-        // Preload pinned scenes (current + partner if in transition)
-        for instanceId in budgetCoordinator.pinnedInstanceIds {
-            _ = await getOrPrepareRuntime(for: instanceId)
+        guard let renderMode = math.renderMode(for: compressedFrame) else { return }
+
+        // PHASE 1: Await exact readiness for active mode
+        switch renderMode {
+        case .single(let sceneIndex, let localFrame):
+            guard sceneIndex < math.sceneItems.count else { return }
+            let instanceId = math.sceneItems[sceneIndex].id
+            if let runtime = await getOrCreateRuntime(for: instanceId) {
+                _ = await runtime.waitUntilReadyForPresentation(at: localFrame)
+            }
+
+        case .transition(let aIndex, let frameA, let bIndex, let frameB, _, _):
+            guard aIndex < math.sceneItems.count,
+                  bIndex < math.sceneItems.count else { return }
+            let instanceIdA = math.sceneItems[aIndex].id
+            let instanceIdB = math.sceneItems[bIndex].id
+
+            // Create both runtimes in parallel
+            async let runtimeATask = getOrCreateRuntime(for: instanceIdA)
+            async let runtimeBTask = getOrCreateRuntime(for: instanceIdB)
+
+            let runtimeA = await runtimeATask
+            let runtimeB = await runtimeBTask
+
+            // Wait for both readiness in parallel
+            async let stateATask = runtimeA?.waitUntilReadyForPresentation(at: frameA)
+            async let stateBTask = runtimeB?.waitUntilReadyForPresentation(at: frameB)
+
+            _ = await stateATask
+            _ = await stateBTask
         }
 
-        // Preload warm scenes (adjacent)
+        // PHASE 2: Opportunistic create for warm scenes (no await readiness)
+        // Failures not surfaced here - will come through resolveFrame
         for instanceId in budgetCoordinator.warmInstanceIds {
-            _ = await getOrPrepareRuntime(for: instanceId)
+            _ = await getOrCreateRuntime(for: instanceId)
         }
     }
 
@@ -428,8 +661,8 @@ public final class TimelineCompositionEngine {
         var result: [SceneAudioExportData] = []
 
         for (index, item) in math.sceneItems.enumerated() {
-            // Ensure runtime is loaded
-            guard let instanceRuntime = await getOrPrepareRuntime(for: item.id) else {
+            // TT-02: Use getOrCreateRuntime (readiness managed separately)
+            guard let instanceRuntime = await getOrCreateRuntime(for: item.id) else {
                 #if DEBUG
                 print("[TimelineCompositionEngine] WARNING: No runtime for scene at index \(index)")
                 #endif

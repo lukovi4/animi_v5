@@ -1330,49 +1330,68 @@ final class PlayerViewController: UIViewController {
         playheadAsyncTask?.cancel()
 
         playheadAsyncTask = Task { @MainActor in
-            // Resolve frame via engine (async - may prepare runtimes)
-            guard let resolved = await engine.resolveFrame(compressedFrame, generation: generation) else {
-                // Generation mismatch or failed to prepare - skip
-                return
-            }
+            // TT-02: Resolve frame via engine with explicit resolution result
+            let resolution = await engine.resolveFrame(compressedFrame, generation: generation, policy: .presentation)
 
             // Check if this task was cancelled
             guard !Task.isCancelled else { return }
 
-            // Cache resolved frame for draw()
-            self.cachedTimelineFrame = resolved
+            switch resolution {
+            case .resolved(let resolved):
+                // Cache resolved frame for draw()
+                self.cachedTimelineFrame = resolved
 
-            // PR-F: Set activeSceneInstanceId from engine (required for controller invariants)
-            // For single: use context's sceneInstanceId
-            // For transition: use primary scene from frameMapping
-            switch resolved {
-            case .single(let ctx):
-                self.activeSceneInstanceId = ctx.sceneInstanceId
-            case .transition:
-                // Use primary scene (frameMapping gives the "current" scene during transition)
-                self.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
-            }
-
-            // Update video frames for scrub based on resolved context
-            if !self.isPlaying {
+                // PR-F: Set activeSceneInstanceId from engine (required for controller invariants)
+                // For single: use context's sceneInstanceId
+                // For transition: use primary scene from frameMapping
                 switch resolved {
                 case .single(let ctx):
-                    if let runtime = engine.runtime(for: ctx.sceneInstanceId) {
-                        runtime.syncVideoFrame(ctx.localFrame)
-                    }
-                case .transition(let ctx):
-                    // Sync both scenes in transition
-                    if let runtimeA = engine.runtime(for: ctx.sceneA.sceneInstanceId) {
-                        runtimeA.syncVideoFrame(ctx.sceneA.localFrame)
-                    }
-                    if let runtimeB = engine.runtime(for: ctx.sceneB.sceneInstanceId) {
-                        runtimeB.syncVideoFrame(ctx.sceneB.localFrame)
+                    self.activeSceneInstanceId = ctx.sceneInstanceId
+                case .transition:
+                    // Use primary scene (frameMapping gives the "current" scene during transition)
+                    self.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
+                }
+
+                // Update video frames for scrub based on resolved context
+                if !self.isPlaying {
+                    switch resolved {
+                    case .single(let ctx):
+                        if let runtime = engine.runtime(for: ctx.sceneInstanceId) {
+                            runtime.syncVideoFrame(ctx.localFrame)
+                        }
+                    case .transition(let ctx):
+                        // Sync both scenes in transition
+                        if let runtimeA = engine.runtime(for: ctx.sceneA.sceneInstanceId) {
+                            runtimeA.syncVideoFrame(ctx.sceneA.localFrame)
+                        }
+                        if let runtimeB = engine.runtime(for: ctx.sceneB.sceneInstanceId) {
+                            runtimeB.syncVideoFrame(ctx.sceneB.localFrame)
+                        }
                     }
                 }
-            }
 
-            // Trigger redraw
-            self.requestMetalRender()
+                // Trigger redraw
+                self.requestMetalRender()
+
+            case .hold:
+                // TT-02: Keep cachedTimelineFrame unchanged, keep activeSceneInstanceId
+                // Do NOT fabricate fallback frame, do NOT force redraw
+                #if DEBUG
+                print("[PlayerVC] Hold: keeping last frame")
+                #endif
+
+            case .staleGeneration:
+                // TT-02: Nothing changes
+                #if DEBUG
+                print("[PlayerVC] Stale generation: ignoring")
+                #endif
+
+            case .failed(let failure):
+                // TT-02: Nothing changes, only debug log
+                #if DEBUG
+                print("[PlayerVC] Resolution failed: \(failure)")
+                #endif
+            }
         }
     }
 

@@ -85,3 +85,43 @@ public struct TransitionRenderContext: Sendable {
         self.progress = progress
     }
 }
+
+// MARK: - TT-02: Timeline Resolution Policy
+
+/// TT-02: Policy for resolving timeline frames.
+/// Determines blocking vs non-blocking readiness behavior.
+public enum TimelineResolvePolicy: Sendable {
+    /// Preview/playback mode: returns .hold if not ready, no blocking wait.
+    case presentation
+    /// Export mode: blocks until ready or terminal failure, never returns .hold.
+    case export
+}
+
+// MARK: - TT-02: Timeline Frame Resolution Failure
+
+/// TT-02: Failure reasons for frame resolution.
+public enum TimelineFrameResolutionFailure: Equatable, Sendable {
+    /// Timeline is invalid (no transitionMath or invalid renderMode).
+    case invalidTimeline
+    /// Required scene runtime could not be created.
+    case missingDependency(UUID)
+    /// Scene runtime failed during preparation.
+    case dependencyFailed(UUID, reason: String)
+    /// Scene runtime timed out during preparation.
+    case dependencyTimedOut(UUID)
+}
+
+// MARK: - TT-02: Timeline Frame Resolution
+
+/// TT-02: Result of resolving a timeline frame.
+/// Replaces optional return type with explicit result enum.
+public enum TimelineFrameResolution: Sendable {
+    /// Frame successfully resolved with render context.
+    case resolved(ResolvedTimelineFrame)
+    /// Frame not ready yet; caller should hold last presented frame (presentation only).
+    case hold
+    /// Generation mismatch; this resolve request is stale.
+    case staleGeneration
+    /// Resolution failed with specific reason.
+    case failed(TimelineFrameResolutionFailure)
+}

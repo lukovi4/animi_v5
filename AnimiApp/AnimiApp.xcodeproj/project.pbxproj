@@ -17,6 +17,9 @@
 		3C4D5E6F7A8B9C0D1E2F3A4B /* TransitionBoundaryContractsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F7A8B9C0D1E2F /* TransitionBoundaryContractsTests.swift */; };
 		4D5E6F7A8B9C0D1E2F3A4B5C /* TimelineBoundaryInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B3C4D5E6F7A8B9C0D1E2F3A /* TimelineBoundaryInteractionTests.swift */; };
 		6F7A8B9C0D1E2F3A4B5C6D7E /* SceneInstanceRuntimeHoldFrameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E5F6A7B8C9D0E1F2A3B4C5D /* SceneInstanceRuntimeHoldFrameTests.swift */; };
+		7A8B9C0D1E2F3A4B5C6D7E8F /* SceneInstanceRuntimeReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */; };
+		8B9C0D1E2F3A4B5C6D7E8F9A /* TimelineCompositionEngineReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */; };
+		9C0D1E2F3A4B5C6D7E8F9A0B /* VideoExporterTimelineResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B8C9D0E1F2A3B4C5D6E7F8A /* VideoExporterTimelineResolutionTests.swift */; };
 		18CBB8DC59767967525874C6 /* PreviewVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EF91B900FF78191D281BB73 /* PreviewVideoView.swift */; };
 		1E5BA0CCE5E033BDC0F1023A /* Templates in Resources */ = {isa = PBXBuildFile; fileRef = 486CDCFFF485A0C0354A63F5 /* Templates */; };
 		1EA1B9C121F589385C6EACB7 /* TimelineEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99082F901FF221848C1D8848 /* TimelineEvents.swift */; };
@@ -138,6 +141,9 @@
 		1A2B3C4D5E6F7A8B9C0D1E2F /* TransitionBoundaryContractsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransitionBoundaryContractsTests.swift; sourceTree = "<group>"; };
 		2B3C4D5E6F7A8B9C0D1E2F3A /* TimelineBoundaryInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineBoundaryInteractionTests.swift; sourceTree = "<group>"; };
 		4E5F6A7B8C9D0E1F2A3B4C5D /* SceneInstanceRuntimeHoldFrameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInstanceRuntimeHoldFrameTests.swift; sourceTree = "<group>"; };
+		5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInstanceRuntimeReadinessTests.swift; sourceTree = "<group>"; };
+		6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineCompositionEngineReadinessTests.swift; sourceTree = "<group>"; };
+		7B8C9D0E1F2A3B4C5D6E7F8A /* VideoExporterTimelineResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporterTimelineResolutionTests.swift; sourceTree = "<group>"; };
 		10365D40F7866CDC3383B1F0 /* ScrubDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrubDiagnostics.swift; sourceTree = "<group>"; };
 		1226FC7130A6C146E2C8B859 /* UserMediaTextureFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaTextureFactory.swift; sourceTree = "<group>"; };
 		1696482BFA3E93F558EEE181 /* PlayheadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayheadView.swift; sourceTree = "<group>"; };
@@ -286,6 +292,9 @@
 				1A2B3C4D5E6F7A8B9C0D1E2F /* TransitionBoundaryContractsTests.swift */,
 				2B3C4D5E6F7A8B9C0D1E2F3A /* TimelineBoundaryInteractionTests.swift */,
 				4E5F6A7B8C9D0E1F2A3B4C5D /* SceneInstanceRuntimeHoldFrameTests.swift */,
+				5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */,
+				6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */,
+				7B8C9D0E1F2A3B4C5D6E7F8A /* VideoExporterTimelineResolutionTests.swift */,
 				BE83C97F893ECB40F45E4309 /* UserMediaServiceReadinessTests.swift */,
 			);
 			path = Tests;
@@ -637,6 +646,9 @@
 				3C4D5E6F7A8B9C0D1E2F3A4B /* TransitionBoundaryContractsTests.swift in Sources */,
 				4D5E6F7A8B9C0D1E2F3A4B5C /* TimelineBoundaryInteractionTests.swift in Sources */,
 				6F7A8B9C0D1E2F3A4B5C6D7E /* SceneInstanceRuntimeHoldFrameTests.swift in Sources */,
+				7A8B9C0D1E2F3A4B5C6D7E8F /* SceneInstanceRuntimeReadinessTests.swift in Sources */,
+				8B9C0D1E2F3A4B5C6D7E8F9A /* TimelineCompositionEngineReadinessTests.swift in Sources */,
+				9C0D1E2F3A4B5C6D7E8F9A0B /* VideoExporterTimelineResolutionTests.swift in Sources */,
 				B9DE907658522310F2EC88E3 /* UserMediaServiceReadinessTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -1275,8 +1275,17 @@ public final class VideoExporter {
                 // Resolve frame on main actor
                 Task { @MainActor in
                     do {
-                        guard let resolved = await engine.resolveFrame(frameIndex) else {
-                            throw TimelineExportError.frameResolutionFailed(frameIndex)
+                        // TT-02: Use export policy and explicit resolution handling
+                        let resolution = await engine.resolveFrame(frameIndex, policy: .export)
+
+                        // TT-02: Check for export errors via mapping helper
+                        if let error = Self.mapResolutionToExportError(resolution, frameIndex: frameIndex) {
+                            throw error
+                        }
+
+                        guard case .resolved(let resolved) = resolution else {
+                            // Should not reach here if mapResolutionToExportError is correct
+                            throw TimelineExportError.frameResolutionFailed(frame: frameIndex, reason: "unexpected")
                         }
 
                         // Render frame
@@ -1582,17 +1591,58 @@ public final class VideoExporter {
 
 public enum TimelineExportError: Error, LocalizedError {
     case noTimeline
-    case frameResolutionFailed(Int)
+    /// TT-02: Frame resolution failed with reason
+    case frameResolutionFailed(frame: Int, reason: String)
+    /// TT-02: Hold is not allowed in export mode
+    case frameHoldNotAllowed(Int)
     case failedToAcquireOffscreenTexture
 
     public var errorDescription: String? {
         switch self {
         case .noTimeline:
             return "No timeline configured in composition engine"
-        case .frameResolutionFailed(let frame):
-            return "Failed to resolve frame \(frame)"
+        case .frameResolutionFailed(let frame, let reason):
+            return "Failed to resolve frame \(frame): \(reason)"
+        case .frameHoldNotAllowed(let frame):
+            return "Frame \(frame) returned hold, which is not allowed in export"
         case .failedToAcquireOffscreenTexture:
             return "Failed to acquire offscreen texture from pool"
+        }
+    }
+}
+
+// MARK: - TT-02: Resolution to Export Error Mapping
+
+extension VideoExporter {
+    /// TT-02: Maps TimelineFrameResolution to export error (if any).
+    /// Extracted for unit testing without full export loop.
+    internal static func mapResolutionToExportError(
+        _ resolution: TimelineFrameResolution,
+        frameIndex: Int
+    ) -> TimelineExportError? {
+        switch resolution {
+        case .resolved:
+            return nil
+
+        case .hold:
+            return .frameHoldNotAllowed(frameIndex)
+
+        case .staleGeneration:
+            return .frameResolutionFailed(frame: frameIndex, reason: "stale_generation")
+
+        case .failed(let failure):
+            let reason: String
+            switch failure {
+            case .invalidTimeline:
+                reason = "invalid_timeline"
+            case .missingDependency(let id):
+                reason = "missing_dependency:\(id)"
+            case .dependencyFailed(let id, let r):
+                reason = "dependency_failed:\(id):\(r)"
+            case .dependencyTimedOut(let id):
+                reason = "dependency_timeout:\(id)"
+            }
+            return .frameResolutionFailed(frame: frameIndex, reason: reason)
         }
     }
 }
