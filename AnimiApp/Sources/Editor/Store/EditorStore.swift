@@ -253,17 +253,7 @@ public final class EditorStore {
             return
         }
 
-        // Restore state from snapshot
-        state.restore(from: snapshot)
-
-        // Notify all observers
-        notifyTimelineChanged()
-        notifySelectionChanged()
-        onPlayheadChanged?(state.playheadCompressedFrame)
-        notifyUndoRedoChanged()
-
-        // PR-A: Notify runtime to re-apply state for active scene instance
-        onStateRestoredFromUndoRedo?()
+        restoreNormalizedSnapshot(snapshot)
 
         #if DEBUG
         print("[EditorStore] Undo performed. Stack: \(undoStack.debugDescription)")
@@ -280,21 +270,26 @@ public final class EditorStore {
             return
         }
 
-        // Restore state from snapshot
-        state.restore(from: snapshot)
-
-        // Notify all observers
-        notifyTimelineChanged()
-        notifySelectionChanged()
-        onPlayheadChanged?(state.playheadCompressedFrame)
-        notifyUndoRedoChanged()
-
-        // PR-A: Notify runtime to re-apply state for active scene instance
-        onStateRestoredFromUndoRedo?()
+        restoreNormalizedSnapshot(snapshot)
 
         #if DEBUG
         print("[EditorStore] Redo performed. Stack: \(undoStack.debugDescription)")
         #endif
+    }
+
+    /// Restores state from snapshot with normalization.
+    /// Applies invariants, clamps playhead, and emits notices.
+    @discardableResult
+    func restoreNormalizedSnapshot(_ snapshot: EditorSnapshot) -> [EditorNotice] {
+        state.restore(from: snapshot)
+        let notices = EditorReducer.applyInvariantsAndBuildNotices(state: &state)
+        notifyTimelineChanged()
+        notifySelectionChanged()
+        onPlayheadChanged?(state.playheadCompressedFrame)
+        notifyUndoRedoChanged()
+        onStateRestoredFromUndoRedo?()
+        for notice in notices { onNotice?(notice) }
+        return notices
     }
 
     // MARK: - Convenience Accessors

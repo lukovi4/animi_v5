@@ -17,6 +17,7 @@
 		3C4D5E6F7A8B9C0D1E2F3A4B /* TransitionBoundaryContractsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F7A8B9C0D1E2F /* TransitionBoundaryContractsTests.swift */; };
 		4D5E6F7A8B9C0D1E2F3A4B5C /* TimelineBoundaryInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B3C4D5E6F7A8B9C0D1E2F3A /* TimelineBoundaryInteractionTests.swift */; };
 		5E6F7A8B9C0D1E2F3A4B5C6D /* TT08BoundaryPickerIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C4D5E6F7A8B9C0D1E2F3A4C /* TT08BoundaryPickerIntegrationTests.swift */; };
+		B10D1E2F3A4B5C6D7E8F9A12 /* EditorReducerNormalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20D1E2F3A4B5C6D7E8F9A13 /* EditorReducerNormalizationTests.swift */; };
 		6F7A8B9C0D1E2F3A4B5C6D7E /* SceneInstanceRuntimeHoldFrameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E5F6A7B8C9D0E1F2A3B4C5D /* SceneInstanceRuntimeHoldFrameTests.swift */; };
 		7A8B9C0D1E2F3A4B5C6D7E8F /* SceneInstanceRuntimeReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */; };
 		8B9C0D1E2F3A4B5C6D7E8F9A /* TimelineCompositionEngineReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */; };
@@ -149,6 +150,7 @@
 		1A2B3C4D5E6F7A8B9C0D1E2F /* TransitionBoundaryContractsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransitionBoundaryContractsTests.swift; sourceTree = "<group>"; };
 		2B3C4D5E6F7A8B9C0D1E2F3A /* TimelineBoundaryInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineBoundaryInteractionTests.swift; sourceTree = "<group>"; };
 		3C4D5E6F7A8B9C0D1E2F3A4C /* TT08BoundaryPickerIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TT08BoundaryPickerIntegrationTests.swift; sourceTree = "<group>"; };
+		B20D1E2F3A4B5C6D7E8F9A13 /* EditorReducerNormalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerNormalizationTests.swift; sourceTree = "<group>"; };
 		4E5F6A7B8C9D0E1F2A3B4C5D /* SceneInstanceRuntimeHoldFrameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInstanceRuntimeHoldFrameTests.swift; sourceTree = "<group>"; };
 		5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInstanceRuntimeReadinessTests.swift; sourceTree = "<group>"; };
 		6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineCompositionEngineReadinessTests.swift; sourceTree = "<group>"; };
@@ -308,6 +310,7 @@
 				1A2B3C4D5E6F7A8B9C0D1E2F /* TransitionBoundaryContractsTests.swift */,
 				2B3C4D5E6F7A8B9C0D1E2F3A /* TimelineBoundaryInteractionTests.swift */,
 				3C4D5E6F7A8B9C0D1E2F3A4C /* TT08BoundaryPickerIntegrationTests.swift */,
+				B20D1E2F3A4B5C6D7E8F9A13 /* EditorReducerNormalizationTests.swift */,
 				4E5F6A7B8C9D0E1F2A3B4C5D /* SceneInstanceRuntimeHoldFrameTests.swift */,
 				5F6A7B8C9D0E1F2A3B4C5D6E /* SceneInstanceRuntimeReadinessTests.swift */,
 				6A7B8C9D0E1F2A3B4C5D6E7F /* TimelineCompositionEngineReadinessTests.swift */,
@@ -670,6 +673,7 @@
 				3C4D5E6F7A8B9C0D1E2F3A4B /* TransitionBoundaryContractsTests.swift in Sources */,
 				4D5E6F7A8B9C0D1E2F3A4B5C /* TimelineBoundaryInteractionTests.swift in Sources */,
 				5E6F7A8B9C0D1E2F3A4B5C6D /* TT08BoundaryPickerIntegrationTests.swift in Sources */,
+				B10D1E2F3A4B5C6D7E8F9A12 /* EditorReducerNormalizationTests.swift in Sources */,
 				6F7A8B9C0D1E2F3A4B5C6D7E /* SceneInstanceRuntimeHoldFrameTests.swift in Sources */,
 				7A8B9C0D1E2F3A4B5C6D7E8F /* SceneInstanceRuntimeReadinessTests.swift in Sources */,
 				8B9C0D1E2F3A4B5C6D7E8F9A /* TimelineCompositionEngineReadinessTests.swift in Sources */,

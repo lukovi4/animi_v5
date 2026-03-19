@@ -629,6 +629,11 @@ private extension EditorReducer {
 
         return result.resetBoundaries
     }
+}
+
+// MARK: - Invariants (Internal)
+
+extension EditorReducer {
 
     /// Applies track invariants and builds notices for user feedback.
     /// Use on all commit paths (trim.ended, reorder, add, duplicate, delete, setBoundaryTransition).
