@@ -1289,20 +1289,39 @@ public final class VideoExporter {
                     return
                 }
 
-                // TT-05: Resolve and render entirely on export queue (no MainActor)
+                // TT-06: Resolve and render via unified TimelineRenderExecutor
                 do {
                     let resolved = try exportRuntime.resolveFrame(frameIndex)
 
-                    try renderTimelineFrame(
+                    let request = TimelineRenderRequest(
                         resolved: resolved,
-                        target: targetTexture,
-                        renderer: renderer,
-                        transitionCompositor: transitionCompositor,
-                        canvasSize: canvasSize,
-                        clearColor: settings.clearColor,
+                        targetTexture: targetTexture,
+                        drawableScale: 1.0,
+                        timelineCanvasSize: canvasSize,
                         backgroundState: backgroundState,
-                        backgroundTextureProvider: backgroundTextureProvider
+                        backgroundTextureProvider: backgroundTextureProvider,
+                        clearColorOverride: settings.clearColor,
+                        presentationDrawable: nil,
+                        waitUntilCompleted: true
                     )
+                    do {
+                        try TimelineRenderExecutor.render(
+                            request, renderer: renderer,
+                            commandQueue: renderer.commandQueue,
+                            transitionCompositor: transitionCompositor,
+                            completionQueue: nil
+                        )
+                    } catch let error as TimelineRenderExecutorError {
+                        switch error {
+                        case .failedToCreateCommandBuffer:
+                            throw VideoExportError.failedToCreateCommandBuffer
+                        case .failedToAcquireOffscreenTexture:
+                            throw TimelineExportError.failedToAcquireOffscreenTexture
+                        case .missingTransitionCompositor,
+                             .missingCompletionQueueForAsyncTransition:
+                            throw VideoExportError.renderError(error)
+                        }
+                    }
                 } catch {
                     setExportErrorOnce(VideoExportError.renderError(error))
                     videoGroup.leave()
@@ -1411,191 +1430,6 @@ public final class VideoExporter {
         }
     }
 
-    // MARK: - Timeline Frame Rendering
-
-    /// TT-05: Removed @MainActor — runs serial on exportQueue.
-    /// TexturePool is not thread-safe, so render remains serial (not concurrent).
-    private func renderTimelineFrame(
-        resolved: ResolvedTimelineFrame,
-        target: MTLTexture,
-        renderer: MetalRenderer,
-        transitionCompositor: TransitionCompositor,
-        canvasSize: SizeD,
-        clearColor: ClearColor,
-        backgroundState: EffectiveBackgroundState?,
-        backgroundTextureProvider: TextureProvider
-    ) throws {
-        let commandQueue = renderer.commandQueue
-
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            throw VideoExportError.failedToCreateCommandBuffer
-        }
-
-        switch resolved {
-        case .single(let context):
-            // PR-G: Single scene with split-pass architecture
-            // Pass 1: Background pre-pass with backgroundTextureProvider
-            // Pass 2: Scene pass with scene provider (initialLoadAction: .load)
-            let renderTarget = RenderTarget(
-                texture: target,
-                drawableScale: 1.0,
-                animSize: context.canvasSize
-            )
-
-            // Pass 1: Background pre-pass (always prepare target)
-            if let bg = backgroundState {
-                try renderer.draw(
-                    commands: [],
-                    target: renderTarget,
-                    clearColor: clearColor,
-                    textureProvider: backgroundTextureProvider,
-                    commandBuffer: commandBuffer,
-                    assetSizes: [:],
-                    pathRegistry: PathRegistry(),
-                    backgroundState: bg,
-                    initialLoadAction: .clear
-                )
-            } else {
-                // Clear target even without background
-                try renderer.draw(
-                    commands: [],
-                    target: renderTarget,
-                    clearColor: clearColor,
-                    textureProvider: backgroundTextureProvider,
-                    commandBuffer: commandBuffer,
-                    assetSizes: [:],
-                    pathRegistry: PathRegistry(),
-                    backgroundState: nil,
-                    initialLoadAction: .clear
-                )
-            }
-
-            // Pass 2: Scene pass (preserves background)
-            try renderer.draw(
-                commands: context.commands,
-                target: renderTarget,
-                clearColor: clearColor,
-                textureProvider: context.textureProvider,
-                commandBuffer: commandBuffer,
-                assetSizes: context.assetSizes,
-                pathRegistry: context.pathRegistry,
-                backgroundState: nil,  // Already rendered in pass 1
-                initialLoadAction: .load  // Preserve background
-            )
-
-        case .transition(let context):
-            // Transition: render both scenes offscreen, then composite
-            let texturePool = renderer.texturePool
-            let sizePx = (width: target.width, height: target.height)
-
-            // Acquire offscreen textures for scenes A and B
-            guard let textureA = texturePool.acquireColorTexture(size: sizePx),
-                  let textureB = texturePool.acquireColorTexture(size: sizePx) else {
-                throw TimelineExportError.failedToAcquireOffscreenTexture
-            }
-
-            defer {
-                texturePool.release(textureA)
-                texturePool.release(textureB)
-            }
-
-            // Render scene A to offscreen (transparent background)
-            let targetA = RenderTarget(
-                texture: textureA,
-                drawableScale: 1.0,
-                animSize: context.sceneA.canvasSize
-            )
-            try renderer.draw(
-                commands: context.sceneA.commands,
-                target: targetA,
-                clearColor: .transparentBlack,
-                textureProvider: context.sceneA.textureProvider,
-                commandBuffer: commandBuffer,
-                assetSizes: context.sceneA.assetSizes,
-                pathRegistry: context.sceneA.pathRegistry,
-                backgroundState: nil  // No background for offscreen scenes
-            )
-
-            // Render scene B to offscreen (transparent background)
-            let targetB = RenderTarget(
-                texture: textureB,
-                drawableScale: 1.0,
-                animSize: context.sceneB.canvasSize
-            )
-            try renderer.draw(
-                commands: context.sceneB.commands,
-                target: targetB,
-                clearColor: .transparentBlack,
-                textureProvider: context.sceneB.textureProvider,
-                commandBuffer: commandBuffer,
-                assetSizes: context.sceneB.assetSizes,
-                pathRegistry: context.sceneB.pathRegistry,
-                backgroundState: nil
-            )
-
-            // Clear target with background
-            let finalTarget = RenderTarget(
-                texture: target,
-                drawableScale: 1.0,
-                animSize: canvasSize
-            )
-
-            // PR-G: Always prepare final target before compositor
-            // Background pre-pass uses shared backgroundTextureProvider (not EmptyTextureProvider)
-            if let bg = backgroundState {
-                try renderer.draw(
-                    commands: [],
-                    target: finalTarget,
-                    clearColor: clearColor,
-                    textureProvider: backgroundTextureProvider,
-                    commandBuffer: commandBuffer,
-                    assetSizes: [:],
-                    pathRegistry: PathRegistry(),
-                    backgroundState: bg,
-                    initialLoadAction: .clear
-                )
-            } else {
-                // PR-G: Clear target even without background to avoid stale pixels
-                try renderer.draw(
-                    commands: [],
-                    target: finalTarget,
-                    clearColor: clearColor,
-                    textureProvider: backgroundTextureProvider,
-                    commandBuffer: commandBuffer,
-                    assetSizes: [:],
-                    pathRegistry: PathRegistry(),
-                    backgroundState: nil,
-                    initialLoadAction: .clear
-                )
-            }
-
-            // Convert SceneTransition to TransitionParams for TVECore
-            let params = convertToTransitionParams(context.transition)
-
-            // Composite A and B with transition effect
-            try transitionCompositor.composite(
-                sceneA: textureA,
-                sceneB: textureB,
-                transition: params,
-                progress: context.progress,
-                canvasSize: canvasSize,
-                target: target,
-                commandBuffer: commandBuffer
-            )
-        }
-
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-    }
-
-    /// Converts AnimiApp SceneTransition to TVECore TransitionParams.
-    /// PR-F: Uses extension methods from SceneTransition for type conversion.
-    private func convertToTransitionParams(_ transition: SceneTransition) -> TransitionParams {
-        TransitionParams(
-            type: transition.type.toTVECoreType(),
-            easing: transition.easingPreset.toTVECoreType()
-        )
-    }
 }
 
 // MARK: - TT-05: Timeline Export Video Coordinating Protocol

@@ -3356,9 +3356,7 @@ extension PlayerViewController: MTKViewDelegate {
         }
     }
 
-    /// PR-G: Renders single scene in timeline mode using split-pass architecture.
-    /// Pass 1: Background pre-pass with backgroundTextureProvider
-    /// Pass 2: Scene pass with scene provider (preserves background via initialLoadAction: .load)
+    /// TT-06: Renders single scene in timeline mode via unified TimelineRenderExecutor.
     private func drawTimelineSingleScene(in view: MTKView, context ctx: SceneRenderContext) {
         guard ctx.canvasSize.width > 0 else { return }
         guard let renderer = renderer,
@@ -3373,78 +3371,45 @@ extension PlayerViewController: MTKViewDelegate {
             return
         }
 
-        guard let drawable = view.currentDrawable,
-              let cmdBuf = cmdQueue.makeCommandBuffer() else {
+        guard let drawable = view.currentDrawable else {
             inFlightSemaphore.signal()
             return
-        }
-
-        cmdBuf.addCompletedHandler { [weak self] _ in
-            self?.inFlightSemaphore.signal()
         }
 
         #if DEBUG
         perfLogger.recordFrame()
         #endif
 
-        let target = RenderTarget(
-            texture: drawable.texture,
+        let request = TimelineRenderRequest(
+            resolved: .single(ctx),
+            targetTexture: drawable.texture,
             drawableScale: Double(view.contentScaleFactor),
-            animSize: ctx.canvasSize
+            timelineCanvasSize: ctx.canvasSize,
+            backgroundState: effectiveBackgroundState,
+            backgroundTextureProvider: backgroundTextureProvider,
+            clearColorOverride: nil,
+            presentationDrawable: drawable,
+            waitUntilCompleted: false
         )
 
         do {
-            // PR-G: Pass 1 - Background pre-pass (always prepare target)
-            let bgProvider: TextureProvider = backgroundTextureProvider ?? InMemoryTextureProvider()
-            if let bg = effectiveBackgroundState {
-                try renderer.draw(
-                    commands: [],
-                    target: target,
-                    textureProvider: bgProvider,
-                    commandBuffer: cmdBuf,
-                    assetSizes: [:],
-                    pathRegistry: PathRegistry(),
-                    backgroundState: bg,
-                    initialLoadAction: .clear
-                )
-            } else {
-                // Clear target even without background
-                try renderer.draw(
-                    commands: [],
-                    target: target,
-                    textureProvider: bgProvider,
-                    commandBuffer: cmdBuf,
-                    assetSizes: [:],
-                    pathRegistry: PathRegistry(),
-                    backgroundState: nil,
-                    initialLoadAction: .clear
-                )
-            }
-
-            // PR-G: Pass 2 - Scene pass (preserves background)
-            try renderer.draw(
-                commands: ctx.commands,
-                target: target,
-                textureProvider: ctx.textureProvider,
-                commandBuffer: cmdBuf,
-                assetSizes: ctx.assetSizes,
-                pathRegistry: ctx.pathRegistry,
-                backgroundState: nil,  // Already rendered in pass 1
-                initialLoadAction: .load  // Preserve background
+            try TimelineRenderExecutor.render(
+                request, renderer: renderer,
+                commandQueue: cmdQueue, transitionCompositor: nil,
+                completionQueue: nil,
+                onCommandBufferCompleted: { [weak self] _ in self?.inFlightSemaphore.signal() }
             )
         } catch {
+            inFlightSemaphore.signal()
             if !renderErrorLogged {
                 renderErrorLogged = true
                 log("Render error: \(error)")
             }
         }
-
-        cmdBuf.present(drawable)
-        cmdBuf.commit()
     }
 
-    /// PR-F: Renders transition between two scenes using TexturePool and single commandBuffer.
-    /// Contract: Offscreen scenes rendered with backgroundState=nil, background drawn once to final target.
+    /// TT-06: Renders transition between two scenes via unified TimelineRenderExecutor.
+    /// Fallback: render scene B only if compositor unavailable (instant cut behavior).
     private func drawTimelineTransition(in view: MTKView, context: ResolvedTimelineFrame) {
         guard case .transition(let transCtx) = context else { return }
         guard let renderer = renderer,
@@ -3471,140 +3436,41 @@ extension PlayerViewController: MTKViewDelegate {
             return
         }
 
-        guard let drawable = view.currentDrawable,
-              let cmdBuf = cmdQueue.makeCommandBuffer() else {
+        guard let drawable = view.currentDrawable else {
             inFlightSemaphore.signal()
             return
-        }
-
-        cmdBuf.addCompletedHandler { [weak self] _ in
-            self?.inFlightSemaphore.signal()
         }
 
         #if DEBUG
         perfLogger.recordFrame()
         #endif
 
-        // Calculate texture size for offscreen render
-        let scale = view.contentScaleFactor
-        let texWidth = Int(transCtx.sceneA.canvasSize.width * scale)
-        let texHeight = Int(transCtx.sceneA.canvasSize.height * scale)
-        let sizePx = (width: texWidth, height: texHeight)
+        let request = TimelineRenderRequest(
+            resolved: context,
+            targetTexture: drawable.texture,
+            drawableScale: Double(view.contentScaleFactor),
+            timelineCanvasSize: transCtx.sceneA.canvasSize,
+            backgroundState: effectiveBackgroundState,
+            backgroundTextureProvider: backgroundTextureProvider,
+            clearColorOverride: nil,
+            presentationDrawable: drawable,
+            waitUntilCompleted: false
+        )
 
-        // Acquire offscreen textures from pool (non-blocking)
-        let texturePool = renderer.texturePool
-        guard let textureA = texturePool.acquireColorTexture(size: sizePx),
-              let textureB = texturePool.acquireColorTexture(size: sizePx) else {
+        do {
+            try TimelineRenderExecutor.render(
+                request, renderer: renderer,
+                commandQueue: cmdQueue, transitionCompositor: compositor,
+                completionQueue: .main,
+                onCommandBufferCompleted: { [weak self] _ in self?.inFlightSemaphore.signal() }
+            )
+        } catch {
             inFlightSemaphore.signal()
             if !renderErrorLogged {
                 renderErrorLogged = true
-                log("[PR-F] Failed to acquire offscreen textures from pool")
-            }
-            return
-        }
-
-        defer {
-            texturePool.release(textureA)
-            texturePool.release(textureB)
-        }
-
-        do {
-            // Render scene A to offscreen texture (transparent, no background)
-            let targetA = RenderTarget(
-                texture: textureA,
-                drawableScale: 1.0,
-                animSize: transCtx.sceneA.canvasSize
-            )
-            try renderer.draw(
-                commands: transCtx.sceneA.commands,
-                target: targetA,
-                clearColor: .transparentBlack,
-                textureProvider: transCtx.sceneA.textureProvider,
-                commandBuffer: cmdBuf,
-                assetSizes: transCtx.sceneA.assetSizes,
-                pathRegistry: transCtx.sceneA.pathRegistry,
-                backgroundState: nil  // No background for offscreen scenes
-            )
-
-            // Render scene B to offscreen texture (transparent, no background)
-            let targetB = RenderTarget(
-                texture: textureB,
-                drawableScale: 1.0,
-                animSize: transCtx.sceneB.canvasSize
-            )
-            try renderer.draw(
-                commands: transCtx.sceneB.commands,
-                target: targetB,
-                clearColor: .transparentBlack,
-                textureProvider: transCtx.sceneB.textureProvider,
-                commandBuffer: cmdBuf,
-                assetSizes: transCtx.sceneB.assetSizes,
-                pathRegistry: transCtx.sceneB.pathRegistry,
-                backgroundState: nil
-            )
-
-            // Prepare final target (drawable) with background
-            let finalTarget = RenderTarget(
-                texture: drawable.texture,
-                drawableScale: Double(view.contentScaleFactor),
-                animSize: transCtx.sceneA.canvasSize
-            )
-
-            // PR-G: Render background to final target using shared backgroundTextureProvider
-            // Background pre-pass doesn't need scene assets - only background texture slots
-            let bgProvider: TextureProvider = backgroundTextureProvider ?? InMemoryTextureProvider()
-            if let bg = effectiveBackgroundState {
-                try renderer.draw(
-                    commands: [],
-                    target: finalTarget,
-                    clearColor: .transparentBlack,
-                    textureProvider: bgProvider,
-                    commandBuffer: cmdBuf,
-                    assetSizes: [:],
-                    pathRegistry: PathRegistry(),
-                    backgroundState: bg,
-                    initialLoadAction: .clear
-                )
-            } else {
-                // PR-G: Clear target even without background to avoid stale pixels
-                try renderer.draw(
-                    commands: [],
-                    target: finalTarget,
-                    clearColor: .transparentBlack,
-                    textureProvider: bgProvider,
-                    commandBuffer: cmdBuf,
-                    assetSizes: [:],
-                    pathRegistry: PathRegistry(),
-                    backgroundState: nil,
-                    initialLoadAction: .clear
-                )
-            }
-
-            // Convert SceneTransition to TransitionParams
-            let transitionParams = TransitionParams(
-                type: transCtx.transition.type.toTVECoreType(),
-                easing: transCtx.transition.easing.toTVECoreType()
-            )
-
-            // Composite A + B to drawable (loadAction: .load preserves background)
-            try compositor.composite(
-                sceneA: textureA,
-                sceneB: textureB,
-                transition: transitionParams,
-                progress: transCtx.progress,
-                canvasSize: transCtx.sceneA.canvasSize,
-                target: drawable.texture,
-                commandBuffer: cmdBuf
-            )
-        } catch {
-            if !renderErrorLogged {
-                renderErrorLogged = true
-                log("[PR-F] Transition render error: \(error)")
+                log("[TT-06] Transition render error: \(error)")
             }
         }
-
-        cmdBuf.present(drawable)
-        cmdBuf.commit()
     }
 
     /// PR-F: Renders Scene Edit mode using EditorRenderCommandResolver (legacy path).

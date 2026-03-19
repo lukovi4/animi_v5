@@ -1,4 +1,5 @@
 import XCTest
+import struct TVECore.TransitionParams
 @testable import AnimiApp
 
 /// Tests for PR-G: Transition Boundary Picker feature.
@@ -371,5 +372,49 @@ final class TransitionBoundaryContractsTests: XCTestCase {
         XCTAssertNotNil(stateAtNoticeTime)
         // The reordered scene should be at index 2
         XCTAssertEqual(stateAtNoticeTime?.sceneItems[2].id, sceneItems[0].id)
+    }
+
+    // MARK: - 6. TT-06: toTransitionParams() Tests
+
+    /// Test: Fade transition converts to linear easing.
+    func testSceneTransition_toTransitionParams_fadeUsesLinear() {
+        let transition = SceneTransition(type: .fade, durationFrames: 14, easingPreset: .linear)
+        let params = transition.toTransitionParams()
+
+        XCTAssertEqual(params.easing, .linear)
+        // Verify type is fade
+        if case .fade = params.type {} else {
+            XCTFail("Expected .fade type, got \(params.type)")
+        }
+    }
+
+    /// Test: Slide transition converts to easeInOut easing.
+    func testSceneTransition_toTransitionParams_slideUsesEaseInOut() {
+        let transition = SceneTransition(type: .slide(direction: .left), durationFrames: 14, easingPreset: .easeInOut)
+        let params = transition.toTransitionParams()
+
+        XCTAssertEqual(params.easing, .easeInOut)
+        if case .slide(let dir) = params.type {
+            XCTAssertEqual(dir, .left)
+        } else {
+            XCTFail("Expected .slide type, got \(params.type)")
+        }
+    }
+
+    /// Test: Push transition preserves direction through conversion.
+    func testSceneTransition_toTransitionParams_preservesDirection() {
+        let appDirections: [AnimiApp.TransitionDirection] = [.left, .right, .up, .down]
+
+        for appDir in appDirections {
+            let transition = SceneTransition(type: .push(direction: appDir), durationFrames: 14, easingPreset: .easeInOut)
+            let params = transition.toTransitionParams()
+
+            if case .push(let direction) = params.type {
+                // Direction name should match
+                XCTAssertEqual("\(direction)", "\(appDir)", "Direction \(appDir) should map correctly")
+            } else {
+                XCTFail("Expected .push type, got \(params.type)")
+            }
+        }
     }
 }

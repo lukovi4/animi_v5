@@ -122,6 +122,7 @@ struct BoundaryTransitionRecord: Codable, Equatable, Sendable {
 import enum TVECore.TransitionType
 import enum TVECore.TransitionDirection
 import enum TVECore.TransitionEasingPreset
+import struct TVECore.TransitionParams
 
 // Typealiases to disambiguate from AnimiApp types (which have same names)
 typealias TVETransitionType = TVECore.TransitionType
@@ -180,5 +181,10 @@ extension SceneTransition {
     /// Access easing preset via TVECore-compatible property name.
     var easing: EasingPreset {
         easingPreset
+    }
+
+    /// Converts AnimiApp SceneTransition to TVECore TransitionParams.
+    internal func toTransitionParams() -> TransitionParams {
+        TransitionParams(type: type.toTVECoreType(), easing: easingPreset.toTVECoreType())
     }
 }
