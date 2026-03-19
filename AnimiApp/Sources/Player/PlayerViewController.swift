@@ -606,16 +606,17 @@ final class PlayerViewController: UIViewController {
         let key = SceneBoundaryKey(fromSceneId, toSceneId)
         let current = editorStore?.state.canonicalTimeline.boundaryTransitions[key] ?? .none
 
-        let picker = TransitionPickerViewController(currentType: current.type)
-
-        picker.onSelectTransition = { [weak self] transition in
-            // Dispatch AFTER dismiss (completion block)
-            self?.editorStore?.dispatch(.setBoundaryTransition(
-                fromSceneId: fromSceneId,
-                toSceneId: toSceneId,
-                transition: transition
-            ))
+        let handler = PlayerViewController.makeBoundaryTransitionDispatchHandler(
+            fromSceneId: fromSceneId,
+            toSceneId: toSceneId
+        ) { [weak self] action in
+            self?.editorStore?.dispatch(action)
         }
+
+        let picker = PlayerViewController.makeTransitionPicker(
+            currentType: current.type,
+            onSelect: handler
+        )
 
         // Wrap in navigation controller for title/cancel button
         let nav = UINavigationController(rootViewController: picker)
@@ -642,14 +643,57 @@ final class PlayerViewController: UIViewController {
     private func handleEditorNotice(_ notice: EditorNotice) {
         switch notice {
         case .boundaryTransitionsReset:
-            let alert = UIAlertController(
-                title: "Transitions Removed",
-                message: "Some transitions were removed because scene boundaries changed or adjacent scenes are too short.",
-                preferredStyle: .alert
-            )
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            let alert = PlayerViewController.makeBoundaryTransitionsResetAlert()
             present(alert, animated: true)
         }
+    }
+
+    // MARK: - TT-08: Internal Test Seams
+
+    /// Creates a configured transition picker.
+    /// - Parameters:
+    ///   - currentType: Current transition type for checkmark display.
+    ///   - onSelect: Called with selected transition after dismiss.
+    /// - Returns: Configured `TransitionPickerViewController`.
+    static func makeTransitionPicker(
+        currentType: TransitionType,
+        onSelect: @escaping (SceneTransition) -> Void
+    ) -> TransitionPickerViewController {
+        let picker = TransitionPickerViewController(currentType: currentType)
+        picker.onSelectTransition = onSelect
+        return picker
+    }
+
+    /// Creates a dispatch handler that maps a selected transition to a `.setBoundaryTransition` action.
+    /// - Parameters:
+    ///   - fromSceneId: ID of the outgoing scene.
+    ///   - toSceneId: ID of the incoming scene.
+    ///   - dispatch: Action dispatch closure.
+    /// - Returns: Closure suitable for `onSelectTransition`.
+    static func makeBoundaryTransitionDispatchHandler(
+        fromSceneId: UUID,
+        toSceneId: UUID,
+        dispatch: @escaping (EditorAction) -> Void
+    ) -> (SceneTransition) -> Void {
+        { transition in
+            dispatch(.setBoundaryTransition(
+                fromSceneId: fromSceneId,
+                toSceneId: toSceneId,
+                transition: transition
+            ))
+        }
+    }
+
+    /// Creates the alert shown when boundary transitions are auto-reset.
+    /// - Returns: Configured `UIAlertController`.
+    static func makeBoundaryTransitionsResetAlert() -> UIAlertController {
+        let alert = UIAlertController(
+            title: "Transitions Removed",
+            message: "Some transitions were removed because scene boundaries changed or adjacent scenes are too short.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        return alert
     }
 
     // MARK: - PR2: Editor Callbacks
