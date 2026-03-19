@@ -156,9 +156,9 @@ public final class SceneTypeResourcesCache {
 
             let compiled = compiledPackage.compiled
 
-            // 2. Create texture provider (main actor for Metal resources)
+            // 2. Create immutable base texture provider (TT-07: no mutable semantics in shared cache)
             let provider = await MainActor.run {
-                SceneTextureProviderFactory.create(
+                SceneTextureProviderFactory.createBaseProvider(
                     device: capturedDevice,
                     mergedAssetIndex: compiled.mergedAssetIndex,
                     resolver: resolver,
