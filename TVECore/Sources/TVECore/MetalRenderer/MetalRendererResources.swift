@@ -102,10 +102,10 @@ struct MaskCombineParams {
 /// Uniform buffer structure for dip-to-color transition effect.
 /// Layout must match Metal shader struct exactly.
 ///
-/// Metal layout:
+/// Metal layout (scalar padding — no float3 to avoid 16-byte alignment):
 ///   float4x4 mvp:      64 bytes (offset 0)
 ///   float progress:     4 bytes (offset 64)
-///   float3 _padding1:  12 bytes (offset 68)
+///   float _pad0/1/2:   12 bytes (offset 68)
 ///   float4 dipColor:   16 bytes (offset 80)
 ///   Total: 96 bytes
 public struct TransitionDipUniforms {

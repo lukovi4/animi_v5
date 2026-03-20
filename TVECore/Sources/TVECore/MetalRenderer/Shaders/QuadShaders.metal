@@ -405,7 +405,9 @@ fragment float4 bg_image_fragment(
 struct TransitionDipUniforms {
     float4x4 mvp;
     float progress;      // Transition progress (0.0 to 1.0)
-    float3 _padding1;
+    float _pad0;
+    float _pad1;
+    float _pad2;         // 3 × float padding (12 bytes) to align dipColor at offset 80
     float4 dipColor;     // Color to dip to (black or white, RGBA)
 };
 

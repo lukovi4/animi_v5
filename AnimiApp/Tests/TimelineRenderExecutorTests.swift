@@ -409,6 +409,231 @@ final class TimelineRenderExecutorTests: XCTestCase {
         texturePool.release(reacquired2)
     }
 
+    // MARK: - TT-12 Parity helper
+
+    /// Renders preview and export for a given transition at the specified progress,
+    /// validates output via `oracle`, and asserts pixel-identical preview/export parity.
+    private func assertPreviewExportParity(
+        transition: SceneTransition,
+        progress: Double,
+        textureA: MTLTexture? = nil,
+        textureB: MTLTexture? = nil,
+        oracle: ([UInt8]) -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let canvasSize = SizeD(width: 16, height: 16)
+        let texA = textureA ?? makeSolidTexture(width: 16, height: 16, red: 255, green: 0, blue: 0, alpha: 255)
+        let texB = textureB ?? makeSolidTexture(width: 16, height: 16, red: 0, green: 0, blue: 255, alpha: 255)
+        let ctxA = makeSceneContext(canvasSize: canvasSize, assetId: "parity_a", texture: texA)
+        let ctxB = makeSceneContext(canvasSize: canvasSize, assetId: "parity_b", texture: texB)
+        let transCtx = TransitionRenderContext(sceneA: ctxA, sceneB: ctxB, transition: transition, progress: progress)
+
+        // Preview
+        let previewTex = makeRenderTarget(width: 16, height: 16)
+        let previewRequest = TimelineRenderRequest(
+            resolved: .transition(transCtx),
+            targetTexture: previewTex,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: nil,
+            presentationDrawable: nil,
+            waitUntilCompleted: true
+        )
+        try TimelineRenderExecutor.render(
+            previewRequest, renderer: renderer,
+            commandQueue: renderer.commandQueue,
+            transitionCompositor: compositor,
+            completionQueue: nil
+        )
+
+        // Export
+        let exportTex = makeRenderTarget(width: 16, height: 16)
+        let exportRequest = TimelineRenderRequest(
+            resolved: .transition(transCtx),
+            targetTexture: exportTex,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: .opaqueBlack,
+            presentationDrawable: nil,
+            waitUntilCompleted: true
+        )
+        try TimelineRenderExecutor.render(
+            exportRequest, renderer: renderer,
+            commandQueue: renderer.commandQueue,
+            transitionCompositor: compositor,
+            completionQueue: nil
+        )
+
+        let previewPixels = readPixels(from: previewTex)
+        let exportPixels = readPixels(from: exportTex)
+
+        oracle(previewPixels)
+        XCTAssertEqual(previewPixels, exportPixels, "Preview and export must produce identical pixels", file: file, line: line)
+    }
+
+    // MARK: - 8. Slide transition parity
+
+    func testTransition_slide_previewAndExportRequestsMatchAtScale1() throws {
+        let transition = SceneTransition(type: .slide(direction: .left), durationFrames: 14, easingPreset: .easeInOut)
+        try assertPreviewExportParity(transition: transition, progress: 0.5) { pixels in
+            // BGRA8: index 0=B, 1=G, 2=R, 3=A
+            var hasRed = false
+            var hasBlu = false
+            for i in stride(from: 0, to: pixels.count, by: 4) {
+                if pixels[i + 2] > 128 { hasRed = true } // R channel (sceneA red)
+                if pixels[i] > 128 { hasBlu = true }     // B channel (sceneB blue)
+            }
+            XCTAssertTrue(hasRed, "Slide at 0.5 must contain red pixels from sceneA")
+            XCTAssertTrue(hasBlu, "Slide at 0.5 must contain blue pixels from sceneB")
+
+            // Spatial asymmetry: left half ≠ right half
+            let w = 16, h = 16
+            var leftPixels = [UInt8]()
+            var rightPixels = [UInt8]()
+            for row in 0..<h {
+                for col in 0..<w {
+                    let base = (row * w + col) * 4
+                    if col < w / 2 {
+                        leftPixels.append(contentsOf: pixels[base..<base+4])
+                    } else {
+                        rightPixels.append(contentsOf: pixels[base..<base+4])
+                    }
+                }
+            }
+            XCTAssertNotEqual(leftPixels, rightPixels, "Slide transition must produce spatially asymmetric output")
+        }
+    }
+
+    // MARK: - 9. Push transition parity
+
+    func testTransition_push_previewAndExportRequestsMatchAtScale1() throws {
+        let transition = SceneTransition(type: .push(direction: .left), durationFrames: 14, easingPreset: .easeInOut)
+        try assertPreviewExportParity(transition: transition, progress: 0.5) { pixels in
+            var hasRed = false
+            var hasBlu = false
+            for i in stride(from: 0, to: pixels.count, by: 4) {
+                if pixels[i + 2] > 128 { hasRed = true }
+                if pixels[i] > 128 { hasBlu = true }
+            }
+            XCTAssertTrue(hasRed, "Push at 0.5 must contain red pixels from sceneA")
+            XCTAssertTrue(hasBlu, "Push at 0.5 must contain blue pixels from sceneB")
+
+            let w = 16, h = 16
+            var leftPixels = [UInt8]()
+            var rightPixels = [UInt8]()
+            for row in 0..<h {
+                for col in 0..<w {
+                    let base = (row * w + col) * 4
+                    if col < w / 2 {
+                        leftPixels.append(contentsOf: pixels[base..<base+4])
+                    } else {
+                        rightPixels.append(contentsOf: pixels[base..<base+4])
+                    }
+                }
+            }
+            XCTAssertNotEqual(leftPixels, rightPixels, "Push transition must produce spatially asymmetric output")
+        }
+    }
+
+    // MARK: - 10. DipToBlack transition parity
+
+    func testTransition_dipToBlack_previewAndExportRequestsMatchAtScale1() throws {
+        let transition = SceneTransition(type: .dipToBlack, durationFrames: 14, easingPreset: .easeInOut)
+        // Progress 0.25: Phase 1 (A → black) partially applied.
+        // easeInOut(0.25) ≈ 0.156, shader t ≈ 0.3125 → mix(red, black, 0.3125)
+        // Result is dimmed red, avg RGB lower than pure red/blue baseline (~85).
+        try assertPreviewExportParity(transition: transition, progress: 0.25) { pixels in
+            let baselineAvg: Double = 85.0
+            var totalRGB: Double = 0
+            let pixelCount = pixels.count / 4
+            for i in stride(from: 0, to: pixels.count, by: 4) {
+                totalRGB += Double(pixels[i])     // B
+                totalRGB += Double(pixels[i + 1]) // G
+                totalRGB += Double(pixels[i + 2]) // R
+            }
+            let avgRGB = totalRGB / Double(pixelCount * 3)
+            XCTAssertLessThan(avgRGB, baselineAvg, "DipToBlack at 0.25 should produce darker output than pure red or blue (avg \(avgRGB) vs baseline \(baselineAvg))")
+        }
+    }
+
+    // MARK: - 11. DipToWhite transition parity
+
+    func testTransition_dipToWhite_previewAndExportRequestsMatchAtScale1() throws {
+        let transition = SceneTransition(type: .dipToWhite, durationFrames: 14, easingPreset: .easeInOut)
+        // Progress 0.25: Phase 1 (A → white) partially applied.
+        // easeInOut(0.25) ≈ 0.156, shader t ≈ 0.3125 → mix(red, white, 0.3125)
+        // Result has elevated G and B channels from white mix, avg RGB higher than baseline (~85).
+        try assertPreviewExportParity(transition: transition, progress: 0.25) { pixels in
+            let baselineAvg: Double = 85.0
+            var totalRGB: Double = 0
+            let pixelCount = pixels.count / 4
+            for i in stride(from: 0, to: pixels.count, by: 4) {
+                totalRGB += Double(pixels[i])     // B
+                totalRGB += Double(pixels[i + 1]) // G
+                totalRGB += Double(pixels[i + 2]) // R
+            }
+            let avgRGB = totalRGB / Double(pixelCount * 3)
+            XCTAssertGreaterThan(avgRGB, baselineAvg, "DipToWhite at 0.25 should produce brighter output than pure red or blue (avg \(avgRGB) vs baseline \(baselineAvg))")
+        }
+    }
+
+    // MARK: - 12. Photo-to-video media combination parity
+
+    func testTransition_photoToVideo_previewAndExportMatch() throws {
+        let greenTex = makeSolidTexture(width: 16, height: 16, red: 0, green: 255, blue: 0, alpha: 255)
+        let magentaTex = makeSolidTexture(width: 16, height: 16, red: 255, green: 0, blue: 255, alpha: 255)
+        let transition = SceneTransition(type: .fade, durationFrames: 14, easingPreset: .easeInOut)
+        try assertPreviewExportParity(
+            transition: transition,
+            progress: 0.5,
+            textureA: greenTex,
+            textureB: magentaTex
+        ) { pixels in
+            // Fade at 0.5: expect both green and magenta channels present.
+            // Green: G channel high. Magenta: R+B channels high.
+            var hasGreen = false
+            var hasRedOrBlue = false
+            for i in stride(from: 0, to: pixels.count, by: 4) {
+                if pixels[i + 1] > 64 { hasGreen = true }     // G channel
+                if pixels[i + 2] > 64 || pixels[i] > 64 {     // R or B channel
+                    hasRedOrBlue = true
+                }
+            }
+            XCTAssertTrue(hasGreen, "Photo-to-video fade must contain green channel from photo scene")
+            XCTAssertTrue(hasRedOrBlue, "Photo-to-video fade must contain red/blue channels from video scene")
+        }
+    }
+
+    // MARK: - 13. Video-to-photo media combination parity
+
+    func testTransition_videoToPhoto_previewAndExportMatch() throws {
+        let magentaTex = makeSolidTexture(width: 16, height: 16, red: 255, green: 0, blue: 255, alpha: 255)
+        let greenTex = makeSolidTexture(width: 16, height: 16, red: 0, green: 255, blue: 0, alpha: 255)
+        let transition = SceneTransition(type: .fade, durationFrames: 14, easingPreset: .easeInOut)
+        try assertPreviewExportParity(
+            transition: transition,
+            progress: 0.5,
+            textureA: magentaTex,
+            textureB: greenTex
+        ) { pixels in
+            var hasGreen = false
+            var hasRedOrBlue = false
+            for i in stride(from: 0, to: pixels.count, by: 4) {
+                if pixels[i + 1] > 64 { hasGreen = true }
+                if pixels[i + 2] > 64 || pixels[i] > 64 {
+                    hasRedOrBlue = true
+                }
+            }
+            XCTAssertTrue(hasGreen, "Video-to-photo fade must contain green channel from photo scene")
+            XCTAssertTrue(hasRedOrBlue, "Video-to-photo fade must contain red/blue channels from video scene")
+        }
+    }
+
     // MARK: - 7. Missing completionQueue for async transition throws
 
     func testAsyncTransition_withoutCompletionQueue_throwsMissingCompletionQueue() {
