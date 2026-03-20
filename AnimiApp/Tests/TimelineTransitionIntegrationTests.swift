@@ -148,6 +148,85 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
         XCTAssertTrue(decoded.boundaryTransitions.isEmpty)
     }
 
+    /// Test: full CanonicalTimeline roundtrip including boundary, intro, and outro transitions.
+    func testCanonicalTimeline_fullRoundtrip() throws {
+        // Given: 3-scene timeline with boundary transitions, intro, and outro
+        var timeline = makeTimeline(sceneDurationFrames: [60, 60, 60])
+        let items = timeline.sceneItems
+
+        // Add 2 boundary transitions with distinct types/durations/easings
+        let key01 = SceneBoundaryKey(items[0].id, items[1].id)
+        timeline.boundaryTransitions[key01] = SceneTransition(
+            type: .fade,
+            durationFrames: 10,
+            easingPreset: .linear
+        )
+        let key12 = SceneBoundaryKey(items[1].id, items[2].id)
+        timeline.boundaryTransitions[key12] = SceneTransition(
+            type: .slide(direction: .left),
+            durationFrames: 20,
+            easingPreset: .easeInOut
+        )
+
+        // Set intro and outro
+        timeline.introTransition = SceneTransition(
+            type: .dipToBlack,
+            durationFrames: 15,
+            easingPreset: .easeInOut
+        )
+        timeline.outroTransition = SceneTransition(
+            type: .fade,
+            durationFrames: 12,
+            easingPreset: .linear
+        )
+
+        // When: encode → decode
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(timeline)
+        let decoded = try decoder.decode(CanonicalTimeline.self, from: data)
+
+        // Then: boundaryTransitions count and exact keys
+        XCTAssertEqual(decoded.boundaryTransitions.count, 2)
+
+        let decodedT01 = decoded.boundaryTransitions[key01]
+        XCTAssertNotNil(decodedT01)
+        XCTAssertEqual(decodedT01?.type, .fade)
+        XCTAssertEqual(decodedT01?.durationFrames, 10)
+        XCTAssertEqual(decodedT01?.easingPreset, .linear)
+
+        let decodedT12 = decoded.boundaryTransitions[key12]
+        XCTAssertNotNil(decodedT12)
+        XCTAssertEqual(decodedT12?.type, .slide(direction: .left))
+        XCTAssertEqual(decodedT12?.durationFrames, 20)
+        XCTAssertEqual(decodedT12?.easingPreset, .easeInOut)
+
+        // Then: intro/outro equality
+        XCTAssertEqual(decoded.introTransition, timeline.introTransition)
+        XCTAssertEqual(decoded.outroTransition, timeline.outroTransition)
+
+        // Then: tracks and payloads preserved
+        XCTAssertEqual(decoded.tracks.count, timeline.tracks.count)
+        XCTAssertEqual(decoded.payloads.count, timeline.payloads.count)
+        XCTAssertEqual(decoded.sceneItems.count, 3)
+    }
+
+    /// Test: nil intro/outro transitions survive roundtrip.
+    func testIntroOutroTransition_nilRoundtrip() throws {
+        // Given: timeline with nil intro and outro
+        let timeline = makeTimeline(sceneDurationFrames: [30, 30])
+        XCTAssertNil(timeline.introTransition)
+        XCTAssertNil(timeline.outroTransition)
+
+        // When: encode → decode
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(timeline)
+        let decoded = try decoder.decode(CanonicalTimeline.self, from: data)
+
+        // Then: still nil
+        XCTAssertNil(decoded.introTransition)
+        XCTAssertNil(decoded.outroTransition)
+    }
+
     // MARK: - 2. Validator Auto-Reset Tests
 
     /// Test: transition reset when scene becomes too short.
@@ -299,6 +378,8 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
             .slide(direction: .down),
             .push(direction: .left),
             .push(direction: .right),
+            .push(direction: .up),
+            .push(direction: .down),
             .dipToBlack,
             .dipToWhite
         ]
