@@ -696,6 +696,19 @@ final class PlayerViewController: UIViewController {
         return alert
     }
 
+    // MARK: - TT-10: Scene Edit Isolation
+
+    /// Isolates timeline activity when entering scene edit mode.
+    /// Contract: cancel pending timeline resolve first, then stop playback.
+    /// Order matters — stale resolve must not complete after lifecycle stop.
+    static func isolateTimelineActivityForSceneEdit(
+        cancelPendingTimelineResolve: () -> Void,
+        stopPlayback: () -> Void
+    ) {
+        cancelPendingTimelineResolve()
+        stopPlayback()
+    }
+
     // MARK: - PR2: Editor Callbacks
 
     private func handleEditorClose() {
@@ -1605,10 +1618,18 @@ final class PlayerViewController: UIViewController {
             sceneEditController?.updateOverlay()
 
         case .sceneEdit(let sceneId):
-            // Enter Scene Edit: stop playback, collapse timeline
-            if isPlaying {
-                stopPlayback()
-            }
+            // TT-10: Isolate timeline activity unconditionally on scene edit entry.
+            // Cancel pending timeline resolve before stopping playback lifecycle,
+            // so stale async resolve cannot complete after scene edit is active.
+            PlayerViewController.isolateTimelineActivityForSceneEdit(
+                cancelPendingTimelineResolve: { [weak self] in
+                    self?.playheadAsyncTask?.cancel()
+                    self?.playheadAsyncTask = nil
+                },
+                stopPlayback: { [weak self] in
+                    self?.stopPlayback()
+                }
+            )
             editorLayoutContainer.setSceneEditMode(true, animated: true)
             editorLayoutContainer.navBar.setMode(.sceneEdit)
             sceneEditController?.updateOverlay()
