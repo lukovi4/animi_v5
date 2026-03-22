@@ -96,6 +96,9 @@ public final class SceneInstanceRuntime {
     /// TT-02: Timing config for preparation loop. Production by default.
     private let timingConfig: PreparationTimingConfig
 
+    /// Diagnostics sink for runtime events (test-only, nil in production).
+    internal var runtimeDiagnosticsSink: RuntimeDiagnosticsSink?
+
     // MARK: - State
 
     /// TT-02: Readiness state for scene rendering.
@@ -277,6 +280,7 @@ public final class SceneInstanceRuntime {
             userMediaPresent: state.userMediaPresent,
             to: userMediaService
         )
+        runtimeDiagnosticsSink?.receive(.mediaRestore(instanceId: sceneInstanceId, restoredCount: restoredCount))
 
         #if DEBUG
         print("[SceneInstanceRuntime] Applied state for \(sceneInstanceId): restored \(restoredCount) media items")
@@ -336,6 +340,7 @@ public final class SceneInstanceRuntime {
         }
 
         readinessState = .preparing(targetLocalFrame: targetFrame)
+        runtimeDiagnosticsSink?.receive(.instancePrepareStarted(instanceId: sceneInstanceId, targetFrame: targetFrame))
 
         // Initial frozen sync
         syncFrozenFrame(targetFrame)
@@ -361,6 +366,7 @@ public final class SceneInstanceRuntime {
             // Check for failures early
             if mediaSyncing.hasFailedMedia {
                 readinessState = .failed(reason: "Media restore failed")
+                runtimeDiagnosticsSink?.receive(.instancePrepareFailed(instanceId: sceneInstanceId, reason: "Media restore failed"))
                 return
             }
 
@@ -369,6 +375,7 @@ public final class SceneInstanceRuntime {
                 // Final frozen sync before marking ready
                 syncFrozenFrame(targetFrame)
                 readinessState = .ready(targetLocalFrame: targetFrame)
+                runtimeDiagnosticsSink?.receive(.instancePrepareCompleted(instanceId: sceneInstanceId, targetFrame: targetFrame))
                 #if DEBUG
                 print("[SceneInstanceRuntime] Ready for presentation at frame \(targetFrame): \(sceneInstanceId)")
                 #endif
@@ -384,6 +391,7 @@ public final class SceneInstanceRuntime {
 
         // Timeout
         readinessState = .timedOut(targetLocalFrame: targetFrame)
+        runtimeDiagnosticsSink?.receive(.instancePrepareFailed(instanceId: sceneInstanceId, reason: "Timed out"))
         #if DEBUG
         print("[SceneInstanceRuntime] Timed out preparing at frame \(targetFrame): \(sceneInstanceId)")
         #endif

@@ -524,20 +524,6 @@ final class EditorLayoutContainerView: UIView {
         sceneEditBar.setCanReset(canReset)
     }
 
-    /// Configures timeline with duration in microseconds and template FPS.
-    /// PR4: Legacy single-scene API, converts to scenes array internally.
-    /// - Parameters:
-    ///   - durationUs: Duration in microseconds
-    ///   - templateFPS: Template frame rate for quantization
-    @available(*, deprecated, message: "Use configure(scenes:templateFPS:minSceneDurationUs:)")
-    func configure(durationUs: TimeUs, templateFPS: Int) {
-        #if DEBUG
-        assertionFailure("Legacy timeline API. Use configure(scenes:templateFPS:minSceneDurationUs:) via EditorStore snapshot.")
-        #endif
-        rulerView.configure(durationUs: durationUs)
-        timelineView.configure(durationUs: durationUs, templateFPS: templateFPS)
-    }
-
     /// Configures timeline with scenes array (PR2: Multi-scene support).
     /// PR-G: Includes boundaries for transition controls.
     /// - Parameters:

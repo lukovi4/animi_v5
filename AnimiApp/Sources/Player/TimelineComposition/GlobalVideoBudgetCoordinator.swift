@@ -111,19 +111,10 @@ public final class GlobalVideoBudgetCoordinator {
         }
     }
 
-    /// Returns whether a scene instance should have active video decoders.
-    /// Only pinned scenes get guaranteed decoder slots.
-    /// Warm scenes may get slots if budget allows.
+    /// Returns whether a scene instance participates in decoder allocation.
+    /// Pinned scenes are considered first; warm scenes receive spare capacity only if budget allows.
     public func shouldHaveActiveDecoders(for instanceId: UUID) -> Bool {
-        pinnedInstanceIds.contains(instanceId)
-    }
-
-    /// Returns scene instance IDs that should be evicted (farthest from current).
-    /// - Parameter allInstanceIds: All currently loaded scene instance IDs.
-    /// - Returns: Set of instance IDs to evict.
-    /// - Note: Compatibility wrapper; prefer `instancesToEvictOrdered` for deterministic ordering.
-    public func instancesToEvict(from allInstanceIds: Set<UUID>, sceneItems: [TimelineItem]) -> Set<UUID> {
-        Set(instancesToEvictOrdered(from: allInstanceIds, sceneItems: sceneItems))
+        pinnedInstanceIds.contains(instanceId) || warmInstanceIds.contains(instanceId)
     }
 
     /// Returns ordered list of scene instances to evict.

@@ -224,42 +224,6 @@ final class SceneTrackView: UIView, TrackViewContract {
         }
     }
 
-    // MARK: - Legacy Configuration (PR4 deprecated)
-
-    /// Configures track with scenes array.
-    /// PR4: Deprecated - use applySnapshot + setLayoutContext instead
-    @available(*, deprecated, message: "Use applySnapshot + setLayoutContext instead")
-    func configure(scenes: [SceneDraft], pxPerSecond: CGFloat, leftPadding: CGFloat, minDurationUs: TimeUs) {
-        let snapshot = SceneTrackSnapshot(
-            scenes: scenes,
-            boundaries: [],
-            selectedSceneId: selectedSceneId,
-            minDurationUs: minDurationUs
-        )
-        applySnapshot(snapshot)
-        setLayoutContext(TimelineLayoutContext(pxPerSecond: pxPerSecond, leftPadding: leftPadding))
-    }
-
-    /// Updates pixels per second and leftPadding (when timeline zooms).
-    /// PR4: Deprecated - use setLayoutContext instead
-    @available(*, deprecated, message: "Use setLayoutContext instead")
-    func setPxPerSecond(_ pxPerSec: CGFloat, leftPadding: CGFloat) {
-        setLayoutContext(TimelineLayoutContext(pxPerSecond: pxPerSec, leftPadding: leftPadding))
-    }
-
-    /// Updates scenes and refreshes layout.
-    /// PR4: Deprecated - use applySnapshot instead
-    @available(*, deprecated, message: "Use applySnapshot instead")
-    func updateScenes(_ scenes: [SceneDraft]) {
-        let snapshot = SceneTrackSnapshot(
-            scenes: scenes,
-            boundaries: [],
-            selectedSceneId: selectedSceneId,
-            minDurationUs: minDurationUs
-        )
-        applySnapshot(snapshot)
-    }
-
     // MARK: - Reorder Mode (PR3)
 
     /// Sets reorder mode and propagates to clip views.
@@ -283,24 +247,6 @@ final class SceneTrackView: UIView, TrackViewContract {
     }
 
     // MARK: - Legacy API (backward compatibility)
-
-    /// Legacy configure for single-scene mode.
-    /// Creates a temporary scene with given duration.
-    func configure(durationUs: TimeUs, pxPerSecond: CGFloat, leftPadding: CGFloat) {
-        // Create a single scene for backward compatibility (uses default minDurationUs ~30fps)
-        let singleScene = SceneDraft(id: UUID(), durationUs: durationUs)
-        configure(scenes: [singleScene], pxPerSecond: pxPerSecond, leftPadding: leftPadding, minDurationUs: ProjectDraft.minSceneDurationUs)
-    }
-
-    /// Legacy selection API.
-    func setSelected(_ selected: Bool) {
-        // Select first scene if selected, otherwise clear
-        if selected, let firstScene = scenes.first {
-            setSelectedScene(firstScene.id)
-        } else {
-            setSelectedScene(nil)
-        }
-    }
 
     // MARK: - Private (PR4)
 

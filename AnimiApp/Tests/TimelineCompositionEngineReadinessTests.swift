@@ -1009,6 +1009,133 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
         XCTAssertEqual(timedOutId, transitionResult.instanceIdA, "Timed out instance ID should match scene A")
     }
 
+    // MARK: - DEFECT-01 Proof Tests
+
+    /// DEFECT-01 proof: warm prewarm does not await readiness —
+    /// prewarmed warm scene should resolve via resolveFrame after prepareForPlayback.
+    /// Primary oracle: black-box resolveFrame call (not internal readinessState).
+    @MainActor
+    func testPrewarmedWarmScene_resolvesReady_afterPrepareForPlayback() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        // 3 scenes, no transitions
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 3, framesPerScene: 100)
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources {
+            cache.addToCache(res)
+        }
+
+        // All spies report media ready immediately
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+
+        // Playhead at frame 150 = middle of scene 1 (index 1)
+        // Budget coordinator will mark scene 0 and scene 2 as warm
+        await engine.prepareForPlayback(startingAt: 150)
+
+        let warmSceneId = timeline.sceneItems[0].id
+
+        // Primary oracle: black-box resolveFrame for warm scene (frame 0 = scene 0)
+        let result = await engine.resolveFrame(0, policy: .presentation)
+        guard case .resolved(.single) = result else {
+            XCTFail("Expected .resolved(.single(...)) for warm scene 0, got \(result)")
+            return
+        }
+
+        // Secondary explanatory probe (not asserted)
+        if let warmRuntime = engine.runtime(for: warmSceneId) {
+            print("[DEFECT-01 probe] warmRuntime.readinessState = \(warmRuntime.readinessState)")
+        }
+    }
+
+    /// DEFECT-01 proof: prewarmed transition partner is not ready —
+    /// first transition frame returns .hold instead of .resolved(.transition(...)).
+    @MainActor
+    func testTransitionWithPrewarmedPartner_resolvesReady_afterPrepareForPlayback() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        // 3 scenes with a 10-frame fade transition between scene 0 and scene 1
+        let transitionResult = makeTimelineWithTransition3Scenes()
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in transitionResult.resources {
+            cache.addToCache(res)
+        }
+
+        // All spies report media ready immediately
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+
+        engine.setTimeline(transitionResult.timeline, sceneStates: [:])
+
+        // prepareForPlayback at frame 50 = single mode in scene 0
+        // Scene 1 is warm (next scene)
+        await engine.prepareForPlayback(startingAt: 50)
+
+        // Scene 1 should be ready if partner prewarm works
+        let warmSceneId = transitionResult.instanceIdB
+        guard let warmRuntime = engine.runtime(for: warmSceneId) else {
+            XCTFail("Warm scene 1 runtime should exist after prepareForPlayback")
+            return
+        }
+
+        // Now resolve at transition frame (frame 95, in the transition zone)
+        // If scene 1 were properly prewarmed, this would return .resolved(.transition(...))
+        let resolveResult = await engine.resolveFrame(95, policy: .presentation)
+
+        guard case .resolved(let frame) = resolveResult else {
+            XCTFail("Expected .resolved at transition frame, got \(resolveResult)")
+            return
+        }
+        guard case .transition = frame else {
+            XCTFail("Expected .transition frame, got \(frame)")
+            return
+        }
+    }
+
     // MARK: - Transition Test Helpers
 
     /// Result of makeTimelineWithTransition for deterministic spy mapping
@@ -1070,6 +1197,89 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
         let transition = SceneTransition(type: .fade, durationFrames: transitionDuration)
 
         // Create sceneSequence track with items
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: items)
+        let timeline = CanonicalTimeline(
+            tracks: [sceneTrack],
+            payloads: payloads,
+            boundaryTransitions: [boundaryKey: transition]
+        )
+
+        return TransitionTimelineResult(
+            timeline: timeline,
+            resources: resources,
+            instanceIdA: instanceIdA,
+            instanceIdB: instanceIdB,
+            framesPerScene: framesPerScene,
+            transitionDuration: transitionDuration
+        )
+    }
+
+    /// Creates a timeline with 3 scenes and a fade transition between scene 0 and scene 1.
+    /// Scene 2 has no transition — used for DEFECT-01 tests where scene 1 is a warm partner.
+    @MainActor
+    private func makeTimelineWithTransition3Scenes() -> TransitionTimelineResult {
+        let framesPerScene = 100
+        let transitionDuration = 10
+
+        var items: [TimelineItem] = []
+        var payloads: [UUID: TimelinePayload] = [:]
+        var resources: [SceneTypeResourcesCache.Resources] = []
+
+        // Scene A
+        let instanceIdA = UUID()
+        let payloadIdA = UUID()
+        let sceneTypeIdA = "scene-type-A"
+
+        let durationUsA = framesToUs(framesPerScene)
+        let itemA = TimelineItem(
+            id: instanceIdA,
+            payloadId: payloadIdA,
+            kind: .scene,
+            startUs: nil,
+            durationUs: durationUsA
+        )
+        items.append(itemA)
+        payloads[payloadIdA] = .scene(ScenePayload(sceneTypeId: sceneTypeIdA))
+        resources.append(makeMinimalResources(durationFrames: framesPerScene, sceneTypeId: sceneTypeIdA))
+
+        // Scene B
+        let instanceIdB = UUID()
+        let payloadIdB = UUID()
+        let sceneTypeIdB = "scene-type-B"
+
+        let durationUsB = framesToUs(framesPerScene)
+        let itemB = TimelineItem(
+            id: instanceIdB,
+            payloadId: payloadIdB,
+            kind: .scene,
+            startUs: nil,
+            durationUs: durationUsB
+        )
+        items.append(itemB)
+        payloads[payloadIdB] = .scene(ScenePayload(sceneTypeId: sceneTypeIdB))
+        resources.append(makeMinimalResources(durationFrames: framesPerScene, sceneTypeId: sceneTypeIdB))
+
+        // Scene C
+        let instanceIdC = UUID()
+        let payloadIdC = UUID()
+        let sceneTypeIdC = "scene-type-C"
+
+        let durationUsC = framesToUs(framesPerScene)
+        let itemC = TimelineItem(
+            id: instanceIdC,
+            payloadId: payloadIdC,
+            kind: .scene,
+            startUs: nil,
+            durationUs: durationUsC
+        )
+        items.append(itemC)
+        payloads[payloadIdC] = .scene(ScenePayload(sceneTypeId: sceneTypeIdC))
+        resources.append(makeMinimalResources(durationFrames: framesPerScene, sceneTypeId: sceneTypeIdC))
+
+        // Transition between A and B (10-frame fade)
+        let boundaryKey = SceneBoundaryKey(instanceIdA, instanceIdB)
+        let transition = SceneTransition(type: .fade, durationFrames: transitionDuration)
+
         let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: items)
         let timeline = CanonicalTimeline(
             tracks: [sceneTrack],

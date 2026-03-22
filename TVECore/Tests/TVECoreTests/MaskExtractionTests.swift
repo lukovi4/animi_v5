@@ -674,6 +674,10 @@ final class MaskExtractionTests: XCTestCase {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device not available")
         }
-        return try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        do {
+            return try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        } catch MetalRendererError.failedToCreatePipeline(let reason) where reason.contains("Failed to load Metal library") {
+            throw XCTSkip("DEFECT-TVE-02: \(reason)")
+        }
     }
 }

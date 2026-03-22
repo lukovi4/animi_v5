@@ -17,7 +17,11 @@ final class MetalRendererMatteTests: XCTestCase {
             throw XCTSkip("No Metal device available")
         }
         device = mtlDevice
-        renderer = try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        do {
+            renderer = try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        } catch MetalRendererError.failedToCreatePipeline(let reason) where reason.contains("Failed to load Metal library") {
+            throw XCTSkip("DEFECT-TVE-02: \(reason)")
+        }
     }
 
     override func tearDown() {

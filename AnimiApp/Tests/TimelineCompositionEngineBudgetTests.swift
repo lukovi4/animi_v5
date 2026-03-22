@@ -506,6 +506,86 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         XCTAssertNotNil(engine.runtime(for: ids[2]), "Scene 2 runtime should still exist (warm, not evicted)")
     }
 
+    // MARK: - DEFECT-02 Proof Tests
+
+    /// DEFECT-02 proof: warm scenes do not receive spare decoder grants.
+    /// When budget has spare capacity (3 decoders, 1 pinned scene using 1), warm scenes
+    /// should receive the remaining 2 grants — but they don't because `shouldHaveActiveDecoders`
+    /// only returns true for pinned.
+    @MainActor
+    func testWarmScenesReceiveSpareBudgetGrants() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        // 3 scenes, each with exactly 1 eligible visible video block
+        let ids = (0..<3).map { _ in UUID() }
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 3, framesPerScene: 100, fixedIds: ids)
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources {
+            cache.addToCache(res)
+        }
+
+        // Create per-scene spies with 1 playback candidate each
+        var spies: [UUID: SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy] = [:]
+        for (i, id) in ids.enumerated() {
+            let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+            spy.isSceneMediaReady = true
+            // Configure 1 candidate for every frame in this scene's range
+            let candidate = PlaybackVideoCandidate(
+                blockId: "video_\(i)",
+                priority: BlockPriorityInfo(isVisible: true, area: 100, zIndex: 1)
+            )
+            for frame in 0..<100 {
+                spy.playbackCandidatesByFrame[frame] = [candidate]
+            }
+            spies[id] = spy
+        }
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spies[instanceId]!
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+
+        // Playhead at frame 150 = middle of scene 1 (index 1) in single mode
+        // Scene 1 is pinned, scenes 0 and 2 are warm
+        await engine.prepareForPlayback(startingAt: 150)
+
+        // Get budget snapshot
+        guard let snapshot = engine.debugPlaybackBudgetSnapshot(at: 150) else {
+            XCTFail("debugPlaybackBudgetSnapshot should return non-nil")
+            return
+        }
+
+        // Verify pinned and warm classification
+        XCTAssertTrue(snapshot.pinnedInstanceIds.contains(ids[1]), "Scene 1 should be pinned")
+        XCTAssertTrue(snapshot.warmInstanceIds.contains(ids[0]), "Scene 0 should be warm")
+        XCTAssertTrue(snapshot.warmInstanceIds.contains(ids[2]), "Scene 2 should be warm")
+
+        let warmGrants0 = snapshot.grantsByInstance[ids[0]] ?? []
+        let warmGrants2 = snapshot.grantsByInstance[ids[2]] ?? []
+        XCTAssertFalse(warmGrants0.isEmpty, "Warm scene 0 should receive spare grant, got empty")
+        XCTAssertFalse(warmGrants2.isEmpty, "Warm scene 2 should receive spare grant, got empty")
+    }
+
+    // MARK: - TT-03 Completion: Active->Warm Transition Tests
+
     /// Test: Transition A/B -> single C: outgoing scene A becomes warm and gets deactivated.
     ///
     /// Scenario:

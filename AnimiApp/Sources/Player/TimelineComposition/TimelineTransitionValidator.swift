@@ -14,8 +14,6 @@ public enum TimelineTransitionValidator {
         case sceneTooShort(sceneId: UUID, requiredFrames: Int, actualFrames: Int)
         /// Boundary references non-existent or non-adjacent scenes.
         case invalidBoundary(key: SceneBoundaryKey)
-        /// Transition window would overlap with another transition.
-        case overlappingTransitions(boundary1: SceneBoundaryKey, boundary2: SceneBoundaryKey)
     }
 
     /// Validates transitions in timeline.

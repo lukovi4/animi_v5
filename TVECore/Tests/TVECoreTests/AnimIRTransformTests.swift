@@ -1,4 +1,5 @@
 import XCTest
+import Metal
 @testable import TVECore
 @testable import TVECompilerCore
 
@@ -525,7 +526,16 @@ final class AnimIRTransformTests: XCTestCase {
     /// This is correct Lottie/AE semantics for precomp layers
     func testPrecomp_containerOpacityAffectsSubtree() {
         // Given: precomp layer at 50% opacity containing an image layer at 100%
-        // Expected: image inside precomp renders at 50% (container opacity * layer opacity)
+        //
+        // Correct AE/Lottie semantics (isolated group path):
+        //   - The runtime emits beginIsolatedGroup(opacity: 0.5)
+        //   - Children render at full internal opacity (1.0)
+        //   - The group result is composited with container opacity (0.5)
+        //   - This means drawImage.opacity == 1.0, NOT 0.5
+        //   - The visual output is 0.5 opacity, achieved through the isolated group composite
+        //
+        // DEFECT-TVE-01: Previous oracle checked drawImage.opacity == 0.5, which is wrong.
+        // The correct oracle verifies: beginIsolatedGroup(opacity: 0.5) present + drawImage.opacity == 1.0.
         let precompId: CompID = "precomp_0"
 
         // Image layer inside precomp
@@ -593,18 +603,198 @@ final class AnimIRTransformTests: XCTestCase {
         // When
         let commands = ir.renderCommands(frameIndex: 0)
 
-        // Then: image should render at 0.5 opacity (container 50% * layer 100%)
+        // Then: verify isolated group path (correct AE semantics)
+        // 1. beginIsolatedGroup(opacity: 0.5) must be present
+        let isolatedGroupCmd = commands.first { cmd in
+            if case .beginIsolatedGroup = cmd { return true }
+            return false
+        }
+        if case let .beginIsolatedGroup(groupOpacity) = isolatedGroupCmd {
+            XCTAssertEqual(groupOpacity, 0.5, accuracy: 0.01,
+                "Isolated group should carry container opacity 0.5")
+        } else {
+            XCTFail("Expected beginIsolatedGroup command for precomp with opacity != 1.0")
+        }
+
+        // 2. drawImage inside group must have opacity 1.0 (full internal opacity)
         let drawCommand = commands.first { cmd in
             if case .drawImage = cmd { return true }
             return false
         }
-
         if case let .drawImage(_, opacity) = drawCommand {
-            XCTAssertEqual(opacity, 0.5, accuracy: 0.01,
-                "Image in precomp should inherit container opacity: 0.5 * 1.0 = 0.5")
+            XCTAssertEqual(opacity, 1.0, accuracy: 0.01,
+                "Image inside isolated group should render at full internal opacity (1.0)")
         } else {
             XCTFail("Expected DrawImage command")
         }
+
+        // 3. endIsolatedGroup must close the group
+        let endGroupCmd = commands.contains { cmd in
+            if case .endIsolatedGroup = cmd { return true }
+            return false
+        }
+        XCTAssertTrue(endGroupCmd, "endIsolatedGroup must close the isolated group")
+
+        // 4. Commands must be balanced
+        XCTAssertTrue(commands.isBalanced(), "Render commands must be balanced")
+    }
+
+    /// Render-output proof: precomp at 50% container opacity produces ~0.5 alpha in rendered pixels.
+    /// Complements testPrecomp_containerOpacityAffectsSubtree (command-level) with GPU pixel verification.
+    func testPrecomp_containerOpacity_renderOutput() throws {
+        // 1. Skip if no Metal device
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device")
+        }
+
+        // 2. Create renderer — skip ONLY if Metal library specifically unavailable
+        let renderer: MetalRenderer
+        do {
+            renderer = try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        } catch MetalRendererError.failedToCreatePipeline(let reason) where reason.contains("Failed to load Metal library") {
+            throw XCTSkip("DEFECT-TVE-02: \(reason)")
+        }
+
+        // 3. Same AnimIR setup (precomp at 50% opacity, image at 100%)
+        let precompId: CompID = "precomp_0"
+
+        let imageLayer = Layer(
+            id: 1,
+            name: "ImageInPrecomp",
+            type: .image,
+            timing: LayerTiming(inPoint: 0, outPoint: 60, startTime: 0),
+            parent: nil,
+            transform: .identity,
+            masks: [],
+            matte: nil,
+            content: .image(assetId: "image_0"),
+            isMatteSource: false
+        )
+
+        let precompLayer = Layer(
+            id: 1,
+            name: "PrecompLayer",
+            type: .precomp,
+            timing: LayerTiming(inPoint: 0, outPoint: 60, startTime: 0),
+            parent: nil,
+            transform: TransformTrack(
+                position: .static(.zero),
+                scale: .static(Vec2D(x: 100, y: 100)),
+                rotation: .static(0),
+                opacity: .static(50),
+                anchor: .static(.zero)
+            ),
+            masks: [],
+            matte: nil,
+            content: .precomp(compId: precompId),
+            isMatteSource: false
+        )
+
+        var ir = AnimIR(
+            meta: Meta(
+                width: 100, height: 100, fps: 30,
+                inPoint: 0, outPoint: 60,
+                sourceAnimRef: "test.json"
+            ),
+            rootComp: AnimIR.rootCompId,
+            comps: [
+                AnimIR.rootCompId: Composition(
+                    id: AnimIR.rootCompId,
+                    size: SizeD(width: 100, height: 100),
+                    layers: [precompLayer]
+                ),
+                precompId: Composition(
+                    id: precompId,
+                    size: SizeD(width: 100, height: 100),
+                    layers: [imageLayer]
+                )
+            ],
+            assets: AssetIndexIR(byId: ["image_0": "images/img.png"]),
+            binding: BindingInfo(
+                bindingKey: "media",
+                boundLayerId: 1,
+                boundAssetId: "image_0",
+                boundCompId: precompId
+            )
+        )
+        let commands = ir.renderCommands(frameIndex: 0)
+
+        // 4. Create white opaque texture and register via InMemoryTextureProvider
+        let texDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: 100,
+            height: 100,
+            mipmapped: false
+        )
+        texDesc.usage = [.shaderRead]
+        texDesc.storageMode = .shared
+        guard let whiteTexture = device.makeTexture(descriptor: texDesc) else {
+            throw XCTSkip("Failed to create white texture")
+        }
+
+        // Fill with opaque white (BGRA: 255, 255, 255, 255)
+        let bytesPerRow = 4 * 100
+        var pixels = [UInt8](repeating: 255, count: bytesPerRow * 100)
+        whiteTexture.replace(
+            region: MTLRegionMake2D(0, 0, 100, 100),
+            mipmapLevel: 0,
+            withBytes: &pixels,
+            bytesPerRow: bytesPerRow
+        )
+
+        let provider = InMemoryTextureProvider()
+        provider.setTexture(whiteTexture, for: "image_0")
+
+        // 5. Render offscreen
+        let privateTexture = try renderer.drawOffscreen(
+            commands: commands,
+            device: device,
+            sizePx: (width: 100, height: 100),
+            animSize: SizeD(width: 100, height: 100),
+            textureProvider: provider,
+            pathRegistry: PathRegistry()
+        )
+
+        // 6. Blit private → shared texture (for CPU read)
+        let sharedDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: 100,
+            height: 100,
+            mipmapped: false
+        )
+        sharedDesc.usage = [.shaderRead]
+        sharedDesc.storageMode = .shared
+        guard let sharedTexture = device.makeTexture(descriptor: sharedDesc),
+              let cmdQueue = device.makeCommandQueue(),
+              let cmdBuf = cmdQueue.makeCommandBuffer(),
+              let blitEncoder = cmdBuf.makeBlitCommandEncoder() else {
+            throw XCTSkip("Failed to create blit resources")
+        }
+
+        blitEncoder.copy(from: privateTexture, sourceSlice: 0, sourceLevel: 0,
+                         sourceOrigin: MTLOriginMake(0, 0, 0),
+                         sourceSize: MTLSizeMake(100, 100, 1),
+                         to: sharedTexture, destinationSlice: 0, destinationLevel: 0,
+                         destinationOrigin: MTLOriginMake(0, 0, 0))
+        blitEncoder.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+
+        // 7. Read center pixel alpha
+        var centerPixel = [UInt8](repeating: 0, count: 4)
+        sharedTexture.getBytes(
+            &centerPixel,
+            bytesPerRow: bytesPerRow,
+            from: MTLRegionMake2D(50, 50, 1, 1),
+            mipmapLevel: 0
+        )
+
+        // BGRA layout: [0]=B, [1]=G, [2]=R, [3]=A
+        let alpha = Double(centerPixel[3]) / 255.0
+
+        // 8. Assert alpha ≈ 0.5 (±0.05)
+        XCTAssertEqual(alpha, 0.5, accuracy: 0.05,
+            "Precomp at 50% container opacity should produce ~0.5 alpha in rendered output, got \(alpha)")
     }
 
     func testParenting_withParentRotation() {

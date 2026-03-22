@@ -345,7 +345,7 @@ final class InFlightFrame: @unchecked Sendable {
 ///     completion: { result in ... }
 /// )
 /// ```
-public final class VideoExporter {
+public final class VideoExporter: @unchecked Sendable {
     // MARK: - Queues
 
     /// Main export queue for frame stepping
@@ -405,6 +405,88 @@ public final class VideoExporter {
 
     public init() {}
 
+    // MARK: - Export-Owned Render Context
+
+    /// Single-scene export handoff for `exportQueue`.
+    /// Owns an export-only renderer plus immutable snapshots and a thread-safe texture provider.
+    private final class SingleSceneExportWorkItem: @unchecked Sendable {
+        let runtime: SceneRuntime
+        let snapshot: SceneRenderStateSnapshot
+        let renderer: MetalRenderer
+        let textureProvider: ExportTextureProvider
+        let pathRegistry: PathRegistry
+        let assetSizes: [String: AssetSize]
+        let videoSelections: [String: VideoSelection]
+        let settings: VideoExportSettings
+        let backgroundState: EffectiveBackgroundState?
+
+        init(
+            runtime: SceneRuntime,
+            snapshot: SceneRenderStateSnapshot,
+            renderer: MetalRenderer,
+            textureProvider: ExportTextureProvider,
+            pathRegistry: PathRegistry,
+            assetSizes: [String: AssetSize],
+            videoSelections: [String: VideoSelection],
+            settings: VideoExportSettings,
+            backgroundState: EffectiveBackgroundState?
+        ) {
+            self.runtime = runtime
+            self.snapshot = snapshot
+            self.renderer = renderer
+            self.textureProvider = textureProvider
+            self.pathRegistry = pathRegistry
+            self.assetSizes = assetSizes
+            self.videoSelections = videoSelections
+            self.settings = settings
+            self.backgroundState = backgroundState
+        }
+    }
+
+    /// Timeline export handoff for `exportQueue`.
+    /// Keeps preview and export isolated by owning a dedicated renderer/compositor pair.
+    private final class TimelineExportWorkItem: @unchecked Sendable {
+        let session: TimelineCompositionEngine.TimelineExportSession
+        let renderer: MetalRenderer
+        let transitionCompositor: TransitionCompositor
+        let totalFrames: Int
+        let canvasSize: SizeD
+        let backgroundState: EffectiveBackgroundState?
+        let backgroundTextureProvider: TextureProvider
+        let settings: TimelineExportSettings
+        let renderDiagnosticsSink: RenderDiagnosticsSink?
+
+        init(
+            session: TimelineCompositionEngine.TimelineExportSession,
+            renderer: MetalRenderer,
+            transitionCompositor: TransitionCompositor,
+            totalFrames: Int,
+            canvasSize: SizeD,
+            backgroundState: EffectiveBackgroundState?,
+            backgroundTextureProvider: TextureProvider,
+            settings: TimelineExportSettings,
+            renderDiagnosticsSink: RenderDiagnosticsSink?
+        ) {
+            self.session = session
+            self.renderer = renderer
+            self.transitionCompositor = transitionCompositor
+            self.totalFrames = totalFrames
+            self.canvasSize = canvasSize
+            self.backgroundState = backgroundState
+            self.backgroundTextureProvider = backgroundTextureProvider
+            self.settings = settings
+            self.renderDiagnosticsSink = renderDiagnosticsSink
+        }
+    }
+
+    private func makeExportRenderer(device: MTLDevice) throws -> MetalRenderer {
+        try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+    }
+
+    private func makeExportTransitionCompositor(device: MTLDevice) throws -> TransitionCompositor {
+        try TransitionCompositor(device: device, colorPixelFormat: .bgra8Unorm)
+    }
+
     // MARK: - Public API
 
     /// Exports a compiled scene to video.
@@ -412,8 +494,8 @@ public final class VideoExporter {
     /// - Parameters:
     ///   - compiledScene: Scene to export (runtime + assets)
     ///   - scenePlayer: ScenePlayer instance (MainActor) for state snapshot
-    ///   - renderer: MetalRenderer for GPU rendering
-    ///   - textureProvider: Thread-safe mutable texture provider (use ExportTextureProvider)
+    ///   - device: Metal device used to build an export-owned renderer
+    ///   - textureProvider: Thread-safe export texture provider
     ///   - pathRegistry: Path registry from compiled scene
     ///   - assetSizes: Asset sizes from mergedAssetIndex.sizeById
     ///   - userMediaService: UserMediaService for video selections snapshot (PR-E3)
@@ -425,8 +507,8 @@ public final class VideoExporter {
     public func exportVideo(
         compiledScene: CompiledScene,
         scenePlayer: ScenePlayer,
-        renderer: MetalRenderer,
-        textureProvider: MutableTextureProvider,
+        device: MTLDevice,
+        textureProvider: ExportTextureProvider,
         pathRegistry: PathRegistry,
         assetSizes: [String: AssetSize],
         userMediaService: UserMediaService?,
@@ -454,8 +536,28 @@ public final class VideoExporter {
         // Reset state
         resetState()
 
+        let exportRenderer: MetalRenderer
+        do {
+            exportRenderer = try makeExportRenderer(device: device)
+        } catch {
+            completion(.failure(VideoExportError.renderError(error)))
+            return
+        }
+
+        let workItem = SingleSceneExportWorkItem(
+            runtime: runtime,
+            snapshot: snapshot,
+            renderer: exportRenderer,
+            textureProvider: textureProvider,
+            pathRegistry: pathRegistry,
+            assetSizes: assetSizes,
+            videoSelections: videoSelections,
+            settings: settings,
+            backgroundState: backgroundState
+        )
+
         // Run export on background queue
-        exportQueue.async { [weak self] in
+        exportQueue.async { [weak self, workItem] in
             guard let self else {
                 DispatchQueue.main.async {
                     completion(.failure(VideoExportError.cancelled))
@@ -463,16 +565,18 @@ public final class VideoExporter {
                 return
             }
 
+            workItem.textureProvider.preloadAll(commandQueue: workItem.renderer.commandQueue)
+
             self.runExportLoop(
-                runtime: runtime,
-                snapshot: snapshot,
-                renderer: renderer,
-                textureProvider: textureProvider,
-                pathRegistry: pathRegistry,
-                assetSizes: assetSizes,
-                videoSelections: videoSelections,
-                settings: settings,
-                backgroundState: backgroundState,
+                runtime: workItem.runtime,
+                snapshot: workItem.snapshot,
+                renderer: workItem.renderer,
+                textureProvider: workItem.textureProvider,
+                pathRegistry: workItem.pathRegistry,
+                assetSizes: workItem.assetSizes,
+                videoSelections: workItem.videoSelections,
+                settings: workItem.settings,
+                backgroundState: workItem.backgroundState,
                 progress: progress,
                 completion: completion
             )
@@ -977,8 +1081,6 @@ public final class VideoExporter {
     ///
     /// - Parameters:
     ///   - engine: TimelineCompositionEngine with configured timeline
-    ///   - renderer: MetalRenderer for GPU rendering
-    ///   - transitionCompositor: TransitionCompositor for transition effects
     ///   - backgroundState: Background state for rendering
     ///   - settings: Export configuration
     ///   - progress: Progress callback (0.0 - 1.0), called on main queue
@@ -986,11 +1088,10 @@ public final class VideoExporter {
     @MainActor
     public func exportTimeline(
         engine: TimelineCompositionEngine,
-        renderer: MetalRenderer,
-        transitionCompositor: TransitionCompositor,
         backgroundState: EffectiveBackgroundState?,
         backgroundTextureProvider: TextureProvider,
         settings: TimelineExportSettings,
+        renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
@@ -1007,7 +1108,12 @@ public final class VideoExporter {
         resetState()
 
         // TT-05: Build immutable export session on MainActor, then dispatch to background
-        Task {
+        Task { @MainActor [weak self] in
+            guard let self else {
+                completion(.failure(VideoExportError.cancelled))
+                return
+            }
+
             let session: TimelineCompositionEngine.TimelineExportSession
             do {
                 session = try await engine.buildExportSession()
@@ -1021,36 +1127,31 @@ public final class VideoExporter {
             let totalFrames = session.transitionMath.compressedDurationFrames
             let canvasSize = session.canvasSize
 
-            // Build audio pipeline if configured
-            var audioPipeline: BuiltAudioPipeline?
-            if let audioConfig = settings.audio {
-                do {
-                    let builder = AudioCompositionBuilder()
-                    audioPipeline = try builder.buildTimeline(
-                        sceneData: session.audioSceneData,
-                        transitionMath: session.transitionMath,
-                        fps: settings.fps,
-                        config: audioConfig
-                    )
-                } catch {
-                    DispatchQueue.main.async {
-                        completion(.failure(VideoExportError.failedToBuildAudioPipeline(error)))
-                    }
-                    return
+            let exportRenderer: MetalRenderer
+            let exportCompositor: TransitionCompositor
+            do {
+                exportRenderer = try self.makeExportRenderer(device: engine.device)
+                exportCompositor = try self.makeExportTransitionCompositor(device: engine.device)
+            } catch {
+                DispatchQueue.main.async {
+                    completion(.failure(VideoExportError.renderError(error)))
                 }
+                return
             }
 
-            // Capture for background handoff — these are handed off to exportQueue
-            // and not accessed concurrently; nonisolated(unsafe) silences sendability warnings.
-            let device = engine.device
-            nonisolated(unsafe) let exportSession = session
-            nonisolated(unsafe) let exportRenderer = renderer
-            nonisolated(unsafe) let exportCompositor = transitionCompositor
-            nonisolated(unsafe) let exportBgProvider = backgroundTextureProvider
-            nonisolated(unsafe) let exportAudioPipeline = audioPipeline
+            let workItem = TimelineExportWorkItem(
+                session: session,
+                renderer: exportRenderer,
+                transitionCompositor: exportCompositor,
+                totalFrames: totalFrames,
+                canvasSize: canvasSize,
+                backgroundState: backgroundState,
+                backgroundTextureProvider: backgroundTextureProvider,
+                settings: settings,
+                renderDiagnosticsSink: renderDiagnosticsSink
+            )
 
-            // Run export on background queue
-            exportQueue.async { [weak self] in
+            self.exportQueue.async { [weak self, workItem] in
                 guard let self else {
                     DispatchQueue.main.async {
                         completion(.failure(VideoExportError.cancelled))
@@ -1058,17 +1159,35 @@ public final class VideoExporter {
                     return
                 }
 
+                var audioPipeline: BuiltAudioPipeline?
+                if let audioConfig = workItem.settings.audio {
+                    do {
+                        let builder = AudioCompositionBuilder()
+                        audioPipeline = try builder.buildTimeline(
+                            sceneData: workItem.session.audioSceneData,
+                            transitionMath: workItem.session.transitionMath,
+                            fps: workItem.settings.fps,
+                            config: audioConfig
+                        )
+                    } catch {
+                        DispatchQueue.main.async {
+                            completion(.failure(VideoExportError.failedToBuildAudioPipeline(error)))
+                        }
+                        return
+                    }
+                }
+
                 self.runTimelineExportLoop(
-                    session: exportSession,
-                    device: device,
-                    renderer: exportRenderer,
-                    transitionCompositor: exportCompositor,
-                    totalFrames: totalFrames,
-                    canvasSize: canvasSize,
-                    backgroundState: backgroundState,
-                    backgroundTextureProvider: exportBgProvider,
-                    audioPipeline: exportAudioPipeline,
-                    settings: settings,
+                    session: workItem.session,
+                    renderer: workItem.renderer,
+                    transitionCompositor: workItem.transitionCompositor,
+                    totalFrames: workItem.totalFrames,
+                    canvasSize: workItem.canvasSize,
+                    backgroundState: workItem.backgroundState,
+                    backgroundTextureProvider: workItem.backgroundTextureProvider,
+                    audioPipeline: audioPipeline,
+                    settings: workItem.settings,
+                    renderDiagnosticsSink: workItem.renderDiagnosticsSink,
                     progress: progress,
                     completion: completion
                 )
@@ -1080,7 +1199,6 @@ public final class VideoExporter {
 
     private func runTimelineExportLoop(
         session: TimelineCompositionEngine.TimelineExportSession,
-        device: MTLDevice,
         renderer: MetalRenderer,
         transitionCompositor: TransitionCompositor,
         totalFrames: Int,
@@ -1089,6 +1207,7 @@ public final class VideoExporter {
         backgroundTextureProvider: TextureProvider,
         audioPipeline: BuiltAudioPipeline?,
         settings: TimelineExportSettings,
+        renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
@@ -1220,7 +1339,7 @@ public final class VideoExporter {
             exportRuntime = try TimelineExportRuntime(
                 session: session,
                 textureCache: textureCache,
-                coordinatorFactory: TimelineExportRuntime.makeDefaultFactory(device: device)
+                coordinatorFactory: TimelineExportRuntime.makeDefaultFactory(device: renderer.commandQueue.device)
             )
         } catch {
             writer.cancelWriting()
@@ -1302,14 +1421,16 @@ public final class VideoExporter {
                         backgroundTextureProvider: backgroundTextureProvider,
                         clearColorOverride: settings.clearColor,
                         presentationDrawable: nil,
-                        waitUntilCompleted: true
+                        waitUntilCompleted: true,
+                        diagnosticFrameTag: frameIndex
                     )
                     do {
                         try TimelineRenderExecutor.render(
                             request, renderer: renderer,
                             commandQueue: renderer.commandQueue,
                             transitionCompositor: transitionCompositor,
-                            completionQueue: nil
+                            completionQueue: nil,
+                            renderSink: renderDiagnosticsSink
                         )
                     } catch let error as TimelineRenderExecutorError {
                         switch error {

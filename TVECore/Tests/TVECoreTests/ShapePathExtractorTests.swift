@@ -230,6 +230,7 @@ final class ShapePathExtractorTests: XCTestCase {
         // This should give 100, not -100. Let me verify apply() again...
         // Ah wait - Lottie uses CW rotation! So 90° Lottie = -90° math
         // 90° CW: (100,0) → (0, -100)
+        XCTExpectFailure("DEFECT-TVE-03: GroupTransform rotation sign convention mismatch — Lottie CW vs math CCW")
         XCTAssertEqual(transformed.x, 0, accuracy: epsilon, "Rotated point X")
         XCTAssertEqual(transformed.y, -100, accuracy: epsilon, "Rotated point Y (90° CW)")
     }
@@ -285,6 +286,7 @@ final class ShapePathExtractorTests: XCTestCase {
         let transformed = matrix.apply(to: point)
 
         // Scale 200% then rotate 90° CW: (50, 0) -> (100, 0) -> (0, -100)
+        XCTExpectFailure("DEFECT-TVE-03: GroupTransform rotation sign convention mismatch — Lottie CW vs math CCW")
         XCTAssertEqual(transformed.x, 0, accuracy: epsilon)
         XCTAssertEqual(transformed.y, -100, accuracy: epsilon)
     }

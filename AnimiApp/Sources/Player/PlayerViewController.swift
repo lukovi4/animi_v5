@@ -157,6 +157,8 @@ final class PlayerViewController: UIViewController {
     private var transitionCompositor: TransitionCompositor?
     /// Cached resolved frame for timeline mode (pre-resolved async before draw).
     private var cachedTimelineFrame: ResolvedTimelineFrame?
+    /// Cached compressed frame matching cachedTimelineFrame (for diagnostic tag).
+    private var cachedTimelineCompressedFrame: Int?
     /// Current compressed frame for timeline mode (for scrub invalidation).
     private var currentCompressedFrame: Int = 0
 
@@ -1397,6 +1399,7 @@ final class PlayerViewController: UIViewController {
             case .resolved(let resolved):
                 // Cache resolved frame for draw()
                 self.cachedTimelineFrame = resolved
+                self.cachedTimelineCompressedFrame = compressedFrame
 
                 // PR-F: Set activeSceneInstanceId from engine (required for controller invariants)
                 // For single: use context's sceneInstanceId
@@ -1992,7 +1995,7 @@ final class PlayerViewController: UIViewController {
 
         // Single-scene export (only for single-scene projects)
         // 1. Guard dependencies
-        guard let renderer = renderer,
+        guard let device = metalView.device,
               let compiled = compiledScene,
               let player = scenePlayer,
               let mainTextureProvider = textureProvider,
@@ -2002,16 +2005,12 @@ final class PlayerViewController: UIViewController {
         }
 
         // 2. Create ExportTextureProvider
-        let device = renderer.commandQueue.device
         let exportTP = ExportTextureProvider(
             device: device,
             assetIndex: compiled.mergedAssetIndex,
             resolver: resolver,
             bindingAssetIds: compiled.bindingAssetIds
         )
-
-        // Preload package assets
-        exportTP.preloadAll(commandQueue: renderer.commandQueue)
 
         // Inject user media textures from main provider
         exportTP.injectTextures(from: mainTextureProvider, for: compiled.bindingAssetIds)
@@ -2102,7 +2101,7 @@ final class PlayerViewController: UIViewController {
                 exporter.exportVideo(
                     compiledScene: compiled,
                     scenePlayer: player,
-                    renderer: renderer,
+                    device: device,
                     textureProvider: exportTP,
                     pathRegistry: compiled.pathRegistry,
                     assetSizes: compiled.mergedAssetIndex.sizeById,
@@ -2144,12 +2143,6 @@ final class PlayerViewController: UIViewController {
     /// Exports multi-scene timeline with transitions.
     /// Uses TimelineCompositionEngine and TransitionCompositor.
     private func startTimelineExport(engine: TimelineCompositionEngine) {
-        guard let renderer = renderer,
-              let compositor = transitionCompositor else {
-            log("[Export] ERROR: Missing renderer or compositor for timeline export")
-            return
-        }
-
         guard let transitionMath = engine.transitionMath else {
             log("[Export] ERROR: No timeline configured")
             return
@@ -2238,8 +2231,6 @@ final class PlayerViewController: UIViewController {
 
                 exporter.exportTimeline(
                     engine: engine,
-                    renderer: renderer,
-                    transitionCompositor: compositor,
                     backgroundState: self.effectiveBackgroundState,
                     backgroundTextureProvider: exportBackgroundProvider,
                     settings: settings,
@@ -2300,11 +2291,6 @@ final class PlayerViewController: UIViewController {
         } else {
             startPlayback()
         }
-    }
-
-    @objc private func metalViewTapped(_ recognizer: UITapGestureRecognizer) {
-        // PR-E: Block selection via tap is now handled by Scene Edit mode
-        // This handler is legacy dev-UI path - no-op in production
     }
 
     // PR-D: Tap handler for Scene Edit mode (on overlayView)
@@ -3454,7 +3440,8 @@ extension PlayerViewController: MTKViewDelegate {
             backgroundTextureProvider: backgroundTextureProvider,
             clearColorOverride: nil,
             presentationDrawable: drawable,
-            waitUntilCompleted: false
+            waitUntilCompleted: false,
+            diagnosticFrameTag: cachedTimelineCompressedFrame
         )
 
         do {
@@ -3462,7 +3449,8 @@ extension PlayerViewController: MTKViewDelegate {
                 request, renderer: renderer,
                 commandQueue: cmdQueue, transitionCompositor: nil,
                 completionQueue: nil,
-                onCommandBufferCompleted: { [weak self] _ in self?.inFlightSemaphore.signal() }
+                onCommandBufferCompleted: { [weak self] _ in self?.inFlightSemaphore.signal() },
+                renderSink: timelineCompositionEngine?.renderDiagnosticsSink
             )
         } catch {
             inFlightSemaphore.signal()
@@ -3519,7 +3507,8 @@ extension PlayerViewController: MTKViewDelegate {
             backgroundTextureProvider: backgroundTextureProvider,
             clearColorOverride: nil,
             presentationDrawable: drawable,
-            waitUntilCompleted: false
+            waitUntilCompleted: false,
+            diagnosticFrameTag: cachedTimelineCompressedFrame
         )
 
         do {
@@ -3527,7 +3516,8 @@ extension PlayerViewController: MTKViewDelegate {
                 request, renderer: renderer,
                 commandQueue: cmdQueue, transitionCompositor: compositor,
                 completionQueue: .main,
-                onCommandBufferCompleted: { [weak self] _ in self?.inFlightSemaphore.signal() }
+                onCommandBufferCompleted: { [weak self] _ in self?.inFlightSemaphore.signal() },
+                renderSink: timelineCompositionEngine?.renderDiagnosticsSink
             )
         } catch {
             inFlightSemaphore.signal()

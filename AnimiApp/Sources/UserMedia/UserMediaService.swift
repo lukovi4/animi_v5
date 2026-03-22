@@ -969,14 +969,6 @@ public final class UserMediaService {
         return syntheticFrame
     }
 
-    /// Legacy compatibility: Updates video textures (calls scrub mode internally).
-    ///
-    /// - Parameter sceneFrameIndex: Current frame index in the scene timeline
-    @available(*, deprecated, message: "Use updateVideoFramesForPlayback/Scrub/Frozen instead")
-    public func updateAllVideoFrames(sceneFrameIndex: Int) {
-        updateVideoFramesForScrub(sceneFrameIndex: sceneFrameIndex)
-    }
-
     // MARK: - Clear API
 
     /// Clears user media for a block.

@@ -327,22 +327,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     // MARK: - Configuration
 
-    /// Configures timeline with duration in microseconds and template FPS.
-    /// Does NOT reset position - use restoreState() to set position after configure.
-    /// PR4: Legacy single-scene API, converts to scenes array internally.
-    /// - Parameters:
-    ///   - durationUs: Duration in microseconds (source of truth)
-    ///   - templateFPS: Template frame rate for quantization
-    @available(*, deprecated, message: "Use configure(scenes:boundaries:templateFPS:minSceneDurationUs:)")
-    func configure(durationUs: TimeUs, templateFPS: Int) {
-        #if DEBUG
-        assertionFailure("Legacy timeline API. Use configure(scenes:boundaries:templateFPS:minSceneDurationUs:) via EditorStore snapshot.")
-        #endif
-        // Convert to single-scene array for PR4 compatibility
-        let singleScene = SceneDraft(id: UUID(), durationUs: durationUs)
-        configure(scenes: [singleScene], boundaries: [], templateFPS: templateFPS, minSceneDurationUs: ProjectDraft.minSceneDurationUs)
-    }
-
     /// Sets the playhead mapper for offset ↔ compressed frame conversion.
     /// Called by EditorLayoutContainerView when timeline structure changes.
     func setMapper(_ mapper: TimelinePlayheadMapper) {

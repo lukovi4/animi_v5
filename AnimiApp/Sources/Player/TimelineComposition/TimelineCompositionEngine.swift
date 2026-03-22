@@ -55,6 +55,12 @@ public final class TimelineCompositionEngine {
     /// Public init provides production closure, internal init for tests.
     private let runtimeFactory: (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime
 
+    /// Diagnostics sink for runtime events (test-only, nil in production).
+    internal private(set) var runtimeDiagnosticsSink: RuntimeDiagnosticsSink?
+
+    /// Diagnostics sink for render events (test-only, nil in production).
+    internal private(set) var renderDiagnosticsSink: RenderDiagnosticsSink?
+
     // MARK: - Init
 
     public init(
@@ -68,6 +74,8 @@ public final class TimelineCompositionEngine {
         self.fps = fps
         self.budgetCoordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: maxActiveDecoders)
         self.resourcesCache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        self.runtimeDiagnosticsSink = nil
+        self.renderDiagnosticsSink = nil
         // TT-02: Production factory
         self.runtimeFactory = { instanceId, resources, dev, queue in
             SceneInstanceRuntime(
@@ -86,7 +94,9 @@ public final class TimelineCompositionEngine {
         fps: Int = 30,
         maxActiveDecoders: Int = 3,
         resourcesCache: SceneTypeResourcesCache,
-        runtimeFactory: @escaping (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime
+        runtimeFactory: @escaping (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime,
+        runtimeDiagnosticsSink: RuntimeDiagnosticsSink? = nil,
+        renderDiagnosticsSink: RenderDiagnosticsSink? = nil
     ) {
         self.device = device
         self.commandQueue = commandQueue
@@ -94,6 +104,8 @@ public final class TimelineCompositionEngine {
         self.budgetCoordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: maxActiveDecoders)
         self.resourcesCache = resourcesCache
         self.runtimeFactory = runtimeFactory
+        self.runtimeDiagnosticsSink = runtimeDiagnosticsSink
+        self.renderDiagnosticsSink = renderDiagnosticsSink
     }
 
     // MARK: - Configuration
@@ -374,6 +386,7 @@ public final class TimelineCompositionEngine {
             }
 
             // Both ready
+            runtimeDiagnosticsSink?.receive(.transitionPartnerReady(instanceIdA: instanceIdA, instanceIdB: instanceIdB))
             let contextA = runtimeA.makeRenderContext(localFrame: frameA)
             let contextB = runtimeB.makeRenderContext(localFrame: frameB)
             let transitionContext = TransitionRenderContext(
@@ -467,9 +480,12 @@ public final class TimelineCompositionEngine {
             resources = cached
         } else {
             // Preload fallback - load resources if not cached
+            runtimeDiagnosticsSink?.receive(.sceneTypePreloadStarted(sceneTypeId: sceneTypeId))
             do {
                 resources = try await resourcesCache.preload(sceneTypeId: sceneTypeId)
+                runtimeDiagnosticsSink?.receive(.sceneTypePreloadCompleted(sceneTypeId: sceneTypeId))
             } catch {
+                runtimeDiagnosticsSink?.receive(.sceneTypePreloadFailed(sceneTypeId: sceneTypeId, error: error.localizedDescription))
                 #if DEBUG
                 print("[TimelineCompositionEngine] Failed to preload resources for \(sceneTypeId): \(error.localizedDescription)")
                 #endif
@@ -479,6 +495,9 @@ public final class TimelineCompositionEngine {
 
         // TT-02: Create instance runtime via factory
         let runtime = runtimeFactory(instanceId, resources, device, commandQueue)
+
+        // Propagate diagnostics sink to runtime
+        runtime.runtimeDiagnosticsSink = runtimeDiagnosticsSink
 
         // Apply state if available
         if let state = sceneStates[instanceId] {
@@ -508,6 +527,7 @@ public final class TimelineCompositionEngine {
         for instanceId in toEvict {
             if let runtime = instanceRuntimes.removeValue(forKey: instanceId) {
                 runtime.pause()
+                runtimeDiagnosticsSink?.receive(.evictionDecision(instanceId: instanceId, tier: "evictable"))
                 #if DEBUG
                 print("[TimelineCompositionEngine] TT-03: Evicted non-resident runtime: \(instanceId)")
                 #endif
@@ -526,52 +546,87 @@ public final class TimelineCompositionEngine {
         evictNonResidentRuntimes(math: math)
     }
 
-    /// Computes playback budget grants for active runtime(s).
+    /// Returns boundary-aligned local frames for warm scenes around the current render mode.
+    /// Previous warm scenes prepare at their last frame, next warm scenes at frame 0.
+    private func warmPresentationTargets(
+        math: TimelineTransitionMath,
+        mode: TimelineTransitionMath.RenderMode
+    ) -> [UUID: Int] {
+        var targets: [UUID: Int] = [:]
+
+        switch mode {
+        case .single(let sceneIndex, _):
+            if sceneIndex > 0 {
+                let prevIndex = sceneIndex - 1
+                targets[math.sceneItems[prevIndex].id] = max(0, math.durationFrames(forSceneAt: prevIndex) - 1)
+            }
+            if sceneIndex < math.sceneItems.count - 1 {
+                let nextIndex = sceneIndex + 1
+                targets[math.sceneItems[nextIndex].id] = 0
+            }
+
+        case .transition(let aIndex, _, let bIndex, _, _, _):
+            let minIndex = min(aIndex, bIndex)
+            let maxIndex = max(aIndex, bIndex)
+            if minIndex > 0 {
+                let prevIndex = minIndex - 1
+                targets[math.sceneItems[prevIndex].id] = max(0, math.durationFrames(forSceneAt: prevIndex) - 1)
+            }
+            if maxIndex < math.sceneItems.count - 1 {
+                let nextIndex = maxIndex + 1
+                targets[math.sceneItems[nextIndex].id] = 0
+            }
+        }
+
+        return targets
+    }
+
+    /// Returns local frames for every scene eligible for decoder allocation.
+    /// Includes pinned scenes from the current render mode and warm scenes at their boundary frames.
+    private func decoderAllocationLocalFrames(
+        math: TimelineTransitionMath,
+        mode: TimelineTransitionMath.RenderMode
+    ) -> [UUID: Int] {
+        var localFrames = warmPresentationTargets(math: math, mode: mode)
+
+        switch mode {
+        case .single(let sceneIndex, let localFrame):
+            guard sceneIndex < math.sceneItems.count else { return localFrames }
+            localFrames[math.sceneItems[sceneIndex].id] = localFrame
+
+        case .transition(let aIndex, let frameA, let bIndex, let frameB, _, _):
+            guard aIndex < math.sceneItems.count,
+                  bIndex < math.sceneItems.count else { return localFrames }
+            localFrames[math.sceneItems[aIndex].id] = frameA
+            localFrames[math.sceneItems[bIndex].id] = frameB
+        }
+
+        return localFrames
+    }
+
+    /// Computes playback budget grants for all decoder-allocation participants.
     /// Returns mapping of instanceId -> granted blockIds.
     /// - Parameters:
-    ///   - compressedFrame: Current compressed frame.
     ///   - math: Timeline transition math.
     ///   - mode: Current render mode (single or transition).
     /// - Returns: Dictionary mapping instance ID to granted block IDs.
     private func playbackBudgetGrants(
-        compressedFrame: Int,
         math: TimelineTransitionMath,
         mode: TimelineTransitionMath.RenderMode
     ) -> [UUID: Set<String>] {
-        // 1. Determine active instance IDs
-        var activeInstanceIds: [(id: UUID, localFrame: Int)] = []
-
-        switch mode {
-        case .single(let sceneIndex, let localFrame):
-            guard sceneIndex < math.sceneItems.count else { return [:] }
-            let instanceId = math.sceneItems[sceneIndex].id
-            if budgetCoordinator.shouldHaveActiveDecoders(for: instanceId) {
-                activeInstanceIds.append((instanceId, localFrame))
-            }
-
-        case .transition(let aIndex, let frameA, let bIndex, let frameB, _, _):
-            guard aIndex < math.sceneItems.count,
-                  bIndex < math.sceneItems.count else { return [:] }
-            let idA = math.sceneItems[aIndex].id
-            let idB = math.sceneItems[bIndex].id
-
-            if budgetCoordinator.shouldHaveActiveDecoders(for: idA) {
-                activeInstanceIds.append((idA, frameA))
-            }
-            if budgetCoordinator.shouldHaveActiveDecoders(for: idB) {
-                activeInstanceIds.append((idB, frameB))
-            }
+        let localFramesByInstanceId = decoderAllocationLocalFrames(math: math, mode: mode)
+        let allocationInstanceIds = localFramesByInstanceId.keys.filter {
+            budgetCoordinator.shouldHaveActiveDecoders(for: $0)
         }
 
-        // 2. If no active instances, return empty grants for all
-        guard !activeInstanceIds.isEmpty else {
+        guard !allocationInstanceIds.isEmpty else {
             return [:]
         }
 
-        // 3. Get scene rank for prioritization
+        // 1. Get scene rank for prioritization
         let sceneRank: [UUID: Int] = {
             let prioritized = budgetCoordinator.prioritizedInstances(
-                from: Set(activeInstanceIds.map(\.id)),
+                from: Set(allocationInstanceIds),
                 sceneItems: math.sceneItems
             )
             var rank: [UUID: Int] = [:]
@@ -581,7 +636,7 @@ public final class TimelineCompositionEngine {
             return rank
         }()
 
-        // 4. Collect candidates from all active runtimes
+        // 2. Collect candidates from all eligible runtimes
         struct FlatCandidate {
             let instanceId: UUID
             let blockId: String
@@ -591,7 +646,8 @@ public final class TimelineCompositionEngine {
 
         var flatCandidates: [FlatCandidate] = []
 
-        for (instanceId, localFrame) in activeInstanceIds {
+        for instanceId in allocationInstanceIds {
+            guard let localFrame = localFramesByInstanceId[instanceId] else { continue }
             guard let runtime = instanceRuntimes[instanceId] else { continue }
             let candidates = runtime.playbackCandidates(at: localFrame)
             let rank = sceneRank[instanceId] ?? 0
@@ -606,7 +662,7 @@ public final class TimelineCompositionEngine {
             }
         }
 
-        // 5. Sort globally: isVisible desc → area desc → zIndex desc → sceneRank asc → instanceId asc → blockId asc
+        // 3. Sort globally: isVisible desc → area desc → zIndex desc → sceneRank asc → instanceId asc → blockId asc
         flatCandidates.sort { a, b in
             if a.priority.isVisible != b.priority.isVisible {
                 return a.priority.isVisible
@@ -626,14 +682,14 @@ public final class TimelineCompositionEngine {
             return a.blockId < b.blockId
         }
 
-        // 6. Take prefix(maxActiveDecoders)
+        // 4. Take prefix(maxActiveDecoders)
         let granted = flatCandidates.prefix(budgetCoordinator.maxActiveDecoders)
 
-        // 7. Group back into [UUID: Set<String>]
+        // 5. Group back into [UUID: Set<String>]
         var result: [UUID: Set<String>] = [:]
 
-        // Initialize all active instances with empty sets
-        for (instanceId, _) in activeInstanceIds {
+        // Initialize all eligible instances with empty sets
+        for instanceId in allocationInstanceIds {
             result[instanceId] = []
         }
 
@@ -666,6 +722,7 @@ public final class TimelineCompositionEngine {
     ) {
         // Step 1: Compute active instance IDs from current render mode
         var activeInstanceIds: Set<UUID> = []
+        let localFramesByInstanceId = decoderAllocationLocalFrames(math: math, mode: mode)
         switch mode {
         case .single(let sceneIndex, _):
             guard sceneIndex < math.sceneItems.count else { return }
@@ -683,32 +740,25 @@ public final class TimelineCompositionEngine {
             budgetCoordinator.pinnedInstanceIds.union(budgetCoordinator.warmInstanceIds)
         )
 
-        // Step 3: For active runtimes - apply budget-aware playback
-        switch mode {
-        case .single(let sceneIndex, let localFrame):
-            let instanceId = math.sceneItems[sceneIndex].id
-            if isStart {
-                instanceRuntimes[instanceId]?.startPlayback(at: localFrame, grantedBlockIds: grants[instanceId] ?? [])
-            } else {
-                instanceRuntimes[instanceId]?.syncPlaybackTick(localFrame, grantedBlockIds: grants[instanceId] ?? [])
-            }
+        // Step 3: Update active scenes and warm scenes that actually received spare grants.
+        var syncedInstanceIds: Set<UUID> = []
+        for instanceId in residentIds {
+            guard let localFrame = localFramesByInstanceId[instanceId] else { continue }
+            let grantedBlockIds = grants[instanceId] ?? []
+            let shouldSync = activeInstanceIds.contains(instanceId) || !grantedBlockIds.isEmpty
+            guard shouldSync else { continue }
 
-        case .transition(let aIndex, let frameA, let bIndex, let frameB, _, _):
-            let instanceIdA = math.sceneItems[aIndex].id
-            let instanceIdB = math.sceneItems[bIndex].id
             if isStart {
-                instanceRuntimes[instanceIdA]?.startPlayback(at: frameA, grantedBlockIds: grants[instanceIdA] ?? [])
-                instanceRuntimes[instanceIdB]?.startPlayback(at: frameB, grantedBlockIds: grants[instanceIdB] ?? [])
+                instanceRuntimes[instanceId]?.startPlayback(at: localFrame, grantedBlockIds: grantedBlockIds)
             } else {
-                instanceRuntimes[instanceIdA]?.syncPlaybackTick(frameA, grantedBlockIds: grants[instanceIdA] ?? [])
-                instanceRuntimes[instanceIdB]?.syncPlaybackTick(frameB, grantedBlockIds: grants[instanceIdB] ?? [])
+                instanceRuntimes[instanceId]?.syncPlaybackTick(localFrame, grantedBlockIds: grantedBlockIds)
             }
+            syncedInstanceIds.insert(instanceId)
         }
 
-        // Step 4: For resident non-active runtimes - deactivate preserving textures
-        // This is the critical fix: warm runtimes that were previously active
-        // must be soft-stopped to release decoder slots while keeping textures
-        for instanceId in residentIds where !activeInstanceIds.contains(instanceId) {
+        // Step 4: Resident runtimes without active grants keep last texture but release decoder slots.
+        for instanceId in residentIds
+        where !activeInstanceIds.contains(instanceId) && !syncedInstanceIds.contains(instanceId) {
             instanceRuntimes[instanceId]?.deactivatePlaybackPreservingTextures()
         }
     }
@@ -727,7 +777,7 @@ public final class TimelineCompositionEngine {
         evictNonResidentRuntimes(math: math)
 
         // TT-03: Compute budget grants
-        let grants = playbackBudgetGrants(compressedFrame: compressedFrame, math: math, mode: mode)
+        let grants = playbackBudgetGrants(math: math, mode: mode)
 
         // TT-03 Completion: Apply budget to all resident runtimes
         applyPlaybackBudget(mode: mode, math: math, grants: grants, isStart: false)
@@ -747,7 +797,7 @@ public final class TimelineCompositionEngine {
         evictNonResidentRuntimes(math: math)
 
         // TT-03: Compute budget grants
-        let grants = playbackBudgetGrants(compressedFrame: compressedFrame, math: math, mode: mode)
+        let grants = playbackBudgetGrants(math: math, mode: mode)
 
         // TT-03 Completion: Apply budget to all resident runtimes
         applyPlaybackBudget(mode: mode, math: math, grants: grants, isStart: true)
@@ -784,7 +834,7 @@ public final class TimelineCompositionEngine {
 
     /// TT-02: Prepares scene resources for playback.
     /// PHASE 1: Awaits exact readiness for active mode (single or both transition scenes).
-    /// PHASE 2: Opportunistic create for warm scenes (no readiness wait).
+    /// PHASE 2: Awaits warm-scene readiness at boundary-aligned frames.
     public func prepareForPlayback(startingAt compressedFrame: Int = 0) async {
         guard let math = transitionMath else { return }
 
@@ -822,10 +872,17 @@ public final class TimelineCompositionEngine {
             _ = await stateBTask
         }
 
-        // PHASE 2: Opportunistic create for warm scenes (no await readiness)
-        // Failures not surfaced here - will come through resolveFrame
-        for instanceId in budgetCoordinator.warmInstanceIds {
-            _ = await getOrCreateRuntime(for: instanceId)
+        // PHASE 2: Warm scenes must be ready before they can satisfy the first-correct-frame contract.
+        let warmTargets = warmPresentationTargets(math: math, mode: renderMode)
+        let orderedWarmIds = budgetCoordinator.prioritizedInstances(
+            from: budgetCoordinator.warmInstanceIds,
+            sceneItems: math.sceneItems
+        )
+        for instanceId in orderedWarmIds {
+            guard let targetFrame = warmTargets[instanceId] else { continue }
+            if let runtime = await getOrCreateRuntime(for: instanceId) {
+                _ = await runtime.waitUntilReadyForPresentation(at: targetFrame)
+            }
         }
 
         // TT-03: PHASE 3: Evict non-resident runtimes
@@ -857,6 +914,49 @@ public final class TimelineCompositionEngine {
             return .zero
         }
         return SizeD(width: Double(canvas.width), height: Double(canvas.height))
+    }
+
+    // MARK: - Test-Only Budget Probe
+
+    /// Test-only snapshot of playback budget state.
+    internal struct PlaybackBudgetSnapshot {
+        let mode: TimelineTransitionMath.RenderMode
+        let pinnedInstanceIds: Set<UUID>
+        let warmInstanceIds: Set<UUID>
+        let grantsByInstance: [UUID: Set<String>]
+        let activeInstanceIdsUsedForGrantComputation: [UUID]
+    }
+
+    /// Test-only: returns a snapshot of the budget state at the given compressed frame
+    /// without mutating any runtime state (no side effects on runtimes).
+    /// - Parameter compressedFrame: Compressed timeline frame.
+    /// - Returns: Budget snapshot, or nil if no timeline/math.
+    internal func debugPlaybackBudgetSnapshot(at compressedFrame: Int) -> PlaybackBudgetSnapshot? {
+        guard let math = transitionMath,
+              let renderMode = math.renderMode(for: compressedFrame) else { return nil }
+
+        // Update budget coordinator (determines pinned/warm sets)
+        budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
+
+        // Compute grants using existing method (read-only w.r.t. runtimes)
+        let grants = playbackBudgetGrants(math: math, mode: renderMode)
+
+        let activeIds = budgetCoordinator.prioritizedInstances(
+            from: Set(
+                decoderAllocationLocalFrames(math: math, mode: renderMode).keys.filter {
+                    budgetCoordinator.shouldHaveActiveDecoders(for: $0)
+                }
+            ),
+            sceneItems: math.sceneItems
+        )
+
+        return PlaybackBudgetSnapshot(
+            mode: renderMode,
+            pinnedInstanceIds: budgetCoordinator.pinnedInstanceIds,
+            warmInstanceIds: budgetCoordinator.warmInstanceIds,
+            grantsByInstance: grants,
+            activeInstanceIdsUsedForGrantComputation: activeIds
+        )
     }
 
     // MARK: - Export Support

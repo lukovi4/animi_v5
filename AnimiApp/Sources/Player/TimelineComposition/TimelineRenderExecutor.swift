@@ -22,6 +22,32 @@ internal struct TimelineRenderRequest {
     let clearColorOverride: ClearColor?   // nil -> renderer default; non-nil -> explicit
     let presentationDrawable: MTLDrawable?
     let waitUntilCompleted: Bool
+    /// Optional diagnostic frame tag (compressed frame for preview, export frame index for export).
+    let diagnosticFrameTag: Int?
+
+    init(
+        resolved: ResolvedTimelineFrame,
+        targetTexture: MTLTexture,
+        drawableScale: Double,
+        timelineCanvasSize: SizeD,
+        backgroundState: EffectiveBackgroundState?,
+        backgroundTextureProvider: TextureProvider?,
+        clearColorOverride: ClearColor?,
+        presentationDrawable: MTLDrawable?,
+        waitUntilCompleted: Bool,
+        diagnosticFrameTag: Int? = nil
+    ) {
+        self.resolved = resolved
+        self.targetTexture = targetTexture
+        self.drawableScale = drawableScale
+        self.timelineCanvasSize = timelineCanvasSize
+        self.backgroundState = backgroundState
+        self.backgroundTextureProvider = backgroundTextureProvider
+        self.clearColorOverride = clearColorOverride
+        self.presentationDrawable = presentationDrawable
+        self.waitUntilCompleted = waitUntilCompleted
+        self.diagnosticFrameTag = diagnosticFrameTag
+    }
 }
 
 /// Single composition contract for both preview and export paths.
@@ -43,7 +69,8 @@ internal enum TimelineRenderExecutor {
         commandQueue: MTLCommandQueue,
         transitionCompositor: TransitionCompositor?,
         completionQueue: DispatchQueue?,
-        onCommandBufferCompleted: ((MTLCommandBuffer) -> Void)? = nil
+        onCommandBufferCompleted: ((MTLCommandBuffer) -> Void)? = nil,
+        renderSink: RenderDiagnosticsSink? = nil
     ) throws {
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw TimelineRenderExecutorError.failedToCreateCommandBuffer
@@ -57,11 +84,20 @@ internal enum TimelineRenderExecutor {
             guard let compositor = transitionCompositor else {
                 throw TimelineRenderExecutorError.missingTransitionCompositor
             }
+            let encodeStart = CFAbsoluteTimeGetCurrent()
             try renderTransition(
                 request: request, context: ctx,
                 renderer: renderer, compositor: compositor,
-                commandBuffer: cmdBuf, completionQueue: completionQueue
+                commandBuffer: cmdBuf, completionQueue: completionQueue,
+                renderSink: renderSink
             )
+            let encodeTime = CFAbsoluteTimeGetCurrent() - encodeStart
+            renderSink?.receive(.compositorEncodeTime(seconds: encodeTime))
+        }
+
+        // Emit firstCompositedFrame if diagnostic tag is set
+        if let frameTag = request.diagnosticFrameTag {
+            renderSink?.receive(.firstCompositedFrame(frameTag: frameTag))
         }
 
         if let drawable = request.presentationDrawable {
@@ -138,7 +174,8 @@ internal enum TimelineRenderExecutor {
         renderer: MetalRenderer,
         compositor: TransitionCompositor,
         commandBuffer: MTLCommandBuffer,
-        completionQueue: DispatchQueue?
+        completionQueue: DispatchQueue?,
+        renderSink: RenderDiagnosticsSink? = nil
     ) throws {
         #if DEBUG
         assert(ctx.sceneA.canvasSize == ctx.sceneB.canvasSize,
@@ -161,6 +198,10 @@ internal enum TimelineRenderExecutor {
               let textureB = texturePool.acquireColorTexture(size: sizePx) else {
             throw TimelineRenderExecutorError.failedToAcquireOffscreenTexture
         }
+
+        // Emit offscreen render events
+        renderSink?.receive(.offscreenRenderA(instanceId: ctx.sceneA.sceneInstanceId))
+        renderSink?.receive(.offscreenRenderB(instanceId: ctx.sceneB.sceneInstanceId))
 
         // Texture release strategy depends on sync vs async path
         if request.waitUntilCompleted {

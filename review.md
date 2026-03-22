@@ -1,49 +1,53 @@
-Выбирать нужно **B**, но не в том виде, как вы его сформулировали, и точно **не C**.
+Все фактические замечания программиста подтверждаются текущим кодом. Канонические ответы такие.
 
-**Каноническое решение**
-- `clampedLocalFrame` **не открывать** из `private` в `internal`.
-- Для `makeRenderContext` и `renderCommands` делать **behavior tests на реальном `SceneInstanceRuntime`**, собранном из **минимального in-memory `CompiledScene`**, а не из файловых `ScenePackages`.
-- Для forwarding в `UserMediaService` делать **узкий test seam**, а не тянуть full package assets.
+1. `viewWillDisappear` safety net не удаляем полностью, но его текущую семантику надо убрать.
+Сейчас он вызывает `saveDraftIfNeeded()` только при `isMovingFromParent || isBeingDismissed`, то есть фактически это второй autosave при закрытии editor, а не механизм crash/background recovery: [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L1795).
+Новая каноника:
+`Save to SavedProject` из этого места делать нельзя.
+После выбора `Не сохранять` этот path не должен ничего сохранять.
+Если этот hook остаётся, то только как fallback-запись в `Active Draft Slot`, и только когда пользователь не выбрал `Не сохранять`.
+При этом реальный resume-механизм не должен опираться только на `viewWillDisappear`, потому что текущий код не покрывает background/crash.
 
-**Почему именно так**
-- `A` слишком тяжёлый и хрупкий. Тесты на реальные `ScenePackages` и диск:
-  - медленнее,
-  - зависят от ассетов и структуры пакетов,
-  - ближе к integration/UI regression, чем к unit/contract.
-- `C` недостаточен. Это снова тестирует формулу, а не production behavior.
-- `B` даёт правильный баланс:
-  - тест идёт через **реальный production path** `SceneInstanceRuntime`,
-  - не зависит от дисковых scene packages,
-  - детерминирован,
-  - быстро выполняется.
+2. Да, save-on-success нужно добавить в оба export flow одинаково.
+Сейчас есть два параллельных пути: single-scene export и timeline export, каждый со своим `onCompleted`: [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L2072), [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L2203).
+Каноника одна для обоих:
+`success -> create/update SavedProject`
+`failure/cancel -> ничего не сохранять`.
 
-**Что делать**
-1. Для `makeRenderContext` и `renderCommands`:
-- собрать минимальный `CompiledScene` вручную через `TVECore` модели;
-- положить его в `SceneTypeResourcesCache.Resources`;
-- создать реальный `SceneInstanceRuntime` с `MTLCreateSystemDefaultDevice()` и `makeCommandQueue()`;
-- проверить:
-  - `makeRenderContext(localFrame: 350).localFrame == 299`
-  - `renderCommands(localFrame: 299, mode: .preview) == renderCommands(localFrame: 350, mode: .preview)`
+3. Да, `Active Draft Slot` обязан хранить metadata помимо самого `ProjectDraft`.
+Одного `ProjectDraft` недостаточно.
+Минимум нужно хранить:
+`entry context`
+`source templateId`
+`linked savedProjectId?`
+Причина в реальном коде: сейчас editor знает только `templateId` entry point и перегружает `draft.id/currentProjectId` как единственный project identity: [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L74), [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L280).
+В новой модели нужно различать:
+`newFromTemplate`
+`openSavedProject`
+и понимать, должен ли `Save/Export` создать новый проект или обновить уже существующий.
+После первого успешного `Save/Export` в сессии этот linkage тоже должен сохраниться, чтобы следующий `Export` обновил тот же `SavedProject`, а не создал новый.
 
-2. Для `syncVideoFrame`, `syncPlaybackTick`, `startPlayback`:
-- не менять visibility helper’а;
-- добавить **test-only seam для media service injection** в [SceneInstanceRuntime.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/TimelineComposition/SceneInstanceRuntime.swift)
-- лучший вариант:
-  - маленький internal protocol, который покрывает только нужные методы
-  - `UserMediaService` ему соответствует
-  - internal init для тестов принимает injected service
-- дальше spy проверяет, что в сервис ушёл `299`, а не `350`
+4. На cold start active draft всегда имеет приоритет над `My Projects` и home.
+Если active draft slot существует, приложение сразу открывает editor.
+Это ожидаемое поведение до тех пор, пока пользователь явно не примет решение: `Сохранить` или `Не сохранять`.
+Байпаса сразу в `My Projects` не нужно.
+По текущей архитектуре навигации правильнее всего оставить home root-экраном внутри `UINavigationController` и автоматически пушить editor поверх него: [SceneDelegate.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/App/SceneDelegate.swift#L17).
+Тогда после явного завершения draft пользователь естественно попадает обратно на home и уже оттуда может открыть `My Projects`.
 
-**Чего не делать**
-- не делать `clampedLocalFrame` internal только ради тестов
-- не тащить файловые `TestAssets/ScenePackages` в основной contract suite
-- не ограничиваться pure helper tests
+5. Для `My Projects` в v1 превью нужно брать из исходного общего шаблона.
+Генерации project-specific thumbnail сейчас в продукте нет.
+В `ProjectDraft` нет поля preview, есть только ссылка на базовый `templateId`: [ProjectDraft.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectDraft.swift#L28).
+Текущая карточка каталога уже умеет показывать bundle video preview из `TemplateDescriptor.previewURL`: [TemplatePreviewCell.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/TemplatesUI/TemplatePreviewCell.swift#L47).
+Поэтому каноника для v1:
+в `My Projects` использовать preview исходного шаблона, резолвя его через `sourceTemplateId/templateId` и `TemplateCatalog`.
+Никаких новых thumbnail pipelines в v1 не нужно.
+Группировка секций при этом идёт по дате сохранения проекта, а не по категориям.
 
-**Итог**
-- для behavior test: **B**
-- для forwarding test: **spy через injected seam**
-- `C` отклонить
-- `A` оставить только как optional integration test, не как основной способ закрытия acceptance gap
+6. Старый per-template crash-draft API нужно убирать как отдельный публичный механизм.
+Сейчас это мёртвый контракт без call sites и он конфликтует с новой архитектурой единственного active draft slot: [ProjectStore.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectStore.swift#L383).
+Каноника:
+в продукте должен остаться только один механизм unsaved editor persistence.
+Если при реализации удобно переиспользовать куски JSON IO внутренне, это допустимо.
+Но старого отдельного API/поведения `saveCrashDraft/loadCrashDraft/deleteCrashFile/hasCrashFile` как самостоятельного контракта после этой задачи оставаться не должно.
 
-Если нужно, следующим сообщением я могу дать **точный final test plan по файлам и API seam**, без вариантов выбора.
+После этих 6 ответов продуктовых вопросов по этой задаче у меня больше нет. Если нужно, следующим сообщением соберу для программиста уже `implementation plan` по конкретным файлам и шагам изменения кода.
