@@ -219,7 +219,7 @@ final class CategoryTemplatesViewController: UIViewController {
             let detailsVC = TemplateDetailsViewController(templateId: template.id)
             navigationController?.pushViewController(detailsVC, animated: true)
         case .directToEditor:
-            let editorVC = PlayerViewController(templateId: template.id)
+            let editorVC = PlayerViewController(entryContext: .newFromTemplate(templateId: template.id))
             navigationController?.pushViewController(editorVC, animated: true)
         }
     }

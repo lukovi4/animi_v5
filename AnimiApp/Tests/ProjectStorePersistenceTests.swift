@@ -2,8 +2,8 @@ import XCTest
 import TVECore
 @testable import AnimiApp
 
-/// Disk-roundtrip tests for ProjectStore + ProjectDraft (v6 schema).
-/// Validates current-schema persistence contract with no migrations.
+/// Disk-roundtrip tests for ProjectStore + SavedProjectRecord + ActiveDraftSlot (v6 schema).
+/// Validates current-schema persistence contract with SavedProjects API.
 final class ProjectStorePersistenceTests: XCTestCase {
 
     // MARK: - Helper
@@ -157,37 +157,49 @@ final class ProjectStorePersistenceTests: XCTestCase {
 
     // MARK: - Tests
 
-    /// Full draft save → load roundtrip through ProjectStore.
-    func testProjectStore_saveLoad_roundtrip_preservesCurrentSchemaDraft() throws {
+    /// Full draft save → load roundtrip through SavedProjectRecord.
+    func testSavedProjectRecord_roundtrip_preservesCurrentSchemaDraft() throws {
         let templateId = "tt11-\(UUID())"
         let store = ProjectStore()
-        defer { try? store.deleteProject(templateId: templateId) }
-
-        let projectId = try store.createOrLoadProjectId(for: templateId)
+        let projectId = UUID()
         let draft = makeFullDraft(templateId: templateId, projectId: projectId)
 
-        // Save
-        try store.saveProjectDraft(draft)
+        // Materialize via ActiveDraftSlot
+        var slot = ActiveDraftSlot(
+            entryContext: .newFromTemplate(templateId: templateId),
+            sourceTemplateId: templateId,
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        try store.materializeSavedProject(from: &slot)
+
+        // Cleanup
+        defer { try? store.deleteSavedProject(projectId: projectId) }
 
         // Load
-        let loaded = try store.loadProjectDraft(projectId: projectId, templateId: templateId)
+        let loaded = store.loadSavedProject(projectId: projectId)
         XCTAssertNotNil(loaded)
-        XCTAssertEqual(loaded, draft)
+        XCTAssertEqual(loaded?.draft, draft)
+        XCTAssertEqual(loaded?.sourceTemplateId, templateId)
+
+        // Identity invariant
+        XCTAssertEqual(loaded?.id, draft.id)
+        XCTAssertEqual(slot.linkedSavedProjectId, projectId)
 
         // Spot-checks for key fields
         let l = try XCTUnwrap(loaded)
-        XCTAssertEqual(l.schemaVersion, ProjectDraft.currentSchemaVersion)
-        XCTAssertEqual(l.name, "TT-11 Full Draft")
-        XCTAssertEqual(l.canonicalTimeline.tracks.count, 3)
-        XCTAssertEqual(l.canonicalTimeline.boundaryTransitions.count, 2)
-        XCTAssertNotNil(l.canonicalTimeline.introTransition)
-        XCTAssertNotNil(l.canonicalTimeline.outroTransition)
-        XCTAssertEqual(l.sceneInstanceStates.count, 3)
-        XCTAssertEqual(l.background.selectedPresetId, "sunset_01")
-        XCTAssertEqual(l.background.regions.count, 2)
+        XCTAssertEqual(l.draft.schemaVersion, ProjectDraft.currentSchemaVersion)
+        XCTAssertEqual(l.draft.name, "TT-11 Full Draft")
+        XCTAssertEqual(l.draft.canonicalTimeline.tracks.count, 3)
+        XCTAssertEqual(l.draft.canonicalTimeline.boundaryTransitions.count, 2)
+        XCTAssertNotNil(l.draft.canonicalTimeline.introTransition)
+        XCTAssertNotNil(l.draft.canonicalTimeline.outroTransition)
+        XCTAssertEqual(l.draft.sceneInstanceStates.count, 3)
+        XCTAssertEqual(l.draft.background.selectedPresetId, "sunset_01")
+        XCTAssertEqual(l.draft.background.regions.count, 2)
 
         // Verify all 4 payload discriminators present
-        let payloadTypes = Set(l.canonicalTimeline.payloads.values.map { payload -> String in
+        let payloadTypes = Set(l.draft.canonicalTimeline.payloads.values.map { payload -> String in
             switch payload {
             case .scene: return "scene"
             case .audio: return "audio"
@@ -198,69 +210,119 @@ final class ProjectStorePersistenceTests: XCTestCase {
         XCTAssertEqual(payloadTypes, ["scene", "audio", "sticker", "text"])
     }
 
-    /// Schema version mismatch → loadProjectDraft returns nil.
-    func testLoadProjectDraft_schemaMismatch_returnsNil() throws {
+    /// ActiveDraftSlot roundtrip.
+    func testActiveDraftSlot_roundtrip() throws {
         let templateId = "tt11-\(UUID())"
         let store = ProjectStore()
-        defer { try? store.deleteProject(templateId: templateId) }
+        let projectId = UUID()
+        let draft = makeFullDraft(templateId: templateId, projectId: projectId)
 
-        let projectId = try store.createOrLoadProjectId(for: templateId)
+        let slot = ActiveDraftSlot(
+            entryContext: .newFromTemplate(templateId: templateId),
+            sourceTemplateId: templateId,
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
 
-        // Write JSON with schema version 999 directly to disk
-        let url = try store.projectsDirectoryURL()
-            .appendingPathComponent("\(projectId.uuidString).json")
-        try store.ensureDirectoriesExist()
+        try store.saveActiveDraft(slot)
+        defer { try? store.deleteActiveDraft() }
 
-        var mismatchDraft = ProjectDraft.create(for: templateId, projectId: projectId)
-        mismatchDraft.schemaVersion = 999
-        // Use same encoder config as ProjectStore
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(mismatchDraft)
-        try data.write(to: url, options: .atomic)
+        XCTAssertTrue(store.hasActiveDraft())
 
-        // Load should return nil due to schema mismatch
-        let loaded = try store.loadProjectDraft(projectId: projectId, templateId: templateId)
-        XCTAssertNil(loaded)
+        let loaded = store.loadActiveDraft()
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.draft, draft)
+        XCTAssertEqual(loaded?.sourceTemplateId, templateId)
+        XCTAssertEqual(loaded?.entryContext, .newFromTemplate(templateId: templateId))
+        XCTAssertNil(loaded?.linkedSavedProjectId)
     }
 
-    /// Schema mismatch on disk → createOrLoadProjectDraft returns fresh v6 draft.
-    func testCreateOrLoadProjectDraft_schemaMismatch_createsNewEmptyCurrentSchemaDraft() throws {
+    /// Multiple saved projects with same sourceTemplateId.
+    func testMultipleSavedProjects_sameTemplate() throws {
         let templateId = "tt11-\(UUID())"
         let store = ProjectStore()
-        defer { try? store.deleteProject(templateId: templateId) }
 
-        let projectId = try store.createOrLoadProjectId(for: templateId)
+        let id1 = UUID()
+        let id2 = UUID()
+        let draft1 = ProjectDraft.create(for: templateId, projectId: id1)
+        let draft2 = ProjectDraft.create(for: templateId, projectId: id2)
 
-        // Write schema-999 file to disk
-        let url = try store.projectsDirectoryURL()
-            .appendingPathComponent("\(projectId.uuidString).json")
-        try store.ensureDirectoriesExist()
+        var slot1 = ActiveDraftSlot(
+            entryContext: .newFromTemplate(templateId: templateId),
+            sourceTemplateId: templateId,
+            linkedSavedProjectId: nil,
+            draft: draft1
+        )
+        try store.materializeSavedProject(from: &slot1)
 
-        var mismatchDraft = ProjectDraft.create(for: templateId, projectId: projectId)
-        mismatchDraft.schemaVersion = 999
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(mismatchDraft)
-        try data.write(to: url, options: .atomic)
+        var slot2 = ActiveDraftSlot(
+            entryContext: .newFromTemplate(templateId: templateId),
+            sourceTemplateId: templateId,
+            linkedSavedProjectId: nil,
+            draft: draft2
+        )
+        try store.materializeSavedProject(from: &slot2)
 
-        // createOrLoadProjectDraft should create a new v6 draft reusing the same projectId
-        let result = try store.createOrLoadProjectDraft(for: templateId)
-        XCTAssertEqual(result.id, projectId)
-        XCTAssertEqual(result.schemaVersion, ProjectDraft.currentSchemaVersion)
-        XCTAssertEqual(result.templateId, templateId)
-        XCTAssertTrue(result.canonicalTimeline.sceneItems.isEmpty)
+        defer {
+            try? store.deleteSavedProject(projectId: id1)
+            try? store.deleteSavedProject(projectId: id2)
+        }
+
+        let entries = store.allSavedProjectEntries()
+        let projectIds = Set(entries.map(\.projectId))
+        XCTAssertTrue(projectIds.contains(id1))
+        XCTAssertTrue(projectIds.contains(id2))
     }
 
-    /// Empty draft roundtrips correctly.
-    func testProjectStore_saveLoad_emptyDraft_roundtrip() throws {
+    /// allSavedProjectEntries returns entries with projectId.
+    func testAllSavedProjectEntries_containsProjectId() throws {
         let templateId = "tt11-\(UUID())"
         let store = ProjectStore()
-        defer { try? store.deleteProject(templateId: templateId) }
+        let projectId = UUID()
+        let draft = ProjectDraft.create(for: templateId, projectId: projectId)
 
-        let projectId = try store.createOrLoadProjectId(for: templateId)
+        var slot = ActiveDraftSlot(
+            entryContext: .newFromTemplate(templateId: templateId),
+            sourceTemplateId: templateId,
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        try store.materializeSavedProject(from: &slot)
+        defer { try? store.deleteSavedProject(projectId: projectId) }
+
+        let entries = store.allSavedProjectEntries()
+        let entry = entries.first { $0.projectId == projectId }
+        XCTAssertNotNil(entry)
+        XCTAssertEqual(entry?.sourceTemplateId, templateId)
+    }
+
+    /// hasActiveDraft is correct.
+    func testHasActiveDraft_correctness() throws {
+        let store = ProjectStore()
+
+        // Ensure clean state
+        try? store.deleteActiveDraft()
+        XCTAssertFalse(store.hasActiveDraft())
+
+        let draft = ProjectDraft.create(for: "test-template")
+        let slot = ActiveDraftSlot(
+            entryContext: .newFromTemplate(templateId: "test-template"),
+            sourceTemplateId: "test-template",
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        try store.saveActiveDraft(slot)
+        XCTAssertTrue(store.hasActiveDraft())
+
+        try store.deleteActiveDraft()
+        XCTAssertFalse(store.hasActiveDraft())
+    }
+
+    /// Empty draft roundtrips correctly through SavedProjectRecord.
+    func testSavedProjectRecord_emptyDraft_roundtrip() throws {
+        let templateId = "tt11-\(UUID())"
+        let store = ProjectStore()
+        let projectId = UUID()
         // Use whole-second dates to survive ISO8601 roundtrip
         let now = Date(timeIntervalSince1970: 1705312800)
         let draft = ProjectDraft(
@@ -270,10 +332,17 @@ final class ProjectStorePersistenceTests: XCTestCase {
             updatedAt: now
         )
 
-        try store.saveProjectDraft(draft)
+        var slot = ActiveDraftSlot(
+            entryContext: .newFromTemplate(templateId: templateId),
+            sourceTemplateId: templateId,
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        try store.materializeSavedProject(from: &slot)
+        defer { try? store.deleteSavedProject(projectId: projectId) }
 
-        let loaded = try store.loadProjectDraft(projectId: projectId, templateId: templateId)
+        let loaded = store.loadSavedProject(projectId: projectId)
         XCTAssertNotNil(loaded)
-        XCTAssertEqual(loaded, draft)
+        XCTAssertEqual(loaded?.draft, draft)
     }
 }

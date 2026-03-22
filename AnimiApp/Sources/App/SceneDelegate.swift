@@ -1,5 +1,9 @@
 import UIKit
 
+extension Notification.Name {
+    static let appDidEnterBackground = Notification.Name("appDidEnterBackground")
+}
+
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
@@ -16,20 +20,27 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let window = UIWindow(windowScene: windowScene)
 
-        // PR-Templates: Start with Templates Home inside Navigation Controller
         let homeViewController = TemplatesHomeViewController()
         let navigationController = UINavigationController(rootViewController: homeViewController)
-        window.rootViewController = navigationController
 
+        // Auto-resume: if active draft exists, push editor immediately
+        if ProjectStore.shared.hasActiveDraft() {
+            let editorVC = PlayerViewController(entryContext: .resumeActiveDraft)
+            navigationController.pushViewController(editorVC, animated: false)
+        }
+
+        window.rootViewController = navigationController
         window.makeKeyAndVisible()
 
         self.window = window
     }
 
-    // MARK: - PR3: Background Presets
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        NotificationCenter.default.post(name: .appDidEnterBackground, object: nil)
+    }
 
-    /// Loads background presets from bundle at app startup.
-    /// Fail-fast: logs error in DEBUG, continues with fallback in RELEASE.
+    // MARK: - Background Presets
+
     private func loadBackgroundPresets() {
         do {
             try BackgroundPresetLibrary.shared.loadFromBundle()
