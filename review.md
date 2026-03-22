@@ -1,53 +1,47 @@
-Все фактические замечания программиста подтверждаются текущим кодом. Канонические ответы такие.
+::code-comment{title="[P1] Close action sheet crashes on iPad" body="`AnimiApp` targets both iPhone and iPad, but this `actionSheet` is presented without configuring `popoverPresentationController`. On iPad that raises a runtime exception as soon as the user taps Close, so the new `Save / Don't Save / Cancel` flow is not shippable yet." file="/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift" start=794 end=802 priority=1 confidence=0.99}
 
-1. `viewWillDisappear` safety net не удаляем полностью, но его текущую семантику надо убрать.
-Сейчас он вызывает `saveDraftIfNeeded()` только при `isMovingFromParent || isBeingDismissed`, то есть фактически это второй autosave при закрытии editor, а не механизм crash/background recovery: [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L1795).
-Новая каноника:
-`Save to SavedProject` из этого места делать нельзя.
-После выбора `Не сохранять` этот path не должен ничего сохранять.
-Если этот hook остаётся, то только как fallback-запись в `Active Draft Slot`, и только когда пользователь не выбрал `Не сохранять`.
-При этом реальный resume-механизм не должен опираться только на `viewWillDisappear`, потому что текущий код не покрывает background/crash.
+::code-comment{title="[P1] My Projects is still a flat list, not save-date sections" body="The approved UX required a grid grouped by save date, replacing template categories with date-based sections. This implementation builds a single compositional section, stores one flat `entries` array, and exposes only `numberOfItemsInSection`, so the required sectioned presentation is still missing." file="/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MyProjects/MyProjectsViewController.swift" start=72 end=123 priority=1 confidence=0.99}
 
-2. Да, save-on-success нужно добавить в оба export flow одинаково.
-Сейчас есть два параллельных пути: single-scene export и timeline export, каждый со своим `onCompleted`: [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L2072), [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L2203).
-Каноника одна для обоих:
-`success -> create/update SavedProject`
-`failure/cancel -> ничего не сохранять`.
+::code-comment{title="[P2] My Projects preview cards never start playback" body="Unlike the home and category screens, this collection view delegate never forwards `willDisplay`/`didEndDisplaying` to the preview cell. `PreviewVideoView` only starts playback when `play()` is called, so saved-project cards do not behave like the template grid previews they are meant to mirror." file="/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MyProjects/MyProjectsViewController.swift" start=163 end=175 priority=2 confidence=0.96}
 
-3. Да, `Active Draft Slot` обязан хранить metadata помимо самого `ProjectDraft`.
-Одного `ProjectDraft` недостаточно.
-Минимум нужно хранить:
-`entry context`
-`source templateId`
-`linked savedProjectId?`
-Причина в реальном коде: сейчас editor знает только `templateId` entry point и перегружает `draft.id/currentProjectId` как единственный project identity: [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L74), [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L280).
-В новой модели нужно различать:
-`newFromTemplate`
-`openSavedProject`
-и понимать, должен ли `Save/Export` создать новый проект или обновить уже существующий.
-После первого успешного `Save/Export` в сессии этот linkage тоже должен сохраниться, чтобы следующий `Export` обновил тот же `SavedProject`, а не создал новый.
+**Critical Findings**
+1. `[P1]` Новый close-flow сейчас падает на iPad. В [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L794) показывается `UIAlertController` c `.actionSheet`, но без `popoverPresentationController`, а таргет уже собирается для `TARGETED_DEVICE_FAMILY = "1,2"` в [project.pbxproj](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/AnimiApp.xcodeproj/project.pbxproj#L989). Это прямой runtime crash.
+2. `[P1]` `My Projects` не соответствует утверждённому UX: нет секций по дате сохранения. Экран строит один flat grid в [MyProjectsViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MyProjects/MyProjectsViewController.swift#L72) и хранит один массив `entries` в [MyProjectsViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MyProjects/MyProjectsViewController.swift#L98). То есть пункт `вместо категорий — дата сохранения` ещё не выполнен.
+3. `[P2]` Превью в `My Projects` не доведены до поведения home-grid. В `MyProjectsViewController` нет `willDisplay/didEndDisplaying`, в отличие от [TemplatesHomeViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/TemplatesUI/TemplatesHomeViewController.swift#L293), а `PreviewVideoView` начинает видео только через `play()` в [PreviewVideoView.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/TemplatesUI/PreviewVideoView.swift#L186). Дополнительно `ProjectPreviewCell.configure` не передаёт `nil` в `configure(url:)`, поэтому reused cell может удержать старое превью для шаблонов без previewURL: [ProjectPreviewCell.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MyProjects/ProjectPreviewCell.swift#L89).
 
-4. На cold start active draft всегда имеет приоритет над `My Projects` и home.
-Если active draft slot существует, приложение сразу открывает editor.
-Это ожидаемое поведение до тех пор, пока пользователь явно не примет решение: `Сохранить` или `Не сохранять`.
-Байпаса сразу в `My Projects` не нужно.
-По текущей архитектуре навигации правильнее всего оставить home root-экраном внутри `UINavigationController` и автоматически пушить editor поверх него: [SceneDelegate.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/App/SceneDelegate.swift#L17).
-Тогда после явного завершения draft пользователь естественно попадает обратно на home и уже оттуда может открыть `My Projects`.
+**Task Compliance Matrix**
+- `CommonTemplate` как immutable bundle-каталог: `PASS`
+- `one template -> many saved projects`: `PASS`
+- разделение `ActiveDraftSlot` и `SavedProject`: `PASS`
+- `Save / Don't Save / Cancel` close flow: `PARTIAL`
+  Причина: логика есть, но iPad-path сейчас аварийный
+- `Export success -> materialize/update SavedProject`: `PASS`
+- `My Projects` как отдельный экран с `Delete`: `PARTIAL`
+  Причина: экран есть, delete есть, но нет date sections и карточки не доведены до поведения home
+- auto-resume active draft на cold start: `PASS` как best-effort
+- migration legacy persistence: `PASS` по коду, но без отдельной тестовой верификации
+- GC для `Background + UserMedia + ActiveDraft`: `PASS`
 
-5. Для `My Projects` в v1 превью нужно брать из исходного общего шаблона.
-Генерации project-specific thumbnail сейчас в продукте нет.
-В `ProjectDraft` нет поля preview, есть только ссылка на базовый `templateId`: [ProjectDraft.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectDraft.swift#L28).
-Текущая карточка каталога уже умеет показывать bundle video preview из `TemplateDescriptor.previewURL`: [TemplatePreviewCell.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/TemplatesUI/TemplatePreviewCell.swift#L47).
-Поэтому каноника для v1:
-в `My Projects` использовать preview исходного шаблона, резолвя его через `sourceTemplateId/templateId` и `TemplateCatalog`.
-Никаких новых thumbnail pipelines в v1 не нужно.
-Группировка секций при этом идёт по дате сохранения проекта, а не по категориям.
+**Architecture Conclusion**
+Аудитировал подсистемы `Editor`, `Player`, `Export`, `Project`, `UserMedia`, `Background`, `TemplatesCatalog`, `TemplatesUI`. `TimelineComposition` и `TVECore` напрямую не менялись, но seam-проверка была сделана. Проверенные seams: `Editor <-> Player`, `Player <-> Export`, `Project <-> Editor`, `Project <-> Player`, `Templates UI/catalog <-> runtime/render path`, `UserMedia <-> TimelineComposition`.
 
-6. Старый per-template crash-draft API нужно убирать как отдельный публичный механизм.
-Сейчас это мёртвый контракт без call sites и он конфликтует с новой архитектурой единственного active draft slot: [ProjectStore.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectStore.swift#L383).
-Каноника:
-в продукте должен остаться только один механизм unsaved editor persistence.
-Если при реализации удобно переиспользовать куски JSON IO внутренне, это допустимо.
-Но старого отдельного API/поведения `saveCrashDraft/loadCrashDraft/deleteCrashFile/hasCrashFile` как самостоятельного контракта после этой задачи оставаться не должно.
+Главная архитектура в целом стала правильной и соответствует утверждённой модели: immutable common templates, один active draft slot, много saved projects на один template, `Export -> Save`, migration и GC. Основные отклонения остались не в persistence, а в UI/UX-слое завершения epic.
 
-После этих 6 ответов продуктовых вопросов по этой задаче у меня больше нет. Если нужно, следующим сообщением соберу для программиста уже `implementation plan` по конкретным файлам и шагам изменения кода.
+**Repo-Wide Supplemental Risks**
+- `hasActiveDraft()` в [ProjectStore.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectStore.swift#L290) проверяет только наличие файла, а не валидность слота. Поэтому [SceneDelegate.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/App/SceneDelegate.swift#L27) может auto-push-нуть editor даже на битом/устаревшем `active_draft.json`, после чего editor перейдёт в failed state в [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L324). Это не блокер для текущей задачи, но seam ещё шероховатый.
+- Не вижу automated coverage для новых UI-paths: close dialog, export-save integration, `My Projects`, auto-resume UX, migration path. Текущие зелёные тесты не доказывают эти сценарии.
+
+**Legacy / Dead Code Audit**
+- В [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L2808) остался dead method `loadCompiledTemplateFromBundle(templateName:)`; по репозиторию у него нет callers.
+- Старые crash-draft/background-override/templateId->projectId APIs действительно убраны; stale callers по поиску не осталось.
+
+**Tests / Verification**
+- Полный прогон прошёл успешно:
+```bash
+xcodebuild test -project AnimiApp/AnimiApp.xcodeproj -scheme AnimiApp -destination 'platform=iOS Simulator,id=C2A4F4FA-2C2F-4942-B942-19508DF9222E'
+```
+  Результат: `349 tests`, `0 failures`, `TEST SUCCEEDED`.
+- Точечный прогон `ProjectStorePersistenceTests` тоже зелёный: `6/6`.
+
+**Final Verdict**
+Как финальную реализацию epic я это **пока не принимаю**. Persistence/core architecture уже в хорошем состоянии и в целом соответствует утверждённой модели, но есть 2 блокера на acceptance: iPad-crash в close dialog и отсутствие date-based sections в `My Projects`. После исправления этих пунктов и доведения preview-карточек `My Projects` до поведения home-grid можно переходить к повторному финальному audit.

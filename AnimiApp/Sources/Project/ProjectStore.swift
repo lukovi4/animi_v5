@@ -11,8 +11,8 @@ public enum ProjectStoreError: Error, LocalizedError {
     case projectReadFailed(UUID, Error)
     case projectWriteFailed(UUID, Error)
     case projectNotFound(UUID)
-    case crashFileReadFailed(String, Error)
-    case crashFileWriteFailed(String, Error)
+    case activeDraftWriteFailed(Error)
+    case activeDraftReadFailed(Error)
 
     public var errorDescription: String? {
         switch self {
@@ -28,23 +28,36 @@ public enum ProjectStoreError: Error, LocalizedError {
             return "Failed to write project \(id): \(error.localizedDescription)"
         case .projectNotFound(let id):
             return "Project not found: \(id)"
-        case .crashFileReadFailed(let templateId, let error):
-            return "Failed to read crash file for template \(templateId): \(error.localizedDescription)"
-        case .crashFileWriteFailed(let templateId, let error):
-            return "Failed to write crash file for template \(templateId): \(error.localizedDescription)"
+        case .activeDraftWriteFailed(let error):
+            return "Failed to write active draft: \(error.localizedDescription)"
+        case .activeDraftReadFailed(let error):
+            return "Failed to read active draft: \(error.localizedDescription)"
         }
     }
 }
 
-// MARK: - Projects Index
+// MARK: - Saved Projects Index
 
-/// Index file structure for templateId → projectId mapping.
-struct ProjectsIndex: Codable {
-    var byTemplateId: [String: String]  // templateId → projectId (UUID string)
-
-    init(byTemplateId: [String: String] = [:]) {
-        self.byTemplateId = byTemplateId
+/// Index file mapping projectId → entry metadata.
+struct SavedProjectsIndex: Codable {
+    var projects: [UUID: SavedProjectIndexEntry]
+    init(projects: [UUID: SavedProjectIndexEntry] = [:]) {
+        self.projects = projects
     }
+}
+
+/// Metadata entry in the saved projects index.
+struct SavedProjectIndexEntry: Codable {
+    var projectId: UUID
+    var sourceTemplateId: String
+    var savedAt: Date
+}
+
+// MARK: - Legacy Index (for migration)
+
+/// Old index format: templateId → projectId string.
+private struct LegacyProjectsIndex: Codable {
+    var byTemplateId: [String: String]
 }
 
 // MARK: - Project Store
@@ -54,12 +67,14 @@ struct ProjectsIndex: Codable {
 /// File structure:
 /// ```
 /// Application Support/AnimiProjects/
-/// ├── index.json                    # templateId → projectId mapping
-/// ├── <projectId>.json              # ProjectDraft (with schemaVersion)
-/// ├── crash_<hash>.json             # Crash recovery draft (SHA256 prefix of templateId)
+/// ├── index.json                    # SavedProjectsIndex (projectId → entry)
+/// ├── active_draft.json             # ActiveDraftSlot (current editor session)
+/// ├── <projectId>.json              # SavedProjectRecord
 /// └── Media/
-///     └── Background/
-///         └── <uuid>.jpg            # copied images
+///     ├── Background/
+///     │   └── <uuid>.jpg
+///     └── UserMedia/
+///         └── <uuid>.jpg
 /// ```
 public final class ProjectStore {
 
@@ -71,6 +86,7 @@ public final class ProjectStore {
 
     private static let projectsDirectoryName = "AnimiProjects"
     private static let indexFileName = "index.json"
+    private static let activeDraftFileName = "active_draft.json"
     private static let mediaDirectoryName = "Media"
     private static let backgroundMediaDirectoryName = "Background"
     private static let userMediaDirectoryName = "UserMedia"
@@ -78,10 +94,13 @@ public final class ProjectStore {
     // MARK: - Properties
 
     private let fileManager: FileManager
-    private var cachedIndex: ProjectsIndex?
+    private var cachedIndex: SavedProjectsIndex?
 
-    /// PR4: Flag to prevent concurrent GC runs
+    /// Flag to prevent concurrent GC runs
     private var isGCInProgress = false
+
+    /// Tracks whether one-time migration has been attempted this session
+    private var migrationAttempted = false
 
     // MARK: - Initialization
 
@@ -140,23 +159,34 @@ public final class ProjectStore {
         try projectsDirectoryURL().appendingPathComponent(Self.indexFileName)
     }
 
-    /// Loads the projects index from disk.
-    private func loadIndex() throws -> ProjectsIndex {
+    /// Loads the saved projects index, migrating from legacy format if needed.
+    private func loadSavedIndex() throws -> SavedProjectsIndex {
         if let cached = cachedIndex {
             return cached
+        }
+
+        // Run one-time migration if needed
+        if !migrationAttempted {
+            migrationAttempted = true
+            try migrateIfNeeded()
+            if let cached = cachedIndex {
+                return cached
+            }
         }
 
         let url = try indexURL()
 
         guard fileManager.fileExists(atPath: url.path) else {
-            let empty = ProjectsIndex()
+            let empty = SavedProjectsIndex()
             cachedIndex = empty
             return empty
         }
 
         do {
             let data = try Data(contentsOf: url)
-            let index = try JSONDecoder().decode(ProjectsIndex.self, from: data)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let index = try decoder.decode(SavedProjectsIndex.self, from: data)
             cachedIndex = index
             return index
         } catch {
@@ -164,13 +194,14 @@ public final class ProjectStore {
         }
     }
 
-    /// Saves the projects index to disk.
-    private func saveIndex(_ index: ProjectsIndex) throws {
+    /// Saves the saved projects index to disk.
+    private func saveSavedIndex(_ index: SavedProjectsIndex) throws {
         try ensureDirectoriesExist()
 
         let url = try indexURL()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
 
         do {
             let data = try encoder.encode(index)
@@ -181,37 +212,6 @@ public final class ProjectStore {
         }
     }
 
-    // MARK: - Project ID API
-
-    /// Returns the project ID for a template, if one exists.
-    /// - Parameter templateId: Template identifier
-    /// - Returns: Project UUID or nil if no project exists
-    public func projectId(for templateId: String) throws -> UUID? {
-        let index = try loadIndex()
-        guard let idString = index.byTemplateId[templateId] else {
-            return nil
-        }
-        return UUID(uuidString: idString)
-    }
-
-    /// Creates or loads the project ID for a template.
-    /// - Parameter templateId: Template identifier
-    /// - Returns: Project UUID (existing or newly created)
-    public func createOrLoadProjectId(for templateId: String) throws -> UUID {
-        var index = try loadIndex()
-
-        if let existingIdString = index.byTemplateId[templateId],
-           let existingId = UUID(uuidString: existingIdString) {
-            return existingId
-        }
-
-        let newId = UUID()
-        index.byTemplateId[templateId] = newId.uuidString
-        try saveIndex(index)
-
-        return newId
-    }
-
     // MARK: - Project File URL
 
     /// Returns the URL for a project file.
@@ -219,174 +219,276 @@ public final class ProjectStore {
         try projectsDirectoryURL().appendingPathComponent("\(projectId.uuidString).json")
     }
 
-    // MARK: - Background Override API
+    // MARK: - Active Draft Slot API
 
-    /// Loads the background override for a project.
-    /// Reads from ProjectDraft.background.
-    /// - Parameters:
-    ///   - projectId: Project UUID
-    ///   - templateId: Template identifier
-    /// - Returns: Background override or nil if not found
-    public func loadBackgroundOverride(projectId: UUID, templateId: String) throws -> ProjectBackgroundOverride? {
-        guard let draft = try loadProjectDraft(projectId: projectId, templateId: templateId) else {
-            return nil
-        }
-        return draft.background
+    /// Returns the URL for the active draft file.
+    private func activeDraftURL() throws -> URL {
+        try projectsDirectoryURL().appendingPathComponent(Self.activeDraftFileName)
     }
 
-    /// Saves the background override for a project.
-    /// Updates ProjectDraft.background and saves the full draft.
-    /// - Parameters:
-    ///   - projectId: Project UUID
-    ///   - templateId: Template identifier
-    ///   - override: Background override to save
-    public func saveBackgroundOverride(projectId: UUID, templateId: String, override: ProjectBackgroundOverride) throws {
-        // Load or create draft
-        var draft = try loadProjectDraft(projectId: projectId, templateId: templateId)
-            ?? ProjectDraft.create(for: templateId, projectId: projectId)
-
-        // Update background
-        draft.background = override
-        draft.updatedAt = Date()
-
-        // Save full draft
-        try saveProjectDraft(draft)
-    }
-
-    /// Deletes a project and its associated data.
-    /// - Parameter templateId: Template identifier
-    public func deleteProject(templateId: String) throws {
-        var index = try loadIndex()
-
-        guard let idString = index.byTemplateId[templateId],
-              let projectId = UUID(uuidString: idString) else {
-            return  // No project to delete
-        }
-
-        // Remove project file
-        let projectURL = try projectURL(for: projectId)
-        if fileManager.fileExists(atPath: projectURL.path) {
-            try fileManager.removeItem(at: projectURL)
-        }
-
-        // Update index
-        index.byTemplateId.removeValue(forKey: templateId)
-        try saveIndex(index)
-    }
-
-    // MARK: - Project Draft API (Release v1)
-
-    /// Loads the project draft for a project.
-    /// If schema version doesn't match current, returns nil (fallback to new project).
-    /// - Parameters:
-    ///   - projectId: Project UUID
-    ///   - templateId: Template identifier
-    /// - Returns: ProjectDraft or nil if not found or incompatible schema
-    public func loadProjectDraft(projectId: UUID, templateId: String) throws -> ProjectDraft? {
-        let url = try projectURL(for: projectId)
-
-        guard fileManager.fileExists(atPath: url.path) else {
-            return nil
-        }
-
-        let data = try Data(contentsOf: url)
-
-        // Try to decode as ProjectDraft (with ISO8601 dates)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
-        guard let draft = try? decoder.decode(ProjectDraft.self, from: data) else {
-            // Cannot decode - treat as corrupted, will create new project
-            #if DEBUG
-            print("[ProjectStore] Cannot decode project \(projectId), will create new")
-            #endif
-            return nil
-        }
-
-        // Check schema version - no migrations, just fallback to new project
-        guard draft.isValid else {
-            #if DEBUG
-            print("[ProjectStore] Schema mismatch for project \(projectId): \(draft.schemaVersion) != \(ProjectDraft.currentSchemaVersion), will create new")
-            #endif
-            return nil
-        }
-
-        return draft
-    }
-
-    /// Saves the project draft.
-    /// - Parameter draft: ProjectDraft to save
-    public func saveProjectDraft(_ draft: ProjectDraft) throws {
+    /// Saves the active draft slot to disk.
+    func saveActiveDraft(_ slot: ActiveDraftSlot) throws {
         try ensureDirectoriesExist()
 
-        let url = try projectURL(for: draft.id)
+        let url = try activeDraftURL()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
 
         do {
-            let data = try encoder.encode(draft)
+            let data = try encoder.encode(slot)
             try data.write(to: url, options: .atomic)
         } catch {
-            throw ProjectStoreError.projectWriteFailed(draft.id, error)
-        }
-
-        // Run GC async after save (non-blocking)
-        Task.detached { [weak self] in
-            await self?.collectOrphanBackgroundMediaFiles()
+            throw ProjectStoreError.activeDraftWriteFailed(error)
         }
     }
 
-    /// Creates or loads a ProjectDraft for a template.
-    /// If existing project has incompatible schema, creates a new empty project.
-    /// - Parameter templateId: Template identifier
-    /// - Returns: Existing or new ProjectDraft
-    public func createOrLoadProjectDraft(for templateId: String) throws -> ProjectDraft {
-        let projectId = try createOrLoadProjectId(for: templateId)
-
-        // Try to load existing draft (returns nil if schema mismatch)
-        if let existingDraft = try loadProjectDraft(projectId: projectId, templateId: templateId) {
-            return existingDraft
+    /// Loads the active draft slot from disk.
+    /// Returns nil if no active draft exists or if it cannot be decoded.
+    func loadActiveDraft() -> ActiveDraftSlot? {
+        guard let url = try? activeDraftURL(),
+              fileManager.fileExists(atPath: url.path) else {
+            return nil
         }
 
-        // Create new empty draft (timeline will be populated from recipe in loadProject)
-        let newDraft = ProjectDraft.create(for: templateId, projectId: projectId)
-        try saveProjectDraft(newDraft)
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let slot = try decoder.decode(ActiveDraftSlot.self, from: data)
 
-        #if DEBUG
-        print("[ProjectStore] Created new empty draft for template \(templateId)")
-        #endif
+            // Validate schema version
+            guard slot.draft.isValid else {
+                #if DEBUG
+                print("[ProjectStore] Active draft has invalid schema, ignoring")
+                #endif
+                try? deleteActiveDraft()
+                return nil
+            }
 
-        return newDraft
+            return slot
+        } catch {
+            #if DEBUG
+            print("[ProjectStore] Failed to load active draft: \(error.localizedDescription)")
+            #endif
+            return nil
+        }
     }
 
-    // MARK: - Crash Recovery API (PR1)
+    /// Deletes the active draft file.
+    public func deleteActiveDraft() throws {
+        let url = try activeDraftURL()
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
 
-    /// Returns the crash file URL for a template.
-    /// Uses first 16 bytes (32 hex chars) of SHA256 hash of templateId for filesystem-safe filename.
-    /// Full templateId is stored inside the file for validation.
-    private func crashFileURL(for templateId: String) throws -> URL {
-        let hash = SHA256.hash(data: Data(templateId.utf8))
-        let hashString = hash.prefix(16).map { String(format: "%02x", $0) }.joined()
-        let filename = "crash_\(hashString).json"
-        return try projectsDirectoryURL().appendingPathComponent(filename)
+        // Trigger async GC
+        triggerAsyncGC()
     }
 
-    /// Checks if a crash recovery file exists for a template.
-    /// - Parameter templateId: Template identifier
-    /// - Returns: true if crash file exists
-    public func hasCrashFile(for templateId: String) -> Bool {
-        guard let url = try? crashFileURL(for: templateId) else { return false }
+    /// Checks whether an active draft exists on disk.
+    public func hasActiveDraft() -> Bool {
+        guard let url = try? activeDraftURL() else { return false }
         return fileManager.fileExists(atPath: url.path)
     }
 
-    /// Loads the crash recovery draft for a template.
-    /// - Parameter templateId: Template identifier
-    /// - Returns: ProjectDraft from crash file, or nil if not found/invalid
-    public func loadCrashDraft(for templateId: String) throws -> ProjectDraft? {
-        let url = try crashFileURL(for: templateId)
+    // MARK: - Saved Projects API
+
+    /// Materializes a saved project from the active draft slot.
+    /// 1. Determines projectId (linkedSavedProjectId or draft.id)
+    /// 2. Creates/overwrites SavedProjectRecord on disk
+    /// 3. Updates index
+    /// 4. Sets slot.linkedSavedProjectId
+    func materializeSavedProject(from slot: inout ActiveDraftSlot) throws {
+        let projectId = slot.linkedSavedProjectId ?? slot.draft.id
+
+        let record = SavedProjectRecord(
+            sourceTemplateId: slot.sourceTemplateId,
+            savedAt: Date(),
+            draft: slot.draft
+        )
+
+        // Ensure draft.id matches projectId for identity invariant
+        if slot.draft.id != projectId {
+            // This shouldn't happen, but defensive: use draft.id as canonical
+        }
+
+        try saveSavedProjectRecord(record)
+
+        // Update index
+        var index = try loadSavedIndex()
+        index.projects[record.id] = SavedProjectIndexEntry(
+            projectId: record.id,
+            sourceTemplateId: slot.sourceTemplateId,
+            savedAt: record.savedAt
+        )
+        try saveSavedIndex(index)
+
+        slot.linkedSavedProjectId = record.id
+
+        // Trigger async GC
+        triggerAsyncGC()
+    }
+
+    /// Loads a saved project record by projectId.
+    func loadSavedProject(projectId: UUID) -> SavedProjectRecord? {
+        guard let url = try? projectURL(for: projectId),
+              fileManager.fileExists(atPath: url.path) else {
+            return nil
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let record = try decoder.decode(SavedProjectRecord.self, from: data)
+
+            guard record.draft.isValid else {
+                #if DEBUG
+                print("[ProjectStore] Saved project \(projectId) has invalid schema, skipping")
+                #endif
+                return nil
+            }
+
+            return record
+        } catch {
+            #if DEBUG
+            print("[ProjectStore] Failed to load saved project \(projectId): \(error.localizedDescription)")
+            #endif
+            return nil
+        }
+    }
+
+    /// Deletes a saved project and removes it from the index.
+    public func deleteSavedProject(projectId: UUID) throws {
+        // Remove project file
+        let url = try projectURL(for: projectId)
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+
+        // Update index
+        var index = try loadSavedIndex()
+        index.projects.removeValue(forKey: projectId)
+        try saveSavedIndex(index)
+
+        // Trigger async GC
+        triggerAsyncGC()
+    }
+
+    /// Returns all saved project index entries, sorted by savedAt descending.
+    func allSavedProjectEntries() -> [SavedProjectIndexEntry] {
+        guard let index = try? loadSavedIndex() else { return [] }
+        return index.projects.values.sorted { $0.savedAt > $1.savedAt }
+    }
+
+    // MARK: - Internal IO Helpers
+
+    /// Saves a SavedProjectRecord to disk as `<record.id>.json`.
+    private func saveSavedProjectRecord(_ record: SavedProjectRecord) throws {
+        try ensureDirectoriesExist()
+
+        let url = try projectURL(for: record.id)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+
+        do {
+            let data = try encoder.encode(record)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw ProjectStoreError.projectWriteFailed(record.id, error)
+        }
+    }
+
+    // MARK: - One-Time Migration (Legacy → SavedProjectsIndex)
+
+    /// Migrates from old `ProjectsIndex { byTemplateId }` format to new `SavedProjectsIndex`.
+    /// Also converts raw `ProjectDraft` files to `SavedProjectRecord` wrapper format.
+    private func migrateIfNeeded() throws {
+        let url = try indexURL()
 
         guard fileManager.fileExists(atPath: url.path) else {
+            // No index at all — clean start
+            return
+        }
+
+        // Try to decode as new format first
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        if let _ = try? decoder.decode(SavedProjectsIndex.self, from: data) {
+            // Already new format
+            return
+        }
+
+        // Try to decode as legacy format
+        guard let legacyIndex = try? JSONDecoder().decode(LegacyProjectsIndex.self, from: data) else {
+            // Cannot decode either format — remove corrupted index, clean start
+            #if DEBUG
+            print("[ProjectStore] Cannot decode index as old or new format, starting fresh")
+            #endif
+            try? fileManager.removeItem(at: url)
+            return
+        }
+
+        #if DEBUG
+        print("[ProjectStore] Migrating legacy index with \(legacyIndex.byTemplateId.count) entries")
+        #endif
+
+        // Migrate each project
+        var newIndex = SavedProjectsIndex()
+        for (templateId, projectIdString) in legacyIndex.byTemplateId {
+            guard let projectId = UUID(uuidString: projectIdString) else { continue }
+
+            // Load raw ProjectDraft from legacy file
+            guard let draft = loadLegacyProjectDraft(projectId: projectId) else {
+                #if DEBUG
+                print("[ProjectStore] Migration: skipping project \(projectId) (cannot load/invalid schema)")
+                #endif
+                continue
+            }
+
+            // Wrap in SavedProjectRecord
+            let record = SavedProjectRecord(
+                sourceTemplateId: templateId,
+                savedAt: draft.updatedAt,
+                draft: draft
+            )
+
+            // Overwrite file in new format
+            do {
+                try saveSavedProjectRecord(record)
+            } catch {
+                #if DEBUG
+                print("[ProjectStore] Migration: failed to save record for \(projectId): \(error)")
+                #endif
+                continue
+            }
+
+            newIndex.projects[projectId] = SavedProjectIndexEntry(
+                projectId: projectId,
+                sourceTemplateId: templateId,
+                savedAt: draft.updatedAt
+            )
+        }
+
+        // Save new index
+        try saveSavedIndex(newIndex)
+
+        // Clean up legacy crash files
+        cleanupLegacyCrashFiles()
+
+        #if DEBUG
+        print("[ProjectStore] Migration complete: \(newIndex.projects.count) projects migrated")
+        #endif
+    }
+
+    /// Loads a raw ProjectDraft from legacy file format (pre-SavedProjectRecord).
+    private func loadLegacyProjectDraft(projectId: UUID) -> ProjectDraft? {
+        guard let url = try? projectURL(for: projectId),
+              fileManager.fileExists(atPath: url.path) else {
             return nil
         }
 
@@ -396,49 +498,32 @@ public final class ProjectStore {
             decoder.dateDecodingStrategy = .iso8601
             let draft = try decoder.decode(ProjectDraft.self, from: data)
 
-            // Validate templateId matches
-            guard draft.templateId == templateId else {
-                #if DEBUG
-                print("[ProjectStore] Crash file templateId mismatch, ignoring")
-                #endif
-                try? deleteCrashFile(for: templateId)
-                return nil
-            }
+            // Schema fallback: skip invalid drafts
+            guard draft.isValid else { return nil }
 
             return draft
         } catch {
-            throw ProjectStoreError.crashFileReadFailed(templateId, error)
+            return nil
         }
     }
 
-    /// Saves a crash recovery draft for a template.
-    /// Called on every user edit onEnd to enable crash recovery.
-    /// - Parameters:
-    ///   - draft: Current ProjectDraft state
-    ///   - templateId: Template identifier
-    public func saveCrashDraft(_ draft: ProjectDraft, for templateId: String) throws {
-        try ensureDirectoriesExist()
-
-        let url = try crashFileURL(for: templateId)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+    /// Removes legacy crash_*.json files after migration.
+    private func cleanupLegacyCrashFiles() {
+        guard let projectsDir = try? projectsDirectoryURL() else { return }
 
         do {
-            let data = try encoder.encode(draft)
-            try data.write(to: url, options: .atomic)
+            let contents = try fileManager.contentsOfDirectory(
+                at: projectsDir,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            for fileURL in contents where fileURL.lastPathComponent.hasPrefix("crash_") {
+                try? fileManager.removeItem(at: fileURL)
+            }
         } catch {
-            throw ProjectStoreError.crashFileWriteFailed(templateId, error)
-        }
-    }
-
-    /// Deletes the crash recovery file for a template.
-    /// Called after successful Save/Export or on Discard.
-    /// - Parameter templateId: Template identifier
-    public func deleteCrashFile(for templateId: String) throws {
-        let url = try crashFileURL(for: templateId)
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
+            #if DEBUG
+            print("[ProjectStore] Failed to clean up legacy crash files: \(error)")
+            #endif
         }
     }
 
@@ -463,11 +548,6 @@ public final class ProjectStore {
     }
 
     /// Saves user media (photo) to the user media directory.
-    /// - Parameters:
-    ///   - imageData: JPEG image data
-    ///   - sceneInstanceId: Scene instance ID for organizing files
-    ///   - blockId: Block ID for organizing files
-    /// - Returns: MediaRef with relative path
     public func saveUserMedia(
         _ imageData: Data,
         sceneInstanceId: UUID,
@@ -488,15 +568,7 @@ public final class ProjectStore {
     }
 
     /// Saves user video to the user media directory.
-    ///
-    /// PR-D: Uses `FileManager.copyItem` instead of loading video into memory.
-    /// Preserves original extension (mov/mp4/m4v).
-    ///
-    /// - Parameters:
-    ///   - sourceURL: Source video file URL (will be copied, not moved)
-    ///   - sceneInstanceId: Scene instance ID for organizing files
-    ///   - blockId: Block ID for organizing files
-    /// - Returns: MediaRef with relative path to the copied video
+    /// Uses `FileManager.copyItem` instead of loading video into memory.
     public func saveUserVideo(
         from sourceURL: URL,
         sceneInstanceId: UUID,
@@ -512,27 +584,22 @@ public final class ProjectStore {
         let mediaDir = try userMediaDirectoryURL()
         let destURL = mediaDir.appendingPathComponent(filename)
 
-        // Remove existing file if present (for replaceItemAt semantics)
         if fileManager.fileExists(atPath: destURL.path) {
             try fileManager.removeItem(at: destURL)
         }
 
-        // Copy video file (efficient, no memory loading)
         try fileManager.copyItem(at: sourceURL, to: destURL)
 
         return MediaRef.file(relativePath)
     }
 
     /// Returns the absolute URL for a media reference.
-    /// - Parameter mediaRef: Media reference
-    /// - Returns: Absolute file URL
     public func absoluteURL(for mediaRef: MediaRef) throws -> URL {
         let projectsDir = try projectsDirectoryURL()
         return projectsDir.appendingPathComponent(mediaRef.id)
     }
 
     /// Deletes a media file.
-    /// - Parameter mediaRef: Media reference to delete
     public func deleteMediaFile(_ mediaRef: MediaRef) throws {
         let url = try absoluteURL(for: mediaRef)
         if fileManager.fileExists(atPath: url.path) {
@@ -540,12 +607,18 @@ public final class ProjectStore {
         }
     }
 
-    // MARK: - Garbage Collection (PR4)
+    // MARK: - Garbage Collection
 
-    /// Collects and deletes orphan background media files not referenced by any project.
-    /// Runs async, with throttle to prevent concurrent executions.
-    public func collectOrphanBackgroundMediaFiles() async {
-        // Throttle: skip if GC already in progress
+    /// Triggers async GC (non-blocking).
+    private func triggerAsyncGC() {
+        Task.detached { [weak self] in
+            await self?.collectOrphanMediaFiles()
+        }
+    }
+
+    /// Collects and deletes orphan media files not referenced by any saved project or active draft.
+    /// Scans both Media/Background/ and Media/UserMedia/.
+    public func collectOrphanMediaFiles() async {
         guard !isGCInProgress else {
             #if DEBUG
             print("[ProjectStore] GC skipped - already in progress")
@@ -557,35 +630,21 @@ public final class ProjectStore {
         defer { isGCInProgress = false }
 
         do {
-            // 1. Collect all referenced media paths from all projects
             let referencedPaths = try collectAllReferencedMediaPaths()
 
-            // 2. Get all files in Media/Background/
-            let mediaDir = try backgroundMediaDirectoryURL()
-            guard fileManager.fileExists(atPath: mediaDir.path) else { return }
-
-            let contents = try fileManager.contentsOfDirectory(
-                at: mediaDir,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
+            // GC Background media
+            try gcDirectory(
+                try backgroundMediaDirectoryURL(),
+                subdirectory: "\(Self.mediaDirectoryName)/\(Self.backgroundMediaDirectoryName)",
+                referencedPaths: referencedPaths
             )
 
-            // 3. Delete orphan files
-            var deletedCount = 0
-            for fileURL in contents {
-                let relativePath = "\(Self.mediaDirectoryName)/\(Self.backgroundMediaDirectoryName)/\(fileURL.lastPathComponent)"
-
-                if !referencedPaths.contains(relativePath) {
-                    try fileManager.removeItem(at: fileURL)
-                    deletedCount += 1
-                }
-            }
-
-            #if DEBUG
-            if deletedCount > 0 {
-                print("[ProjectStore] GC deleted \(deletedCount) orphan file(s)")
-            }
-            #endif
+            // GC UserMedia
+            try gcDirectory(
+                try userMediaDirectoryURL(),
+                subdirectory: "\(Self.mediaDirectoryName)/\(Self.userMediaDirectoryName)",
+                referencedPaths: referencedPaths
+            )
         } catch {
             #if DEBUG
             print("[ProjectStore] GC error: \(error.localizedDescription)")
@@ -593,28 +652,69 @@ public final class ProjectStore {
         }
     }
 
-    /// Collects all MediaRef paths referenced by all projects.
-    private func collectAllReferencedMediaPaths() throws -> Set<String> {
-        var paths: Set<String> = []
+    /// Deletes files in a directory that are not in the referenced set.
+    private func gcDirectory(_ dirURL: URL, subdirectory: String, referencedPaths: Set<String>) throws {
+        guard fileManager.fileExists(atPath: dirURL.path) else { return }
 
-        let index = try loadIndex()
+        let contents = try fileManager.contentsOfDirectory(
+            at: dirURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
 
-        for (templateId, projectIdString) in index.byTemplateId {
-            guard let projectId = UUID(uuidString: projectIdString) else { continue }
-
-            // Load ProjectDraft and collect MediaRefs
-            if let draft = try? loadProjectDraft(projectId: projectId, templateId: templateId) {
-                // Collect MediaRefs from background regions
-                for (_, regionOverride) in draft.background.regions {
-                    if let mediaRef = regionOverride.imageMediaRef {
-                        paths.insert(mediaRef.id)
-                    }
-                }
-                // Future: collect from sceneState.mediaAssignments when implemented
+        var deletedCount = 0
+        for fileURL in contents {
+            let relativePath = "\(subdirectory)/\(fileURL.lastPathComponent)"
+            if !referencedPaths.contains(relativePath) {
+                try fileManager.removeItem(at: fileURL)
+                deletedCount += 1
             }
         }
 
+        #if DEBUG
+        if deletedCount > 0 {
+            print("[ProjectStore] GC deleted \(deletedCount) orphan file(s) from \(subdirectory)")
+        }
+        #endif
+    }
+
+    /// Collects all MediaRef paths referenced by all saved projects + active draft.
+    private func collectAllReferencedMediaPaths() throws -> Set<String> {
+        var paths: Set<String> = []
+
+        // Collect from all saved projects
+        let index = try loadSavedIndex()
+        for (projectId, _) in index.projects {
+            if let record = loadSavedProject(projectId: projectId) {
+                collectMediaPaths(from: record.draft, into: &paths)
+            }
+        }
+
+        // Collect from active draft
+        if let slot = loadActiveDraft() {
+            collectMediaPaths(from: slot.draft, into: &paths)
+        }
+
         return paths
+    }
+
+    /// Extracts all media paths from a ProjectDraft.
+    private func collectMediaPaths(from draft: ProjectDraft, into paths: inout Set<String>) {
+        // Background region media
+        for (_, regionOverride) in draft.background.regions {
+            if let mediaRef = regionOverride.imageMediaRef {
+                paths.insert(mediaRef.id)
+            }
+        }
+
+        // User media from scene instance states
+        for (_, sceneState) in draft.sceneInstanceStates {
+            if let assignments = sceneState.mediaAssignments {
+                for (_, mediaRef) in assignments {
+                    paths.insert(mediaRef.id)
+                }
+            }
+        }
     }
 
     // MARK: - Cache Management
@@ -622,5 +722,6 @@ public final class ProjectStore {
     /// Clears the cached index (for testing or refresh).
     public func clearCache() {
         cachedIndex = nil
+        migrationAttempted = false
     }
 }

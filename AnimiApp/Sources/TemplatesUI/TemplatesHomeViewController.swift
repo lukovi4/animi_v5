@@ -76,6 +76,12 @@ final class TemplatesHomeViewController: UIViewController {
 
     private func setupUI() {
         title = "Templates"
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "folder"),
+            style: .plain,
+            target: self,
+            action: #selector(openMyProjects)
+        )
         view.backgroundColor = .systemBackground
 
         view.addSubview(collectionView)
@@ -219,13 +225,18 @@ final class TemplatesHomeViewController: UIViewController {
 
     // MARK: - Navigation
 
+    @objc private func openMyProjects() {
+        let myProjectsVC = MyProjectsViewController()
+        navigationController?.pushViewController(myProjectsVC, animated: true)
+    }
+
     private func openTemplate(_ template: TemplateDescriptor) {
         switch template.openBehavior {
         case .previewFirst:
             let detailsVC = TemplateDetailsViewController(templateId: template.id)
             navigationController?.pushViewController(detailsVC, animated: true)
         case .directToEditor:
-            let editorVC = PlayerViewController(templateId: template.id)
+            let editorVC = PlayerViewController(entryContext: .newFromTemplate(templateId: template.id))
             navigationController?.pushViewController(editorVC, animated: true)
         }
     }

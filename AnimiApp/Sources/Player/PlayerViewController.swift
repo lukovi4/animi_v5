@@ -65,19 +65,36 @@ private struct SceneSetupResult {
 /// PR-E: Production-only editor mode (dev-UI removed).
 final class PlayerViewController: UIViewController {
 
-    // MARK: - Initializers (PR-E: editor mode only)
+    // MARK: - Entry Context
 
-    /// Current template ID for editor mode
-    private var currentEditorTemplateId: String?
+    /// Describes how the editor was entered.
+    enum EntryContext {
+        case newFromTemplate(templateId: String)
+        case openSavedProject(projectId: UUID, sourceTemplateId: String)
+        case resumeActiveDraft
+    }
 
-    /// Initializer with template ID for editor mode
-    init(templateId: String) {
-        self.currentEditorTemplateId = templateId
+    private let entryContext: EntryContext
+    private var activeDraftSlot: ActiveDraftSlot?
+
+    init(entryContext: EntryContext) {
+        self.entryContext = entryContext
         super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        autosaveTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self, name: .appDidEnterBackground, object: nil)
+    }
+
+    @objc private func appDidEnterBackground() {
+        if !userMadeExplicitCloseChoice {
+            saveDraftToActiveSlot()
+        }
     }
 
     // MARK: - Export State
@@ -168,8 +185,12 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - PR2: Visual Editor Timeline
     private var currentProjectDraft: ProjectDraft?
-    /// Tracks whether draft has unsaved changes (Time Refactor: dirty flag for save optimization).
+    /// Tracks whether draft has unsaved changes.
     private var draftIsDirty = false
+    /// Tracks whether user made explicit Save/Don't Save choice (prevents double-save in viewWillDisappear).
+    private var userMadeExplicitCloseChoice = false
+    /// Periodic autosave timer (crash recovery safety net).
+    private var autosaveTimer: Timer?
     private lazy var editorLayoutContainer = EditorLayoutContainerView()
     private weak var fullScreenPreviewVC: FullScreenPreviewViewController?
 
@@ -232,21 +253,89 @@ final class PlayerViewController: UIViewController {
         let deviceName = metalView.device?.name ?? "N/A"
         log("AnimiApp initialized, TVECore: \(TVECore.version), Metal: \(deviceName)")
 
-        // PR-E: Production editor mode - load content from stored templateId
-        guard let templateId = currentEditorTemplateId else {
-            log("[PR-E] ERROR: No templateId provided")
-            return
+        // Lifecycle observers for background save
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appDidEnterBackground),
+            name: .appDidEnterBackground, object: nil
+        )
+
+        // Autosave timer (crash recovery safety net, 30s interval)
+        autosaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.saveDraftToActiveSlot()
         }
+
+        // Load content based on entry context
         Task { @MainActor in
-            await loadEditorContent(templateId: templateId)
+            await loadEditorContent()
         }
     }
 
     // MARK: - Release v1: Editor Content Loading
 
     /// Loads all editor content: SceneLibrary, Recipe, ProjectDraft, and first scene.
-    private func loadEditorContent(templateId: String) async {
+    private func loadEditorContent() async {
+        // Resolve templateId and draft from entry context
+        let templateId: String
+        let draft: ProjectDraft
+
+        switch entryContext {
+        case .newFromTemplate(let tplId):
+            templateId = tplId
+            let newDraft = ProjectDraft.create(for: tplId)
+            let slot = ActiveDraftSlot(
+                entryContext: .newFromTemplate(templateId: tplId),
+                sourceTemplateId: tplId,
+                linkedSavedProjectId: nil,
+                draft: newDraft
+            )
+            do {
+                try ProjectStore.shared.saveActiveDraft(slot)
+            } catch {
+                log("[Editor] ERROR: Failed to save active draft: \(error)")
+            }
+            activeDraftSlot = slot
+            draft = newDraft
+            log("[Editor] New from template: \(tplId), draft: \(newDraft.id)")
+
+        case .openSavedProject(let projectId, let sourceTemplateId):
+            templateId = sourceTemplateId
+            guard let record = ProjectStore.shared.loadSavedProject(projectId: projectId) else {
+                log("[Editor] ERROR: Cannot load saved project \(projectId)")
+                loadingState = .failed(message: "Project load failed")
+                updateLoadingStateUI()
+                return
+            }
+            let slot = ActiveDraftSlot(
+                entryContext: .openSavedProject(projectId: projectId),
+                sourceTemplateId: sourceTemplateId,
+                linkedSavedProjectId: projectId,
+                draft: record.draft
+            )
+            do {
+                try ProjectStore.shared.saveActiveDraft(slot)
+            } catch {
+                log("[Editor] ERROR: Failed to save active draft: \(error)")
+            }
+            activeDraftSlot = slot
+            draft = record.draft
+            log("[Editor] Opened saved project: \(projectId)")
+
+        case .resumeActiveDraft:
+            guard let slot = ProjectStore.shared.loadActiveDraft() else {
+                log("[Editor] ERROR: No active draft to resume")
+                loadingState = .failed(message: "No draft to resume")
+                updateLoadingStateUI()
+                return
+            }
+            activeDraftSlot = slot
+            templateId = slot.sourceTemplateId
+            draft = slot.draft
+            log("[Editor] Resumed active draft: \(draft.id), template: \(templateId)")
+        }
+
         currentTemplateId = templateId
+        currentProjectDraft = draft
+        currentProjectId = draft.id
 
         // Step 1: Load SceneLibrary
         do {
@@ -275,23 +364,9 @@ final class PlayerViewController: UIViewController {
             return
         }
 
-        // Step 3: Load or create ProjectDraft via ProjectStore (single source of truth)
-        do {
-            let draft = try ProjectStore.shared.createOrLoadProjectDraft(for: templateId)
-            currentProjectDraft = draft
-            currentProjectId = draft.id
-            log("[Release v1] Project draft loaded/created: \(draft.id)")
-        } catch {
-            log("[Release v1] ERROR: Failed to load/create project: \(error)")
-            loadingState = .failed(message: "Project load failed")
-            updateLoadingStateUI()
-            return
-        }
-
-        // Step 4: Load first scene from SceneLibrary
-        // P0-2 fix: Use draft timeline first (for saved projects), fallback to recipe
+        // Step 3: Determine first scene from draft or recipe
         let firstSceneTypeId: String
-        if let draftFirstSceneTypeId = currentProjectDraft?.canonicalTimeline.firstSceneTypeId {
+        if let draftFirstSceneTypeId = draft.canonicalTimeline.firstSceneTypeId {
             firstSceneTypeId = draftFirstSceneTypeId
             log("[Release v1] Using first scene from draft: \(firstSceneTypeId)")
         } else if let recipeFirstSceneTypeId = defaultSceneSequence.first?.sceneTypeId {
@@ -714,14 +789,76 @@ final class PlayerViewController: UIViewController {
     // MARK: - PR2: Editor Callbacks
 
     private func handleEditorClose() {
-        // Stop playback before closing
         stopPlayback()
 
-        // Save draft before closing (Time Refactor: ensures migrated durationUs is persisted)
-        saveDraftIfNeeded()
+        let alert = UIAlertController(title: nil, message: "Save changes?", preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self] _ in
+            self?.saveAndClose()
+        })
+        alert.addAction(UIAlertAction(title: "Don't Save", style: .destructive) { [weak self] _ in
+            self?.discardAndClose()
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+        present(alert, animated: true)
+    }
 
-        // Pop back to previous screen
+    private func saveAndClose() {
+        guard var slot = activeDraftSlot,
+              let draft = currentMergedDraft() else {
+            navigationController?.popViewController(animated: true)
+            return
+        }
+        slot.draft = draft
+        slot.draft.updatedAt = Date()
+
+        do {
+            try ProjectStore.shared.materializeSavedProject(from: &slot)
+            try ProjectStore.shared.deleteActiveDraft()
+        } catch {
+            log("[Close] Save failed: \(error)")
+            presentSaveError(error)
+            return
+        }
+
+        userMadeExplicitCloseChoice = true
         navigationController?.popViewController(animated: true)
+    }
+
+    private func discardAndClose() {
+        do { try ProjectStore.shared.deleteActiveDraft() }
+        catch { log("[Close] Discard error: \(error)") }
+        userMadeExplicitCloseChoice = true
+        navigationController?.popViewController(animated: true)
+    }
+
+    private func presentSaveError(_ error: Error) {
+        let alert = UIAlertController(
+            title: "Save Failed",
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    /// Materializes saved project after successful export.
+    private func handleExportSuccess() {
+        guard var slot = activeDraftSlot,
+              let draft = currentMergedDraft() else { return }
+        slot.draft = draft
+        slot.draft.updatedAt = Date()
+        do {
+            try ProjectStore.shared.materializeSavedProject(from: &slot)
+            activeDraftSlot = slot
+            try ProjectStore.shared.saveActiveDraft(slot)
+        } catch {
+            log("[Export] Save error: \(error.localizedDescription)")
+        }
     }
 
     private func handleFullScreenPreview() {
@@ -1791,9 +1928,9 @@ final class PlayerViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
 
-        // Time Refactor: Save draft as safety net when leaving editor
-        if isMovingFromParent || isBeingDismissed {
-            saveDraftIfNeeded()
+        // Safety net: save to active slot when leaving editor without explicit choice
+        if (isMovingFromParent || isBeingDismissed) && !userMadeExplicitCloseChoice {
+            saveDraftToActiveSlot()
         }
     }
 
@@ -1807,39 +1944,32 @@ final class PlayerViewController: UIViewController {
         backgroundTextureService?.clearAllTrackedTextures()
     }
 
-    // MARK: - Draft Persistence (Time Refactor)
+    // MARK: - Draft Persistence
 
-    /// Saves current project draft if it has unsaved changes.
-    /// Called on editor close and viewWillDisappear.
-    /// Saves current project draft if it has unsaved changes.
-    /// Called on editor close and viewWillDisappear.
-    /// PR2: Reads draft from EditorStore (single source of truth).
-    private func saveDraftIfNeeded() {
-        guard draftIsDirty else { return }
-
-        // PR2: Get draft from store (single source of truth)
-        var draft: ProjectDraft
-        if let store = editorStore {
-            draft = store.currentDraft
-        } else if let localDraft = currentProjectDraft {
-            // Fallback to local draft if store not initialized
-            draft = localDraft
-        } else {
-            return
+    /// Assembles the full current draft including background from authoritative source.
+    private func currentMergedDraft() -> ProjectDraft? {
+        guard var draft = editorStore?.currentDraft
+                ?? activeDraftSlot?.draft else { return nil }
+        if let bg = projectBackgroundOverride {
+            draft.background = bg
         }
+        return draft
+    }
 
-        // Update timestamp before save
-        draft.updatedAt = Date()
-
-        // Sync local reference
-        currentProjectDraft = draft
-
+    /// Saves current draft to the active draft slot (not to SavedProject).
+    /// Called on background, autosave timer, and viewWillDisappear safety net.
+    private func saveDraftToActiveSlot() {
+        guard draftIsDirty, var slot = activeDraftSlot,
+              let draft = currentMergedDraft() else { return }
+        slot.draft = draft
+        slot.draft.updatedAt = Date()
         do {
-            try ProjectStore.shared.saveProjectDraft(draft)
+            try ProjectStore.shared.saveActiveDraft(slot)
+            activeDraftSlot = slot
             draftIsDirty = false
-            log("[PR2] Draft saved: \(draft.id)")
+            log("[Autosave] Draft saved to active slot")
         } catch {
-            log("[PR2] Failed to save draft: \(error.localizedDescription)")
+            log("[Autosave] Error: \(error.localizedDescription)")
         }
     }
 
@@ -1938,9 +2068,6 @@ final class PlayerViewController: UIViewController {
             return
         }
 
-        // P1-3: Get old mediaRef before replacing (for cleanup after successful inject)
-        let oldMediaRef = projectBackgroundOverride?.regions[regionId]?.imageMediaRef
-
         do {
             // Save image to project store
             let mediaRef = try service.saveImage(image)
@@ -1962,11 +2089,7 @@ final class PlayerViewController: UIViewController {
                         editor.setImage(for: regionId, mediaRef: mediaRef, image: image)
                     }
 
-                    // P1-3: Delete old file after successful inject
-                    if let oldRef = oldMediaRef, oldRef != mediaRef {
-                        service.deleteMediaFile(oldRef)
-                        log("[Background] Deleted old media file: \(oldRef.id)")
-                    }
+                    // Old media file cleanup deferred to GC (Phase 1E)
 
                     metalView.setNeedsDisplay()
                 } catch {
@@ -2070,6 +2193,7 @@ final class PlayerViewController: UIViewController {
         }
 
         progressVC.onCompleted = { [weak self] url in
+            self?.handleExportSuccess()
             self?.dismiss(animated: true) {
                 self?.presentShareSheet(for: url)
             }
@@ -2201,6 +2325,7 @@ final class PlayerViewController: UIViewController {
         }
 
         progressVC.onCompleted = { [weak self] url in
+            self?.handleExportSuccess()
             self?.dismiss(animated: true) {
                 self?.presentShareSheet(for: url)
             }
@@ -3107,7 +3232,7 @@ final class PlayerViewController: UIViewController {
 
     /// Sets up background state from template and project override.
     private func setupBackgroundState(compiled: CompiledScene) {
-        guard let templateId = currentTemplateId,
+        guard currentTemplateId != nil,
               let device = metalView.device,
               let queue = commandQueue else {
             log("[Background] Skipped: missing dependencies")
@@ -3124,17 +3249,8 @@ final class PlayerViewController: UIViewController {
             commandQueue: queue
         )
 
-        // Load or create project
-        do {
-            currentProjectId = try ProjectStore.shared.createOrLoadProjectId(for: templateId)
-            if let projectId = currentProjectId {
-                projectBackgroundOverride = try ProjectStore.shared.loadBackgroundOverride(projectId: projectId, templateId: templateId)
-            }
-        } catch {
-            log("[Background] ProjectStore error: \(error.localizedDescription)")
-            currentProjectId = nil
-            projectBackgroundOverride = nil
-        }
+        // Load background from active draft slot
+        projectBackgroundOverride = activeDraftSlot?.draft.background
 
         // Build effective state
         let templateBackground = compiled.runtime.scene.background
@@ -3875,16 +3991,8 @@ extension PlayerViewController: BackgroundEditorDelegate {
     }
 
     func backgroundEditorWillDismiss(override: ProjectBackgroundOverride, presetId: String) {
-        // Save to ProjectStore
-        guard let projectId = currentProjectId,
-              let templateId = currentTemplateId else { return }
-
-        do {
-            try ProjectStore.shared.saveBackgroundOverride(projectId: projectId, templateId: templateId, override: override)
-            log("[Background] Saved override for project \(projectId), template \(templateId)")
-        } catch {
-            log("[Background] Failed to save: \(error.localizedDescription)")
-        }
+        // Mark dirty — will be persisted via saveDraftToActiveSlot/materialize
+        draftIsDirty = true
 
         // P0-2: Check if preset changed and cleanup old textures
         let presetChanged = lastBackgroundPresetId != nil && lastBackgroundPresetId != presetId

@@ -188,7 +188,7 @@ final class TemplateDetailsViewController: UIViewController {
 
     @objc private func useTemplateTapped() {
         guard template != nil else { return }
-        let editorVC = PlayerViewController(templateId: templateId)
+        let editorVC = PlayerViewController(entryContext: .newFromTemplate(templateId: templateId))
         navigationController?.pushViewController(editorVC, animated: true)
     }
 }

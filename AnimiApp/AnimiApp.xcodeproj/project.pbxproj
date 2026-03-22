@@ -137,6 +137,10 @@
 		FE30676DCE3F9DF63B5A23A2 /* EditorRenderContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59971755844E2F253995D2F /* EditorRenderContract.swift */; };
 		FF0D1E2F3A4B5C6D7E8F9A18 /* SceneTypeResourcesCacheProviderSplitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0D1E2F3A4B5C6D7E8F9A19 /* SceneTypeResourcesCacheProviderSplitTests.swift */; };
 		TT11BF0001000000000000AA /* ProjectStorePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TT11FR0001000000000000BB /* ProjectStorePersistenceTests.swift */; };
+		AA01000100010001AAAA0001 /* ActiveDraftSlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100010001AAAA0001 /* ActiveDraftSlot.swift */; };
+		AA01000100010001AAAA0002 /* SavedProjectRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100010001AAAA0002 /* SavedProjectRecord.swift */; };
+		AA01000100010001AAAA0003 /* ProjectPreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100010001AAAA0003 /* ProjectPreviewCell.swift */; };
+		AA01000100010001AAAA0004 /* MyProjectsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100010001AAAA0004 /* MyProjectsViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -282,6 +286,10 @@
 		FC49A46FA18BE025E45C3184 /* UserMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaService.swift; sourceTree = "<group>"; };
 		FF0D1E2F3A4B5C6D7E8F9A19 /* SceneTypeResourcesCacheProviderSplitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneTypeResourcesCacheProviderSplitTests.swift; sourceTree = "<group>"; };
 		TT11FR0001000000000000BB /* ProjectStorePersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStorePersistenceTests.swift; sourceTree = "<group>"; };
+		AA02000100010001AAAA0001 /* ActiveDraftSlot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActiveDraftSlot.swift; sourceTree = "<group>"; };
+		AA02000100010001AAAA0002 /* SavedProjectRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectRecord.swift; sourceTree = "<group>"; };
+		AA02000100010001AAAA0003 /* ProjectPreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPreviewCell.swift; sourceTree = "<group>"; };
+		AA02000100010001AAAA0004 /* MyProjectsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyProjectsViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -370,6 +378,7 @@
 		192D2901CC0DF98E94429A09 /* Project */ = {
 			isa = PBXGroup;
 			children = (
+				AA02000100010001AAAA0001 /* ActiveDraftSlot.swift */,
 				3364EA3951160DA864738903 /* CanonicalTimeline.swift */,
 				CA08D7E49AF2FAED41B3739D /* EditorConfig.swift */,
 				6D5135EA575C330539D1FD0A /* MediaRef.swift */,
@@ -377,6 +386,7 @@
 				55C76845C9F4E045E5E4913B /* ProjectBackgroundOverride.swift */,
 				24544FC9E0EAD15CABC4A7B4 /* ProjectDraft.swift */,
 				B68FDC0B5B9E176AEECBF7BF /* ProjectStore.swift */,
+				AA02000100010001AAAA0002 /* SavedProjectRecord.swift */,
 				6F1811C646979CF0638C6195 /* SceneState.swift */,
 				77E8E00BD4B0BBC56EB6E639 /* SceneTransition.swift */,
 				B685C4E5B201E8A6899D2B21 /* TimelinePayload.swift */,
@@ -394,6 +404,15 @@
 				E3FB56BE62079A849F579C2F /* TemplatesHomeViewController.swift */,
 			);
 			path = TemplatesUI;
+			sourceTree = "<group>";
+		};
+		AA03000100010001AAAA0001 /* MyProjects */ = {
+			isa = PBXGroup;
+			children = (
+				AA02000100010001AAAA0004 /* MyProjectsViewController.swift */,
+				AA02000100010001AAAA0003 /* ProjectPreviewCell.swift */,
+			);
+			path = MyProjects;
 			sourceTree = "<group>";
 		};
 		5EE3CBAF8EB42497C510D2D4 /* Background */ = {
@@ -417,6 +436,7 @@
 				9E265860D86C3AF53EC27331 /* Content */,
 				AB885C05AC47A6617B0FB4FE /* Editor */,
 				174A8C02D785B7926CEE2F64 /* Export */,
+				AA03000100010001AAAA0001 /* MyProjects */,
 				0C30BD67F1694F5E87D23958 /* Player */,
 				192D2901CC0DF98E94429A09 /* Project */,
 				AB3DC2C4EBEE3F6352CE45D7 /* TemplatesCatalog */,
@@ -810,6 +830,10 @@
 				5FEFD831EE615753FA850EE1 /* RenderDiagnosticEvent.swift in Sources */,
 				A49137771BDBE3C142772C34 /* RuntimeDiagnosticsSink.swift in Sources */,
 				5B24D8BEF582FE2B71D7C64A /* RenderDiagnosticsSink.swift in Sources */,
+				AA01000100010001AAAA0001 /* ActiveDraftSlot.swift in Sources */,
+				AA01000100010001AAAA0002 /* SavedProjectRecord.swift in Sources */,
+				AA01000100010001AAAA0003 /* ProjectPreviewCell.swift in Sources */,
+				AA01000100010001AAAA0004 /* MyProjectsViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
