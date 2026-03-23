@@ -183,6 +183,11 @@ final class PlayerViewController: UIViewController {
     /// Currently active scene instance ID (for per-instance state apply).
     private var activeSceneInstanceId: UUID?
 
+    /// Set after scene-edit activation completes; gates render to prevent stale frames.
+    private var sceneEditReadyInstanceId: UUID?
+    /// Cancellable task for scene-edit activation (prevents races on rapid switching).
+    private var sceneEditActivationTask: Task<Void, Never>?
+
     /// Write-target resolution: in scene-edit returns uiMode target;
     /// otherwise returns runtime activeSceneInstanceId.
     /// Production code and tests share this single implementation.
@@ -207,12 +212,50 @@ final class PlayerViewController: UIViewController {
 
     private func assertSceneEditTargetMatchesRuntimeIfPossible() {
         #if DEBUG
+        // Activation in progress — divergence is expected
+        guard sceneEditReadyInstanceId != nil else { return }
         guard let target = sceneEditTargetInstanceId,
               let runtime = activeSceneInstanceId,
               target != runtime else { return }
         print("[BUG-GUARD] sceneEditTargetInstanceId (\(target)) != activeSceneInstanceId (\(runtime))")
         assertionFailure("[BUG-GUARD] Scene edit target diverged from runtime active scene")
         #endif
+    }
+
+    /// Activates a specific scene for scene-edit by instance ID.
+    /// Blocks render via sceneEditReadyInstanceId until activation completes.
+    private func activateSceneEditTarget(instanceId: UUID) {
+        // Cancel any in-flight activation
+        sceneEditActivationTask?.cancel()
+        // Block render immediately
+        sceneEditReadyInstanceId = nil
+
+        sceneEditActivationTask = Task { @MainActor [weak self] in
+            guard let self, let coordinator = self.playbackCoordinator else { return }
+
+            guard let (_, localFrame) = await coordinator.activateSceneByInstanceId(instanceId) else {
+                return // Scene not found or stale
+            }
+            guard !Task.isCancelled else { return }
+
+            self.activeSceneInstanceId = instanceId
+            self.currentFrameIndex = localFrame
+            self.resetRuntimeForSceneInstanceChange()
+            self.applySceneInstanceState(instanceId: instanceId)
+
+            // Unblock render
+            self.sceneEditReadyInstanceId = instanceId
+
+            self.refreshSceneEditBars()
+            self.sceneEditController?.updateOverlay()
+            self.requestMetalRender()
+
+            // Sync video frames at frame 0
+            if !self.isPlaying {
+                self.userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                self.lastVideoUpdateFrame = localFrame
+            }
+        }
     }
 
     // MARK: - PR2: Visual Editor Timeline
@@ -630,6 +673,9 @@ final class PlayerViewController: UIViewController {
 
         case .editBoundaryTransition(let fromId, let toId, let anchorRect):
             presentTransitionPicker(fromSceneId: fromId, toSceneId: toId, anchorRect: anchorRect)
+
+        case .focusScene(let sceneId):
+            editorStore?.dispatch(.focusScene(sceneId: sceneId))
         }
     }
 
@@ -970,6 +1016,11 @@ final class PlayerViewController: UIViewController {
     }
 
     private func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
+        // In timeline mode, scene selection comes from playhead via focusScene.
+        // Only allow .audio and .none through direct .select dispatch.
+        if editorStore?.state.uiMode == .timeline, case .scene = selection {
+            return
+        }
         // PR3: Only dispatch to store. UI updates happen in handleStoreStateChanged.
         editorStore?.dispatch(.select(selection: selection))
     }
@@ -1329,7 +1380,8 @@ final class PlayerViewController: UIViewController {
         log("[Release v1] Coordinator loaded scene: \(loadedScene.sceneTypeId)")
 
         // PR9: Apply per-instance state after scene load
-        if let instanceId = activeSceneInstanceId {
+        // Skip during scene-edit activation — activation method is the single owner
+        if sceneEditReadyInstanceId != nil, let instanceId = activeSceneInstanceId {
             resetRuntimeForSceneInstanceChange()
             applySceneInstanceState(instanceId: instanceId)
         }
@@ -1348,6 +1400,9 @@ final class PlayerViewController: UIViewController {
 
         let previousInstanceId = activeSceneInstanceId
         activeSceneInstanceId = sceneInfo.sceneInstanceId
+
+        // During scene-edit activation, the activation method handles state apply
+        guard sceneEditReadyInstanceId != nil else { return }
 
         // If scene is already loaded (same sceneTypeId), apply state immediately
         // Otherwise, state will be applied in handleCoordinatorSceneLoaded after load
@@ -1522,6 +1577,11 @@ final class PlayerViewController: UIViewController {
         // PR-F: Set activeSceneInstanceId SYNCHRONOUSLY for boot invariant.
         activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
 
+        // Sync timeline scroll to follow playhead
+        if let mapper = editorStore?.state.makePlayheadMapper() {
+            editorLayoutContainer.setCurrentCompressedFrame(compressedFrame, mapper: mapper)
+        }
+
         // PR-G: Use shared helper with scrub invalidation
         // Phase 2.1: Pass compressed frame directly (no round-trip conversion)
         resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: true)
@@ -1627,6 +1687,8 @@ final class PlayerViewController: UIViewController {
     /// Handles playhead changes in Scene Edit mode via TimelinePlaybackCoordinator.
     /// Phase 2.1: Takes compressed frame and converts to nominal timeUs for coordinator.
     private func handleSceneEditModePlayheadChanged(_ compressedFrame: Int) {
+        // Don't process playhead changes until scene-edit activation completes
+        guard sceneEditReadyInstanceId != nil else { return }
         guard let coordinator = playbackCoordinator else { return }
 
         // Phase 2.1: Convert compressed frame to nominal timeUs for coordinator
@@ -1785,6 +1847,9 @@ final class PlayerViewController: UIViewController {
         switch mode {
         case .timeline:
             // Exit Scene Edit: restore timeline UI
+            sceneEditActivationTask?.cancel()
+            sceneEditActivationTask = nil
+            sceneEditReadyInstanceId = nil
             editorLayoutContainer.setSceneEditMode(false, animated: true)
             editorLayoutContainer.navBar.setMode(.timeline)
             sceneEditController?.updateOverlay()
@@ -1808,6 +1873,9 @@ final class PlayerViewController: UIViewController {
 
             // PR-F: Configure bottom bars state
             refreshSceneEditBars()
+
+            // Activate target scene by instance ID (async, render-gated)
+            activateSceneEditTarget(instanceId: sceneId)
 
             #if DEBUG
             log("[PR-D] Entered Scene Edit for scene: \(sceneId)")
@@ -2739,12 +2807,19 @@ final class PlayerViewController: UIViewController {
         ))
     }
 
-    // MARK: - PR9: Scene Catalog
+    // MARK: - Scene Catalog
 
     /// Presents the scene catalog for adding a new scene.
     private func presentSceneCatalog() {
         guard let library = sceneLibrarySnapshot else {
-            log("[PR9] presentSceneCatalog: sceneLibrarySnapshot is nil")
+            log("[SceneCatalog] presentSceneCatalog: sceneLibrarySnapshot is nil")
+            let alert = UIAlertController(
+                title: "Scenes Unavailable",
+                message: "Scene library could not be loaded. Please try again.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
             return
         }
 
@@ -2760,13 +2835,13 @@ final class PlayerViewController: UIViewController {
     /// Handles scene selection from catalog.
     private func handleAddScene(sceneTypeId: String, baseDurationUs: TimeUs) {
         guard let store = editorStore else {
-            log("[PR9] handleAddScene: editorStore is nil")
+            log("[SceneCatalog] handleAddScene: editorStore is nil")
             return
         }
 
         // Dispatch addScene action to store
         store.dispatch(.addScene(sceneTypeId: sceneTypeId, durationUs: baseDurationUs))
-        log("[PR9] Added scene: \(sceneTypeId) duration=\(baseDurationUs)us")
+        log("[SceneCatalog] Added scene: \(sceneTypeId) duration=\(baseDurationUs)us")
     }
 
     override var prefersStatusBarHidden: Bool {
@@ -3381,14 +3456,10 @@ final class PlayerViewController: UIViewController {
         let maxFrame = store.state.compressedDurationFrames - 1
         let nextFrame = min(currentFrame + 1, maxFrame)
 
-        // Dispatch to store - onPlayheadChanged callback handles coordinator + redraw
+        // Dispatch to store - onPlayheadChanged callback handles coordinator + redraw + timeline scroll
         store.dispatch(.setPlayhead(compressedFrame: nextFrame))
 
-        // Phase 2.1: Get mapper for UI updates
-        let mapper = store.state.makePlayheadMapper()
-
-        // Phase 2.1: Update timeline with compressed frame directly
-        editorLayoutContainer.setCurrentCompressedFrame(nextFrame, mapper: mapper)
+        // Full screen preview (not driven by store callback)
         fullScreenPreviewVC?.setCurrentCompressedFrame(nextFrame)
 
         // PR-F: Video sync via engine in timeline mode, legacy path in sceneEdit mode
@@ -3401,6 +3472,7 @@ final class PlayerViewController: UIViewController {
 
         case .sceneEdit:
             // Legacy path - use coordinator's local frame
+            let mapper = store.state.makePlayheadMapper()
             let nextTimeUs = mapper.nominalTimeUs(forCompressedFrame: nextFrame)
             let fps = store.state.templateFPS
             let globalFrameIndex = Int(nextTimeUs * TimeUs(fps) / 1_000_000)
@@ -3636,7 +3708,10 @@ extension PlayerViewController: MTKViewDelegate {
         let frameIndex = currentFrameIndex
 
         guard let uiMode = editorStore?.state.uiMode,
-              case .sceneEdit = uiMode else { return }
+              case .sceneEdit(let sceneEditTargetId) = uiMode else { return }
+
+        // Render guard: don't draw until activation completes for the target scene
+        guard sceneEditReadyInstanceId == sceneEditTargetId else { return }
 
         guard let resolved = EditorRenderCommandResolver.resolve(
             uiMode: uiMode,

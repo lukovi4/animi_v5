@@ -11,6 +11,16 @@ public enum EditorUIMode: Equatable, Sendable {
     case sceneEdit(sceneInstanceId: UUID)
 }
 
+// MARK: - Timeline Scene Selection Mode
+
+/// Controls how scene selection behaves relative to playhead movement.
+public enum TimelineSceneSelectionMode: Equatable, Sendable {
+    /// No automatic selection — user must explicitly tap a scene.
+    case inactive
+    /// Selection follows playhead across scenes (activated by focusScene).
+    case followPlayhead
+}
+
 // MARK: - Editor State (Release v1)
 
 /// Centralized state for the editor.
@@ -31,6 +41,9 @@ public struct EditorState: Equatable, Sendable {
 
     /// Current timeline selection.
     public var selection: TimelineSelection
+
+    /// Timeline scene selection mode (follows playhead or inactive).
+    public var timelineSceneSelectionMode: TimelineSceneSelectionMode = .inactive
 
     // MARK: - Template Configuration (immutable after loadProject)
 
@@ -99,17 +112,32 @@ public struct EditorState: Equatable, Sendable {
         makeTransitionMath().compressedDurationFrames
     }
 
+    // MARK: - Playhead-Derived Helpers (Timeline Mode)
+
+    /// Returns the scene instance ID at the current playhead position.
+    /// Uses frameMapping from TimelineTransitionMath (primary scene by 50% rule).
+    /// Returns nil if playhead is out of range or no scenes exist.
+    public func sceneIdAtPlayhead() -> UUID? {
+        let math = makeTransitionMath()
+        guard let mapping = math.frameMapping(for: playheadCompressedFrame) else { return nil }
+        let items = sceneItems
+        guard mapping.sceneIndex >= 0 && mapping.sceneIndex < items.count else { return nil }
+        return items[mapping.sceneIndex].id
+    }
+
     // MARK: - Initialization
 
     public init(
         draft: ProjectDraft,
         playheadCompressedFrame: Int = 0,
         selection: TimelineSelection = .none,
+        timelineSceneSelectionMode: TimelineSceneSelectionMode = .inactive,
         templateFPS: Int = 30
     ) {
         self.draft = draft
         self.playheadCompressedFrame = playheadCompressedFrame
         self.selection = selection
+        self.timelineSceneSelectionMode = timelineSceneSelectionMode
         self.templateFPS = templateFPS
     }
 
@@ -145,18 +173,23 @@ public struct EditorSnapshot: Equatable, Sendable {
     /// Saved scene edit return position (compressed frame).
     public let sceneEditReturnCompressedFrame: Int?
 
+    /// Timeline scene selection mode at snapshot time.
+    public let timelineSceneSelectionMode: TimelineSceneSelectionMode
+
     public init(
         canonicalTimeline: CanonicalTimeline,
         playheadCompressedFrame: Int,
         selection: TimelineSelection,
         sceneInstanceStates: [UUID: SceneState] = [:],
-        sceneEditReturnCompressedFrame: Int? = nil
+        sceneEditReturnCompressedFrame: Int? = nil,
+        timelineSceneSelectionMode: TimelineSceneSelectionMode = .inactive
     ) {
         self.canonicalTimeline = canonicalTimeline
         self.playheadCompressedFrame = playheadCompressedFrame
         self.selection = selection
         self.sceneInstanceStates = sceneInstanceStates
         self.sceneEditReturnCompressedFrame = sceneEditReturnCompressedFrame
+        self.timelineSceneSelectionMode = timelineSceneSelectionMode
     }
 
     /// Creates snapshot from current state.
@@ -166,6 +199,7 @@ public struct EditorSnapshot: Equatable, Sendable {
         self.selection = state.selection
         self.sceneInstanceStates = state.draft.sceneInstanceStates
         self.sceneEditReturnCompressedFrame = state.sceneEditReturnCompressedFrame
+        self.timelineSceneSelectionMode = state.timelineSceneSelectionMode
     }
 }
 
@@ -181,5 +215,6 @@ public extension EditorState {
         playheadCompressedFrame = snapshot.playheadCompressedFrame
         selection = snapshot.selection
         sceneEditReturnCompressedFrame = snapshot.sceneEditReturnCompressedFrame
+        timelineSceneSelectionMode = snapshot.timelineSceneSelectionMode
     }
 }

@@ -1,13 +1,12 @@
 import UIKit
 
-// MARK: - Global Action Bar (PR2)
+// MARK: - Global Action Bar
 
 /// Bottom bar shown when no timeline item is selected.
 /// Contains action buttons: Add Text, Add Scene, Music, Sticker, Media.
-/// All buttons are placeholders in PR2 (no functionality).
 final class GlobalActionBar: UIView {
 
-    // MARK: - Callbacks (for future PRs)
+    // MARK: - Callbacks
 
     var onAddText: (() -> Void)?
     var onAddScene: (() -> Void)?
@@ -22,7 +21,7 @@ final class GlobalActionBar: UIView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal
         stack.distribution = .fillEqually
-        stack.alignment = .center
+        stack.alignment = .fill
         stack.spacing = 0
         return stack
     }()

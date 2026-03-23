@@ -59,13 +59,30 @@ public enum EditorReducer {
             // Clamp to valid range [0, compressedDurationFrames - 1]
             let maxFrame = max(0, newState.compressedDurationFrames - 1)
             newState.playheadCompressedFrame = clampFrame(compressedFrame, totalFrames: maxFrame + 1)
+            // Only auto-derive selection when in follow-playhead mode
+            rebindSelectionIfFollowing(state: &newState)
             // Playhead changes don't push snapshot
             return ReducerResult(state: newState, shouldPushSnapshot: false)
 
         // MARK: - Selection
 
         case .select(let selection):
+            // In timeline mode, .scene selection must come from focusScene.
+            // Direct .select(.scene) is a no-op in timeline mode.
+            if newState.uiMode == .timeline, case .scene = selection {
+                #if DEBUG
+                print("[EditorReducer] Warning: .select(.scene) in timeline mode — use .focusScene instead")
+                #endif
+                return ReducerResult(state: newState, shouldPushSnapshot: false)
+            }
             newState.selection = selection
+            // Mode management: clearing selection or selecting audio deactivates follow mode
+            switch selection {
+            case .none, .audio:
+                newState.timelineSceneSelectionMode = .inactive
+            case .scene:
+                break // guarded as no-op above for timeline mode
+            }
             // Selection changes don't push snapshot
             return ReducerResult(state: newState, shouldPushSnapshot: false)
 
@@ -137,6 +154,9 @@ public enum EditorReducer {
             )
 
         // MARK: - Scene Edit Mode (PR-A)
+
+        case .focusScene(let sceneId):
+            return focusScene(state: newState, sceneId: sceneId)
 
         case .enterSceneEdit(let sceneId):
             return enterSceneEdit(state: newState, sceneId: sceneId)
@@ -211,11 +231,12 @@ private extension EditorReducer {
             )
         }
 
-        // Create initial state
+        // Create initial state: no scene selected, mode inactive
         let state = EditorState(
             draft: newDraft,
             playheadCompressedFrame: 0,
             selection: .none,
+            timelineSceneSelectionMode: .inactive,
             templateFPS: templateFPS
         )
 
@@ -358,6 +379,9 @@ private extension EditorReducer {
             forNominalFrame: newNominalPlayhead,
             quantize: .ended
         )
+
+        // Rebind selection if follow mode is active
+        rebindSelectionIfFollowing(state: &newState)
 
         // Build notices from reset keys
         let notices: [EditorNotice] = resetKeys.isEmpty ? [] : [.boundaryTransitionsReset(resetKeys)]
@@ -639,12 +663,24 @@ extension EditorReducer {
     /// Use on all commit paths (trim.ended, reorder, add, duplicate, delete, setBoundaryTransition).
     /// - Parameter state: Editor state to modify
     /// - Returns: Notices to emit (empty if no boundaries were reset)
+    /// Rebinds selection to the scene under playhead if follow mode is active.
+    /// Call after any mutation that changes playhead position or scene layout.
+    static func rebindSelectionIfFollowing(state: inout EditorState) {
+        guard state.uiMode == .timeline,
+              state.timelineSceneSelectionMode == .followPlayhead,
+              let sceneId = state.sceneIdAtPlayhead() else { return }
+        state.selection = .scene(id: sceneId)
+    }
+
     static func applyInvariantsAndBuildNotices(state: inout EditorState) -> [EditorNotice] {
         let resetKeys = ensureTrackInvariants(&state.canonicalTimeline)
 
         // Clamp playhead to new compressed duration
         let maxFrame = max(0, state.compressedDurationFrames - 1)
         state.playheadCompressedFrame = min(state.playheadCompressedFrame, maxFrame)
+
+        // Rebind selection if follow mode is active
+        rebindSelectionIfFollowing(state: &state)
 
         guard !resetKeys.isEmpty else { return [] }
         return [.boundaryTransitionsReset(resetKeys)]
@@ -833,6 +869,36 @@ private extension EditorReducer {
     }
 }
 
+// MARK: - Focus Scene (Playhead as Source of Truth)
+
+private extension EditorReducer {
+
+    /// Moves playhead to the start of a scene and activates follow-playhead mode.
+    /// Used when user taps a scene in timeline mode.
+    static func focusScene(
+        state: EditorState,
+        sceneId: UUID
+    ) -> ReducerResult {
+        var newState = state
+
+        // Find scene index
+        guard let index = state.canonicalTimeline.sceneItems.firstIndex(where: { $0.id == sceneId }) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Move playhead to scene boundary start frame
+        let mapper = state.makePlayheadMapper()
+        newState.playheadCompressedFrame = mapper.sceneBoundaryCompressedFrame(forSceneAt: index)
+
+        // Explicit selection + activate follow mode
+        newState.selection = .scene(id: sceneId)
+        newState.timelineSceneSelectionMode = .followPlayhead
+
+        // UI navigation, no undo snapshot
+        return ReducerResult(state: newState, shouldPushSnapshot: false)
+    }
+}
+
 // MARK: - Scene Edit Mode (PR-A)
 
 private extension EditorReducer {
@@ -870,6 +936,7 @@ private extension EditorReducer {
 
     /// Exits scene edit mode.
     /// Restores playhead to saved position, clears Scene Edit state.
+    /// Follow mode is preserved through scene edit cycle.
     static func exitSceneEdit(
         state: EditorState
     ) -> ReducerResult {
@@ -885,7 +952,10 @@ private extension EditorReducer {
         newState.uiMode = .timeline
         newState.selectedBlockId = nil
 
-        // 3. Do NOT push snapshot (UI transition)
+        // 3. Only re-derive selection if follow mode is active
+        rebindSelectionIfFollowing(state: &newState)
+
+        // 4. Do NOT push snapshot (UI transition)
         return ReducerResult(state: newState, shouldPushSnapshot: false)
     }
 

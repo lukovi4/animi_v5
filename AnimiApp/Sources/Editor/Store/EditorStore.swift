@@ -283,6 +283,8 @@ public final class EditorStore {
     func restoreNormalizedSnapshot(_ snapshot: EditorSnapshot) -> [EditorNotice] {
         state.restore(from: snapshot)
         let notices = EditorReducer.applyInvariantsAndBuildNotices(state: &state)
+        // Only re-derive selection if follow mode is active
+        EditorReducer.rebindSelectionIfFollowing(state: &state)
         notifyTimelineChanged()
         notifySelectionChanged()
         onPlayheadChanged?(state.playheadCompressedFrame)
@@ -385,6 +387,7 @@ public final class EditorStore {
         case .setBlockVariant: actionName = "setBlockVariant"
         case .setBlockToggle: actionName = "setBlockToggle"
         case .setBlockMedia: actionName = "setBlockMedia"
+        case .focusScene: actionName = "focusScene"
         case .enterSceneEdit: actionName = "enterSceneEdit"
         case .exitSceneEdit: actionName = "exitSceneEdit"
         case .selectBlock: actionName = "selectBlock"

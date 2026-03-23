@@ -184,7 +184,8 @@ final class EditorLayoutContainerView: UIView {
         bottomBarContainer.addSubview(sceneEditBar)
         bottomBarContainer.addSubview(mediaBlockActionBar)
 
-        // Initial state: show GlobalActionBar
+        // Initial state: GlobalActionBar visible (no scene selected at start)
+        globalActionBar.isHidden = false
         contextBar.isHidden = true
         sceneEditBar.isHidden = true
         mediaBlockActionBar.isHidden = true
@@ -402,6 +403,10 @@ final class EditorLayoutContainerView: UIView {
         case .editBoundaryTransition:
             // PR-G: Forward to VC for picker presentation
             onTimelineEvent?(event)
+
+        case .focusScene:
+            // Forward to VC — playhead moves to scene start, selection derived from playhead
+            onTimelineEvent?(event)
         }
     }
 
@@ -449,7 +454,7 @@ final class EditorLayoutContainerView: UIView {
             timelineContainer.isHidden = true
             menuStrip.isHidden = true  // Hide (not disable) per review.md
 
-            // P2 fix: Set bottom bar to consistent state on enter
+            // Set bottom bar to consistent state on enter scene edit
             globalActionBar.isHidden = true
             contextBar.isHidden = true
             sceneEditBar.isHidden = false      // Default: no block selected
@@ -613,21 +618,16 @@ final class EditorLayoutContainerView: UIView {
     // MARK: - Private
 
     private func updateBottomBar() {
-        // PR-C: Don't update if in scene edit mode (handled separately)
         guard !isSceneEditMode else { return }
-
+        sceneEditBar.isHidden = true
+        mediaBlockActionBar.isHidden = true
         switch currentSelection {
         case .none:
             globalActionBar.isHidden = false
             contextBar.isHidden = true
         case .scene, .audio:
-            // PR2: .scene(id:) matches any scene selection
             globalActionBar.isHidden = true
             contextBar.isHidden = false
         }
-
-        // Ensure scene edit bars are hidden
-        sceneEditBar.isHidden = true
-        mediaBlockActionBar.isHidden = true
     }
 }

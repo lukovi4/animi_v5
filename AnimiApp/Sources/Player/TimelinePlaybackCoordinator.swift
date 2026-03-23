@@ -362,6 +362,57 @@ public final class TimelinePlaybackCoordinator {
         sceneTimeline.first?.sceneTypeId
     }
 
+    // MARK: - Instance-Based Activation
+
+    /// Looks up scene time info by instance ID.
+    public func sceneTimeInfo(forInstanceId instanceId: UUID) -> SceneTimeInfo? {
+        sceneTimeline.first(where: { $0.sceneInstanceId == instanceId })
+    }
+
+    /// Activates a specific scene by instance ID, loading its type if needed.
+    /// Returns the scene info and local frame (0), or nil if not found or stale.
+    public func activateSceneByInstanceId(_ instanceId: UUID) async -> (SceneTimeInfo, Int)? {
+        guard let sceneInfo = sceneTimeInfo(forInstanceId: instanceId) else {
+            return nil
+        }
+
+        // Update instance tracking
+        if instanceId != currentSceneInstanceId {
+            currentSceneInstanceId = instanceId
+            onActiveSceneChanged?(sceneInfo)
+        }
+
+        // Load scene type if different
+        if currentSceneTypeId != sceneInfo.sceneTypeId {
+            requestGeneration += 1
+            pendingSceneTypeId = sceneInfo.sceneTypeId
+            pendingLoadTask?.cancel()
+
+            let generation = requestGeneration
+            pendingLoadTask = Task {
+                await loadScene(sceneInfo.sceneTypeId)
+            }
+            await pendingLoadTask?.value
+
+            // Stale check
+            guard generation == requestGeneration else { return nil }
+            pendingSceneTypeId = nil
+            pendingLoadTask = nil
+        } else {
+            // Fast-path: same sceneTypeId — invalidate any stale pending load
+            // (mirrors syncSetGlobalTimeUs logic at line ~251)
+            if pendingSceneTypeId != nil && pendingSceneTypeId != currentSceneTypeId {
+                requestGeneration += 1
+                pendingLoadTask?.cancel()
+                pendingLoadTask = nil
+                pendingSceneTypeId = nil
+            }
+        }
+
+        currentLocalFrame = 0
+        return (sceneInfo, 0)
+    }
+
     // MARK: - Private
 
     private func findActiveScene(at globalTimeUs: TimeUs) -> SceneTimeInfo? {

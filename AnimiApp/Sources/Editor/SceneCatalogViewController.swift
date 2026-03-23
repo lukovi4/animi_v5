@@ -1,23 +1,14 @@
 import UIKit
 
-// MARK: - Scene Catalog View Controller (PR9)
+// MARK: - Scene Catalog View Controller
 
 /// Simple table view for selecting a scene to add from SceneLibrary.
 final class SceneCatalogViewController: UITableViewController {
 
-    // MARK: - Types
-
-    /// Scene item for display in table.
-    struct SceneItem {
-        let sceneTypeId: String
-        let title: String
-        let baseDurationUs: TimeUs
-    }
-
     // MARK: - Properties
 
     /// Scenes available for selection.
-    private var scenes: [SceneItem] = []
+    private let scenes: [SceneTypeDescriptor]
 
     /// Called when a scene is selected.
     var onSelectScene: ((String, TimeUs) -> Void)?
@@ -26,16 +17,8 @@ final class SceneCatalogViewController: UITableViewController {
 
     /// Creates a catalog with scenes from the library snapshot.
     init(sceneLibrary: SceneLibrarySnapshot) {
+        scenes = sceneLibrary.scenesInOrder
         super.init(style: .plain)
-
-        // Build scene items from library (ordered)
-        scenes = sceneLibrary.scenesInOrder.map { descriptor in
-            SceneItem(
-                sceneTypeId: descriptor.id,
-                title: descriptor.title,
-                baseDurationUs: descriptor.baseDurationUs
-            )
-        }
     }
 
     required init?(coder: NSCoder) {
@@ -72,11 +55,11 @@ final class SceneCatalogViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "SceneCell", for: indexPath)
-        let item = scenes[indexPath.row]
+        let scene = scenes[indexPath.row]
 
         var content = cell.defaultContentConfiguration()
-        content.text = item.title
-        content.secondaryText = formatDuration(item.baseDurationUs)
+        content.text = scene.title
+        content.secondaryText = formatDuration(scene.baseDurationUs)
         cell.contentConfiguration = content
 
         return cell
@@ -85,9 +68,9 @@ final class SceneCatalogViewController: UITableViewController {
     // MARK: - UITableViewDelegate
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        let item = scenes[indexPath.row]
+        let scene = scenes[indexPath.row]
         dismiss(animated: true) { [weak self] in
-            self?.onSelectScene?(item.sceneTypeId, item.baseDurationUs)
+            self?.onSelectScene?(scene.id, scene.baseDurationUs)
         }
     }
 

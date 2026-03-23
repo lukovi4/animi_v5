@@ -54,4 +54,9 @@ public enum TimelineEvent: Sendable {
     /// - toSceneId: ID of the incoming scene
     /// - anchorRect: Rect for popover anchor (in TimelineView coordinates)
     case editBoundaryTransition(fromSceneId: UUID, toSceneId: UUID, anchorRect: CGRect)
+
+    /// Focus scene event: user tapped a scene in timeline mode.
+    /// Moves playhead to scene start and derives selection from playhead.
+    /// - sceneId: ID of the scene to focus
+    case focusScene(sceneId: UUID)
 }

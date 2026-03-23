@@ -224,10 +224,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private func wireSceneTrackCallbacks() {
         sceneTrack.onSelectScene = { [weak self] sceneId in
             guard let self = self else { return }
-            self.selectedSceneId = sceneId
-            self.sceneTrack.setSelectedScene(sceneId)
-            self.audioTrack.setSelected(false)
-            self.emitEvent(.selection(.scene(id: sceneId)))
+            // Emit focusScene — playhead moves to scene start, selection follows via store
+            self.emitEvent(.focusScene(sceneId: sceneId))
         }
 
         sceneTrack.onTrimScene = { [weak self] sceneId, newDurationUs, edge, phase in
@@ -580,6 +578,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             print("[Timeline] reorderScene: \(sceneId), toIndex=\(toIndex), \(phase)")
         case .editBoundaryTransition(let fromId, let toId, _):
             print("[Timeline] editBoundaryTransition: \(fromId) → \(toId)")
+        case .focusScene(let sceneId):
+            print("[Timeline] focusScene: \(sceneId)")
         }
         #endif
         onEvent?(event)
@@ -835,9 +835,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // Check if tap is on audio track
         let audioFrame = audioTrack.convert(audioTrack.bounds, to: contentView)
         if audioFrame.contains(location) {
-            selectedSceneId = nil
-            sceneTrack.setSelectedScene(nil)
-            audioTrack.setSelected(true)
             emitEvent(.selection(.audio))
             return
         }
@@ -850,9 +847,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
 
         // Tap on empty space - clear selection
-        selectedSceneId = nil
-        sceneTrack.setSelectedScene(nil)
-        audioTrack.setSelected(false)
         emitEvent(.selection(.none))
     }
 

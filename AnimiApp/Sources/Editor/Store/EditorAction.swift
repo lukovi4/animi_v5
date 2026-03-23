@@ -119,6 +119,14 @@ public enum EditorAction: Sendable {
     ///   - media: MediaRef to assigned media, or nil to clear
     case setBlockMedia(sceneInstanceId: UUID, blockId: String, media: MediaRef?)
 
+    // MARK: - Scene Focus (Playhead as Source of Truth)
+
+    /// Moves playhead to the start of a specific scene and derives selection.
+    /// UI navigation action — does NOT push undo snapshot.
+    /// Used when user taps a scene in timeline mode.
+    /// - Parameter sceneId: ID of the scene to focus
+    case focusScene(sceneId: UUID)
+
     // MARK: - Scene Edit Mode (PR-A)
 
     /// Enters scene edit mode for a specific scene.
