@@ -99,9 +99,31 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - Export State
 
-    private var isExporting = false
-    private var videoExporter: VideoExporter?
-    private var exportProgressVC: ExportProgressViewController?
+    struct ActiveExportRequest {
+        let id: UUID
+        let exporter: VideoExporter
+
+        /// Returns true if `requestId` matches this request's id.
+        func isActive(for requestId: UUID) -> Bool {
+            id == requestId
+        }
+    }
+
+    private var activeExportRequest: ActiveExportRequest?
+    private var isExporting: Bool { activeExportRequest != nil }
+
+    /// True if `requestId` matches the currently active export request.
+    /// Used as the single gating predicate for all request-scoped callbacks.
+    func isActiveExportRequest(_ requestId: UUID) -> Bool {
+        activeExportRequest?.isActive(for: requestId) ?? false
+    }
+
+    /// Clears activeExportRequest only if it matches `requestId`.
+    /// Prevents stale cancel from request A clearing active request B.
+    func clearExportRequestIfCurrent(_ requestId: UUID) {
+        guard isActiveExportRequest(requestId) else { return }
+        activeExportRequest = nil
+    }
 
     // MARK: - Metal View
 
@@ -2279,19 +2301,15 @@ final class PlayerViewController: UIViewController {
         progressVC.modalTransitionStyle = .crossDissolve
 
         let exporter = VideoExporter()
-        videoExporter = exporter
-        exportProgressVC = progressVC
-
-        // Fix 2: Track cancellation to ignore late completion callbacks
-        var wasCancelled = false
+        let request = ActiveExportRequest(id: UUID(), exporter: exporter)
+        activeExportRequest = request
+        let requestId = request.id
 
         progressVC.onCancel = { [weak self, weak exporter] in
-            wasCancelled = true
             exporter?.cancel()
-            // Fix 1: Restore UI state on cancel
-            self?.isExporting = false
-            self?.videoExporter = nil
-            self?.dismiss(animated: true)
+            guard let self else { return }
+            self.clearExportRequestIfCurrent(requestId)
+            self.dismiss(animated: true)
         }
 
         progressVC.onCompleted = { [weak self] url in
@@ -2306,8 +2324,6 @@ final class PlayerViewController: UIViewController {
                 self?.presentExportError(error)
             }
         }
-
-        isExporting = true
 
         present(progressVC, animated: true) { [weak self] in
             guard let self = self else { return }
@@ -2324,6 +2340,12 @@ final class PlayerViewController: UIViewController {
                 // Preload background textures into export provider
                 await self.preloadBackgroundTexturesForExport(provider: exportTP)
 
+                // P1: Cancel may have arrived during preload — bail out
+                guard self.isActiveExportRequest(requestId) else {
+                    self.log("[Export] Cancelled during preload (stale request)")
+                    return
+                }
+
                 exporter.exportVideo(
                     compiledScene: compiled,
                     scenePlayer: player,
@@ -2334,27 +2356,29 @@ final class PlayerViewController: UIViewController {
                     userMediaService: self.userMediaService,
                     settings: settings,
                     backgroundState: self.effectiveBackgroundState,
-                    progress: { progress in
-                        // Fix 2: Ignore progress updates after cancel
-                        guard !wasCancelled else { return }
-                        progressVC.updateState(.rendering(progress: progress))
+                    onFinishing: { [weak self, weak progressVC] in
+                        guard let self, self.isActiveExportRequest(requestId) else { return }
+                        progressVC?.updateState(.finishing)
+                    },
+                    progress: { [weak self, weak progressVC] progress in
+                        guard let self, self.isActiveExportRequest(requestId) else { return }
+                        progressVC?.updateState(.rendering(progress: progress))
                     },
                     completion: { [weak self] result in
-                        guard let self = self else { return }
-
-                        // Fix 2: Ignore completion after cancel (UI already restored in onCancel)
-                        guard !wasCancelled else {
-                            self.log("[Export] Completion ignored (was cancelled)")
+                        guard let self else { return }
+                        guard self.isActiveExportRequest(requestId) else {
+                            self.log("[Export] Ignoring stale completion")
                             return
                         }
-
-                        self.isExporting = false
-                        self.videoExporter = nil
+                        self.activeExportRequest = nil
 
                         switch result {
                         case .success(let url):
                             self.log("[Export] SUCCESS: \(url.lastPathComponent)")
                             progressVC.updateState(.completed(url))
+
+                        case .failure(let error as VideoExportError) where error.isCancelled:
+                            self.log("[Export] Cancelled")
 
                         case .failure(let error):
                             self.log("[Export] ERROR: \(error.localizedDescription)")
@@ -2413,17 +2437,15 @@ final class PlayerViewController: UIViewController {
         progressVC.modalTransitionStyle = .crossDissolve
 
         let exporter = VideoExporter()
-        videoExporter = exporter
-        exportProgressVC = progressVC
-
-        var wasCancelled = false
+        let request = ActiveExportRequest(id: UUID(), exporter: exporter)
+        activeExportRequest = request
+        let requestId = request.id
 
         progressVC.onCancel = { [weak self, weak exporter] in
-            wasCancelled = true
             exporter?.cancel()
-            self?.isExporting = false
-            self?.videoExporter = nil
-            self?.dismiss(animated: true)
+            guard let self else { return }
+            self.clearExportRequestIfCurrent(requestId)
+            self.dismiss(animated: true)
         }
 
         progressVC.onCompleted = { [weak self] url in
@@ -2438,8 +2460,6 @@ final class PlayerViewController: UIViewController {
                 self?.presentExportError(error)
             }
         }
-
-        isExporting = true
 
         present(progressVC, animated: true) { [weak self] in
             guard let self = self else { return }
@@ -2456,29 +2476,40 @@ final class PlayerViewController: UIViewController {
                 let exportBackgroundProvider = ThreadSafeInMemoryTextureProvider()
                 await self.preloadBackgroundTexturesForExport(provider: exportBackgroundProvider)
 
+                // P1: Cancel may have arrived during preload — bail out
+                guard self.isActiveExportRequest(requestId) else {
+                    self.log("[Export] Cancelled during preload (stale request)")
+                    return
+                }
+
                 exporter.exportTimeline(
                     engine: engine,
                     backgroundState: self.effectiveBackgroundState,
                     backgroundTextureProvider: exportBackgroundProvider,
                     settings: settings,
-                    progress: { progress in
-                        guard !wasCancelled else { return }
-                        progressVC.updateState(.rendering(progress: progress))
+                    onFinishing: { [weak self, weak progressVC] in
+                        guard let self, self.isActiveExportRequest(requestId) else { return }
+                        progressVC?.updateState(.finishing)
+                    },
+                    progress: { [weak self, weak progressVC] progress in
+                        guard let self, self.isActiveExportRequest(requestId) else { return }
+                        progressVC?.updateState(.rendering(progress: progress))
                     },
                     completion: { [weak self] result in
-                        guard let self = self else { return }
-                        guard !wasCancelled else {
-                            self.log("[Export] Completion ignored (was cancelled)")
+                        guard let self else { return }
+                        guard self.isActiveExportRequest(requestId) else {
+                            self.log("[Export] Ignoring stale completion")
                             return
                         }
-
-                        self.isExporting = false
-                        self.videoExporter = nil
+                        self.activeExportRequest = nil
 
                         switch result {
                         case .success(let url):
                             self.log("[Export] SUCCESS: \(url.lastPathComponent)")
                             progressVC.updateState(.completed(url))
+
+                        case .failure(let error as VideoExportError) where error.isCancelled:
+                            self.log("[Export] Cancelled")
 
                         case .failure(let error):
                             self.log("[Export] ERROR: \(error.localizedDescription)")

@@ -147,9 +147,6 @@ public struct VideoExportSettings: Sendable {
     /// Clear color for each frame (default: opaqueBlack for H.264)
     public let clearColor: ClearColor
 
-    /// Timeout for writer backpressure wait in seconds (default: 3.0)
-    public let backpressureTimeoutSeconds: Double
-
     /// Audio export configuration (PR-E4). nil = video-only export.
     public let audio: AudioExportConfig?
 
@@ -160,7 +157,6 @@ public struct VideoExportSettings: Sendable {
         bitrate: Int = 10_000_000,
         gopSeconds: Int = 2,
         clearColor: ClearColor = .opaqueBlack,
-        backpressureTimeoutSeconds: Double = 3.0,
         audio: AudioExportConfig? = nil
     ) {
         self.outputURL = outputURL
@@ -169,7 +165,6 @@ public struct VideoExportSettings: Sendable {
         self.bitrate = bitrate
         self.gopSeconds = gopSeconds
         self.clearColor = clearColor
-        self.backpressureTimeoutSeconds = backpressureTimeoutSeconds
         self.audio = audio
     }
 }
@@ -202,12 +197,6 @@ public enum VideoExportError: Error, Sendable {
     /// Failed to create Metal texture from pixel buffer
     case failedToCreateMetalTexture(CVReturn)
 
-    /// Writer is not in writing state
-    case writerNotWriting(Error?)
-
-    /// Writer backpressure timeout
-    case writerBackpressureTimeout
-
     /// Append failed
     case appendFailed(Error?)
 
@@ -233,9 +222,6 @@ public enum VideoExportError: Error, Sendable {
 
     /// Audio append failed
     case audioAppendFailed(Error?)
-
-    /// Audio backpressure timeout
-    case audioBackpressureTimeout
 
     /// Missing audio track in source file
     case missingAudioTrack(URL)
@@ -263,10 +249,6 @@ extension VideoExportError: LocalizedError {
             return "Failed to create pixel buffer: CVReturn \(status)"
         case .failedToCreateMetalTexture(let status):
             return "Failed to create Metal texture: CVReturn \(status)"
-        case .writerNotWriting(let error):
-            return "Writer not in writing state: \(error?.localizedDescription ?? "unknown")"
-        case .writerBackpressureTimeout:
-            return "Writer backpressure timeout - input not ready"
         case .appendFailed(let error):
             return "Append failed: \(error?.localizedDescription ?? "unknown")"
         case .finishFailed(let error):
@@ -283,13 +265,17 @@ extension VideoExportError: LocalizedError {
             return "Audio reader failed to start: \(error?.localizedDescription ?? "unknown")"
         case .audioAppendFailed(let error):
             return "Audio append failed: \(error?.localizedDescription ?? "unknown")"
-        case .audioBackpressureTimeout:
-            return "Audio backpressure timeout - input not ready"
         case .missingAudioTrack(let url):
             return "Missing audio track in: \(url.lastPathComponent)"
         case .failedToBuildAudioPipeline(let error):
             return "Failed to build audio pipeline: \(error.localizedDescription)"
         }
+    }
+
+    /// True if this error represents a user-initiated cancellation.
+    public var isCancelled: Bool {
+        if case .cancelled = self { return true }
+        return false
     }
 }
 
@@ -351,54 +337,26 @@ public final class VideoExporter: @unchecked Sendable {
     /// Main export queue for frame stepping
     private let exportQueue = DispatchQueue(label: "com.animi.videoexporter", qos: .userInitiated)
 
-    /// Serial queue for all AVAssetWriter append operations
-    private let writerQueue = DispatchQueue(label: "com.animi.videoexporter.writer")
+    // MARK: - Thread-safe Active Session
 
-    // MARK: - Thread-safe Cancel
+    private let sessionLock = NSLock()
+    private var _activeSession: ExportSession?
 
-    private let cancelLock = NSLock()
-    private var _isCancelled = false
+    private func setActiveSession(_ session: ExportSession?) {
+        sessionLock.lock()
+        _activeSession = session
+        sessionLock.unlock()
+    }
 
-    private func isCancelled() -> Bool {
-        cancelLock.lock()
-        defer { cancelLock.unlock() }
-        return _isCancelled
+    private var activeSession: ExportSession? {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        return _activeSession
     }
 
     /// Cancels the current export.
     public func cancel() {
-        cancelLock.lock()
-        _isCancelled = true
-        cancelLock.unlock()
-    }
-
-    // MARK: - Thread-safe Error
-
-    private let exportErrorLock = NSLock()
-    private var _exportError: Error?
-
-    private func exportError() -> Error? {
-        exportErrorLock.lock()
-        defer { exportErrorLock.unlock() }
-        return _exportError
-    }
-
-    private func setExportErrorOnce(_ error: Error) {
-        exportErrorLock.lock()
-        defer { exportErrorLock.unlock() }
-        if _exportError == nil {
-            _exportError = error
-        }
-    }
-
-    private func resetState() {
-        cancelLock.lock()
-        _isCancelled = false
-        cancelLock.unlock()
-
-        exportErrorLock.lock()
-        _exportError = nil
-        exportErrorLock.unlock()
+        activeSession?.requestCancel()
     }
 
     // MARK: - Init
@@ -514,12 +472,21 @@ public final class VideoExporter: @unchecked Sendable {
         userMediaService: UserMediaService?,
         settings: VideoExportSettings,
         backgroundState: EffectiveBackgroundState?,
+        onFinishing: (() -> Void)? = nil,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
+        let session = ExportSession(completion: completion)
+        setActiveSession(session)
+
+        session.setOnTerminal { [weak self] in
+            self?.setActiveSession(nil)
+        }
+        if let onFinishing { session.setOnFinishing(onFinishing) }
+
         // Validate FPS match
         guard settings.fps == compiledScene.runtime.fps else {
-            completion(.failure(VideoExportError.fpsMismatch(
+            session.complete(with: .failure(VideoExportError.fpsMismatch(
                 settingsFps: settings.fps,
                 runtimeFps: compiledScene.runtime.fps
             )))
@@ -533,14 +500,11 @@ public final class VideoExporter: @unchecked Sendable {
         // PR-E3: Capture video selections snapshot on MainActor
         let videoSelections = userMediaService?.exportVideoSelectionsSnapshot() ?? [:]
 
-        // Reset state
-        resetState()
-
         let exportRenderer: MetalRenderer
         do {
             exportRenderer = try makeExportRenderer(device: device)
         } catch {
-            completion(.failure(VideoExportError.renderError(error)))
+            session.complete(with: .failure(VideoExportError.renderError(error)))
             return
         }
 
@@ -557,15 +521,13 @@ public final class VideoExporter: @unchecked Sendable {
         )
 
         // Run export on background queue
-        exportQueue.async { [weak self, workItem] in
-            guard let self else {
-                DispatchQueue.main.async {
-                    completion(.failure(VideoExportError.cancelled))
-                }
+        exportQueue.async { [self, workItem, session] in
+            workItem.textureProvider.preloadAll(commandQueue: workItem.renderer.commandQueue)
+
+            guard !session.isCancelled else {
+                session.complete(with: .failure(VideoExportError.cancelled))
                 return
             }
-
-            workItem.textureProvider.preloadAll(commandQueue: workItem.renderer.commandQueue)
 
             self.runExportLoop(
                 runtime: workItem.runtime,
@@ -577,8 +539,8 @@ public final class VideoExporter: @unchecked Sendable {
                 videoSelections: workItem.videoSelections,
                 settings: workItem.settings,
                 backgroundState: workItem.backgroundState,
-                progress: progress,
-                completion: completion
+                session: session,
+                progress: progress
             )
         }
     }
@@ -595,69 +557,16 @@ public final class VideoExporter: @unchecked Sendable {
         videoSelections: [String: VideoSelection],
         settings: VideoExportSettings,
         backgroundState: EffectiveBackgroundState?,
-        progress: @escaping (Double) -> Void,
-        completion: @escaping (Result<URL, Error>) -> Void
+        session: ExportSession,
+        progress: @escaping (Double) -> Void
     ) {
         // Delete existing file if present
         try? FileManager.default.removeItem(at: settings.outputURL)
 
-        // 1. Create AVAssetWriter
-        let writer: AVAssetWriter
-        do {
-            writer = try AVAssetWriter(outputURL: settings.outputURL, fileType: .mp4)
-        } catch {
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.failedToCreateWriter(error)))
-            }
-            return
-        }
-
-        // 2. Configure video input
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: settings.sizePx.width,
-            AVVideoHeightKey: settings.sizePx.height,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: settings.bitrate,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                AVVideoMaxKeyFrameIntervalKey: settings.fps * settings.gopSeconds,
-                AVVideoExpectedSourceFrameRateKey: settings.fps
-            ]
-        ]
-
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput.expectsMediaDataInRealTime = false
-
-        // Check canAdd before adding
-        guard writer.canAdd(videoInput) else {
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.cannotAddVideoInput))
-            }
-            return
-        }
-        writer.add(videoInput)
-
-        // 3. Create pixel buffer adaptor
-        let pixelBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-            kCVPixelBufferWidthKey as String: settings.sizePx.width,
-            kCVPixelBufferHeightKey as String: settings.sizePx.height,
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
-
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: videoInput,
-            sourcePixelBufferAttributes: pixelBufferAttributes
-        )
-
-        // 4. PR-E4: Build audio pipeline (if configured)
+        // 1. Build audio pipeline (if configured)
         var audioPipeline: BuiltAudioPipeline?
-        var audioInput: AVAssetWriterInput?
-        var audioPump: AudioWriterPump?
 
         if let audioConfig = settings.audio {
-            // Build audio composition
             let builder = AudioCompositionBuilder()
             do {
                 audioPipeline = try builder.build(
@@ -667,48 +576,28 @@ public final class VideoExporter: @unchecked Sendable {
                     config: audioConfig
                 )
             } catch {
-                DispatchQueue.main.async {
-                    completion(.failure(VideoExportError.failedToBuildAudioPipeline(error)))
-                }
+                session.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))
                 return
             }
-
-            // Check if composition has audio tracks
-            if let pipeline = audioPipeline,
-               !pipeline.composition.tracks(withMediaType: .audio).isEmpty {
-                // Create audio input
-                let aacSettings: [String: Any] = [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: 44100,
-                    AVNumberOfChannelsKey: 2,
-                    AVEncoderBitRateKey: 128000
-                ]
-
-                let input = AVAssetWriterInput(mediaType: .audio, outputSettings: aacSettings)
-                input.expectsMediaDataInRealTime = false
-
-                guard writer.canAdd(input) else {
-                    DispatchQueue.main.async {
-                        completion(.failure(VideoExportError.cannotAddAudioInput))
-                    }
-                    return
-                }
-                writer.add(input)
-                audioInput = input
-                audioPump = AudioWriterPump()
-            }
         }
 
-        // 5. Start writing
-        guard writer.startWriting() else {
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.writerStartFailed(writer.error)))
-            }
+        // 2. Create pipeline (replaces ~100 lines of writer setup)
+        let pipeline: ExportWriterPipeline
+        do {
+            pipeline = try ExportWriterPipeline(
+                outputURL: settings.outputURL,
+                video: .init(sizePx: settings.sizePx, fps: settings.fps,
+                             bitrate: settings.bitrate, gopSeconds: settings.gopSeconds),
+                audio: audioPipeline.map { .init(composition: $0.composition, audioMix: $0.audioMix) }
+            )
+            session.attachPipeline(pipeline)
+            try pipeline.startWriting()
+        } catch {
+            session.complete(with: .failure(error))
             return
         }
-        writer.startSession(atSourceTime: .zero)
 
-        // 6. Create CVMetalTextureCache using commandQueue.device
+        // 3. Create CVMetalTextureCache
         let metalDevice = renderer.commandQueue.device
         var textureCache: CVMetalTextureCache?
         let cacheStatus = CVMetalTextureCacheCreate(
@@ -720,14 +609,12 @@ public final class VideoExporter: @unchecked Sendable {
         )
 
         guard cacheStatus == kCVReturnSuccess, let textureCache else {
-            writer.cancelWriting()
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.failedToCreateTextureCache))
-            }
+            pipeline.cancel()
+            session.complete(with: .failure(VideoExportError.failedToCreateTextureCache))
             return
         }
 
-        // 7. PR-E3: Setup video slots coordinator
+        // 4. Setup video slots coordinator
         var videoSlotsCoordinator: ExportVideoSlotsCoordinator?
         if !videoSelections.isEmpty {
             let coordinator = ExportVideoSlotsCoordinator(
@@ -743,58 +630,38 @@ public final class VideoExporter: @unchecked Sendable {
                 try coordinator.prepareAll()
                 videoSlotsCoordinator = coordinator
             } catch {
-                writer.cancelWriting()
-                DispatchQueue.main.async {
-                    completion(.failure(error))
-                }
+                pipeline.cancel()
+                session.complete(with: .failure(error))
                 return
             }
         }
 
-        // 8. Setup synchronization primitives
+        session.setCleanup(
+            onSuccess: { videoSlotsCoordinator?.finish() },
+            onFailure: { videoSlotsCoordinator?.cancel() },
+            onCancel:  { videoSlotsCoordinator?.cancel() }
+        )
+        session.transitionToRendering()
+
+        // 5. Sync primitives — semaphore stays for GPU backpressure
         let maxInFlight = renderer.maxFramesInFlight
         let semaphore = DispatchSemaphore(value: maxInFlight)
         let videoGroup = DispatchGroup()
-        let audioGroup = DispatchGroup()
-        let backpressureTimeout = settings.backpressureTimeoutSeconds
 
-        // 9. PR-E4: Start audio pump in parallel (if configured)
-        if let pipeline = audioPipeline,
-           let input = audioInput,
-           let pump = audioPump {
-            audioGroup.enter()
-            pump.start(
-                composition: pipeline.composition,
-                audioMix: pipeline.audioMix,
-                audioInput: input,
-                writerQueue: writerQueue,
-                backpressureTimeout: backpressureTimeout,
-                cancelCheck: { [weak self] in self?.isCancelled() ?? true },
-                errorCheck: { [weak self] in self?.exportError() },
-                setExportErrorOnce: { [weak self] in self?.setExportErrorOnce($0) },
-                completion: { audioGroup.leave() }
-            )
-        }
-
-        // 10. Video export loop
+        // 6. Video export loop
         let totalFrames = runtime.durationFrames
         let canvasSize = runtime.canvasSize
 
         for frameIndex in 0..<totalFrames {
-            // Check cancellation
-            if isCancelled() { break }
+            if session.shouldStop { break }
 
-            // Check for errors from other frames
-            if exportError() != nil { break }
-
-            // Wait for in-flight slot (GPU backpressure)
             semaphore.wait()
             videoGroup.enter()
 
             autoreleasepool {
                 // Get pixel buffer from pool
-                guard let pool = adaptor.pixelBufferPool else {
-                    setExportErrorOnce(VideoExportError.noPixelBufferPool)
+                guard let pool = pipeline.pixelBufferPool else {
+                    pipeline.setError(VideoExportError.noPixelBufferPool)
                     videoGroup.leave()
                     semaphore.signal()
                     return
@@ -808,7 +675,7 @@ public final class VideoExporter: @unchecked Sendable {
                 )
 
                 guard pbStatus == kCVReturnSuccess, let pixelBuffer else {
-                    setExportErrorOnce(VideoExportError.failedToCreatePixelBuffer(pbStatus))
+                    pipeline.setError(VideoExportError.failedToCreatePixelBuffer(pbStatus))
                     videoGroup.leave()
                     semaphore.signal()
                     return
@@ -831,18 +698,17 @@ public final class VideoExporter: @unchecked Sendable {
                 guard texStatus == kCVReturnSuccess,
                       let cvMetalTexture,
                       let targetTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
-                    setExportErrorOnce(VideoExportError.failedToCreateMetalTexture(texStatus))
+                    pipeline.setError(VideoExportError.failedToCreateMetalTexture(texStatus))
                     videoGroup.leave()
                     semaphore.signal()
                     return
                 }
 
-                // PR-E3: Update video textures before render
+                // Update video textures before render
                 videoSlotsCoordinator?.updateTextures(forSceneFrameIndex: frameIndex)
 
-                // P0 #2: Check for video slot provider errors
                 if let error = videoSlotsCoordinator?.providerError {
-                    setExportErrorOnce(error)
+                    pipeline.setError(error)
                     videoGroup.leave()
                     semaphore.signal()
                     return
@@ -858,7 +724,6 @@ public final class VideoExporter: @unchecked Sendable {
                     layerToggleState: snapshot.layerToggleState
                 )
 
-                // Create presentation time and render target
                 let pts = CMTime(value: CMTimeValue(frameIndex), timescale: CMTimeScale(settings.fps))
                 let renderTarget = RenderTarget(
                     texture: targetTexture,
@@ -866,15 +731,14 @@ public final class VideoExporter: @unchecked Sendable {
                     animSize: canvasSize
                 )
 
-                // Create command buffer
                 guard let commandBuffer = renderer.commandQueue.makeCommandBuffer() else {
-                    setExportErrorOnce(VideoExportError.failedToCreateCommandBuffer)
+                    pipeline.setError(VideoExportError.failedToCreateCommandBuffer)
                     videoGroup.leave()
                     semaphore.signal()
                     return
                 }
 
-                // Create in-flight frame holder
+                // InFlightFrame keeps CVMetalTexture alive until GPU completion + enqueue
                 let inFlightFrame = InFlightFrame(
                     pixelBuffer: pixelBuffer,
                     cvMetalTexture: cvMetalTexture,
@@ -882,7 +746,6 @@ public final class VideoExporter: @unchecked Sendable {
                     presentationTime: pts
                 )
 
-                // Render frame
                 do {
                     try renderer.draw(
                         commands: commands,
@@ -895,133 +758,44 @@ public final class VideoExporter: @unchecked Sendable {
                         backgroundState: backgroundState
                     )
                 } catch {
-                    setExportErrorOnce(VideoExportError.renderError(error))
+                    pipeline.setError(VideoExportError.renderError(error))
                     videoGroup.leave()
                     semaphore.signal()
                     return
                 }
 
-                // Add completion handler - append on writerQueue after GPU completion
-                commandBuffer.addCompletedHandler { [weak self] _ in
-                    guard let self else {
+                // GPU completion: pass ONLY pixelBuffer + pts to pump.
+                // InFlightFrame (with cvMetalTexture) deallocs here after enqueue.
+                commandBuffer.addCompletedHandler { _ in
+                    guard !session.shouldStop else {
                         videoGroup.leave()
                         semaphore.signal()
                         return
                     }
-
-                    self.writerQueue.async {
-                        defer {
-                            videoGroup.leave()
-                            semaphore.signal()
-                        }
-
-                        // Check cancellation
-                        if self.isCancelled() { return }
-
-                        // Check for existing error
-                        if self.exportError() != nil { return }
-
-                        // Check writer status
-                        if writer.status != .writing {
-                            self.setExportErrorOnce(VideoExportError.writerNotWriting(writer.error))
-                            return
-                        }
-
-                        // Bounded wait for isReadyForMoreMediaData
-                        let deadline = Date().addingTimeInterval(backpressureTimeout)
-                        while !videoInput.isReadyForMoreMediaData {
-                            if self.isCancelled() { return }
-                            if self.exportError() != nil { return }
-                            if Date() > deadline {
-                                self.setExportErrorOnce(VideoExportError.writerBackpressureTimeout)
-                                return
-                            }
-                            // Small sleep to yield
-                            Thread.sleep(forTimeInterval: 0.002)
-                        }
-
-                        // Append pixel buffer
-                        let ok = adaptor.append(
-                            inFlightFrame.pixelBuffer,
-                            withPresentationTime: inFlightFrame.presentationTime
-                        )
-                        if !ok {
-                            self.setExportErrorOnce(VideoExportError.appendFailed(writer.error))
-                        }
+                    pipeline.enqueueVideoFrame(
+                        inFlightFrame.pixelBuffer,
+                        presentationTime: inFlightFrame.presentationTime
+                    ) {
+                        videoGroup.leave()
+                        semaphore.signal()
                     }
                 }
 
-                // Commit command buffer (non-blocking)
                 commandBuffer.commit()
             }
 
-            // Report progress after commit (frame submitted)
-            let progressValue = Double(frameIndex + 1) / Double(totalFrames)
-            DispatchQueue.main.async {
-                progress(progressValue)
-            }
+            session.emitProgressIfActive(Double(frameIndex + 1) / Double(totalFrames), via: progress)
         }
 
-        // 11. Wait for all video frames to complete
+        // 7. Wait for all GPU completions to enqueue
         videoGroup.wait()
 
-        // 12. Wait for audio pump to complete (if running)
-        audioGroup.wait()
-
-        // 13. Finalization on writerQueue
-        writerQueue.async { [weak self] in
-            guard let self else {
-                audioPump?.cancel()
-                videoSlotsCoordinator?.cancel()
-                DispatchQueue.main.async {
-                    completion(.failure(VideoExportError.cancelled))
-                }
-                return
-            }
-
-            // Check cancellation
-            if self.isCancelled() {
-                audioPump?.cancel()
-                videoSlotsCoordinator?.cancel()
-                writer.cancelWriting()
-                try? FileManager.default.removeItem(at: settings.outputURL)
-                DispatchQueue.main.async {
-                    completion(.failure(VideoExportError.cancelled))
-                }
-                return
-            }
-
-            // Check for export errors
-            if let error = self.exportError() {
-                audioPump?.cancel()
-                videoSlotsCoordinator?.cancel()
-                writer.cancelWriting()
-                try? FileManager.default.removeItem(at: settings.outputURL)
-                DispatchQueue.main.async {
-                    completion(.failure(error))
-                }
-                return
-            }
-
-            // PR-E3: Finish video slots coordinator
-            videoSlotsCoordinator?.finish()
-
-            // Finalize writer - mark both inputs as finished
-            videoInput.markAsFinished()
-            // Note: audioInput.markAsFinished() is called in AudioWriterPump on completion
-
-            writer.finishWriting {
-                if writer.status == .completed {
-                    DispatchQueue.main.async {
-                        completion(.success(settings.outputURL))
-                    }
-                } else {
-                    try? FileManager.default.removeItem(at: settings.outputURL)
-                    DispatchQueue.main.async {
-                        completion(.failure(VideoExportError.finishFailed(writer.error)))
-                    }
-                }
-            }
+        // 8. Finish or cancel — cleanup closures fire inside complete()
+        if session.shouldStop {
+            if !session.isCancelled { pipeline.cancel() }
+            session.complete(with: .failure(session.terminalError ?? VideoExportError.cancelled))
+        } else {
+            session.finishWriting()
         }
     }
 
@@ -1047,9 +821,6 @@ public final class VideoExporter: @unchecked Sendable {
         /// Clear color for each frame
         public let clearColor: ClearColor
 
-        /// Timeout for writer backpressure wait in seconds
-        public let backpressureTimeoutSeconds: Double
-
         /// Audio export configuration
         public let audio: AudioExportConfig?
 
@@ -1060,7 +831,6 @@ public final class VideoExporter: @unchecked Sendable {
             bitrate: Int = 10_000_000,
             gopSeconds: Int = 2,
             clearColor: ClearColor = .opaqueBlack,
-            backpressureTimeoutSeconds: Double = 3.0,
             audio: AudioExportConfig? = nil
         ) {
             self.outputURL = outputURL
@@ -1069,7 +839,6 @@ public final class VideoExporter: @unchecked Sendable {
             self.bitrate = bitrate
             self.gopSeconds = gopSeconds
             self.clearColor = clearColor
-            self.backpressureTimeoutSeconds = backpressureTimeoutSeconds
             self.audio = audio
         }
     }
@@ -1092,40 +861,54 @@ public final class VideoExporter: @unchecked Sendable {
         backgroundTextureProvider: TextureProvider,
         settings: TimelineExportSettings,
         renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
+        onFinishing: (() -> Void)? = nil,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
+        let exportSession = ExportSession(completion: completion)
+        setActiveSession(exportSession)
+
+        exportSession.setOnTerminal { [weak self] in
+            self?.setActiveSession(nil)
+        }
+        if let onFinishing { exportSession.setOnFinishing(onFinishing) }
+
         // Validate FPS match
         guard settings.fps == engine.fps else {
-            completion(.failure(VideoExportError.fpsMismatch(
+            exportSession.complete(with: .failure(VideoExportError.fpsMismatch(
                 settingsFps: settings.fps,
                 runtimeFps: engine.fps
             )))
             return
         }
 
-        // Reset state
-        resetState()
-
         // TT-05: Build immutable export session on MainActor, then dispatch to background
         Task { @MainActor [weak self] in
             guard let self else {
-                completion(.failure(VideoExportError.cancelled))
+                exportSession.complete(with: .failure(VideoExportError.cancelled))
                 return
             }
 
-            let session: TimelineCompositionEngine.TimelineExportSession
+            guard !exportSession.isCancelled else {
+                exportSession.complete(with: .failure(VideoExportError.cancelled))
+                return
+            }
+
+            let tlSession: TimelineCompositionEngine.TimelineExportSession
             do {
-                session = try await engine.buildExportSession()
+                tlSession = try await engine.buildExportSession()
             } catch {
-                DispatchQueue.main.async {
-                    completion(.failure(VideoExportError.renderError(error)))
-                }
+                exportSession.complete(with: .failure(VideoExportError.renderError(error)))
                 return
             }
 
-            let totalFrames = session.transitionMath.compressedDurationFrames
-            let canvasSize = session.canvasSize
+            guard !exportSession.isCancelled else {
+                exportSession.complete(with: .failure(VideoExportError.cancelled))
+                return
+            }
+
+            let totalFrames = tlSession.transitionMath.compressedDurationFrames
+            let canvasSize = tlSession.canvasSize
 
             let exportRenderer: MetalRenderer
             let exportCompositor: TransitionCompositor
@@ -1133,14 +916,12 @@ public final class VideoExporter: @unchecked Sendable {
                 exportRenderer = try self.makeExportRenderer(device: engine.device)
                 exportCompositor = try self.makeExportTransitionCompositor(device: engine.device)
             } catch {
-                DispatchQueue.main.async {
-                    completion(.failure(VideoExportError.renderError(error)))
-                }
+                exportSession.complete(with: .failure(VideoExportError.renderError(error)))
                 return
             }
 
             let workItem = TimelineExportWorkItem(
-                session: session,
+                session: tlSession,
                 renderer: exportRenderer,
                 transitionCompositor: exportCompositor,
                 totalFrames: totalFrames,
@@ -1151,14 +932,7 @@ public final class VideoExporter: @unchecked Sendable {
                 renderDiagnosticsSink: renderDiagnosticsSink
             )
 
-            self.exportQueue.async { [weak self, workItem] in
-                guard let self else {
-                    DispatchQueue.main.async {
-                        completion(.failure(VideoExportError.cancelled))
-                    }
-                    return
-                }
-
+            self.exportQueue.async { [self, workItem, exportSession] in
                 var audioPipeline: BuiltAudioPipeline?
                 if let audioConfig = workItem.settings.audio {
                     do {
@@ -1170,15 +944,13 @@ public final class VideoExporter: @unchecked Sendable {
                             config: audioConfig
                         )
                     } catch {
-                        DispatchQueue.main.async {
-                            completion(.failure(VideoExportError.failedToBuildAudioPipeline(error)))
-                        }
+                        exportSession.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))
                         return
                     }
                 }
 
                 self.runTimelineExportLoop(
-                    session: workItem.session,
+                    tlSession: workItem.session,
                     renderer: workItem.renderer,
                     transitionCompositor: workItem.transitionCompositor,
                     totalFrames: workItem.totalFrames,
@@ -1188,8 +960,8 @@ public final class VideoExporter: @unchecked Sendable {
                     audioPipeline: audioPipeline,
                     settings: workItem.settings,
                     renderDiagnosticsSink: workItem.renderDiagnosticsSink,
-                    progress: progress,
-                    completion: completion
+                    exportSession: exportSession,
+                    progress: progress
                 )
             }
         }
@@ -1198,7 +970,7 @@ public final class VideoExporter: @unchecked Sendable {
     // MARK: - Timeline Export Loop
 
     private func runTimelineExportLoop(
-        session: TimelineCompositionEngine.TimelineExportSession,
+        tlSession: TimelineCompositionEngine.TimelineExportSession,
         renderer: MetalRenderer,
         transitionCompositor: TransitionCompositor,
         totalFrames: Int,
@@ -1208,91 +980,29 @@ public final class VideoExporter: @unchecked Sendable {
         audioPipeline: BuiltAudioPipeline?,
         settings: TimelineExportSettings,
         renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
-        progress: @escaping (Double) -> Void,
-        completion: @escaping (Result<URL, Error>) -> Void
+        exportSession: ExportSession,
+        progress: @escaping (Double) -> Void
     ) {
         // Delete existing file
         try? FileManager.default.removeItem(at: settings.outputURL)
 
-        // 1. Create AVAssetWriter
-        let writer: AVAssetWriter
+        // 1. Create pipeline (replaces writer/input/adaptor/audio setup)
+        let pipeline: ExportWriterPipeline
         do {
-            writer = try AVAssetWriter(outputURL: settings.outputURL, fileType: .mp4)
+            pipeline = try ExportWriterPipeline(
+                outputURL: settings.outputURL,
+                video: .init(sizePx: settings.sizePx, fps: settings.fps,
+                             bitrate: settings.bitrate, gopSeconds: settings.gopSeconds),
+                audio: audioPipeline.map { .init(composition: $0.composition, audioMix: $0.audioMix) }
+            )
+            exportSession.attachPipeline(pipeline)
+            try pipeline.startWriting()
         } catch {
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.failedToCreateWriter(error)))
-            }
+            exportSession.complete(with: .failure(error))
             return
         }
 
-        // 2. Configure video input
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: settings.sizePx.width,
-            AVVideoHeightKey: settings.sizePx.height,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: settings.bitrate,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                AVVideoMaxKeyFrameIntervalKey: settings.fps * settings.gopSeconds,
-                AVVideoExpectedSourceFrameRateKey: settings.fps
-            ]
-        ]
-
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput.expectsMediaDataInRealTime = false
-
-        guard writer.canAdd(videoInput) else {
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.cannotAddVideoInput))
-            }
-            return
-        }
-        writer.add(videoInput)
-
-        // 2b. Configure audio input (if audio pipeline provided)
-        var audioInput: AVAssetWriterInput?
-        var audioPump: AudioWriterPump?
-        if audioPipeline != nil {
-            let audioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44100,
-                AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128000
-            ]
-            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            input.expectsMediaDataInRealTime = false
-
-            if writer.canAdd(input) {
-                writer.add(input)
-                audioInput = input
-                audioPump = AudioWriterPump()
-            }
-        }
-
-        // 3. Create pixel buffer adaptor
-        let pixelBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-            kCVPixelBufferWidthKey as String: settings.sizePx.width,
-            kCVPixelBufferHeightKey as String: settings.sizePx.height,
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
-
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: videoInput,
-            sourcePixelBufferAttributes: pixelBufferAttributes
-        )
-
-        // 4. Start writing (timeline export)
-        guard writer.startWriting() else {
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.writerStartFailed(writer.error)))
-            }
-            return
-        }
-        writer.startSession(atSourceTime: .zero)
-
-        // 5. Create CVMetalTextureCache
+        // 2. Create CVMetalTextureCache
         let metalDevice = renderer.commandQueue.device
         var textureCache: CVMetalTextureCache?
         let cacheStatus = CVMetalTextureCacheCreate(
@@ -1304,68 +1014,46 @@ public final class VideoExporter: @unchecked Sendable {
         )
 
         guard cacheStatus == kCVReturnSuccess, let textureCache else {
-            writer.cancelWriting()
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.failedToCreateTextureCache))
-            }
+            pipeline.cancel()
+            exportSession.complete(with: .failure(VideoExportError.failedToCreateTextureCache))
             return
         }
 
-        // 6. Setup synchronization
-        let audioGroup = DispatchGroup()
-        let backpressureTimeout = settings.backpressureTimeoutSeconds
-
-        // 6b. Start audio pump in parallel (if configured)
-        if let pipeline = audioPipeline,
-           let input = audioInput,
-           let pump = audioPump {
-            audioGroup.enter()
-            pump.start(
-                composition: pipeline.composition,
-                audioMix: pipeline.audioMix,
-                audioInput: input,
-                writerQueue: writerQueue,
-                backpressureTimeout: backpressureTimeout,
-                cancelCheck: { [weak self] in self?.isCancelled() ?? true },
-                errorCheck: { [weak self] in self?.exportError() },
-                setExportErrorOnce: { [weak self] in self?.setExportErrorOnce($0) },
-                completion: { audioGroup.leave() }
-            )
-        }
-
-        // TT-05: Create TimelineExportRuntime on export queue
+        // 3. Create TimelineExportRuntime on export queue
         let exportRuntime: TimelineExportRuntime
         do {
             exportRuntime = try TimelineExportRuntime(
-                session: session,
+                session: tlSession,
                 textureCache: textureCache,
                 coordinatorFactory: TimelineExportRuntime.makeDefaultFactory(device: renderer.commandQueue.device)
             )
         } catch {
-            writer.cancelWriting()
-            DispatchQueue.main.async {
-                completion(.failure(VideoExportError.renderError(error)))
-            }
+            pipeline.cancel()
+            exportSession.complete(with: .failure(VideoExportError.renderError(error)))
             return
         }
 
-        // 7. TT-05: Video export loop — resolve+render on exportQueue, append on writerQueue
+        exportSession.setCleanup(
+            onSuccess: { exportRuntime.finish() },
+            onFailure: { exportRuntime.cancel() },
+            onCancel:  { exportRuntime.cancel() }
+        )
+        exportSession.transitionToRendering()
+
+        // 4. Video export loop
         let semaphore = DispatchSemaphore(value: renderer.maxFramesInFlight)
         let videoGroup = DispatchGroup()
 
         for frameIndex in 0..<totalFrames {
-            // Check cancellation
-            if isCancelled() { break }
-            if exportError() != nil { break }
+            if exportSession.shouldStop { break }
 
-            // Wait for in-flight slot (backpressure from writerQueue append)
             semaphore.wait()
             videoGroup.enter()
 
             autoreleasepool {
                 // Get pixel buffer from pool
-                guard let pool = adaptor.pixelBufferPool else {
-                    setExportErrorOnce(VideoExportError.noPixelBufferPool)
+                guard let pool = pipeline.pixelBufferPool else {
+                    pipeline.setError(VideoExportError.noPixelBufferPool)
                     videoGroup.leave()
                     semaphore.signal()
                     return
@@ -1379,7 +1067,7 @@ public final class VideoExporter: @unchecked Sendable {
                 )
 
                 guard pbStatus == kCVReturnSuccess, let pixelBuffer else {
-                    setExportErrorOnce(VideoExportError.failedToCreatePixelBuffer(pbStatus))
+                    pipeline.setError(VideoExportError.failedToCreatePixelBuffer(pbStatus))
                     videoGroup.leave()
                     semaphore.signal()
                     return
@@ -1402,13 +1090,13 @@ public final class VideoExporter: @unchecked Sendable {
                 guard texStatus == kCVReturnSuccess,
                       let cvMetalTexture,
                       let targetTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
-                    setExportErrorOnce(VideoExportError.failedToCreateMetalTexture(texStatus))
+                    pipeline.setError(VideoExportError.failedToCreateMetalTexture(texStatus))
                     videoGroup.leave()
                     semaphore.signal()
                     return
                 }
 
-                // TT-06: Resolve and render via unified TimelineRenderExecutor
+                // Resolve and render via unified TimelineRenderExecutor
                 do {
                     let resolved = try exportRuntime.resolveFrame(frameIndex)
 
@@ -1444,323 +1132,35 @@ public final class VideoExporter: @unchecked Sendable {
                         }
                     }
                 } catch {
-                    setExportErrorOnce(VideoExportError.renderError(error))
+                    pipeline.setError(VideoExportError.renderError(error))
                     videoGroup.leave()
                     semaphore.signal()
                     return
                 }
 
-                // Append on writerQueue — preserves audio/video writer synchronization contract
+                // Enqueue via pipeline — no busy-wait, readiness-driven
                 let pts = CMTime(value: CMTimeValue(frameIndex), timescale: CMTimeScale(settings.fps))
-                self.writerQueue.async { [weak self] in
-                    defer {
-                        videoGroup.leave()
-                        semaphore.signal()
-                    }
-
-                    guard let self else { return }
-                    if self.isCancelled() { return }
-                    if self.exportError() != nil { return }
-
-                    if writer.status != .writing {
-                        self.setExportErrorOnce(VideoExportError.writerNotWriting(writer.error))
-                        return
-                    }
-
-                    // Bounded wait for readiness
-                    let deadline = Date().addingTimeInterval(backpressureTimeout)
-                    while !videoInput.isReadyForMoreMediaData {
-                        if self.isCancelled() { return }
-                        if self.exportError() != nil { return }
-                        if Date() > deadline {
-                            self.setExportErrorOnce(VideoExportError.writerBackpressureTimeout)
-                            return
-                        }
-                        Thread.sleep(forTimeInterval: 0.002)
-                    }
-
-                    let ok = adaptor.append(pixelBuffer, withPresentationTime: pts)
-                    if !ok {
-                        self.setExportErrorOnce(VideoExportError.appendFailed(writer.error))
-                    }
+                pipeline.enqueueVideoFrame(pixelBuffer, presentationTime: pts) {
+                    videoGroup.leave()
+                    semaphore.signal()
                 }
             }
 
-            // Report progress
-            let progressValue = Double(frameIndex + 1) / Double(totalFrames)
-            DispatchQueue.main.async {
-                progress(progressValue)
-            }
+            exportSession.emitProgressIfActive(Double(frameIndex + 1) / Double(totalFrames), via: progress)
         }
 
-        // 8. Wait for all video frames to finish appending
+        // 5. Wait for all video frames to finish
         videoGroup.wait()
 
-        // 8a. Finalize export runtime
-        if isCancelled() || exportError() != nil {
-            exportRuntime.cancel()
+        // 6. Finish or cancel — cleanup closures fire inside complete()
+        if exportSession.shouldStop {
+            if !exportSession.isCancelled { pipeline.cancel() }
+            exportSession.complete(with: .failure(exportSession.terminalError ?? VideoExportError.cancelled))
         } else {
-            exportRuntime.finish()
-        }
-
-        // 8b. Wait for audio pump
-        audioGroup.wait()
-
-        // 9. Finalization on writerQueue — same queue as audio/video appends
-        writerQueue.sync { [weak self] in
-            guard let self else {
-                DispatchQueue.main.async {
-                    completion(.failure(VideoExportError.cancelled))
-                }
-                return
-            }
-
-            if self.isCancelled() {
-                writer.cancelWriting()
-                try? FileManager.default.removeItem(at: settings.outputURL)
-                DispatchQueue.main.async {
-                    completion(.failure(VideoExportError.cancelled))
-                }
-                return
-            }
-
-            if let error = self.exportError() {
-                writer.cancelWriting()
-                try? FileManager.default.removeItem(at: settings.outputURL)
-                DispatchQueue.main.async {
-                    completion(.failure(error))
-                }
-                return
-            }
-
-            videoInput.markAsFinished()
-            audioInput?.markAsFinished()
-
-            writer.finishWriting {
-                if writer.status == .completed {
-                    DispatchQueue.main.async {
-                        completion(.success(settings.outputURL))
-                    }
-                } else {
-                    try? FileManager.default.removeItem(at: settings.outputURL)
-                    DispatchQueue.main.async {
-                        completion(.failure(VideoExportError.finishFailed(writer.error)))
-                    }
-                }
-            }
+            exportSession.finishWriting()
         }
     }
 
-}
-
-// MARK: - TT-05: Timeline Export Video Coordinating Protocol
-
-/// Testability seam for video slot coordination in timeline export.
-internal protocol TimelineExportVideoCoordinating: AnyObject {
-    var providerError: ExportVideoFrameProviderError? { get }
-    func updateTextures(forSceneFrameIndex: Int)
-    func finish()
-    func cancel()
-}
-
-extension ExportVideoSlotsCoordinator: TimelineExportVideoCoordinating {}
-
-/// Factory for creating video coordinators from scene snapshots.
-internal typealias TimelineExportCoordinatorFactory =
-    (TimelineCompositionEngine.TimelineExportSceneSnapshot, CVMetalTextureCache, Int) throws -> TimelineExportVideoCoordinating?
-
-// MARK: - TT-05: Timeline Export Runtime
-
-/// Pure export-side resolver that works entirely on exportQueue.
-/// After buildExportSession(), per-frame loop never touches engine/runtime.
-internal final class TimelineExportRuntime {
-
-    let session: TimelineCompositionEngine.TimelineExportSession
-    private var videoCoordinatorsByInstanceId: [UUID: TimelineExportVideoCoordinating]
-
-    init(
-        session: TimelineCompositionEngine.TimelineExportSession,
-        textureCache: CVMetalTextureCache,
-        coordinatorFactory: @escaping TimelineExportCoordinatorFactory
-    ) throws {
-        self.session = session
-        self.videoCoordinatorsByInstanceId = [:]
-
-        for (instanceId, snapshot) in session.scenesByInstanceId {
-            if let coordinator = try coordinatorFactory(snapshot, textureCache, session.fps) {
-                videoCoordinatorsByInstanceId[instanceId] = coordinator
-            }
-        }
-    }
-
-    /// Default factory that creates ExportVideoSlotsCoordinator when video selections exist.
-    static func makeDefaultFactory(device: MTLDevice) -> TimelineExportCoordinatorFactory {
-        return { snapshot, textureCache, fps in
-            guard !snapshot.videoSelections.isEmpty else { return nil }
-
-            let coordinator = ExportVideoSlotsCoordinator(
-                device: device,
-                textureCache: textureCache,
-                runtime: snapshot.runtime,
-                sceneFPS: Double(fps),
-                exportTextureProvider: snapshot.textureProvider
-            )
-            coordinator.configure(videoSelectionsByBlockId: snapshot.videoSelections)
-            try coordinator.prepareAll()
-            return coordinator
-        }
-    }
-
-    func resolveFrame(_ compressedFrame: Int) throws -> ResolvedTimelineFrame {
-        guard let mode = session.transitionMath.renderMode(for: compressedFrame) else {
-            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "no_render_mode")
-        }
-
-        switch mode {
-        case .single(let sceneIndex, let localFrame):
-            return try resolveSingle(sceneIndex: sceneIndex, localFrame: localFrame, compressedFrame: compressedFrame)
-
-        case .transition(let aIndex, let frameA, let bIndex, let frameB, let transition, let progress):
-            return try resolveTransition(
-                aIndex: aIndex, frameA: frameA,
-                bIndex: bIndex, frameB: frameB,
-                transition: transition, progress: progress,
-                compressedFrame: compressedFrame
-            )
-        }
-    }
-
-    func finish() {
-        for coordinator in videoCoordinatorsByInstanceId.values {
-            coordinator.finish()
-        }
-    }
-
-    func cancel() {
-        for coordinator in videoCoordinatorsByInstanceId.values {
-            coordinator.cancel()
-        }
-    }
-
-    // MARK: - Private
-
-    private func resolveSingle(sceneIndex: Int, localFrame: Int, compressedFrame: Int) throws -> ResolvedTimelineFrame {
-        let math = session.transitionMath
-        guard sceneIndex < math.sceneItems.count else {
-            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "invalid_scene_index")
-        }
-
-        let instanceId = math.sceneItems[sceneIndex].id
-        guard let snapshot = session.scenesByInstanceId[instanceId] else {
-            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot:\(instanceId)")
-        }
-
-        // Update video coordinator if present
-        if let coordinator = videoCoordinatorsByInstanceId[instanceId] {
-            coordinator.updateTextures(forSceneFrameIndex: localFrame)
-            if let error = coordinator.providerError {
-                throw error
-            }
-        }
-
-        let context = makeRenderContext(snapshot: snapshot, localFrame: localFrame)
-        return .single(context)
-    }
-
-    private func resolveTransition(
-        aIndex: Int, frameA: Int,
-        bIndex: Int, frameB: Int,
-        transition: SceneTransition,
-        progress: Double,
-        compressedFrame: Int
-    ) throws -> ResolvedTimelineFrame {
-        let math = session.transitionMath
-        guard aIndex < math.sceneItems.count, bIndex < math.sceneItems.count else {
-            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "invalid_scene_index")
-        }
-
-        let instanceIdA = math.sceneItems[aIndex].id
-        let instanceIdB = math.sceneItems[bIndex].id
-
-        guard let snapshotA = session.scenesByInstanceId[instanceIdA] else {
-            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot:\(instanceIdA)")
-        }
-        guard let snapshotB = session.scenesByInstanceId[instanceIdB] else {
-            throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot:\(instanceIdB)")
-        }
-
-        // Update coordinators
-        if let coordA = videoCoordinatorsByInstanceId[instanceIdA] {
-            coordA.updateTextures(forSceneFrameIndex: frameA)
-            if let error = coordA.providerError {
-                throw error
-            }
-        }
-        if let coordB = videoCoordinatorsByInstanceId[instanceIdB] {
-            coordB.updateTextures(forSceneFrameIndex: frameB)
-            if let error = coordB.providerError {
-                throw error
-            }
-        }
-
-        let contextA = makeRenderContext(snapshot: snapshotA, localFrame: frameA)
-        let contextB = makeRenderContext(snapshot: snapshotB, localFrame: frameB)
-
-        return .transition(TransitionRenderContext(
-            sceneA: contextA,
-            sceneB: contextB,
-            transition: transition,
-            progress: progress
-        ))
-    }
-
-    private func makeRenderContext(
-        snapshot: TimelineCompositionEngine.TimelineExportSceneSnapshot,
-        localFrame: Int
-    ) -> SceneRenderContext {
-        let commands = SceneRenderPlan.renderCommands(
-            for: snapshot.runtime,
-            sceneFrameIndex: localFrame,
-            userTransforms: snapshot.renderState.userTransforms,
-            variantOverrides: snapshot.renderState.variantOverrides,
-            userMediaPresent: snapshot.renderState.userMediaPresent,
-            layerToggleState: snapshot.renderState.layerToggleState
-        )
-
-        return SceneRenderContext(
-            commands: commands,
-            textureProvider: snapshot.textureProvider,
-            pathRegistry: snapshot.pathRegistry,
-            assetSizes: snapshot.assetSizes,
-            localFrame: localFrame,
-            canvasSize: snapshot.sceneCanvasSize,
-            sceneInstanceId: snapshot.instanceId
-        )
-    }
-}
-
-// MARK: - Timeline Export Errors
-
-public enum TimelineExportError: Error, LocalizedError {
-    case noTimeline
-    /// TT-02: Frame resolution failed with reason
-    case frameResolutionFailed(frame: Int, reason: String)
-    /// TT-02: Hold is not allowed in export mode
-    case frameHoldNotAllowed(Int)
-    case failedToAcquireOffscreenTexture
-
-    public var errorDescription: String? {
-        switch self {
-        case .noTimeline:
-            return "No timeline configured in composition engine"
-        case .frameResolutionFailed(let frame, let reason):
-            return "Failed to resolve frame \(frame): \(reason)"
-        case .frameHoldNotAllowed(let frame):
-            return "Frame \(frame) returned hold, which is not allowed in export"
-        case .failedToAcquireOffscreenTexture:
-            return "Failed to acquire offscreen texture from pool"
-        }
-    }
 }
 
 // MARK: - TT-02: Resolution to Export Error Mapping

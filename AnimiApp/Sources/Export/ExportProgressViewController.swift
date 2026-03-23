@@ -9,7 +9,6 @@ enum ExportProgressState {
     case finishing
     case completed(URL)
     case failed(Error)
-    case cancelled
 }
 
 // MARK: - Export Progress View Controller
@@ -102,10 +101,6 @@ final class ExportProgressViewController: UIViewController {
         return button
     }()
 
-    // MARK: - State
-
-    private var currentState: ExportProgressState = .preparing
-
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -163,8 +158,6 @@ final class ExportProgressViewController: UIViewController {
 
     /// Updates the progress state and UI.
     func updateState(_ state: ExportProgressState) {
-        currentState = state
-
         DispatchQueue.main.async { [weak self] in
             self?.updateUI(for: state)
         }
@@ -199,9 +192,6 @@ final class ExportProgressViewController: UIViewController {
         case .failed(let error):
             onFailed?(error)
 
-        case .cancelled:
-            // Handled by caller
-            break
         }
     }
 
