@@ -183,6 +183,38 @@ final class PlayerViewController: UIViewController {
     /// Currently active scene instance ID (for per-instance state apply).
     private var activeSceneInstanceId: UUID?
 
+    /// Write-target resolution: in scene-edit returns uiMode target;
+    /// otherwise returns runtime activeSceneInstanceId.
+    /// Production code and tests share this single implementation.
+    static func resolveWriteTargetForSceneEdit(
+        uiMode: EditorUIMode,
+        activeSceneInstanceId: UUID?
+    ) -> UUID? {
+        if case .sceneEdit(let id) = uiMode {
+            return id
+        }
+        return activeSceneInstanceId
+    }
+
+    /// Write-target for scene-edit persistence: delegates to the static resolver.
+    private var sceneEditTargetInstanceId: UUID? {
+        guard let uiMode = editorStore?.state.uiMode else { return nil }
+        return Self.resolveWriteTargetForSceneEdit(
+            uiMode: uiMode,
+            activeSceneInstanceId: activeSceneInstanceId
+        )
+    }
+
+    private func assertSceneEditTargetMatchesRuntimeIfPossible() {
+        #if DEBUG
+        guard let target = sceneEditTargetInstanceId,
+              let runtime = activeSceneInstanceId,
+              target != runtime else { return }
+        print("[BUG-GUARD] sceneEditTargetInstanceId (\(target)) != activeSceneInstanceId (\(runtime))")
+        assertionFailure("[BUG-GUARD] Scene edit target diverged from runtime active scene")
+        #endif
+    }
+
     // MARK: - PR2: Visual Editor Timeline
     private var currentProjectDraft: ProjectDraft?
     /// Tracks whether draft has unsaved changes.
@@ -504,7 +536,7 @@ final class PlayerViewController: UIViewController {
 
         editorLayoutContainer.onResetScene = { [weak self] in
             guard let self = self,
-                  case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+                  let instanceId = self.sceneEditTargetInstanceId else { return }
 
             // PR-F: Show confirmation only if scene has state to reset
             let sceneState = self.editorStore?.state.draft.sceneInstanceStates[instanceId]
@@ -520,7 +552,7 @@ final class PlayerViewController: UIViewController {
             alert.addAction(UIAlertAction(title: "Reset", style: .destructive) { [weak self] _ in
                 guard let self = self else { return }
                 self.editorStore?.dispatch(.resetSceneState(sceneInstanceId: instanceId))
-                self.reloadRuntimeStateForActiveScene()
+                self.reloadRuntimeState(for: instanceId)
                 self.refreshSceneEditBars()
             })
 
@@ -542,7 +574,7 @@ final class PlayerViewController: UIViewController {
 
         editorLayoutContainer.onToggleEnabled = { [weak self] blockId in
             guard let self = self,
-                  case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+                  let instanceId = self.sceneEditTargetInstanceId else { return }
             // Toggle current state
             let currentPresent = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.userMediaPresent?[blockId] ?? true
             self.editorStore?.dispatch(.setBlockMediaPresent(
@@ -559,7 +591,7 @@ final class PlayerViewController: UIViewController {
 
         editorLayoutContainer.onRemove = { [weak self] blockId in
             guard let self = self,
-                  case .sceneEdit(let instanceId) = self.editorStore?.state.uiMode else { return }
+                  let instanceId = self.sceneEditTargetInstanceId else { return }
             // Clear runtime
             self.userMediaService?.clear(blockId: blockId)
             // Dispatch to store (sets mediaAssignments = nil, userMediaPresent = false)
@@ -1802,7 +1834,7 @@ final class PlayerViewController: UIViewController {
     private func updateMediaBlockActionBarForSelectedBlock() {
         guard let blockId = editorStore?.state.selectedBlockId,
               let player = scenePlayer,
-              case .sceneEdit(let instanceId) = editorStore?.state.uiMode else { return }
+              let instanceId = sceneEditTargetInstanceId else { return }
 
         // Get block capabilities from ScenePlayer
         let allowedMedia = player.allowedMedia(blockId: blockId)
@@ -1828,7 +1860,7 @@ final class PlayerViewController: UIViewController {
     /// Refreshes SceneEditBar and MediaBlockActionBar states.
     /// PR-F: Called after state changes to keep bottom bars in sync.
     private func refreshSceneEditBars() {
-        guard case .sceneEdit(let instanceId) = editorStore?.state.uiMode else { return }
+        guard let instanceId = sceneEditTargetInstanceId else { return }
 
         // 1. Update SceneEditBar reset button state
         let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId]
@@ -1841,12 +1873,10 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    /// Reloads runtime state for the active scene instance.
+    /// Reloads runtime state for a given scene instance.
     /// PR-F: Single sync-point for runtime reload after undo/redo or Reset Scene.
     /// Order: resetForNewInstance -> clearAll -> applySceneInstanceState -> overlay/redraw -> video sync
-    private func reloadRuntimeStateForActiveScene() {
-        guard let instanceId = activeSceneInstanceId else { return }
-
+    private func reloadRuntimeState(for instanceId: UUID) {
         // 1. Reset ScenePlayer mutable state (transforms, variants, toggles, media presence)
         scenePlayer?.resetForNewInstance()
 
@@ -1893,7 +1923,11 @@ final class PlayerViewController: UIViewController {
     /// PR-D: Re-applies runtime state for active scene instance to sync with restored snapshot.
     /// PR-F: Also refreshes bottom bars and syncs TimelineCompositionEngine.
     private func handleStateRestoredFromUndoRedo() {
-        reloadRuntimeStateForActiveScene()
+        if let targetId = sceneEditTargetInstanceId {
+            reloadRuntimeState(for: targetId)
+        } else if let runtimeId = activeSceneInstanceId {
+            reloadRuntimeState(for: runtimeId)
+        }
         refreshSceneEditBars()
 
         // PR-F: Sync TimelineCompositionEngine with restored state
@@ -2446,43 +2480,10 @@ final class PlayerViewController: UIViewController {
         persistTransformIfNeededSceneEdit(recognizer)
     }
 
-    /// PR9.1: Persists current transform to store for undo/redo and save/load.
-    private func persistTransformIfNeeded(_ recognizer: UIGestureRecognizer) {
-        guard let instanceId = activeSceneInstanceId,
-              let blockId = editorStore?.state.selectedBlockId,
-              let player = scenePlayer else { return }
-
-        let phase: InteractionPhase
-        switch recognizer.state {
-        case .began: phase = .began
-        case .changed: phase = .changed
-        case .ended: phase = .ended
-        case .cancelled, .failed: phase = .cancelled
-        default: return
-        }
-
-        let transform = player.userTransform(blockId: blockId)
-
-        editorStore?.dispatch(.setBlockTransform(
-            sceneInstanceId: instanceId,
-            blockId: blockId,
-            transform: transform,
-            phase: phase
-        ))
-
-        // On cancel, Store restores baseline but runtime still has "last" value.
-        // Apply restored baseline transform back to runtime.
-        // Use .identity as fallback when baseline has no saved transform.
-        if phase == .cancelled {
-            let restored = editorStore?.state.draft.sceneInstanceStates[instanceId]?.userTransforms[blockId] ?? .identity
-            player.setUserTransform(blockId: blockId, transform: restored)
-            metalView.setNeedsDisplay()
-        }
-    }
-
     /// PR-D: Persists transform from Scene Edit mode gestures.
     private func persistTransformIfNeededSceneEdit(_ recognizer: UIGestureRecognizer) {
-        guard let instanceId = activeSceneInstanceId,
+        assertSceneEditTargetMatchesRuntimeIfPossible()
+        guard let instanceId = sceneEditTargetInstanceId,
               let blockId = editorStore?.state.selectedBlockId,
               let player = scenePlayer else { return }
 
@@ -2519,25 +2520,6 @@ final class PlayerViewController: UIViewController {
         presentPhotoPicker(for: .images)
     }
 
-    @objc private func clearMediaTapped() {
-        guard let blockId = editorStore?.state.selectedBlockId else { return }
-
-        // PR9: Clear from runtime service
-        userMediaService?.clear(blockId: blockId)
-
-        // PR9: Clear from store (persistent)
-        if let instanceId = activeSceneInstanceId {
-            editorStore?.dispatch(.setBlockMedia(
-                sceneInstanceId: instanceId,
-                blockId: blockId,
-                media: nil
-            ))
-        }
-
-        metalView.setNeedsDisplay()
-        log("[UserMedia] Cleared media for block '\(blockId)'")
-    }
-
     /// PR9: Handles user media image picked from PHPicker.
     /// Saves to persistent storage and dispatches to store.
     private func handleUserMediaImagePicked(blockId: String, image: UIImage) {
@@ -2553,7 +2535,8 @@ final class PlayerViewController: UIViewController {
         log("[UserMedia] Photo set for block '\(blockId)'")
 
         // Step 2: Save to persistent storage and dispatch to store
-        guard let instanceId = activeSceneInstanceId else {
+        assertSceneEditTargetMatchesRuntimeIfPossible()
+        guard let instanceId = sceneEditTargetInstanceId else {
             log("[UserMedia] No active scene instance, skipping persistence")
             metalView.setNeedsDisplay()
             return
@@ -2597,7 +2580,8 @@ final class PlayerViewController: UIViewController {
     ///   - tempURL: Temporary URL of copied video file (will be deleted after processing)
     private func handleUserMediaVideoPicked(blockId: String, tempURL: URL) {
         // Step 1: Get active scene instance for persistence
-        guard let instanceId = activeSceneInstanceId else {
+        assertSceneEditTargetMatchesRuntimeIfPossible()
+        guard let instanceId = sceneEditTargetInstanceId else {
             log("[UserMedia] No active scene instance, skipping video persistence")
             try? FileManager.default.removeItem(at: tempURL)
             metalView.setNeedsDisplay()
@@ -2746,7 +2730,8 @@ final class PlayerViewController: UIViewController {
         sceneEditController?.updateOverlay()
 
         // 3. Persist to store
-        guard let instanceId = activeSceneInstanceId else { return }
+        assertSceneEditTargetMatchesRuntimeIfPossible()
+        guard let instanceId = sceneEditTargetInstanceId else { return }
         editorStore?.dispatch(.setBlockVariant(
             sceneInstanceId: instanceId,
             blockId: blockId,
@@ -3650,8 +3635,11 @@ extension PlayerViewController: MTKViewDelegate {
         let player = scenePlayer
         let frameIndex = currentFrameIndex
 
+        guard let uiMode = editorStore?.state.uiMode,
+              case .sceneEdit = uiMode else { return }
+
         guard let resolved = EditorRenderCommandResolver.resolve(
-            uiMode: .sceneEdit(sceneInstanceId: activeSceneInstanceId ?? UUID()),
+            uiMode: uiMode,
             coordinatorLocalFrame: coordinator?.currentLocalFrame,
             currentFrameIndex: frameIndex,
             coordinatorCommands: { mode in
