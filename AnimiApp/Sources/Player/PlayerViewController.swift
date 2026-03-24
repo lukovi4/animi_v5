@@ -99,9 +99,17 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - Export State
 
-    struct ActiveExportRequest {
+    final class ActiveExportRequest {
         let id: UUID
         let exporter: VideoExporter
+
+        /// Strongly retains the in-flight delivery operation until terminal completion.
+        var deliveryFlow: ExportDeliveryFlow?
+
+        init(id: UUID, exporter: VideoExporter) {
+            self.id = id
+            self.exporter = exporter
+        }
 
         /// Returns true if `requestId` matches this request's id.
         func isActive(for requestId: UUID) -> Bool {
@@ -2312,19 +2320,6 @@ final class PlayerViewController: UIViewController {
             self.dismiss(animated: true)
         }
 
-        progressVC.onCompleted = { [weak self] url in
-            self?.handleExportSuccess()
-            self?.dismiss(animated: true) {
-                self?.presentShareSheet(for: url)
-            }
-        }
-
-        progressVC.onFailed = { [weak self] error in
-            self?.dismiss(animated: true) {
-                self?.presentExportError(error)
-            }
-        }
-
         present(progressVC, animated: true) { [weak self] in
             guard let self = self else { return }
 
@@ -2370,19 +2365,24 @@ final class PlayerViewController: UIViewController {
                             self.log("[Export] Ignoring stale completion")
                             return
                         }
-                        self.activeExportRequest = nil
 
                         switch result {
                         case .success(let url):
                             self.log("[Export] SUCCESS: \(url.lastPathComponent)")
-                            progressVC.updateState(.completed(url))
+                            self.handleExportSuccess()
+                            progressVC.updateState(.savingToPhotos)
+                            self.saveExportedVideoToPhotos(url, requestId: requestId, progressVC: progressVC)
 
                         case .failure(let error as VideoExportError) where error.isCancelled:
                             self.log("[Export] Cancelled")
+                            self.clearExportRequestIfCurrent(requestId)
 
                         case .failure(let error):
                             self.log("[Export] ERROR: \(error.localizedDescription)")
-                            progressVC.updateState(.failed(error))
+                            self.clearExportRequestIfCurrent(requestId)
+                            self.dismiss(animated: true) {
+                                self.presentExportError(error)
+                            }
                         }
                     }
                 )
@@ -2448,19 +2448,6 @@ final class PlayerViewController: UIViewController {
             self.dismiss(animated: true)
         }
 
-        progressVC.onCompleted = { [weak self] url in
-            self?.handleExportSuccess()
-            self?.dismiss(animated: true) {
-                self?.presentShareSheet(for: url)
-            }
-        }
-
-        progressVC.onFailed = { [weak self] error in
-            self?.dismiss(animated: true) {
-                self?.presentExportError(error)
-            }
-        }
-
         present(progressVC, animated: true) { [weak self] in
             guard let self = self else { return }
 
@@ -2501,19 +2488,24 @@ final class PlayerViewController: UIViewController {
                             self.log("[Export] Ignoring stale completion")
                             return
                         }
-                        self.activeExportRequest = nil
 
                         switch result {
                         case .success(let url):
                             self.log("[Export] SUCCESS: \(url.lastPathComponent)")
-                            progressVC.updateState(.completed(url))
+                            self.handleExportSuccess()
+                            progressVC.updateState(.savingToPhotos)
+                            self.saveExportedVideoToPhotos(url, requestId: requestId, progressVC: progressVC)
 
                         case .failure(let error as VideoExportError) where error.isCancelled:
                             self.log("[Export] Cancelled")
+                            self.clearExportRequestIfCurrent(requestId)
 
                         case .failure(let error):
                             self.log("[Export] ERROR: \(error.localizedDescription)")
-                            progressVC.updateState(.failed(error))
+                            self.clearExportRequestIfCurrent(requestId)
+                            self.dismiss(animated: true) {
+                                self.presentExportError(error)
+                            }
                         }
                     }
                 )
@@ -2521,10 +2513,53 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    private func presentShareSheet(for url: URL) {
-        let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        activityVC.popoverPresentationController?.sourceView = view
-        present(activityVC, animated: true)
+    /// Production test seam: deliverer factory.
+    /// Tests can replace this to inject a mock deliverer.
+    var makeDeliverer: () -> ExportDelivering = { ExportDeliveryCoordinator() }
+
+    private func saveExportedVideoToPhotos(_ url: URL, requestId: UUID, progressVC: ExportProgressViewController) {
+        let deliverer = makeDeliverer()
+        let flow = ExportDeliveryFlow(
+            requestId: requestId,
+            deliverer: deliverer,
+            isRequestActive: { [weak self] id in self?.isActiveExportRequest(id) ?? false },
+            clearRequestIfCurrent: { [weak self] id in self?.clearExportRequestIfCurrent(id) },
+            completion: { [weak self] outcome in
+                guard let self else { return }
+                switch outcome {
+                case .ignoredStale:
+                    self.log("[Export] Ignoring stale delivery completion")
+                case .savedToPhotos:
+                    self.dismiss(animated: true) { self.presentSavedToPhotosAlert() }
+                case .showPermissionSettings:
+                    self.dismiss(animated: true) { self.presentPhotoLibraryPermissionAlert() }
+                case .showError(let error):
+                    self.dismiss(animated: true) { self.presentExportError(error) }
+                }
+            }
+        )
+        // Store flow in active request so it's strongly retained through delivery
+        activeExportRequest?.deliveryFlow = flow
+        flow.start(fileURL: url, destination: .photoLibrary)
+    }
+
+    private func presentSavedToPhotosAlert() {
+        let alert = UIAlertController(title: "Saved to Photos",
+            message: "Your video has been saved to the Photos library.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func presentPhotoLibraryPermissionAlert() {
+        let alert = UIAlertController(title: "Photos Access Required",
+            message: "Animi needs permission to save videos to your Photos library.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Open Settings", style: .default) { _ in
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url)
+            }
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
 
     private func presentExportError(_ error: Error) {

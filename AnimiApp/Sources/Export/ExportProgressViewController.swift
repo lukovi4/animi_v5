@@ -7,8 +7,7 @@ enum ExportProgressState {
     case preparing
     case rendering(progress: Double)
     case finishing
-    case completed(URL)
-    case failed(Error)
+    case savingToPhotos
 }
 
 // MARK: - Export Progress View Controller
@@ -24,8 +23,8 @@ enum ExportProgressState {
 /// // Update progress:
 /// vc.updateState(.rendering(progress: 0.5))
 ///
-/// // On completion:
-/// vc.updateState(.completed(url))
+/// // On render success, transition to delivery:
+/// vc.updateState(.savingToPhotos)
 /// ```
 final class ExportProgressViewController: UIViewController {
 
@@ -33,12 +32,6 @@ final class ExportProgressViewController: UIViewController {
 
     /// Called when user taps Cancel button.
     var onCancel: (() -> Void)?
-
-    /// Called when export completes successfully. Caller should dismiss and show share sheet.
-    var onCompleted: ((URL) -> Void)?
-
-    /// Called when export fails. Caller should dismiss and show alert.
-    var onFailed: ((Error) -> Void)?
 
     // MARK: - UI Components
 
@@ -186,12 +179,11 @@ final class ExportProgressViewController: UIViewController {
             progressView.progress = 1.0
             cancelButton.isEnabled = false
 
-        case .completed(let url):
-            onCompleted?(url)
-
-        case .failed(let error):
-            onFailed?(error)
-
+        case .savingToPhotos:
+            statusLabel.text = "Saving to Photos..."
+            percentLabel.text = "100%"
+            progressView.progress = 1.0
+            cancelButton.isEnabled = false
         }
     }
 

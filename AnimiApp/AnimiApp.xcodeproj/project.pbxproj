@@ -155,6 +155,13 @@
 		AA01000100010001AAAA0002 /* SavedProjectRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100010001AAAA0002 /* SavedProjectRecord.swift */; };
 		AA01000100010001AAAA0003 /* ProjectPreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100010001AAAA0003 /* ProjectPreviewCell.swift */; };
 		AA01000100010001AAAA0004 /* MyProjectsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100010001AAAA0004 /* MyProjectsViewController.swift */; };
+BB00DD0000000000000C0001 /* ExportDeliveryError.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00DD0000000000000A0001 /* ExportDeliveryError.swift */; };
+BB00DD0000000000000C0002 /* PhotoLibraryVideoSaveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00DD0000000000000A0002 /* PhotoLibraryVideoSaveService.swift */; };
+BB00DD0000000000000C0003 /* ExportDeliveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00DD0000000000000A0003 /* ExportDeliveryCoordinator.swift */; };
+BB00DD0000000000000D0001 /* PhotoLibraryVideoSaveServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00DD0000000000000B0001 /* PhotoLibraryVideoSaveServiceTests.swift */; };
+BB00DD0000000000000D0002 /* ExportDeliveryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00DD0000000000000B0002 /* ExportDeliveryCoordinatorTests.swift */; };
+BB00DD0000000000000D0003 /* ExportDeliveryPlayerFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00DD0000000000000B0003 /* ExportDeliveryPlayerFlowTests.swift */; };
+BB00DD0000000000000E0002 /* Photos.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB00DD0000000000000E0001 /* Photos.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -318,6 +325,13 @@
 		AA02000100010001AAAA0002 /* SavedProjectRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectRecord.swift; sourceTree = "<group>"; };
 		AA02000100010001AAAA0003 /* ProjectPreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPreviewCell.swift; sourceTree = "<group>"; };
 		AA02000100010001AAAA0004 /* MyProjectsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyProjectsViewController.swift; sourceTree = "<group>"; };
+BB00DD0000000000000A0001 /* ExportDeliveryError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportDeliveryError.swift; sourceTree = "<group>"; };
+BB00DD0000000000000A0002 /* PhotoLibraryVideoSaveService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryVideoSaveService.swift; sourceTree = "<group>"; };
+BB00DD0000000000000A0003 /* ExportDeliveryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportDeliveryCoordinator.swift; sourceTree = "<group>"; };
+BB00DD0000000000000B0001 /* PhotoLibraryVideoSaveServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryVideoSaveServiceTests.swift; sourceTree = "<group>"; };
+BB00DD0000000000000B0002 /* ExportDeliveryCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportDeliveryCoordinatorTests.swift; sourceTree = "<group>"; };
+BB00DD0000000000000B0003 /* ExportDeliveryPlayerFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportDeliveryPlayerFlowTests.swift; sourceTree = "<group>"; };
+BB00DD0000000000000E0001 /* Photos.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Photos.framework; path = System/Library/Frameworks/Photos.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -327,6 +341,7 @@
 			files = (
 				5730DA4CA9AA56F5D0794FD6 /* TVECore in Frameworks */,
 				73CECF77FB8C3AF12D28CEA6 /* TVECompilerCore in Frameworks */,
+				BB00DD0000000000000E0002 /* Photos.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -384,6 +399,9 @@
 				7185024F1B86566F8B651E51 /* ExportPipelineRegressionTests.swift */,
 				AA11223344556677AABB1003 /* VideoExportSessionTests.swift */,
 				AA11223344556677AABB1004 /* ExportRequestGatingTests.swift */,
+				BB00DD0000000000000B0002 /* ExportDeliveryCoordinatorTests.swift */,
+				BB00DD0000000000000B0003 /* ExportDeliveryPlayerFlowTests.swift */,
+				BB00DD0000000000000B0001 /* PhotoLibraryVideoSaveServiceTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -403,12 +421,15 @@
 			children = (
 				21BCAE9CA856E61018333E4F /* AudioCompositionBuilder.swift */,
 				931F43B88D909958DFAB035F /* AudioWriterPump.swift */,
+				BB00DD0000000000000A0003 /* ExportDeliveryCoordinator.swift */,
+				BB00DD0000000000000A0001 /* ExportDeliveryError.swift */,
 				405CA61F8D950F938A7C179C /* ExportProgressViewController.swift */,
 				AA11223344556677AABB1001 /* ExportSession.swift */,
 				24072B970A995E855147579D /* ExportWriterPipeline.swift */,
 				E1974DAD2C56CCA5F71BFF6E /* ExportTextureProvider.swift */,
 				C1244C22C36801F4B52AFE62 /* ExportVideoFrameProvider.swift */,
 				EF894A5BD8FDCD16513F4379 /* ExportVideoSlotsCoordinator.swift */,
+				BB00DD0000000000000A0002 /* PhotoLibraryVideoSaveService.swift */,
 				AA11223344556677AABB1002 /* TimelineExportRuntime.swift */,
 				41ECBBE27F729040A4BA24F9 /* VideoExporter.swift */,
 				108A78CE2ED596C2B0D36538 /* VideoWriterPump.swift */,
@@ -779,6 +800,9 @@
 				C11E93F73A9CA6E469B16BE7 /* ExportPipelineRegressionTests.swift in Sources */,
 				AA11223344556677AABB0003 /* VideoExportSessionTests.swift in Sources */,
 				AA11223344556677AABB0004 /* ExportRequestGatingTests.swift in Sources */,
+				BB00DD0000000000000D0001 /* PhotoLibraryVideoSaveServiceTests.swift in Sources */,
+				BB00DD0000000000000D0002 /* ExportDeliveryCoordinatorTests.swift in Sources */,
+				BB00DD0000000000000D0003 /* ExportDeliveryPlayerFlowTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -880,6 +904,9 @@
 				23BE4704AC6F0AAA57ACDDDB /* VideoWriterPump.swift in Sources */,
 				5B00F6501B4C64827D7A6F69 /* ExportWriterPipeline.swift in Sources */,
 				AA11223344556677AABB0001 /* ExportSession.swift in Sources */,
+				BB00DD0000000000000C0001 /* ExportDeliveryError.swift in Sources */,
+				BB00DD0000000000000C0002 /* PhotoLibraryVideoSaveService.swift in Sources */,
+				BB00DD0000000000000C0003 /* ExportDeliveryCoordinator.swift in Sources */,
 				AA11223344556677AABB0002 /* TimelineExportRuntime.swift in Sources */,
 				634873BF88B7C4366E03297A /* VideoFrameProvider.swift in Sources */,
 				6D8E921F53B7BAF6F2223211 /* RuntimeDiagnosticEvent.swift in Sources */,

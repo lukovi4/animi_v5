@@ -2820,8 +2820,8 @@ func updateTextures(forSceneFrameIndex sceneFrameIndex: Int) {
 4. User media textures injected from main thread provider
 5. `VideoExporter.exportVideo()` starts background export
 6. Progress callbacks update UI
-7. On completion: share sheet displayed
-8. On cancel: `wasCancelled` flag prevents late callbacks
+7. On completion: video saved to Photos library
+8. On cancel: request-scoped guard via `isActiveExportRequest(requestId)` prevents stale callbacks
 
 ### J6) Templates (updated 2026-02-17)
 
