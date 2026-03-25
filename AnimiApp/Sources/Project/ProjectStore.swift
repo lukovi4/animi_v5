@@ -544,7 +544,7 @@ public final class ProjectStore {
 
         try imageData.write(to: fileURL, options: .atomic)
 
-        return MediaRef.file(relativePath)
+        return MediaRef.file(relativePath, mediaKind: .photo)
     }
 
     /// Saves user media (photo) to the user media directory.
@@ -564,7 +564,7 @@ public final class ProjectStore {
 
         try imageData.write(to: fileURL, options: .atomic)
 
-        return MediaRef.file(relativePath)
+        return MediaRef.file(relativePath, mediaKind: .photo)
     }
 
     /// Saves user video to the user media directory.
@@ -590,7 +590,7 @@ public final class ProjectStore {
 
         try fileManager.copyItem(at: sourceURL, to: destURL)
 
-        return MediaRef.file(relativePath)
+        return MediaRef.file(relativePath, mediaKind: .video)
     }
 
     /// Returns the absolute URL for a media reference.

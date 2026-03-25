@@ -22,11 +22,6 @@ import UIKit
 /// ```
 public enum MediaRestoreHelper {
 
-    // MARK: - Supported Extensions
-
-    private static let photoExtensions = Set(["jpg", "jpeg", "png", "heic"])
-    private static let videoExtensions = Set(["mov", "mp4", "m4v"])
-
     // MARK: - Restore
 
     /// Restores media assignments to UserMediaService.
@@ -37,6 +32,7 @@ public enum MediaRestoreHelper {
     /// - Parameters:
     ///   - assignments: Media assignments from SceneState (blockId -> MediaRef).
     ///   - userMediaPresent: Optional overrides for userMediaPresent (for presentOnReady).
+    ///   - videoSelections: Optional persisted video selections (trim/offset/audio params).
     ///   - service: UserMediaService to apply media to.
     /// - Returns: Number of successfully restored media items.
     @MainActor
@@ -44,6 +40,7 @@ public enum MediaRestoreHelper {
     public static func restore(
         assignments: [String: MediaRef]?,
         userMediaPresent: [String: Bool]?,
+        videoSelections: [String: PersistedVideoSelection]? = nil,
         to service: UserMediaService
     ) -> Int {
         guard let assignments = assignments else { return 0 }
@@ -69,11 +66,10 @@ public enum MediaRestoreHelper {
                 continue
             }
 
-            // Determine media type from extension
-            let ext = url.pathExtension.lowercased()
             let presentOnReady = userMediaPresent?[blockId] ?? true
 
-            if photoExtensions.contains(ext) {
+            switch mediaRef.mediaKind {
+            case .photo:
                 // Photo: load image and apply
                 guard let image = UIImage(contentsOfFile: url.path) else {
                     service.markRestoreFailed(blockId: blockId, reason: "unreadable photo: \(url.lastPathComponent)")
@@ -88,23 +84,26 @@ public enum MediaRestoreHelper {
                 print("[MediaRestoreHelper] Restored photo for \(blockId): presentOnReady=\(presentOnReady), \(success ? "success" : "failed")")
                 #endif
 
-            } else if videoExtensions.contains(ext) {
-                // Video: setVideo marks its own failure if it returns false
+            case .video:
+                // Video: setVideo marks its own failure if it returns false.
+                // pendingPersistedSelection is applied inside the async poster task AFTER mediaState
+                // is written — calling applyPersistedVideoSelection synchronously here would be a no-op
+                // because mediaState[blockId] is not yet populated.
                 let success = service.setVideo(
                     blockId: blockId,
                     url: url,
                     ownership: .persistent,
-                    presentOnReady: presentOnReady
+                    presentOnReady: presentOnReady,
+                    emitSelectionPersistence: false,
+                    pendingPersistedSelection: videoSelections?[blockId]
                 )
-                if success { restored += 1 }
+                if success {
+                    restored += 1
+                }
 
                 #if DEBUG
                 print("[MediaRestoreHelper] Restored video for \(blockId): presentOnReady=\(presentOnReady), \(success ? "success" : "failed")")
                 #endif
-
-            } else {
-                // Unsupported extension
-                service.markRestoreFailed(blockId: blockId, reason: "unsupported extension: .\(ext)")
             }
         }
 

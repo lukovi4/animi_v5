@@ -155,12 +155,56 @@ public final class ExportVideoFrameProvider {
 
     // MARK: - Lifecycle
 
+    /// Prepares the provider for reading (idempotent).
+    ///
+    /// Creates AVAssetReader and configures output.
+    /// Must be called before `texture(forSceneFrameIndex:)`.
+    /// Safe to call multiple times — no-op if already prepared.
+    public func prepareIfNeeded() throws {
+        guard !isPrepared else { return }
+        try prepareInternal()
+    }
+
     /// Prepares the provider for reading.
     ///
     /// Creates AVAssetReader and configures output.
     /// Must be called before `texture(forSceneFrameIndex:)`.
     public func prepare() throws {
         guard !isPrepared else { return }
+        try prepareInternal()
+    }
+
+    /// Suspends the provider — cancels reader, clears pending/lastTexture, keeps config.
+    /// Can be resumed later via `resume()`.
+    public func suspend() {
+        reader?.cancelReading()
+        reader = nil
+        output = nil
+        lastTexture = nil
+        lastPTS = .invalid
+        pending = nil
+        isPrepared = false
+        isFinished = false
+        // Keep config and providerError intact
+    }
+
+    /// Resumes a suspended provider — re-creates reader from saved config.
+    public func resume() throws {
+        guard !isPrepared else { return }
+        providerError = nil
+        try prepareInternal()
+    }
+
+    /// Releases all decoded state (textures, pending samples) without fully finishing.
+    /// Keeps config for potential re-prepare.
+    public func releaseDecodedState() {
+        lastTexture = nil
+        pending = nil
+    }
+
+    // MARK: - Internal Prepare
+
+    private func prepareInternal() throws {
 
         let asset = AVURLAsset(url: config.selection.url)
 

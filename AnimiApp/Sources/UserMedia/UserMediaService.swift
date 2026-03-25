@@ -301,6 +301,11 @@ public final class UserMediaService {
     /// Called after poster injection or clear/replace.
     public var onNeedsDisplay: (() -> Void)?
 
+    /// Emitted when a video selection is created or modified.
+    /// Payload: (blockId, PersistedVideoSelection).
+    /// Wire to EditorStore/sceneStates for persistence.
+    public var onVideoSelectionChanged: ((String, PersistedVideoSelection) -> Void)?
+
     // MARK: - Async Race Protection (PR-async-race)
 
     /// Generation token per blockId for async race protection.
@@ -475,9 +480,14 @@ public final class UserMediaService {
     ///   - url: URL of the video file
     ///   - ownership: Who owns the file lifecycle (default: `.temporary`)
     ///   - presentOnReady: Value for `userMediaPresent` after poster extraction (default: `true`)
+    ///   - emitSelectionPersistence: Whether to fire `onVideoSelectionChanged` callback (default: `true`).
+    ///     Pass `false` on restore path to avoid overwriting persisted state.
+    ///   - pendingPersistedSelection: If non-nil, applied to the VideoSelection inside the async poster task
+    ///     AFTER `mediaState` is written. This is the only safe place to apply persisted trim/offset/audio,
+    ///     since `mediaState` is not populated until the poster completes.
     /// - Returns: `true` if video accepted (async poster generation started), `false` on validation error
     @discardableResult
-    public func setVideo(blockId: String, url: URL, ownership: MediaOwnership = .temporary, presentOnReady: Bool = true) -> Bool {
+    public func setVideo(blockId: String, url: URL, ownership: MediaOwnership = .temporary, presentOnReady: Bool = true, emitSelectionPersistence: Bool = true, pendingPersistedSelection: PersistedVideoSelection? = nil) -> Bool {
         guard let player = activePlayer else {
             // P0: Mark as failed - no player available (symmetric with setPhoto)
             blockReadinessState[blockId] = .failed(reason: "no scene player")
@@ -574,6 +584,17 @@ public final class UserMediaService {
 
                 // Update state with proper selection
                 self.mediaState[blockId] = .video(selection)
+
+                // Apply pending persisted trim/offset/audio if provided (restore path).
+                // Must happen AFTER mediaState is written, since applyPersistedVideoSelection
+                // reads from mediaState.
+                if let pending = pendingPersistedSelection {
+                    self.applyPersistedVideoSelection(blockId: blockId, pending)
+                }
+
+                if emitSelectionPersistence {
+                    self.onVideoSelectionChanged?(blockId, PersistedVideoSelection(from: selection))
+                }
 
                 // Inject poster texture into all variant binding asset IDs
                 // (poster at winStart=0 is the default, which is what we already have)
@@ -1263,6 +1284,21 @@ public final class UserMediaService {
         }
     }
 
+    // MARK: - Export Resource Management
+
+    /// Releases heavy preview resources (video providers/decoders) to free memory before export.
+    ///
+    /// Preserves `mediaState` (contains VideoSelection metadata needed for `exportVideoSelectionsSnapshot()`).
+    /// After calling this, preview video playback is no longer functional, but snapshot APIs still work.
+    public func releasePreviewResources() {
+        for (_, provider) in videoProviders {
+            provider.release()
+        }
+        videoProviders.removeAll()
+        activeVideoBlockIds.removeAll()
+        tickCounter = 0
+    }
+
     // MARK: - Export Snapshot (PR-E3)
 
     /// Returns a snapshot of video selections for export.
@@ -1279,5 +1315,17 @@ public final class UserMediaService {
             }
         }
         return result
+    }
+
+    /// Applies persisted trim/offset/audio to an existing video selection.
+    /// Does NOT fire onVideoSelectionChanged (this IS the restore path).
+    public func applyPersistedVideoSelection(blockId: String, _ persisted: PersistedVideoSelection) {
+        guard case .video(var selection) = mediaState[blockId] else { return }
+        selection.trimStart = persisted.trimStart
+        selection.trimEnd = persisted.trimEnd
+        selection.offset = persisted.offset
+        selection.isMuted = persisted.isMuted
+        selection.volume = persisted.volume
+        mediaState[blockId] = .video(selection)
     }
 }

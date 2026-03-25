@@ -164,6 +164,50 @@ public final class BackgroundTextureService {
         clearAllTextures()
     }
 
+    // MARK: - Export Loading
+
+    /// Loads a background texture for export using DownsampledImageLoader.
+    ///
+    /// Unlike the preview path (which uses `Data(contentsOf:) → UIImage(data:)`),
+    /// this path never loads the full-resolution image into memory.
+    /// Uses Image I/O thumbnail API for memory-efficient downsampling.
+    ///
+    /// - Parameters:
+    ///   - slotKey: Texture slot key (e.g., "bg/wave_split/top")
+    ///   - url: Resolved file URL for the background image
+    ///   - device: Metal device for texture creation
+    ///   - commandQueue: Command queue for staging → private blit
+    ///   - maxDimensionPx: Maximum dimension in pixels (from ExportResourceBudget)
+    /// - Throws: DownsampledImageLoader.LoadError if loading fails
+    public func loadTextureForExport(
+        slotKey: String,
+        url: URL,
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        maxDimensionPx: Int
+    ) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            #if DEBUG
+            print("[BackgroundTextureService] WARNING: File not found for export slot '\(slotKey)': \(url.path)")
+            #endif
+            return
+        }
+
+        let texture = try DownsampledImageLoader.loadTexture(
+            from: url,
+            device: device,
+            commandQueue: commandQueue,
+            maxDimensionPx: maxDimensionPx
+        )
+
+        textureProvider.setTexture(texture, for: slotKey)
+        loadedSlotKeys.insert(slotKey)
+
+        #if DEBUG
+        print("[BackgroundTextureService] Loaded export texture for slot '\(slotKey)' (max \(maxDimensionPx)px)")
+        #endif
+    }
+
     // MARK: - Image Saving
 
     /// Saves an image to the project store and returns a MediaRef.

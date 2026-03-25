@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Metal
 import TVECore
@@ -499,6 +500,16 @@ public final class TimelineCompositionEngine {
         // Propagate diagnostics sink to runtime
         runtime.runtimeDiagnosticsSink = runtimeDiagnosticsSink
 
+        // Wire video selection persistence callback
+        runtime.userMediaService.onVideoSelectionChanged = { [weak self] blockId, persisted in
+            guard let self else { return }
+            var state = self.sceneStates[instanceId] ?? .empty
+            var selections = state.videoSelections ?? [:]
+            selections[blockId] = persisted
+            state.videoSelections = selections
+            self.sceneStates[instanceId] = state
+        }
+
         // Apply state if available
         if let state = sceneStates[instanceId] {
             await runtime.applyState(state)
@@ -897,6 +908,17 @@ public final class TimelineCompositionEngine {
         instanceRuntimes.removeAll()
     }
 
+    /// Releases scene runtimes for export — frees GPU memory from preview.
+    ///
+    /// Preserves `transitionMath` (needed for buildExportSession) and
+    /// `sceneStates` (needed for mediaAssignments).
+    public func releaseForExport() {
+        for runtime in instanceRuntimes.values {
+            runtime.pause()
+        }
+        instanceRuntimes.removeAll()
+    }
+
     /// Returns runtime for given instance ID, if loaded.
     public func runtime(for instanceId: UUID) -> SceneInstanceRuntime? {
         instanceRuntimes[instanceId]
@@ -972,31 +994,6 @@ public final class TimelineCompositionEngine {
     }
 
     /// Compatibility helper — timeline export after TT-05 uses session.audioSceneData instead.
-    public func prepareAudioExportData() async -> [SceneAudioExportData] {
-        guard let math = transitionMath else { return [] }
-
-        var result: [SceneAudioExportData] = []
-
-        for (index, item) in math.sceneItems.enumerated() {
-            // TT-02: Use getOrCreateRuntime (readiness managed separately)
-            guard let instanceRuntime = await getOrCreateRuntime(for: item.id) else {
-                #if DEBUG
-                print("[TimelineCompositionEngine] WARNING: No runtime for scene at index \(index)")
-                #endif
-                continue
-            }
-
-            let data = SceneAudioExportData(
-                sceneIndex: index,
-                runtime: instanceRuntime.resources.compiled.runtime,
-                videoSelections: instanceRuntime.userMediaService.exportVideoSelectionsSnapshot()
-            )
-            result.append(data)
-        }
-
-        return result
-    }
-
     // MARK: - TT-05 Export Session
 
     /// Error when building an immutable export session.
@@ -1006,13 +1003,19 @@ public final class TimelineCompositionEngine {
     }
 
     /// Immutable snapshot of a single scene for export.
+    ///
+    /// Contains lightweight media descriptors instead of live GPU textures.
+    /// The `TimelineExportResidencyController` creates GPU resources on demand.
     internal struct TimelineExportSceneSnapshot {
         let sceneIndex: Int
         let instanceId: UUID
         let runtime: SceneRuntime
         let renderState: SceneRenderStateSnapshot
         let videoSelections: [String: VideoSelection]
-        let textureProvider: ExportTextureProvider
+        let mediaSnapshot: ExportMediaSnapshot
+        let assetIndex: AssetIndexIR
+        let resolver: CompositeAssetResolver
+        let bindingAssetIds: Set<String>
         let pathRegistry: PathRegistry
         let assetSizes: [String: AssetSize]
         let sceneCanvasSize: SizeD
@@ -1031,7 +1034,8 @@ public final class TimelineCompositionEngine {
     /// Must be called on MainActor. Does NOT call resolveFrame, prepareForPlayback,
     /// or touch TT-03 budget/eviction path.
     internal func buildExportSession() async throws -> TimelineExportSession {
-        guard let math = transitionMath, templateCanvas != nil else {
+        guard let math = transitionMath, templateCanvas != nil,
+              let timeline = timeline else {
             throw TimelineExportSessionBuildError.noTimeline
         }
 
@@ -1041,12 +1045,35 @@ public final class TimelineCompositionEngine {
         for (index, item) in math.sceneItems.enumerated() {
             let instanceId = item.id
 
-            guard let instanceRuntime = await getOrCreateRuntime(for: instanceId) else {
+            // 1. Resolve sceneTypeId from timeline payload (no runtime needed)
+            guard let tlItem = timeline.sceneItems.first(where: { $0.id == instanceId }),
+                  let payload = timeline.payloads[tlItem.payloadId],
+                  case .scene(let scenePayload) = payload else {
                 throw TimelineExportSessionBuildError.missingRuntime(instanceId)
             }
+            let sceneTypeId = scenePayload.sceneTypeId
 
-            // Build render state snapshot from sceneStates
+            // 2. Resources: full cache if warm, metadata-only preload if cold.
+            //    NEVER calls full preload() or getOrCreateRuntime() for cold scenes.
+            let resources: SceneTypeResourcesCache.Resources
+            if let cached = resourcesCache.resources(for: sceneTypeId) {
+                resources = cached
+            } else {
+                resources = try await resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
+            }
+
+            // 3. Video selections: warm runtime > persisted state > empty
             let state = sceneStates[instanceId] ?? .empty
+            let videoSelections: [String: VideoSelection]
+            if let warmRuntime = instanceRuntimes[instanceId] {
+                // Warm runtime has in-flight edits — authoritative source
+                videoSelections = warmRuntime.userMediaService.exportVideoSelectionsSnapshot()
+            } else {
+                // Cold scene: assemble from PersistedVideoSelection + MediaRef URLs
+                videoSelections = try await Self.assembleVideoSelections(from: state)
+            }
+
+            // 4. Render state from sceneStates (no runtime needed)
             let renderState = SceneRenderStateSnapshot(
                 userTransforms: state.userTransforms,
                 variantOverrides: state.variantOverrides,
@@ -1054,23 +1081,15 @@ public final class TimelineCompositionEngine {
                 layerToggleState: state.layerToggles
             )
 
-            // Freeze video selections
-            let videoSelections = instanceRuntime.userMediaService.exportVideoSelectionsSnapshot()
-
-            // Create export-safe texture provider
-            let compiled = instanceRuntime.resources.compiled
-            let exportTP = ExportTextureProvider(
-                device: device,
-                assetIndex: compiled.mergedAssetIndex,
-                resolver: instanceRuntime.resources.resolver,
-                bindingAssetIds: compiled.bindingAssetIds
-            )
-            exportTP.preloadAll(commandQueue: commandQueue)
-
-            // Inject current binding textures from live provider
-            exportTP.injectTextures(
-                from: instanceRuntime.layeredTextureProvider,
-                for: compiled.bindingAssetIds
+            // 5. Build snapshot from cache resources
+            let compiled = resources.compiled
+            let mediaAssignments = state.mediaAssignments ?? [:]
+            let mediaSnapshot = try ExportMediaSnapshot.build(
+                compiledScene: compiled,
+                mediaAssignments: mediaAssignments,
+                projectStore: ProjectStore.shared,
+                videoSelections: videoSelections,
+                runtime: compiled.runtime
             )
 
             let snapshot = TimelineExportSceneSnapshot(
@@ -1079,10 +1098,13 @@ public final class TimelineCompositionEngine {
                 runtime: compiled.runtime,
                 renderState: renderState,
                 videoSelections: videoSelections,
-                textureProvider: exportTP,
-                pathRegistry: instanceRuntime.resources.pathRegistry,
-                assetSizes: instanceRuntime.resources.assetSizes,
-                sceneCanvasSize: instanceRuntime.resources.canvasSize
+                mediaSnapshot: mediaSnapshot,
+                assetIndex: compiled.mergedAssetIndex,
+                resolver: resources.resolver,
+                bindingAssetIds: compiled.bindingAssetIds,
+                pathRegistry: resources.pathRegistry,
+                assetSizes: resources.assetSizes,
+                sceneCanvasSize: resources.canvasSize
             )
             scenesByInstanceId[instanceId] = snapshot
 
@@ -1100,5 +1122,71 @@ public final class TimelineCompositionEngine {
             scenesByInstanceId: scenesByInstanceId,
             audioSceneData: audioSceneData
         )
+    }
+
+    /// Assembles runtime VideoSelections from persisted PersistedVideoSelection + MediaRef URLs.
+    /// Handles legacy drafts (videoSelections == nil) by synthesizing defaults from file duration.
+    /// Throws typed error for assigned-but-missing video files (consistent with photo contract).
+    /// Duration probing runs off MainActor to avoid main-thread file I/O.
+    private static func assembleVideoSelections(from state: SceneState) async throws -> [String: VideoSelection] {
+        let mediaAssignments = state.mediaAssignments ?? [:]
+        let persisted = state.videoSelections ?? [:]
+
+        // Collect all video blockIds from mediaAssignments
+        var videoEntries: [(blockId: String, mediaRef: MediaRef)] = []
+        for (blockId, mediaRef) in mediaAssignments where mediaRef.mediaKind == .video {
+            videoEntries.append((blockId, mediaRef))
+        }
+        guard !videoEntries.isEmpty else { return [:] }
+
+        // Fast path: all video entries have persisted selections (no duration probing needed)
+        var needsLegacyProbing = false
+        var fastResult: [String: VideoSelection] = [:]
+        for (blockId, mediaRef) in videoEntries {
+            guard let url = try? ProjectStore.shared.absoluteURL(for: mediaRef) else {
+                throw ExportMediaError.missingPersistedVideo(blockId: blockId)
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw ExportMediaError.missingPersistedVideo(blockId: blockId)
+            }
+
+            if let pvs = persisted[blockId] {
+                fastResult[blockId] = pvs.toVideoSelection(url: url)
+            } else {
+                needsLegacyProbing = true
+                break
+            }
+        }
+
+        // If all entries resolved from persisted state, return without async work
+        guard needsLegacyProbing else { return fastResult }
+
+        // Slow path: legacy draft needs AVURLAsset.duration probing off MainActor
+        let resolved = try await Task.detached(priority: .userInitiated) {
+            var result: [String: VideoSelection] = [:]
+            for (blockId, mediaRef) in videoEntries {
+                guard let url = try? ProjectStore.shared.absoluteURL(for: mediaRef) else {
+                    throw ExportMediaError.missingPersistedVideo(blockId: blockId)
+                }
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    throw ExportMediaError.missingPersistedVideo(blockId: blockId)
+                }
+
+                if let pvs = persisted[blockId] {
+                    result[blockId] = pvs.toVideoSelection(url: url)
+                } else {
+                    // Legacy draft: synthesize default from file duration
+                    let asset = AVURLAsset(url: url)
+                    let durationSeconds = CMTimeGetSeconds(asset.duration)
+                    guard durationSeconds > 0, durationSeconds.isFinite else {
+                        throw ExportMediaError.missingPersistedVideo(blockId: blockId)
+                    }
+                    result[blockId] = VideoSelection(url: url, duration: durationSeconds)
+                }
+            }
+            return result
+        }.value
+
+        return resolved
     }
 }

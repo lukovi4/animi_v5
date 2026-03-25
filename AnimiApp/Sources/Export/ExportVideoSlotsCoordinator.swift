@@ -23,7 +23,6 @@ import TVECore
 ///     exportTextureProvider: textureProvider
 /// )
 /// coordinator.configure(videoSelectionsByBlockId: selections)
-/// try coordinator.prepareAll()
 ///
 /// for frame in 0..<totalFrames {
 ///     coordinator.updateTextures(forSceneFrameIndex: frame)
@@ -35,9 +34,10 @@ import TVECore
 public final class ExportVideoSlotsCoordinator {
     // MARK: - Constants
 
-    /// B1: Prefetch margin in seconds for visibility gating.
-    /// Providers start decoding 1.0s before block becomes visible.
-    private let visibilityPrefetchMarginSeconds: Double = 1.0
+    /// B1: Prefetch margin in frames for visibility gating.
+    /// Providers start decoding this many frames before block becomes visible.
+    /// Configured via ExportResourceBudget.videoPrefetchFrames (default ~1s worth of frames).
+    private let videoPrefetchFrames: Int
 
     // MARK: - Types
 
@@ -48,6 +48,7 @@ public final class ExportVideoSlotsCoordinator {
         let bindingAssetIds: [String]
         let startFrame: Int
         let endFrame: Int
+        var isPrepared: Bool = false
     }
 
     // MARK: - Properties
@@ -63,6 +64,9 @@ public final class ExportVideoSlotsCoordinator {
 
     /// Binding asset IDs by blockId (built once at configure)
     private var bindingAssetIdsByBlockId: [String: [String]] = [:]
+
+    /// Maximum active providers (from budget)
+    private let maxActiveProviders: Int
 
     /// Whether coordinator has been configured
     private var isConfigured = false
@@ -80,18 +84,23 @@ public final class ExportVideoSlotsCoordinator {
     ///   - runtime: Scene runtime (for block timing and binding info)
     ///   - sceneFPS: Scene FPS
     ///   - exportTextureProvider: Mutable texture provider for injection
+    ///   - videoPrefetchFrames: Number of frames to prefetch (from ExportResourceBudget)
     public init(
         device: MTLDevice,
         textureCache: CVMetalTextureCache,
         runtime: SceneRuntime,
         sceneFPS: Double,
-        exportTextureProvider: MutableTextureProvider
+        exportTextureProvider: MutableTextureProvider,
+        videoPrefetchFrames: Int = 30,
+        maxActiveProviders: Int = 4
     ) {
         self.device = device
         self.textureCache = textureCache
         self.runtime = runtime
         self.sceneFPS = sceneFPS
         self.exportTextureProvider = exportTextureProvider
+        self.videoPrefetchFrames = videoPrefetchFrames
+        self.maxActiveProviders = maxActiveProviders
 
         // Build binding asset IDs map once (from runtime.blocks)
         buildBindingAssetIdsMap()
@@ -152,12 +161,11 @@ public final class ExportVideoSlotsCoordinator {
         isConfigured = true
     }
 
-    /// Prepares all providers for reading.
-    ///
-    /// Must be called after `configure` and before `updateTextures`.
-    public func prepareAll() throws {
+    /// Releases all providers' decoded state while keeping configuration.
+    /// Used by residency controller during scene eviction.
+    public func releaseProviders() {
         for (_, slot) in slots {
-            try slot.provider.prepare()
+            slot.provider.releaseDecodedState()
         }
     }
 
@@ -175,29 +183,68 @@ public final class ExportVideoSlotsCoordinator {
     ///
     /// - Parameter sceneFrameIndex: Scene frame index
     public func updateTextures(forSceneFrameIndex sceneFrameIndex: Int) {
-        // B1: Calculate prefetch margin in frames
-        let prefetchFrames = Int(visibilityPrefetchMarginSeconds * sceneFPS)
+        let prefetchFrames = videoPrefetchFrames
+        let suspendMargin = prefetchFrames * 2
 
-        for (_, slot) in slots {
-            // B1: Visibility gating — skip slots that are not visible
-            // A slot is visible if: sceneFrameIndex >= (startFrame - prefetch) AND sceneFrameIndex < endFrame
+        // Collect visible and far-away slots
+        var visibleBlockIds: [String] = []
+
+        for (blockId, slot) in slots {
             let visibilityStart = max(0, slot.startFrame - prefetchFrames)
-            guard sceneFrameIndex >= visibilityStart && sceneFrameIndex < slot.endFrame else {
-                continue
-            }
+            let isVisible = sceneFrameIndex >= visibilityStart && sceneFrameIndex < slot.endFrame
 
-            // P0 #2: Check for provider error and capture first one
-            if let error = slot.provider.providerError, providerError == nil {
-                providerError = error
-            }
+            if isVisible {
+                visibleBlockIds.append(blockId)
 
-            guard let texture = slot.provider.texture(forSceneFrameIndex: sceneFrameIndex) else {
-                continue
-            }
+                // Lazy prepare on visibility hit
+                if !slot.isPrepared {
+                    do {
+                        try slot.provider.prepareIfNeeded()
+                        slots[blockId]?.isPrepared = true
+                    } catch {
+                        if providerError == nil {
+                            providerError = error as? ExportVideoFrameProviderError
+                        }
+                        continue
+                    }
+                }
 
-            // Inject texture into all binding asset IDs for this block
-            for assetId in slot.bindingAssetIds {
-                exportTextureProvider.setTexture(texture, for: assetId)
+                // Check for provider error
+                if let error = slot.provider.providerError, providerError == nil {
+                    providerError = error
+                }
+
+                guard let texture = slot.provider.texture(forSceneFrameIndex: sceneFrameIndex) else {
+                    continue
+                }
+
+                for assetId in slot.bindingAssetIds {
+                    exportTextureProvider.setTexture(texture, for: assetId)
+                }
+            } else if slot.isPrepared {
+                // Suspend providers that are far from current frame
+                let distanceFromEnd = sceneFrameIndex - slot.endFrame
+                let distanceFromStart = slot.startFrame - sceneFrameIndex
+                let distance = max(distanceFromEnd, distanceFromStart)
+
+                if distance > suspendMargin {
+                    slot.provider.suspend()
+                    slots[blockId]?.isPrepared = false
+                }
+            }
+        }
+
+        // Enforce maxActiveProviders: suspend furthest if over limit
+        let preparedSlots = slots.filter { $0.value.isPrepared }
+        if preparedSlots.count > maxActiveProviders {
+            let sorted = preparedSlots.sorted { a, b in
+                let distA = abs(sceneFrameIndex - (a.value.startFrame + a.value.endFrame) / 2)
+                let distB = abs(sceneFrameIndex - (b.value.startFrame + b.value.endFrame) / 2)
+                return distA > distB
+            }
+            for (blockId, slot) in sorted.prefix(preparedSlots.count - maxActiveProviders) {
+                slot.provider.suspend()
+                slots[blockId]?.isPrepared = false
             }
         }
     }

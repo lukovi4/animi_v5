@@ -9,12 +9,11 @@ import TVECore
 /// Unlike `ScenePackageTextureProvider`, this provider:
 /// - Has NO `dispatchPrecondition(.main)` assertions
 /// - Uses a lock for thread-safe cache access
-/// - Must be fully preloaded before export begins
-/// - Supports texture injection for user media
+/// - Supports scene-local residency: warm only the assets needed for the current scene
+/// - Supports texture injection for user media (photos/video frames)
 ///
 /// Usage:
 /// ```swift
-/// // Create on main thread
 /// let exportProvider = ExportTextureProvider(
 ///     device: device,
 ///     assetIndex: compiledScene.mergedAssetIndex,
@@ -22,14 +21,14 @@ import TVECore
 ///     bindingAssetIds: compiledScene.bindingAssetIds
 /// )
 ///
-/// // Preload all textures (can be done on any thread)
-/// exportProvider.preloadAll(commandQueue: renderer.commandQueue)
+/// // Warm template textures for the active scene
+/// exportProvider.warm(assetIds: sceneAssetIds, commandQueue: queue)
 ///
-/// // Inject user media textures (from main thread ScenePackageTextureProvider)
-/// exportProvider.injectTextures(from: mainTextureProvider, for: bindingAssetIds)
+/// // Inject user media via setTexture (photos loaded via DownsampledImageLoader)
+/// exportProvider.setTexture(texture, for: assetId)
 ///
-/// // Use in export (thread-safe)
-/// exporter.exportVideo(..., textureProvider: exportProvider, ...)
+/// // On scene eviction:
+/// exportProvider.clearAll()
 /// ```
 public final class ExportTextureProvider: MutableTextureProvider {
     // MARK: - Properties
@@ -72,7 +71,7 @@ public final class ExportTextureProvider: MutableTextureProvider {
     /// Returns the texture for the given asset ID.
     ///
     /// Thread-safe O(1) cache lookup. No IO performed.
-    /// Must call `preloadAll()` before using this method.
+    /// Must call `warm(assetIds:commandQueue:)` before using this method.
     public func texture(for assetId: String) -> MTLTexture? {
         lock.lock()
         defer { lock.unlock() }
@@ -101,18 +100,24 @@ public final class ExportTextureProvider: MutableTextureProvider {
         cache.removeValue(forKey: assetId)
     }
 
-    // MARK: - Preloading
+    // MARK: - Targeted Loading
 
-    /// Preloads all resolvable textures from the asset index.
+    /// Warms (loads) textures for the specified asset IDs.
     ///
-    /// Must be called before export begins. After this call,
-    /// `texture(for:)` becomes a pure O(1) cache lookup.
+    /// Only loads template assets that are resolvable via the asset index.
+    /// Binding assets are skipped (they are injected separately via `setTexture`).
+    /// Already-cached assets are skipped.
+    ///
+    /// For single-scene export, call with all scene asset IDs.
+    /// For timeline export, called per-scene by the residency controller.
     ///
     /// Thread-safe: can be called from any queue.
     ///
-    /// - Parameter commandQueue: Metal command queue for texture blit operations
-    public func preloadAll(commandQueue: MTLCommandQueue) {
-        for (assetId, basename) in assetIndex.basenameById {
+    /// - Parameters:
+    ///   - assetIds: Set of asset IDs to warm
+    ///   - commandQueue: Metal command queue for texture blit operations
+    public func warm(assetIds: Set<String>, commandQueue: MTLCommandQueue) {
+        for assetId in assetIds {
             // Skip already cached
             lock.lock()
             let alreadyCached = cache[assetId] != nil
@@ -122,8 +127,13 @@ public final class ExportTextureProvider: MutableTextureProvider {
                 continue
             }
 
-            // Skip binding assets (injected separately)
+            // Skip binding assets (injected separately via setTexture)
             if bindingAssetIds.contains(assetId) {
+                continue
+            }
+
+            // Resolve basename from asset index
+            guard let basename = assetIndex.basenameById[assetId] else {
                 continue
             }
 
@@ -148,32 +158,28 @@ public final class ExportTextureProvider: MutableTextureProvider {
         }
     }
 
-    /// Injects textures from another provider for specified asset IDs.
+    /// Clears textures for the specified asset IDs.
     ///
-    /// Use this to copy user media textures from the main-thread
-    /// `ScenePackageTextureProvider` before export begins.
-    ///
-    /// - Note: Must be called on main thread if source provider requires it.
-    ///
-    /// - Parameters:
-    ///   - sourceProvider: Source texture provider (typically ScenePackageTextureProvider)
-    ///   - assetIds: Asset IDs to copy from source
-    public func injectTextures(from sourceProvider: TextureProvider, for assetIds: Set<String>) {
+    /// - Parameter assetIds: Set of asset IDs to clear
+    public func clear(assetIds: Set<String>) {
+        lock.lock()
+        defer { lock.unlock() }
+
         for assetId in assetIds {
-            if let texture = sourceProvider.texture(for: assetId) {
-                setTexture(texture, for: assetId)
-            }
+            cache.removeValue(forKey: assetId)
+            missingAssets.remove(assetId)
         }
     }
 
-    /// Clears the texture cache.
-    public func clearCache() {
+    /// Clears all cached textures.
+    public func clearAll() {
         lock.lock()
         defer { lock.unlock() }
 
         cache.removeAll()
         missingAssets.removeAll()
     }
+
 
     // MARK: - Private
 

@@ -377,6 +377,9 @@ public final class VideoExporter: @unchecked Sendable {
         let videoSelections: [String: VideoSelection]
         let settings: VideoExportSettings
         let backgroundState: EffectiveBackgroundState?
+        let mediaSnapshot: ExportMediaSnapshot?
+        let backgroundSnapshot: ExportBackgroundSnapshot?
+        let budget: ExportResourceBudget
 
         init(
             runtime: SceneRuntime,
@@ -387,7 +390,10 @@ public final class VideoExporter: @unchecked Sendable {
             assetSizes: [String: AssetSize],
             videoSelections: [String: VideoSelection],
             settings: VideoExportSettings,
-            backgroundState: EffectiveBackgroundState?
+            backgroundState: EffectiveBackgroundState?,
+            mediaSnapshot: ExportMediaSnapshot? = nil,
+            backgroundSnapshot: ExportBackgroundSnapshot? = nil,
+            budget: ExportResourceBudget = .default
         ) {
             self.runtime = runtime
             self.snapshot = snapshot
@@ -398,6 +404,9 @@ public final class VideoExporter: @unchecked Sendable {
             self.videoSelections = videoSelections
             self.settings = settings
             self.backgroundState = backgroundState
+            self.mediaSnapshot = mediaSnapshot
+            self.backgroundSnapshot = backgroundSnapshot
+            self.budget = budget
         }
     }
 
@@ -410,8 +419,9 @@ public final class VideoExporter: @unchecked Sendable {
         let totalFrames: Int
         let canvasSize: SizeD
         let backgroundState: EffectiveBackgroundState?
-        let backgroundTextureProvider: TextureProvider
+        let backgroundSnapshot: ExportBackgroundSnapshot?
         let settings: TimelineExportSettings
+        let budget: ExportResourceBudget
         let renderDiagnosticsSink: RenderDiagnosticsSink?
 
         init(
@@ -421,8 +431,9 @@ public final class VideoExporter: @unchecked Sendable {
             totalFrames: Int,
             canvasSize: SizeD,
             backgroundState: EffectiveBackgroundState?,
-            backgroundTextureProvider: TextureProvider,
+            backgroundSnapshot: ExportBackgroundSnapshot?,
             settings: TimelineExportSettings,
+            budget: ExportResourceBudget,
             renderDiagnosticsSink: RenderDiagnosticsSink?
         ) {
             self.session = session
@@ -431,14 +442,16 @@ public final class VideoExporter: @unchecked Sendable {
             self.totalFrames = totalFrames
             self.canvasSize = canvasSize
             self.backgroundState = backgroundState
-            self.backgroundTextureProvider = backgroundTextureProvider
+            self.backgroundSnapshot = backgroundSnapshot
             self.settings = settings
+            self.budget = budget
             self.renderDiagnosticsSink = renderDiagnosticsSink
         }
     }
 
-    private func makeExportRenderer(device: MTLDevice) throws -> MetalRenderer {
-        try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+    private func makeExportRenderer(device: MTLDevice, maxFramesInFlight: Int = 3) throws -> MetalRenderer {
+        let options = MetalRendererOptions(maxFramesInFlight: maxFramesInFlight)
+        return try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm, options: options)
     }
 
     private func makeExportTransitionCompositor(device: MTLDevice) throws -> TransitionCompositor {
@@ -472,6 +485,9 @@ public final class VideoExporter: @unchecked Sendable {
         userMediaService: UserMediaService?,
         settings: VideoExportSettings,
         backgroundState: EffectiveBackgroundState?,
+        budget: ExportResourceBudget = .default,
+        mediaSnapshot: ExportMediaSnapshot? = nil,
+        backgroundSnapshot: ExportBackgroundSnapshot? = nil,
         onFinishing: (() -> Void)? = nil,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
@@ -502,7 +518,7 @@ public final class VideoExporter: @unchecked Sendable {
 
         let exportRenderer: MetalRenderer
         do {
-            exportRenderer = try makeExportRenderer(device: device)
+            exportRenderer = try makeExportRenderer(device: device, maxFramesInFlight: budget.maxFramesInFlight)
         } catch {
             session.complete(with: .failure(VideoExportError.renderError(error)))
             return
@@ -517,12 +533,52 @@ public final class VideoExporter: @unchecked Sendable {
             assetSizes: assetSizes,
             videoSelections: videoSelections,
             settings: settings,
-            backgroundState: backgroundState
+            backgroundState: backgroundState,
+            mediaSnapshot: mediaSnapshot,
+            backgroundSnapshot: backgroundSnapshot,
+            budget: budget
         )
 
         // Run export on background queue
-        exportQueue.async { [self, workItem, session] in
-            workItem.textureProvider.preloadAll(commandQueue: workItem.renderer.commandQueue)
+        let allAssetIds = Set(compiledScene.mergedAssetIndex.basenameById.keys)
+        exportQueue.async { [self, workItem, session, allAssetIds] in
+            // Warm all scene assets (unified API — same behavior as old preloadAll)
+            workItem.textureProvider.warm(assetIds: allAssetIds, commandQueue: workItem.renderer.commandQueue)
+
+            // Load user photos on export queue (not MainActor)
+            if let mediaSnapshot = workItem.mediaSnapshot {
+                let commandQueue = workItem.renderer.commandQueue
+                for imageRef in mediaSnapshot.imageRefs {
+                    if let texture = try? DownsampledImageLoader.loadTexture(
+                        from: imageRef.url,
+                        device: commandQueue.device,
+                        commandQueue: commandQueue,
+                        maxDimensionPx: workItem.budget.targetImageMaxDimensionPx
+                    ) {
+                        for assetId in imageRef.bindingAssetIds {
+                            workItem.textureProvider.setTexture(texture, for: assetId)
+                        }
+                    }
+                }
+            }
+
+            // Load background textures on export queue
+            if let bgSnapshot = workItem.backgroundSnapshot {
+                let commandQueue = workItem.renderer.commandQueue
+                let projectStore = ProjectStore.shared
+                for ref in bgSnapshot.regionRefs {
+                    if let url = try? projectStore.absoluteURL(for: ref.mediaRef) {
+                        if let texture = try? DownsampledImageLoader.loadTexture(
+                            from: url,
+                            device: commandQueue.device,
+                            commandQueue: commandQueue,
+                            maxDimensionPx: workItem.budget.targetImageMaxDimensionPx
+                        ) {
+                            workItem.textureProvider.setTexture(texture, for: ref.slotKey)
+                        }
+                    }
+                }
+            }
 
             guard !session.isCancelled else {
                 session.complete(with: .failure(VideoExportError.cancelled))
@@ -540,6 +596,7 @@ public final class VideoExporter: @unchecked Sendable {
                 settings: workItem.settings,
                 backgroundState: workItem.backgroundState,
                 session: session,
+                budget: workItem.budget,
                 progress: progress
             )
         }
@@ -558,6 +615,7 @@ public final class VideoExporter: @unchecked Sendable {
         settings: VideoExportSettings,
         backgroundState: EffectiveBackgroundState?,
         session: ExportSession,
+        budget: ExportResourceBudget = .default,
         progress: @escaping (Double) -> Void
     ) {
         // Delete existing file if present
@@ -622,18 +680,12 @@ public final class VideoExporter: @unchecked Sendable {
                 textureCache: textureCache,
                 runtime: runtime,
                 sceneFPS: Double(runtime.fps),
-                exportTextureProvider: textureProvider
+                exportTextureProvider: textureProvider,
+                videoPrefetchFrames: budget.videoPrefetchFrames,
+                maxActiveProviders: budget.maxActiveVideoProviders
             )
             coordinator.configure(videoSelectionsByBlockId: videoSelections)
-
-            do {
-                try coordinator.prepareAll()
-                videoSlotsCoordinator = coordinator
-            } catch {
-                pipeline.cancel()
-                session.complete(with: .failure(error))
-                return
-            }
+            videoSlotsCoordinator = coordinator
         }
 
         session.setCleanup(
@@ -643,9 +695,8 @@ public final class VideoExporter: @unchecked Sendable {
         )
         session.transitionToRendering()
 
-        // 5. Sync primitives — semaphore stays for GPU backpressure
-        let maxInFlight = renderer.maxFramesInFlight
-        let semaphore = DispatchSemaphore(value: maxInFlight)
+        // 5. Sync primitives — semaphore capped by budget
+        let semaphore = DispatchSemaphore(value: renderer.maxFramesInFlight)
         let videoGroup = DispatchGroup()
 
         // 6. Video export loop
@@ -858,8 +909,9 @@ public final class VideoExporter: @unchecked Sendable {
     public func exportTimeline(
         engine: TimelineCompositionEngine,
         backgroundState: EffectiveBackgroundState?,
-        backgroundTextureProvider: TextureProvider,
+        backgroundSnapshot: ExportBackgroundSnapshot?,
         settings: TimelineExportSettings,
+        budget: ExportResourceBudget = .default,
         renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
         onFinishing: (() -> Void)? = nil,
         progress: @escaping (Double) -> Void,
@@ -913,7 +965,7 @@ public final class VideoExporter: @unchecked Sendable {
             let exportRenderer: MetalRenderer
             let exportCompositor: TransitionCompositor
             do {
-                exportRenderer = try self.makeExportRenderer(device: engine.device)
+                exportRenderer = try self.makeExportRenderer(device: engine.device, maxFramesInFlight: budget.maxFramesInFlight)
                 exportCompositor = try self.makeExportTransitionCompositor(device: engine.device)
             } catch {
                 exportSession.complete(with: .failure(VideoExportError.renderError(error)))
@@ -927,12 +979,30 @@ public final class VideoExporter: @unchecked Sendable {
                 totalFrames: totalFrames,
                 canvasSize: canvasSize,
                 backgroundState: backgroundState,
-                backgroundTextureProvider: backgroundTextureProvider,
+                backgroundSnapshot: backgroundSnapshot,
                 settings: settings,
+                budget: budget,
                 renderDiagnosticsSink: renderDiagnosticsSink
             )
 
             self.exportQueue.async { [self, workItem, exportSession] in
+                // Load background textures on export queue (off MainActor)
+                let exportBackgroundProvider = ThreadSafeInMemoryTextureProvider()
+                if let bgSnapshot = workItem.backgroundSnapshot {
+                    let commandQueue = workItem.renderer.commandQueue
+                    for ref in bgSnapshot.regionRefs {
+                        if let url = try? ProjectStore.shared.absoluteURL(for: ref.mediaRef),
+                           let texture = try? DownsampledImageLoader.loadTexture(
+                               from: url,
+                               device: commandQueue.device,
+                               commandQueue: commandQueue,
+                               maxDimensionPx: workItem.budget.targetImageMaxDimensionPx
+                           ) {
+                            exportBackgroundProvider.setTexture(texture, for: ref.slotKey)
+                        }
+                    }
+                }
+
                 var audioPipeline: BuiltAudioPipeline?
                 if let audioConfig = workItem.settings.audio {
                     do {
@@ -956,9 +1026,10 @@ public final class VideoExporter: @unchecked Sendable {
                     totalFrames: workItem.totalFrames,
                     canvasSize: workItem.canvasSize,
                     backgroundState: workItem.backgroundState,
-                    backgroundTextureProvider: workItem.backgroundTextureProvider,
+                    backgroundTextureProvider: exportBackgroundProvider,
                     audioPipeline: audioPipeline,
                     settings: workItem.settings,
+                    budget: workItem.budget,
                     renderDiagnosticsSink: workItem.renderDiagnosticsSink,
                     exportSession: exportSession,
                     progress: progress
@@ -979,6 +1050,7 @@ public final class VideoExporter: @unchecked Sendable {
         backgroundTextureProvider: TextureProvider,
         audioPipeline: BuiltAudioPipeline?,
         settings: TimelineExportSettings,
+        budget: ExportResourceBudget = .default,
         renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
         exportSession: ExportSession,
         progress: @escaping (Double) -> Void
@@ -1019,19 +1091,19 @@ public final class VideoExporter: @unchecked Sendable {
             return
         }
 
-        // 3. Create TimelineExportRuntime on export queue
-        let exportRuntime: TimelineExportRuntime
-        do {
-            exportRuntime = try TimelineExportRuntime(
-                session: tlSession,
-                textureCache: textureCache,
-                coordinatorFactory: TimelineExportRuntime.makeDefaultFactory(device: renderer.commandQueue.device)
-            )
-        } catch {
-            pipeline.cancel()
-            exportSession.complete(with: .failure(VideoExportError.renderError(error)))
-            return
-        }
+        // 3. Create residency controller + runtime on export queue
+        let residencyController = TimelineExportResidencyController(
+            session: tlSession,
+            budget: budget,
+            device: renderer.commandQueue.device,
+            commandQueue: renderer.commandQueue,
+            textureCache: textureCache
+        )
+
+        let exportRuntime = TimelineExportRuntime(
+            session: tlSession,
+            residencyController: residencyController
+        )
 
         exportSession.setCleanup(
             onSuccess: { exportRuntime.finish() },
@@ -1040,8 +1112,8 @@ public final class VideoExporter: @unchecked Sendable {
         )
         exportSession.transitionToRendering()
 
-        // 4. Video export loop
-        let semaphore = DispatchSemaphore(value: renderer.maxFramesInFlight)
+        // 4. Video export loop (semaphore capped by budget)
+        let semaphore = DispatchSemaphore(value: budget.maxFramesInFlight)
         let videoGroup = DispatchGroup()
 
         for frameIndex in 0..<totalFrames {

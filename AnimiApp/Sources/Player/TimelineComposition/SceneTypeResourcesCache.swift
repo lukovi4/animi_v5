@@ -202,6 +202,65 @@ public final class SceneTypeResourcesCache {
         }
     }
 
+    // MARK: - Metadata-Only Preload (Export)
+
+    /// Preloads compiled scene metadata without warming GPU textures.
+    /// Export creates its own ExportTextureProvider via TimelineExportResidencyController —
+    /// the base texture provider from cache is not used.
+    /// Result is NOT cached — must not pollute the full-preload cache used by preview.
+    public func preloadMetadata(sceneTypeId: String) async throws -> Resources {
+        // Full cache hit? Return it (textures already warm — harmless for export).
+        if let existing = cache[sceneTypeId] {
+            return existing
+        }
+
+        // Full preload in flight? Await it.
+        if let existingTask = loadingTasks[sceneTypeId] {
+            return try await existingTask.value
+        }
+
+        guard let urlProvider = sceneURLProvider,
+              let sceneURL = urlProvider(sceneTypeId) else {
+            throw SceneCacheError.sceneNotFound(sceneTypeId)
+        }
+
+        let capturedDevice = device
+
+        // Heavy IO only — no texture warm-up
+        let (compiledPackage, resolver) = try await Task.detached(priority: .userInitiated) {
+            let loader = CompiledScenePackageLoader(engineVersion: TVECore.version)
+            let pkg = try loader.load(from: sceneURL)
+            let localIndex = try LocalAssetsIndex(imagesRootURL: sceneURL.appendingPathComponent("images"))
+            let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
+            let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
+            return (pkg, resolver)
+        }.value
+
+        let compiled = compiledPackage.compiled
+
+        // Create provider structure only — NO preloadAll()
+        let provider = SceneTextureProviderFactory.createBaseProvider(
+            device: capturedDevice,
+            mergedAssetIndex: compiled.mergedAssetIndex,
+            resolver: resolver,
+            bindingAssetIds: compiled.bindingAssetIds,
+            logger: { _ in }
+        )
+
+        // NOT cached — lighter than full preload, would break preview if used as cache entry
+        return Resources(
+            sceneTypeId: sceneTypeId,
+            compiled: compiled,
+            resolver: resolver,
+            baseTextureProvider: provider,
+            assetSizes: compiled.mergedAssetIndex.sizeById,
+            pathRegistry: compiled.pathRegistry,
+            canvasSize: compiled.runtime.canvasSize,
+            fps: compiled.runtime.fps,
+            durationFrames: compiled.runtime.durationFrames
+        )
+    }
+
     // MARK: - Cache Management
 
     /// Evicts resources for a scene type.

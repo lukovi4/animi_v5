@@ -111,11 +111,10 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
                 userMediaPresent: [:],
                 layerToggleState: [:]
             )
-            let exportTP = ExportTextureProvider(
-                device: device,
-                assetIndex: res.compiled.mergedAssetIndex,
-                resolver: res.resolver,
-                bindingAssetIds: res.compiled.bindingAssetIds
+            let mediaSnapshot = ExportMediaSnapshot(
+                imageRefs: [],
+                videoRefs: [],
+                allAssetIds: Set(res.compiled.mergedAssetIndex.basenameById.keys)
             )
 
             let snapshot = TimelineCompositionEngine.TimelineExportSceneSnapshot(
@@ -124,7 +123,10 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
                 runtime: res.compiled.runtime,
                 renderState: renderState,
                 videoSelections: [:],
-                textureProvider: exportTP,
+                mediaSnapshot: mediaSnapshot,
+                assetIndex: res.compiled.mergedAssetIndex,
+                resolver: res.resolver,
+                bindingAssetIds: res.compiled.bindingAssetIds,
                 pathRegistry: res.pathRegistry,
                 assetSizes: res.assetSizes,
                 sceneCanvasSize: res.canvasSize

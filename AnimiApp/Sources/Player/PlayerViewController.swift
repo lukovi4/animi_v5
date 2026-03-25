@@ -1399,6 +1399,14 @@ final class PlayerViewController: UIViewController {
                 // PR-F: Sync video frame when provider becomes ready after undo/redo
                 self?.syncPausedVideoFrame(force: true)
             }
+            userMediaService?.onVideoSelectionChanged = { [weak self] blockId, persisted in
+                guard let self, let instanceId = self.activeSceneInstanceId else { return }
+                self.editorStore?.dispatch(.setVideoSelection(
+                    sceneInstanceId: instanceId,
+                    blockId: blockId,
+                    selection: persisted
+                ))
+            }
         }
 
         // PR-E: Update canvas size if different
@@ -1473,17 +1481,29 @@ final class PlayerViewController: UIViewController {
         // 2. Explicit userMediaPresent overrides (can disable)
         // 3. Variant overrides, transforms, toggles
 
-        // STEP 1: Apply media assignments (PR-D: now includes video)
-        // This automatically sets userMediaPresent=true for assigned blocks
-        // P0-3 fix: Pass userMediaPresent for video presentOnReady calculation
-        if let mediaAssignments = state.mediaAssignments {
-            applyMediaAssignments(mediaAssignments, userMediaPresent: state.userMediaPresent)
+        // STEP 1: Apply media assignments via canonical restore path
+        // Uses MediaRestoreHelper for consistent restore semantics (emitSelectionPersistence: false,
+        // persisted video selection application, explicit failure marking)
+        if let service = userMediaService {
+            MediaRestoreHelper.restore(
+                assignments: state.mediaAssignments,
+                userMediaPresent: state.userMediaPresent,
+                videoSelections: state.videoSelections,
+                to: service
+            )
         }
 
-        // STEP 2: Apply explicit userMediaPresent overrides (PR-D: critical fix)
-        // This allows "Disable" to override the automatic present=true from assignments
+        // STEP 2: Apply explicit userMediaPresent overrides for non-video blocks.
+        // Video blocks are handled by setVideo(presentOnReady:) inside MediaRestoreHelper —
+        // unconditional replay here would break poster-gating (enable binding layer before poster ready).
+        // This matches SceneInstanceRuntime which does NOT replay userMediaPresent after restore.
         if let userMediaPresent = state.userMediaPresent {
-            for (blockId, present) in userMediaPresent {
+            let videoBlockIds = Set(
+                (state.mediaAssignments ?? [:])
+                    .filter { $0.value.mediaKind == .video }
+                    .map(\.key)
+            )
+            for (blockId, present) in userMediaPresent where !videoBlockIds.contains(blockId) {
                 player.setUserMediaPresent(blockId: blockId, present: present)
             }
         }
@@ -1511,56 +1531,6 @@ final class PlayerViewController: UIViewController {
               "transforms=\(state.userTransforms.count), " +
               "toggles=\(state.layerToggles.count)")
         #endif
-    }
-
-    /// Applies media assignments from SceneState.
-    /// - Parameters:
-    ///   - assignments: Media assignments (blockId -> MediaRef)
-    ///   - userMediaPresent: Optional overrides for userMediaPresent (for video presentOnReady)
-    private func applyMediaAssignments(_ assignments: [String: MediaRef], userMediaPresent: [String: Bool]?) {
-        for (blockId, mediaRef) in assignments {
-            guard mediaRef.kind == .file else { continue }
-
-            // Resolve URL from relative path
-            guard let url = try? ProjectStore.shared.absoluteURL(for: mediaRef) else {
-                #if DEBUG
-                print("[PlayerVC] Failed to resolve media URL: \(mediaRef.id)")
-                #endif
-                continue
-            }
-
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                #if DEBUG
-                print("[PlayerVC] Media file not found: \(url.path)")
-                #endif
-                continue
-            }
-
-            // Determine media type from extension
-            let ext = url.pathExtension.lowercased()
-            if ["jpg", "jpeg", "png", "heic"].contains(ext) {
-                // Photo (sync, override will work in STEP 2)
-                if let image = UIImage(contentsOfFile: url.path) {
-                    let success = userMediaService?.setPhoto(blockId: blockId, image: image) ?? false
-                    #if DEBUG
-                    print("[PlayerVC] Applied photo for \(blockId): \(success ? "success" : "failed")")
-                    #endif
-                }
-            } else if ["mov", "mp4", "m4v"].contains(ext) {
-                // PR-D: Video support with persistent ownership (file is in ProjectStore)
-                // P0-3 fix: Use presentOnReady from userMediaPresent to respect Disable state
-                let presentOnReady = userMediaPresent?[blockId] ?? true
-                let success = userMediaService?.setVideo(
-                    blockId: blockId,
-                    url: url,
-                    ownership: .persistent,
-                    presentOnReady: presentOnReady
-                ) ?? false
-                #if DEBUG
-                print("[PlayerVC] Applied video for \(blockId): presentOnReady=\(presentOnReady), \(success ? "success" : "failed")")
-                #endif
-            }
-        }
     }
 
     // MARK: - Release v1: Store Callbacks (Split for Performance)
@@ -2233,6 +2203,103 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    // MARK: - Export Mode
+
+    /// Tears down preview resources before export to free GPU memory.
+    ///
+    /// 1. Stops playback and cancels pending playback start
+    /// 2. Clears preview background textures
+    /// 3. Pauses Metal rendering
+    private func enterExportMode() {
+        stopPlayback()
+        playbackStartTask?.cancel()
+        playbackStartTask = nil
+        backgroundTextureService?.clearAllTrackedTextures()
+        userMediaService?.releasePreviewResources()
+        timelineCompositionEngine?.releaseForExport()
+        metalView.isPaused = true
+    }
+
+    /// Decision from the preflight memory warning alert.
+    private enum ExportPreflightDecision {
+        case cancel
+        case continueOriginal
+        case useRecommended(suggestedPreset: VideoQualityPreset, suggestedSizePx: (width: Int, height: Int))
+    }
+
+    /// Shows alert recommending lower quality when memory is constrained.
+    private func showLowerPresetAlert(
+        suggestedPreset: VideoQualityPreset,
+        suggestedSizePx: (width: Int, height: Int)
+    ) async -> ExportPreflightDecision {
+        await withCheckedContinuation { continuation in
+            let alert = UIAlertController(
+                title: "Memory Warning",
+                message: "This project may be too large to export at the current quality. We recommend reducing the quality to \(suggestedSizePx.width)x\(suggestedSizePx.height) for a stable export.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Reduce Quality", style: .default) { _ in
+                continuation.resume(returning: .useRecommended(
+                    suggestedPreset: suggestedPreset,
+                    suggestedSizePx: suggestedSizePx
+                ))
+            })
+            alert.addAction(UIAlertAction(title: "Continue as-is", style: .default) { _ in
+                continuation.resume(returning: .continueOriginal)
+            })
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                continuation.resume(returning: .cancel)
+            })
+            self.present(alert, animated: true)
+        }
+    }
+
+    /// Builds single-scene export settings with the given size and preset.
+    private func makeSingleSceneExportSettings(
+        outputURL: URL,
+        sizePx: (width: Int, height: Int),
+        preset: VideoQualityPreset,
+        fps: Int,
+        audio: AudioExportConfig?
+    ) -> VideoExportSettings {
+        let bitrate = preset.bitrate(for: sizePx)
+        return VideoExportSettings(
+            outputURL: outputURL,
+            sizePx: sizePx,
+            fps: fps,
+            bitrate: bitrate,
+            clearColor: .opaqueBlack,
+            audio: audio
+        )
+    }
+
+    /// Builds timeline export settings with the given size and preset.
+    private func makeTimelineExportSettings(
+        outputURL: URL,
+        sizePx: (width: Int, height: Int),
+        preset: VideoQualityPreset,
+        fps: Int,
+        audio: AudioExportConfig?
+    ) -> VideoExporter.TimelineExportSettings {
+        let bitrate = preset.bitrate(for: sizePx)
+        return VideoExporter.TimelineExportSettings(
+            outputURL: outputURL,
+            sizePx: sizePx,
+            fps: fps,
+            bitrate: bitrate,
+            audio: audio
+        )
+    }
+
+    /// Restores editor to idle state after export completes.
+    ///
+    /// Does NOT auto-restore playback — editor stays idle.
+    /// Preview textures reload on next user interaction.
+    private func exitExportModeToIdle() {
+        metalView.isPaused = false
+        metalView.setNeedsDisplay()
+    }
+
     // MARK: - Export Implementation
 
     private func startExport() {
@@ -2253,13 +2320,15 @@ final class PlayerViewController: UIViewController {
         guard let device = metalView.device,
               let compiled = compiledScene,
               let player = scenePlayer,
-              let mainTextureProvider = textureProvider,
               let resolver = currentResolver else {
             log("[Export] ERROR: Missing dependencies")
             return
         }
 
-        // 2. Create ExportTextureProvider
+        // Tear down preview resources to free GPU memory
+        enterExportMode()
+
+        // 2. Create ExportTextureProvider (user photos loaded via DownsampledImageLoader on export queue)
         let exportTP = ExportTextureProvider(
             device: device,
             assetIndex: compiled.mergedAssetIndex,
@@ -2267,10 +2336,7 @@ final class PlayerViewController: UIViewController {
             bindingAssetIds: compiled.bindingAssetIds
         )
 
-        // Inject user media textures from main provider
-        exportTP.injectTextures(from: mainTextureProvider, for: compiled.bindingAssetIds)
-
-        // 3. Configure VideoExportSettings
+        // 3. Prepare output URL and audio config (settings built after preflight decision)
         let runtime = compiled.runtime
         let canvasSize = runtime.canvasSize
 
@@ -2283,24 +2349,12 @@ final class PlayerViewController: UIViewController {
         let filename = "export_\(sceneId)_\(timestamp)_\(uuid8).mp4"
         let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
 
-        // Use .high quality preset
-        let bitrate = VideoQualityPreset.high.bitrate(for: (width: Int(canvasSize.width), height: Int(canvasSize.height)))
-
         // Release audio config: only original audio from video slots
         let audioConfig = AudioExportConfig(
             music: nil,
             voiceover: nil,
             includeOriginalFromVideoSlots: true,
             originalDefaultVolume: 1.0
-        )
-
-        let settings = VideoExportSettings(
-            outputURL: outputURL,
-            sizePx: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
-            fps: runtime.fps,
-            bitrate: bitrate,
-            clearColor: .opaqueBlack,
-            audio: audioConfig
         )
 
         // 4. Present progress modal
@@ -2330,14 +2384,102 @@ final class PlayerViewController: UIViewController {
 
             progressVC.updateState(.preparing)
 
-            // PR5: Wrap in Task for async preload
             Task { @MainActor in
-                // Preload background textures into export provider
-                await self.preloadBackgroundTexturesForExport(provider: exportTP)
+                // Run preflight to get budget
+                let videoSelections = self.userMediaService?.exportVideoSelectionsSnapshot() ?? [:]
+                let backgroundRegionCount = self.projectBackgroundOverride?.regions.count ?? 0
+                let preflightResult = ExportPreflightPlanner.plan(
+                    sceneCount: 1,
+                    canvasSize: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
+                    videoSlotCount: videoSelections.count,
+                    backgroundRegionCount: backgroundRegionCount,
+                    currentPreset: .high,
+                    fps: runtime.fps
+                )
 
-                // P1: Cancel may have arrived during preload — bail out
+                // Handle preflight recommendation — build settings after decision
+                let originalSizePx = (width: Int(canvasSize.width), height: Int(canvasSize.height))
+                let exportSizePx: (width: Int, height: Int)
+                let exportPreset: VideoQualityPreset
+
+                switch preflightResult {
+                case .recommendLowerPreset(_, let suggestedPreset, let suggestedSizePx):
+                    let decision = await self.showLowerPresetAlert(
+                        suggestedPreset: suggestedPreset,
+                        suggestedSizePx: suggestedSizePx
+                    )
+                    guard self.isActiveExportRequest(requestId) else {
+                        self.exitExportModeToIdle()
+                        return
+                    }
+                    switch decision {
+                    case .cancel:
+                        self.exitExportModeToIdle()
+                        self.clearExportRequestIfCurrent(requestId)
+                        self.dismiss(animated: true)
+                        return
+                    case .continueOriginal:
+                        exportSizePx = originalSizePx
+                        exportPreset = .high
+                    case .useRecommended(let preset, let sizePx):
+                        exportSizePx = sizePx
+                        exportPreset = preset
+                        self.log("[Export] User chose reduced quality: \(sizePx.width)x\(sizePx.height) preset=\(preset)")
+                    }
+                case .safe:
+                    exportSizePx = originalSizePx
+                    exportPreset = .high
+                }
+
+                // Recompute budget with final export parameters (cheap, stateless)
+                let budget = ExportPreflightPlanner.plan(
+                    sceneCount: 1,
+                    canvasSize: exportSizePx,
+                    videoSlotCount: videoSelections.count,
+                    backgroundRegionCount: backgroundRegionCount,
+                    currentPreset: exportPreset,
+                    fps: runtime.fps
+                ).budget
+                let settings = self.makeSingleSceneExportSettings(
+                    outputURL: outputURL,
+                    sizePx: exportSizePx,
+                    preset: exportPreset,
+                    fps: runtime.fps,
+                    audio: audioConfig
+                )
+
+                // Build lightweight media snapshot (no heavy loads on MainActor)
+                let instanceId = self.activeSceneInstanceId
+                let mediaAssignments: [String: MediaRef] = instanceId.flatMap {
+                    self.editorStore?.state.draft.sceneInstanceStates[$0]?.mediaAssignments
+                } ?? [:]
+                let mediaSnapshot: ExportMediaSnapshot
+                do {
+                    mediaSnapshot = try ExportMediaSnapshot.build(
+                        compiledScene: compiled,
+                        mediaAssignments: mediaAssignments,
+                        projectStore: ProjectStore.shared,
+                        videoSelections: videoSelections,
+                        runtime: runtime
+                    )
+                } catch {
+                    self.log("[Export] Media snapshot error: \(error.localizedDescription)")
+                    self.exitExportModeToIdle()
+                    self.clearExportRequestIfCurrent(requestId)
+                    self.dismiss(animated: true) { self.presentExportError(error) }
+                    return
+                }
+
+                // Build background snapshot (lightweight — no texture loading)
+                let bgSnapshot = ExportBackgroundSnapshot.build(
+                    from: self.projectBackgroundOverride,
+                    effectiveState: self.effectiveBackgroundState
+                )
+
+                // P1: Cancel may have arrived during preflight — bail out
                 guard self.isActiveExportRequest(requestId) else {
-                    self.log("[Export] Cancelled during preload (stale request)")
+                    self.log("[Export] Cancelled during preflight (stale request)")
+                    self.exitExportModeToIdle()
                     return
                 }
 
@@ -2351,6 +2493,9 @@ final class PlayerViewController: UIViewController {
                     userMediaService: self.userMediaService,
                     settings: settings,
                     backgroundState: self.effectiveBackgroundState,
+                    budget: budget,
+                    mediaSnapshot: mediaSnapshot,
+                    backgroundSnapshot: bgSnapshot,
                     onFinishing: { [weak self, weak progressVC] in
                         guard let self, self.isActiveExportRequest(requestId) else { return }
                         progressVC?.updateState(.finishing)
@@ -2361,6 +2506,7 @@ final class PlayerViewController: UIViewController {
                     },
                     completion: { [weak self] result in
                         guard let self else { return }
+                        self.exitExportModeToIdle()
                         guard self.isActiveExportRequest(requestId) else {
                             self.log("[Export] Ignoring stale completion")
                             return
@@ -2405,7 +2551,10 @@ final class PlayerViewController: UIViewController {
             return
         }
 
-        // Configure export settings
+        // Tear down preview resources to free GPU memory
+        enterExportMode()
+
+        // Configure output URL and audio config (settings built after preflight decision)
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = dateFormatter.string(from: Date())
@@ -2413,22 +2562,12 @@ final class PlayerViewController: UIViewController {
         let filename = "export_timeline_\(timestamp)_\(uuid8).mp4"
         let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
 
-        let bitrate = VideoQualityPreset.high.bitrate(for: (width: Int(canvasSize.width), height: Int(canvasSize.height)))
-
         // Audio config: include original audio from video slots, no music/voiceover
         let audioConfig = AudioExportConfig(
             music: nil,
             voiceover: nil,
             includeOriginalFromVideoSlots: true,
             originalDefaultVolume: 1.0
-        )
-
-        let settings = VideoExporter.TimelineExportSettings(
-            outputURL: outputURL,
-            sizePx: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
-            fps: engine.fps,
-            bitrate: bitrate,
-            audio: audioConfig
         )
 
         // Present progress modal
@@ -2458,22 +2597,93 @@ final class PlayerViewController: UIViewController {
 
             progressVC.updateState(.preparing)
 
-            // PR-G: Create thread-safe background provider for export queue
             Task { @MainActor in
-                let exportBackgroundProvider = ThreadSafeInMemoryTextureProvider()
-                await self.preloadBackgroundTexturesForExport(provider: exportBackgroundProvider)
+                // Run preflight to get budget
+                let sceneCount = self.editorStore?.state.sceneItems.count ?? 1
+                let allStates = self.editorStore?.state.draft.sceneInstanceStates ?? [:]
+                let totalVideoSlots = allStates.values.reduce(0) { count, state in
+                    count + (state.mediaAssignments ?? [:]).values.filter { $0.mediaKind == .video }.count
+                }
+                let backgroundRegionCount = self.projectBackgroundOverride?.regions.count ?? 0
+                let preflightResult = ExportPreflightPlanner.plan(
+                    sceneCount: sceneCount,
+                    canvasSize: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
+                    videoSlotCount: totalVideoSlots,
+                    backgroundRegionCount: backgroundRegionCount,
+                    currentPreset: .high,
+                    fps: engine.fps
+                )
 
-                // P1: Cancel may have arrived during preload — bail out
+                // Handle preflight recommendation — build settings after decision
+                let originalSizePx = (width: Int(canvasSize.width), height: Int(canvasSize.height))
+                let exportSizePx: (width: Int, height: Int)
+                let exportPreset: VideoQualityPreset
+
+                switch preflightResult {
+                case .recommendLowerPreset(_, let suggestedPreset, let suggestedSizePx):
+                    let decision = await self.showLowerPresetAlert(
+                        suggestedPreset: suggestedPreset,
+                        suggestedSizePx: suggestedSizePx
+                    )
+                    guard self.isActiveExportRequest(requestId) else {
+                        self.exitExportModeToIdle()
+                        return
+                    }
+                    switch decision {
+                    case .cancel:
+                        self.exitExportModeToIdle()
+                        self.clearExportRequestIfCurrent(requestId)
+                        self.dismiss(animated: true)
+                        return
+                    case .continueOriginal:
+                        exportSizePx = originalSizePx
+                        exportPreset = .high
+                    case .useRecommended(let preset, let sizePx):
+                        exportSizePx = sizePx
+                        exportPreset = preset
+                        self.log("[Export] User chose reduced quality: \(sizePx.width)x\(sizePx.height) preset=\(preset)")
+                    }
+                case .safe:
+                    exportSizePx = originalSizePx
+                    exportPreset = .high
+                }
+
+                // Recompute budget with final export parameters (cheap, stateless)
+                let budget = ExportPreflightPlanner.plan(
+                    sceneCount: sceneCount,
+                    canvasSize: exportSizePx,
+                    videoSlotCount: totalVideoSlots,
+                    backgroundRegionCount: backgroundRegionCount,
+                    currentPreset: exportPreset,
+                    fps: engine.fps
+                ).budget
+                let settings = self.makeTimelineExportSettings(
+                    outputURL: outputURL,
+                    sizePx: exportSizePx,
+                    preset: exportPreset,
+                    fps: engine.fps,
+                    audio: audioConfig
+                )
+
+                // Build lightweight background snapshot (textures loaded on exportQueue)
+                let bgSnapshot = ExportBackgroundSnapshot.build(
+                    from: self.projectBackgroundOverride,
+                    effectiveState: self.effectiveBackgroundState
+                )
+
+                // P1: Cancel may have arrived during preflight — bail out
                 guard self.isActiveExportRequest(requestId) else {
-                    self.log("[Export] Cancelled during preload (stale request)")
+                    self.log("[Export] Cancelled during preflight (stale request)")
+                    self.exitExportModeToIdle()
                     return
                 }
 
                 exporter.exportTimeline(
                     engine: engine,
                     backgroundState: self.effectiveBackgroundState,
-                    backgroundTextureProvider: exportBackgroundProvider,
+                    backgroundSnapshot: bgSnapshot,
                     settings: settings,
+                    budget: budget,
                     onFinishing: { [weak self, weak progressVC] in
                         guard let self, self.isActiveExportRequest(requestId) else { return }
                         progressVC?.updateState(.finishing)
@@ -2484,6 +2694,7 @@ final class PlayerViewController: UIViewController {
                     },
                     completion: { [weak self] result in
                         guard let self else { return }
+                        self.exitExportModeToIdle()
                         guard self.isActiveExportRequest(requestId) else {
                             self.log("[Export] Ignoring stale completion")
                             return
@@ -3404,35 +3615,6 @@ final class PlayerViewController: UIViewController {
             }
         } else {
             log("[Background] No effective state (preset not found)")
-        }
-    }
-
-    /// Preloads background image textures into the export texture provider.
-    /// PR5: Called before export to ensure background images are available.
-    @MainActor
-    private func preloadBackgroundTexturesForExport(
-        provider: MutableTextureProvider
-    ) async {
-        guard let override = projectBackgroundOverride,
-              let state = effectiveBackgroundState,
-              let queue = commandQueue else { return }
-
-        let presetId = state.preset.presetId
-        let device = queue.device
-        let service = BackgroundTextureService(
-            textureProvider: provider,
-            device: device,
-            commandQueue: queue
-        )
-
-        for (regionId, regionOverride) in override.regions {
-            guard let mediaRef = regionOverride.imageMediaRef else { continue }
-            let slotKey = EffectiveBackgroundBuilder.makeSlotKey(
-                presetId: presetId,
-                regionId: regionId
-            )
-            // missing file → log+return (PR4), so try? is acceptable
-            try? await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef)
         }
     }
 

@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 import Metal
 @testable import AnimiApp
@@ -180,14 +181,14 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
 
         let session = try await engine.buildExportSession()
 
-        for item in timeline.sceneItems {
+        for (index, item) in timeline.sceneItems.enumerated() {
             guard let snapshot = session.scenesByInstanceId[item.id] else {
                 XCTFail("Missing snapshot for \(item.id)")
                 continue
             }
-            let runtime = engine.runtime(for: item.id)!
-            XCTAssertEqual(snapshot.sceneCanvasSize.width, runtime.resources.canvasSize.width)
-            XCTAssertEqual(snapshot.sceneCanvasSize.height, runtime.resources.canvasSize.height)
+            // Compare against cached resources (engine may not have warm runtimes for cold scenes)
+            XCTAssertEqual(snapshot.sceneCanvasSize.width, resources[index].canvasSize.width)
+            XCTAssertEqual(snapshot.sceneCanvasSize.height, resources[index].canvasSize.height)
         }
     }
 
@@ -231,9 +232,9 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         XCTAssertTrue(snap2.renderState.layerToggleState.isEmpty)
     }
 
-    /// Snapshot texture provider is ExportTextureProvider (not LayeredTextureProvider).
+    /// Snapshot contains media snapshot and asset metadata (no live GPU textures).
     @MainActor
-    func testTextureProviderIsExportType() async throws {
+    func testSnapshotContainsMediaSnapshotAndAssetMetadata() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -245,7 +246,9 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let session = try await engine.buildExportSession()
 
         let snapshot = session.scenesByInstanceId.values.first!
-        XCTAssertTrue(snapshot.textureProvider is ExportTextureProvider)
+        XCTAssertNotNil(snapshot.mediaSnapshot, "Snapshot should have a media snapshot")
+        XCTAssertNotNil(snapshot.assetIndex, "Snapshot should have an asset index")
+        XCTAssertNotNil(snapshot.resolver, "Snapshot should have a resolver")
     }
 
     /// audioSceneData contains data for all scenes.
@@ -346,5 +349,106 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
 
         let session = try await engine.buildExportSession()
         XCTAssertEqual(session.transitionMath.compressedDurationFrames, engine.compressedDurationFrames)
+    }
+
+    // MARK: - Legacy Cold Export
+
+    /// Creates a minimal valid .mp4 file (~1 frame) so AVURLAsset.duration returns > 0.
+    private func createMinimalVideoFile(at url: URL) async throws {
+
+        // Create directory if needed
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        // Write a minimal video using AVAssetWriter
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let settings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: 16,
+            AVVideoHeightKey: 16
+        ]
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: 16,
+                kCVPixelBufferHeightKey as String: 16
+            ]
+        )
+        writer.add(input)
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+
+        // Create a single black frame
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 16, 16, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
+        guard let buffer = pixelBuffer else {
+            throw NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create pixel buffer"])
+        }
+        adaptor.append(buffer, withPresentationTime: .zero)
+        // Add second frame to ensure non-zero duration
+        adaptor.append(buffer, withPresentationTime: CMTime(value: 1, timescale: 30))
+
+        input.markAsFinished()
+        await writer.finishWriting()
+
+        guard writer.status == .completed else {
+            throw writer.error ?? NSError(domain: "Test", code: 2, userInfo: [NSLocalizedDescriptionKey: "AVAssetWriter failed"])
+        }
+    }
+
+    /// Fix 3: Cold scene with legacy video mediaAssignment (videoSelections: nil)
+    /// produces non-empty videoSelections via AVURLAsset.duration fallback.
+    @MainActor
+    func testBuildExportSession_coldLegacyVideoAssignment_synthesizesDefaultVideoSelection() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        // Create a real video file in ProjectStore's directory
+        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let relativePath = "Media/TestLegacy/legacy_\(UUID().uuidString).mp4"
+        let videoURL = projectsDir.appendingPathComponent(relativePath)
+        try await createMinimalVideoFile(at: videoURL)
+        defer { try? FileManager.default.removeItem(at: videoURL) }
+
+        // Build timeline with 1 scene
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let instanceId = timeline.sceneItems[0].id
+
+        // Legacy draft: has mediaAssignments with .video but NO videoSelections
+        let legacyState = SceneState(
+            mediaAssignments: [
+                "block_v1": MediaRef(kind: .file, id: relativePath, mediaKind: .video)
+            ],
+            videoSelections: nil  // Legacy: field absent
+        )
+
+        let engine = makeEngine(
+            device: device,
+            commandQueue: commandQueue,
+            timeline: timeline,
+            resources: resources,
+            sceneStates: [instanceId: legacyState]
+        )
+
+        let session = try await engine.buildExportSession()
+
+        // Verify the cold scene's videoSelections were synthesized (not empty)
+        let snapshot = session.scenesByInstanceId[instanceId]!
+        XCTAssertFalse(snapshot.videoSelections.isEmpty, "Legacy draft should synthesize default video selections from file duration")
+
+        guard let vs = snapshot.videoSelections["block_v1"] else {
+            XCTFail("Expected synthesized video selection for block_v1")
+            return
+        }
+        XCTAssertEqual(vs.url, videoURL)
+        XCTAssertGreaterThan(vs.trimEnd, 0, "trimEnd should be > 0 (from file duration)")
+        XCTAssertEqual(vs.trimStart, 0, accuracy: 0.001, "Default trimStart should be 0")
+        XCTAssertEqual(vs.offset, 0, accuracy: 0.001, "Default offset should be 0")
     }
 }

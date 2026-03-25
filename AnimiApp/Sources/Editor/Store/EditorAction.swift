@@ -119,6 +119,10 @@ public enum EditorAction: Sendable {
     ///   - media: MediaRef to assigned media, or nil to clear
     case setBlockMedia(sceneInstanceId: UUID, blockId: String, media: MediaRef?)
 
+    /// Persists video selection parameters (trim/offset/audio) for a block.
+    /// Does NOT push undo snapshot — this is a continuous persistence operation.
+    case setVideoSelection(sceneInstanceId: UUID, blockId: String, selection: PersistedVideoSelection)
+
     // MARK: - Scene Focus (Playhead as Source of Truth)
 
     /// Moves playhead to the start of a specific scene and derives selection.

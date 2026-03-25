@@ -278,6 +278,7 @@ public final class SceneInstanceRuntime {
         let restoredCount = MediaRestoreHelper.restore(
             assignments: state.mediaAssignments,
             userMediaPresent: state.userMediaPresent,
+            videoSelections: state.videoSelections,
             to: userMediaService
         )
         runtimeDiagnosticsSink?.receive(.mediaRestore(instanceId: sceneInstanceId, restoredCount: restoredCount))

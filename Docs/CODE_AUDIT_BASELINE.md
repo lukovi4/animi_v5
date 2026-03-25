@@ -2815,13 +2815,18 @@ func updateTextures(forSceneFrameIndex sceneFrameIndex: Int) {
 ### J5) Release Export Flow
 
 1. User taps "Export" button
-2. `ExportProgressViewController` presented modally
-3. `ExportTextureProvider` created and preloaded
-4. User media textures injected from main thread provider
-5. `VideoExporter.exportVideo()` starts background export
-6. Progress callbacks update UI
-7. On completion: video saved to Photos library
-8. On cancel: request-scoped guard via `isActiveExportRequest(requestId)` prevents stale callbacks
+2. `ExportDeliveryFlow` coordinates the export lifecycle with request-scoped identity
+3. `ExportPreflightPlanner` computes resource budget and canvas-aware image sizing
+4. `TimelineCompositionEngine.buildExportSession()` builds immutable `TimelineExportSession`:
+   - Cold scenes use metadata-only preload (no preview runtime creation)
+   - Video selections assembled from persisted state or legacy AVURLAsset.duration fallback
+   - `ExportMediaSnapshot` resolves user media URLs (throws typed errors for missing files)
+5. `TimelineExportResidencyController` creates GPU resources on demand per scene
+6. `VideoExporter.exportVideo()` drives the render loop off MainActor
+7. Progress callbacks update UI
+8. On completion: video saved to Photos library via `PhotoLibraryVideoSaveService` (`.addOnly` authorization)
+9. On cancel: request-scoped guard via `isActiveExportRequest(requestId)` prevents stale callbacks
+10. `onTerminal` / `onFinishing` hooks handle cleanup and lifetime management
 
 ### J6) Templates (updated 2026-02-17)
 

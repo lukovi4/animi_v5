@@ -1,6 +1,54 @@
 import Foundation
 import TVECore
 
+// MARK: - Persisted Video Selection
+
+/// Persisted video trim/offset/audio parameters.
+/// URL-less — the video file reference lives in `MediaRef` (mediaAssignments).
+/// Assembled into runtime `VideoSelection` at restore/export time via `toVideoSelection(url:)`.
+public struct PersistedVideoSelection: Codable, Equatable, Sendable {
+    public var trimStart: Double
+    public var trimEnd: Double
+    public var offset: Double
+    public var isMuted: Bool
+    public var volume: Float
+
+    public init(
+        trimStart: Double = 0,
+        trimEnd: Double,
+        offset: Double = 0,
+        isMuted: Bool = false,
+        volume: Float = 1.0
+    ) {
+        self.trimStart = trimStart
+        self.trimEnd = trimEnd
+        self.offset = offset
+        self.isMuted = isMuted
+        self.volume = volume
+    }
+
+    /// Extracts persisted params from a runtime VideoSelection.
+    public init(from selection: VideoSelection) {
+        self.trimStart = selection.trimStart
+        self.trimEnd = selection.trimEnd
+        self.offset = selection.offset
+        self.isMuted = selection.isMuted
+        self.volume = selection.volume
+    }
+
+    /// Assembles a runtime VideoSelection from persisted params + resolved URL.
+    public func toVideoSelection(url: URL) -> VideoSelection {
+        VideoSelection(
+            url: url,
+            trimStart: trimStart,
+            trimEnd: trimEnd,
+            offset: offset,
+            isMuted: isMuted,
+            volume: volume
+        )
+    }
+}
+
 // MARK: - Scene State
 
 /// Persisted state of the base scene (variants, transforms, toggles).
@@ -50,6 +98,13 @@ public struct SceneState: Codable, Equatable, Sendable {
     /// sets `present = true` when media is added.
     public var userMediaPresent: [String: Bool]?
 
+    // MARK: - Video Selections
+
+    /// Per-block video selection parameters (trim/offset/audio).
+    /// Key: blockId. URL-less — video file ref lives in mediaAssignments.
+    /// nil = no video selections persisted (all defaults).
+    public var videoSelections: [String: PersistedVideoSelection]?
+
     // MARK: - Initialization
 
     public init(
@@ -57,13 +112,15 @@ public struct SceneState: Codable, Equatable, Sendable {
         userTransforms: [String: Matrix2D] = [:],
         layerToggles: [String: [String: Bool]] = [:],
         mediaAssignments: [String: MediaRef]? = nil,
-        userMediaPresent: [String: Bool]? = nil
+        userMediaPresent: [String: Bool]? = nil,
+        videoSelections: [String: PersistedVideoSelection]? = nil
     ) {
         self.variantOverrides = variantOverrides
         self.userTransforms = userTransforms
         self.layerToggles = layerToggles
         self.mediaAssignments = mediaAssignments
         self.userMediaPresent = userMediaPresent
+        self.videoSelections = videoSelections
     }
 
     /// Empty state with all defaults.

@@ -153,6 +153,14 @@ public enum EditorReducer {
                 media: media
             )
 
+        case .setVideoSelection(let sceneInstanceId, let blockId, let selection):
+            var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
+            var selections = sceneState.videoSelections ?? [:]
+            selections[blockId] = selection
+            sceneState.videoSelections = selections
+            newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+            return ReducerResult(state: newState, shouldPushSnapshot: false)
+
         // MARK: - Scene Edit Mode (PR-A)
 
         case .focusScene(let sceneId):
