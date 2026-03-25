@@ -209,7 +209,7 @@ public enum EditorReducer {
 
 private extension EditorReducer {
 
-    /// Loads project and populates timeline from recipe if empty.
+    /// Loads project and populates timeline from template defaults if empty.
     static func loadProject(
         draft: ProjectDraft,
         templateFPS: Int,
@@ -217,12 +217,12 @@ private extension EditorReducer {
     ) -> EditorState {
         var newDraft = draft
 
-        // If timeline is empty, populate from recipe
+        // If timeline is empty, populate from template defaults
         if newDraft.canonicalTimeline.sceneItems.isEmpty && !defaultSceneSequence.isEmpty {
-            newDraft.canonicalTimeline = .makeFromRecipe(defaults: defaultSceneSequence)
+            newDraft.canonicalTimeline = .makeFromDefaults(defaultSceneSequence)
 
             #if DEBUG
-            print("[EditorReducer] Populated timeline from recipe: \(defaultSceneSequence.count) scenes")
+            print("[EditorReducer] Populated timeline from template defaults: \(defaultSceneSequence.count) scenes")
             #endif
         }
 
@@ -231,7 +231,7 @@ private extension EditorReducer {
 
         // Safety: Ensure at least one scene exists
         if newDraft.canonicalTimeline.sceneItems.isEmpty && !defaultSceneSequence.isEmpty {
-            // This shouldn't happen after makeFromRecipe, but just in case
+            // This shouldn't happen after makeFromDefaults, but just in case
             let firstDefault = defaultSceneSequence[0]
             newDraft.canonicalTimeline = .makeWithSingleScene(
                 sceneTypeId: firstDefault.sceneTypeId,

@@ -5,7 +5,6 @@ import Foundation
 public enum SceneLibraryError: Error, LocalizedError {
     case manifestNotFound
     case decodingFailed(Error)
-    case invalidPath(String)
     case loadFailed(String)
     case sceneNotFound(SceneTypeID)
     case contentCorrupted(String)
@@ -16,8 +15,6 @@ public enum SceneLibraryError: Error, LocalizedError {
             return "Scene library.json not found in bundle"
         case .decodingFailed(let error):
             return "Failed to decode scene library: \(error.localizedDescription)"
-        case .invalidPath(let path):
-            return "Invalid scene path: \(path)"
         case .loadFailed(let reason):
             return "Failed to load scene library: \(reason)"
         case .sceneNotFound(let id):
@@ -39,7 +36,7 @@ public final class BundleSceneLibraryLoader {
         self.bundle = bundle
     }
 
-    /// Loads library.json and resolves all folder URLs.
+    /// Loads library.json and resolves all folder URLs by convention: Scenes/<id>.
     /// - Returns: Scene library snapshot with resolved URLs
     /// - Throws: `SceneLibraryError` on failure
     public func load() throws -> SceneLibrarySnapshot {
@@ -69,20 +66,16 @@ public final class BundleSceneLibraryLoader {
             throw SceneLibraryError.decodingFailed(error)
         }
 
-        // Resolve folder URLs for each scene
+        // Resolve folder URLs by convention: Scenes/<scene.id>
         var resolvedScenes: [SceneTypeDescriptor] = []
 
         for scene in manifest.scenes {
             var resolved = scene
 
-            // Extract folder name from path (e.g., "Scenes/example_4blocks" -> "example_4blocks")
-            let folderName = (scene.folderPath as NSString).lastPathComponent
-            let parentDir = (scene.folderPath as NSString).deletingLastPathComponent
-
             if let folderURL = bundle.url(
-                forResource: folderName,
+                forResource: scene.id,
                 withExtension: nil,
-                subdirectory: parentDir.isEmpty ? nil : parentDir
+                subdirectory: "Scenes"
             ) {
                 resolved.folderURL = folderURL
                 resolvedScenes.append(resolved)
@@ -92,7 +85,7 @@ public final class BundleSceneLibraryLoader {
                 #endif
             } else {
                 #if DEBUG
-                print("[SceneLibrary] WARNING: Scene '\(scene.id)' folder not found at \(scene.folderPath)")
+                print("[SceneLibrary] WARNING: Scene '\(scene.id)' folder not found at Scenes/\(scene.id)")
                 #endif
                 // Skip scenes with missing folders
             }

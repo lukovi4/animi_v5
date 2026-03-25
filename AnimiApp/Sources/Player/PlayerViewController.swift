@@ -3,9 +3,6 @@ import MetalKit
 import PhotosUI
 import UniformTypeIdentifiers
 import TVECore
-#if DEBUG
-import TVECompilerCore
-#endif
 
 // MARK: - PR1.3: Render Diagnostics Flag
 
@@ -377,7 +374,7 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - Release v1: Editor Content Loading
 
-    /// Loads all editor content: SceneLibrary, Recipe, ProjectDraft, and first scene.
+    /// Loads all editor content: SceneLibrary, template defaults, ProjectDraft, and first scene.
     private func loadEditorContent() async {
         // Resolve templateId and draft from entry context
         let templateId: String
@@ -454,31 +451,49 @@ final class PlayerViewController: UIViewController {
             return
         }
 
-        // Step 2: Load Recipe
-        do {
-            let recipeLoader = BundleTemplateRecipeLoader()
-            defaultSceneSequence = try recipeLoader.loadWithDefaults(
-                templateId: templateId,
-                library: sceneLibrarySnapshot!
-            )
-            log("[Release v1] Recipe loaded: \(defaultSceneSequence.count) scenes")
-        } catch {
-            log("[Release v1] ERROR: Failed to load recipe: \(error)")
-            loadingState = .failed(message: "Recipe load failed")
-            updateLoadingStateUI()
-            return
+        // Step 2: Get scene defaults from template catalog
+        let catalogResult = await TemplateCatalog.shared.load()
+        switch catalogResult {
+        case .failure(let catalogError):
+            // Catalog itself failed to load (IO/decode/manifest error)
+            if draft.canonicalTimeline.sceneItems.isEmpty {
+                log("[Release v1] ERROR: Catalog load failed and draft has no timeline: \(catalogError)")
+                loadingState = .failed(message: "Catalog load failed")
+                updateLoadingStateUI()
+                return
+            }
+            log("[Release v1] WARN: Catalog load failed, using draft timeline: \(catalogError)")
+            defaultSceneSequence = []
+
+        case .success:
+            do {
+                defaultSceneSequence = try TemplateCatalog.shared.sceneTypeDefaults(
+                    for: templateId, library: sceneLibrarySnapshot!
+                )
+                log("[Release v1] Template loaded: \(defaultSceneSequence.count) scenes")
+            } catch {
+                // Template not found in catalog (deleted/old templateId)
+                if draft.canonicalTimeline.sceneItems.isEmpty {
+                    log("[Release v1] ERROR: Template not in catalog and draft has no timeline: \(error)")
+                    loadingState = .failed(message: "Template not found")
+                    updateLoadingStateUI()
+                    return
+                }
+                log("[Release v1] WARN: Template '\(templateId)' not in catalog, using draft timeline")
+                defaultSceneSequence = []
+            }
         }
 
-        // Step 3: Determine first scene from draft or recipe
+        // Step 3: Determine first scene from draft or template defaults
         let firstSceneTypeId: String
         if let draftFirstSceneTypeId = draft.canonicalTimeline.firstSceneTypeId {
             firstSceneTypeId = draftFirstSceneTypeId
             log("[Release v1] Using first scene from draft: \(firstSceneTypeId)")
-        } else if let recipeFirstSceneTypeId = defaultSceneSequence.first?.sceneTypeId {
-            firstSceneTypeId = recipeFirstSceneTypeId
-            log("[Release v1] Using first scene from recipe: \(firstSceneTypeId)")
+        } else if let defaultFirstSceneTypeId = defaultSceneSequence.first?.sceneTypeId {
+            firstSceneTypeId = defaultFirstSceneTypeId
+            log("[Release v1] Using first scene from template defaults: \(firstSceneTypeId)")
         } else {
-            log("[Release v1] ERROR: No scenes in draft or recipe")
+            log("[Release v1] ERROR: No scenes in draft or template defaults")
             loadingState = .failed(message: "Empty project")
             updateLoadingStateUI()
             return

@@ -87,4 +87,56 @@ final class TemplateCatalog {
     var currentSnapshot: TemplateCatalogSnapshot? {
         snapshot
     }
+
+    // MARK: - Scene Defaults Resolution
+
+    /// Resolves scene type defaults for a template by looking up sceneTypeIds in the scene library.
+    /// Replaces the old recipe-based loading flow.
+    /// - Parameters:
+    ///   - templateId: Template identifier
+    ///   - library: Scene library snapshot for resolving scene info
+    /// - Returns: Array of scene type defaults for initializing a project
+    func sceneTypeDefaults(
+        for templateId: TemplateID,
+        library: SceneLibrarySnapshot
+    ) throws -> [SceneTypeDefault] {
+        guard let template = snapshot?.template(by: templateId) else {
+            throw TemplateCatalogError.templateNotFound(templateId)
+        }
+
+        guard !template.sceneTypeIds.isEmpty else {
+            throw TemplateCatalogError.emptySceneList(templateId)
+        }
+
+        var defaults: [SceneTypeDefault] = []
+        for sceneTypeId in template.sceneTypeIds {
+            guard let scene = library.scene(byId: sceneTypeId) else {
+                throw TemplateCatalogError.sceneNotInLibrary(sceneTypeId, templateId)
+            }
+            defaults.append(SceneTypeDefault(
+                sceneTypeId: sceneTypeId,
+                baseDurationUs: scene.baseDurationUs
+            ))
+        }
+        return defaults
+    }
+}
+
+// MARK: - Template Catalog Errors
+
+enum TemplateCatalogError: Error, LocalizedError {
+    case templateNotFound(String)
+    case emptySceneList(String)
+    case sceneNotInLibrary(SceneTypeID, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .templateNotFound(let id):
+            return "Template not found in catalog: \(id)"
+        case .emptySceneList(let id):
+            return "Template '\(id)' has no scenes"
+        case .sceneNotInLibrary(let sceneId, let templateId):
+            return "Scene '\(sceneId)' referenced in template '\(templateId)' not found in library"
+        }
+    }
 }

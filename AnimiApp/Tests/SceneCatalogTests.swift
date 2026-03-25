@@ -12,8 +12,7 @@ final class SceneCatalogTests: XCTestCase {
                 id: "scene_\(i)",
                 order: i,
                 title: "Scene \(i)",
-                baseDurationUs: TimeUs((i + 1) * 1_000_000),
-                folderPath: "scenes/scene_\(i)"
+                baseDurationUs: TimeUs((i + 1) * 1_000_000)
             )
         }
         return SceneLibrarySnapshot(

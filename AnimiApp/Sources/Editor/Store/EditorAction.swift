@@ -9,13 +9,13 @@ public enum EditorAction: Sendable {
 
     // MARK: - Project Lifecycle
 
-    /// Initializes store state with project data from a template recipe.
+    /// Initializes store state with project data from a template.
     /// If draft timeline is empty, populates it from defaultSceneSequence.
     /// Called once when opening a project.
     /// - Parameters:
     ///   - draft: The ProjectDraft to load
     ///   - templateFPS: Template frame rate
-    ///   - defaultSceneSequence: Scene defaults from recipe (used if timeline is empty)
+    ///   - defaultSceneSequence: Scene defaults from template (used if timeline is empty)
     case loadProject(draft: ProjectDraft, templateFPS: Int, defaultSceneSequence: [SceneTypeDefault])
 
     // MARK: - Playhead

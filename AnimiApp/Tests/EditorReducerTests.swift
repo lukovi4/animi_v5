@@ -75,11 +75,11 @@ final class EditorReducerTests: XCTestCase {
         return draft
     }
 
-    // MARK: - 1. loadProject Populates Timeline from Recipe
+    // MARK: - 1. loadProject Populates Timeline from Template Defaults
 
     /// Test: loadProject populates empty timeline from defaultSceneSequence.
-    func testLoadProject_populatesFromRecipe() {
-        // Given: empty draft and recipe with 3 scenes
+    func testLoadProject_populatesFromDefaults() {
+        // Given: empty draft and template defaults with 3 scenes
         let draft = ProjectDraft.create(for: "test-template")
         let defaults = makeDefaultSceneSequence(durations: [2_000_000, 3_000_000, 5_000_000])
 
@@ -89,7 +89,7 @@ final class EditorReducerTests: XCTestCase {
             action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: defaults)
         )
 
-        // Then: timeline has 3 scenes from recipe
+        // Then: timeline has 3 scenes from defaults
         XCTAssertEqual(result.state.sceneItems.count, 3)
         XCTAssertEqual(result.state.sceneItems[0].durationUs, 2_000_000)
         XCTAssertEqual(result.state.sceneItems[1].durationUs, 3_000_000)
@@ -102,7 +102,7 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertFalse(result.shouldPushSnapshot)
     }
 
-    /// Test: loadProject preserves existing timeline (doesn't overwrite with recipe).
+    /// Test: loadProject preserves existing timeline (doesn't overwrite with defaults).
     func testLoadProject_preservesExistingTimeline() {
         // Given: draft with existing scenes
         let draft = makeDraft(sceneDurations: [4_000_000, 6_000_000])
@@ -114,14 +114,14 @@ final class EditorReducerTests: XCTestCase {
             action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: defaults)
         )
 
-        // Then: existing timeline preserved (not replaced by recipe)
+        // Then: existing timeline preserved (not replaced by defaults)
         XCTAssertEqual(result.state.sceneItems.count, 2)
         XCTAssertEqual(result.state.projectDurationUs, 10_000_000)
     }
 
-    /// Test: loadProject enforces min duration for scenes from recipe.
+    /// Test: loadProject enforces min duration for scenes from template defaults.
     func testLoadProject_enforcesMinDuration() {
-        // Given: recipe with scenes below min duration
+        // Given: template defaults with scenes below min duration
         let draft = ProjectDraft.create(for: "test-template")
         let defaults = [
             SceneTypeDefault(sceneTypeId: "s1", baseDurationUs: 50_000), // Below min

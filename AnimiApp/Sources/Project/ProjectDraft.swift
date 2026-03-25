@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Project Draft (Release v1)
 
-/// User project based on a template recipe.
+/// User project based on a template.
 /// Stored in `<projectId>.json` in Application Support.
 /// Contains all user customizations: background, timeline, per-instance scene state.
 public struct ProjectDraft: Codable, Equatable, Sendable {
@@ -84,7 +84,7 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
     // MARK: - Factory
 
     /// Creates an empty draft for a template.
-    /// Timeline will be populated from recipe when loadProject is called.
+    /// Timeline will be populated from template defaults when loadProject is called.
     /// - Parameters:
     ///   - templateId: Template identifier
     ///   - projectId: Optional pre-generated project ID

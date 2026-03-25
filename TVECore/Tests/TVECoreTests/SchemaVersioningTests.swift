@@ -72,7 +72,7 @@ final class SchemaVersioningTests: XCTestCase {
         schemaVersion: UInt16? = nil
     ) throws -> URL {
         guard let templateURL = compiledTemplateURL else {
-            throw XCTSkip("compiled.tve not found in test resources - run Scripts/compile_templates.sh first")
+            throw XCTSkip("compiled.tve not found in test resources - run Scripts/compile_scenes.sh first")
         }
 
         let originalData = try Data(contentsOf: templateURL.appendingPathComponent("compiled.tve"))

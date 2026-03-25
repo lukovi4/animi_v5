@@ -32,16 +32,12 @@ public struct SceneTypeDescriptor: Codable, Equatable, Sendable, Identifiable {
     public let title: String
     /// Base duration from AE in microseconds.
     public let baseDurationUs: TimeUs
-    /// Relative path to scene folder (contains compiled.tve).
-    public let folderPath: String
-    /// Relative path to preview image (optional).
-    public let previewImagePath: String?
 
-    /// Resolved URL for the scene folder (set after manifest load).
+    /// Resolved URL for the scene folder (set by loader using convention: Scenes/<id>).
     public var folderURL: URL?
 
     enum CodingKeys: String, CodingKey {
-        case id, order, title, baseDurationUs, folderPath, previewImagePath
+        case id, order, title, baseDurationUs
     }
 
     public init(
@@ -49,16 +45,12 @@ public struct SceneTypeDescriptor: Codable, Equatable, Sendable, Identifiable {
         order: Int,
         title: String,
         baseDurationUs: TimeUs,
-        folderPath: String,
-        previewImagePath: String? = nil,
         folderURL: URL? = nil
     ) {
         self.id = id
         self.order = order
         self.title = title
         self.baseDurationUs = baseDurationUs
-        self.folderPath = folderPath
-        self.previewImagePath = previewImagePath
         self.folderURL = folderURL
     }
 }
@@ -113,5 +105,20 @@ public struct SceneLibrarySnapshot: Sendable {
     /// Returns all scenes sorted by order.
     public var scenesInOrder: [SceneTypeDescriptor] {
         orderedIds.compactMap { scenesById[$0] }
+    }
+}
+
+// MARK: - Scene Type Default
+
+/// Default scene configuration for initializing a project from a template.
+public struct SceneTypeDefault: Equatable, Sendable {
+    /// Scene type identifier.
+    public let sceneTypeId: SceneTypeID
+    /// Base duration from scene library.
+    public let baseDurationUs: TimeUs
+
+    public init(sceneTypeId: SceneTypeID, baseDurationUs: TimeUs) {
+        self.sceneTypeId = sceneTypeId
+        self.baseDurationUs = baseDurationUs
     }
 }

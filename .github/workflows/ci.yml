@@ -65,8 +65,14 @@ jobs:
             -scheme AnimiApp \
             -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
+            -derivedDataPath DerivedDataCI \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
+
+      - name: Verify Release Bundle Topology
+        run: |
+          APP_PATH=$(find DerivedDataCI -name "AnimiApp.app" -type d | head -1)
+          Scripts/verify_release_bundle.sh "$APP_PATH"
 
   swiftlint:
     name: SwiftLint

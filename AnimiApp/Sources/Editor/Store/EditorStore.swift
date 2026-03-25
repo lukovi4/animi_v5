@@ -407,7 +407,7 @@ public final class EditorStore {
 
 public extension EditorStore {
 
-    /// Creates a store initialized with a project and recipe defaults.
+    /// Creates a store initialized with a project and template defaults.
     static func create(
         draft: ProjectDraft,
         templateFPS: Int,

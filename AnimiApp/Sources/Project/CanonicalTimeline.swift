@@ -98,10 +98,10 @@ public struct CanonicalTimeline: Equatable, Sendable {
     }
 
     /// Creates a timeline from a sequence of scene type defaults.
-    /// Used when initializing a project from a template recipe.
-    /// - Parameter defaults: Array of scene type defaults from recipe
+    /// Used when initializing a project from a template.
+    /// - Parameter defaults: Array of scene type defaults from template
     /// - Returns: CanonicalTimeline with scene items for each default
-    public static func makeFromRecipe(defaults: [SceneTypeDefault]) -> CanonicalTimeline {
+    public static func makeFromDefaults(_ defaults: [SceneTypeDefault]) -> CanonicalTimeline {
         var items: [TimelineItem] = []
         var payloads: [UUID: TimelinePayload] = [:]
 

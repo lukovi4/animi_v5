@@ -32,17 +32,12 @@ targets:
       - path: Resources/Scenes
         type: folder
         buildPhase: resources
-      - path: ../TestAssets
-        type: folder
-        buildPhase: resources
       - path: ../SharedAssets
         type: folder
         buildPhase: resources
     dependencies:
       - package: TVECore
         product: TVECore
-      - package: TVECore
-        product: TVECompilerCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.animi.app
@@ -82,6 +77,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         UIRequiresFullScreen: true
+        NSPhotoLibraryAddUsageDescription: "Animi needs access to save exported videos to your Photo Library."
 
   AnimiAppTests:
     type: bundle.unit-test

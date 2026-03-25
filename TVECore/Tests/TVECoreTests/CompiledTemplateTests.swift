@@ -22,7 +22,7 @@ final class CompiledTemplateTests: XCTestCase {
     func testCompiledPackageLoader_loadsFromTemplateFolder() throws {
         // Skip if no compiled.tve in test bundle
         guard let templateURL = compiledTemplateURL else {
-            throw XCTSkip("compiled.tve not found in test resources - run Scripts/compile_templates.sh first")
+            throw XCTSkip("compiled.tve not found in test resources - run Scripts/compile_scenes.sh first")
         }
 
         // Given
