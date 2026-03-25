@@ -76,34 +76,12 @@ public struct SceneState: Codable, Equatable, Sendable {
     /// Blocks without entry use defaults from scene.json.
     public var layerToggles: [String: [String: Bool]]
 
-    // MARK: - Media Assignments
+    // MARK: - Media Slots (v7)
 
-    /// Per-block media slot assignments.
-    /// Key: blockId, Value: MediaRef to assigned media.
-    public var mediaAssignments: [String: MediaRef]?
-
-    // MARK: - User Media Presence (PR-A: Scene Edit)
-
-    /// Per-block visibility flag for binding layer.
-    /// Key: blockId, Value: whether to render the binding layer.
-    /// nil treated as [:] (empty dictionary).
-    ///
-    /// Semantics:
-    /// - `userMediaPresent[blockId] = true` → render binding layer
-    /// - `userMediaPresent[blockId] = false` → hide binding layer (media still assigned)
-    /// - key absent → follows automatic logic from UserMediaService
-    ///
-    /// Default in SceneRenderPlan: `userMediaPresent[blockId] ?? false`
-    /// This is correct because UserMediaService.setPhoto/setVideo automatically
-    /// sets `present = true` when media is added.
-    public var userMediaPresent: [String: Bool]?
-
-    // MARK: - Video Selections
-
-    /// Per-block video selection parameters (trim/offset/audio).
-    /// Key: blockId. URL-less — video file ref lives in mediaAssignments.
-    /// nil = no video selections persisted (all defaults).
-    public var videoSelections: [String: PersistedVideoSelection]?
+    /// Unified per-block media slots.
+    /// Key: blockId, Value: SceneMediaSlot containing mediaRef + visibility + videoWindow.
+    /// nil = no media assigned to any block.
+    public var mediaSlotsByBlockId: [String: SceneMediaSlot]?
 
     // MARK: - Initialization
 
@@ -111,16 +89,12 @@ public struct SceneState: Codable, Equatable, Sendable {
         variantOverrides: [String: String] = [:],
         userTransforms: [String: Matrix2D] = [:],
         layerToggles: [String: [String: Bool]] = [:],
-        mediaAssignments: [String: MediaRef]? = nil,
-        userMediaPresent: [String: Bool]? = nil,
-        videoSelections: [String: PersistedVideoSelection]? = nil
+        mediaSlotsByBlockId: [String: SceneMediaSlot]? = nil
     ) {
         self.variantOverrides = variantOverrides
         self.userTransforms = userTransforms
         self.layerToggles = layerToggles
-        self.mediaAssignments = mediaAssignments
-        self.userMediaPresent = userMediaPresent
-        self.videoSelections = videoSelections
+        self.mediaSlotsByBlockId = mediaSlotsByBlockId
     }
 
     /// Empty state with all defaults.

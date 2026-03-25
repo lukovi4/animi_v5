@@ -86,6 +86,9 @@ final class PlayerViewController: UIViewController {
     deinit {
         autosaveTimer?.invalidate()
         NotificationCenter.default.removeObserver(self, name: .appDidEnterBackground, object: nil)
+        // Defense-in-depth: cancel ingest tasks even if viewWillDisappear was somehow skipped.
+        // Uses nonisolated helper since deinit cannot call @MainActor methods.
+        mediaIngestCoordinator.cancelAllFromDeinit()
     }
 
     @objc private func appDidEnterBackground() {
@@ -317,15 +320,20 @@ final class PlayerViewController: UIViewController {
     /// Separate from scene texture providers to ensure background textures are always accessible.
     private var backgroundTextureProvider: InMemoryTextureProvider?
 
-    // PR-E: Pending media picker state (deterministic blockId tracking)
-    private var pendingPickedMediaBlockId: String?
-    private var pendingMediaKind: MediaKind?
+    /// Media ingest coordinator — handles PHPicker → prepare → persist → bind pipeline.
+    /// Initialized once on VC lifecycle, not lazily in delegate callback.
+    private lazy var mediaIngestCoordinator: MediaIngestCoordinator = {
+        let coordinator = MediaIngestCoordinator()
+        coordinator.onIngestComplete = { [weak self] result in
+            self?.handleIngestComplete(result)
+        }
+        return coordinator
+    }()
 
-    /// Media kind for picker validation (PR-E)
-    private enum MediaKind {
-        case photo
-        case video
-    }
+    /// Pending picker request — captures (sceneInstanceId, blockId) at picker open time.
+    /// Consumed in PHPickerDelegate. The sceneInstanceId is the source of truth for
+    /// which scene this media belongs to, NOT the current sceneEditTargetInstanceId at callback time.
+    private var pendingPickerRequest: IngestSlotKey?
 
     // In-flight frame limiting (must match MetalRendererOptions.maxFramesInFlight)
     private static let maxFramesInFlight = 3
@@ -601,6 +609,8 @@ final class PlayerViewController: UIViewController {
         }
 
         editorLayoutContainer.onDeleteScene = { [weak self] sceneId in
+            // Cancel all in-flight ingests for the scene being deleted
+            self?.mediaIngestCoordinator.cancelAll(for: sceneId)
             self?.editorStore?.dispatch(.deleteScene(sceneId: sceneId))
         }
 
@@ -639,6 +649,8 @@ final class PlayerViewController: UIViewController {
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
             alert.addAction(UIAlertAction(title: "Reset", style: .destructive) { [weak self] _ in
                 guard let self = self else { return }
+                // Cancel all in-flight ingests for this scene before resetting
+                self.mediaIngestCoordinator.cancelAll(for: instanceId)
                 self.editorStore?.dispatch(.resetSceneState(sceneInstanceId: instanceId))
                 self.reloadRuntimeState(for: instanceId)
                 self.refreshSceneEditBars()
@@ -664,7 +676,7 @@ final class PlayerViewController: UIViewController {
             guard let self = self,
                   let instanceId = self.sceneEditTargetInstanceId else { return }
             // Toggle current state
-            let currentPresent = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.userMediaPresent?[blockId] ?? true
+            let currentPresent = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.visibility ?? true
             self.editorStore?.dispatch(.setBlockMediaPresent(
                 sceneInstanceId: instanceId,
                 blockId: blockId,
@@ -680,13 +692,17 @@ final class PlayerViewController: UIViewController {
         editorLayoutContainer.onRemove = { [weak self] blockId in
             guard let self = self,
                   let instanceId = self.sceneEditTargetInstanceId else { return }
+            // Cancel any in-flight ingest for this slot
+            self.mediaIngestCoordinator.cancelIngest(
+                for: IngestSlotKey(sceneInstanceId: instanceId, blockId: blockId)
+            )
             // Clear runtime
             self.userMediaService?.clear(blockId: blockId)
-            // Dispatch to store (sets mediaAssignments = nil, userMediaPresent = false)
-            self.editorStore?.dispatch(.setBlockMedia(
+            // Dispatch to store (removes slot)
+            self.editorStore?.dispatch(.setMediaSlot(
                 sceneInstanceId: instanceId,
                 blockId: blockId,
-                media: nil
+                slot: nil
             ))
             self.metalView.setNeedsDisplay()
             // Refresh MediaBlockActionBar
@@ -1414,14 +1430,8 @@ final class PlayerViewController: UIViewController {
                 // PR-F: Sync video frame when provider becomes ready after undo/redo
                 self?.syncPausedVideoFrame(force: true)
             }
-            userMediaService?.onVideoSelectionChanged = { [weak self] blockId, persisted in
-                guard let self, let instanceId = self.activeSceneInstanceId else { return }
-                self.editorStore?.dispatch(.setVideoSelection(
-                    sceneInstanceId: instanceId,
-                    blockId: blockId,
-                    selection: persisted
-                ))
-            }
+            // Video selection persistence is now handled by MediaIngestCoordinator
+            // (slot includes videoWindow). No runtime → persistence callback needed.
         }
 
         // PR-E: Update canvas size if different
@@ -1496,30 +1506,23 @@ final class PlayerViewController: UIViewController {
         // 2. Explicit userMediaPresent overrides (can disable)
         // 3. Variant overrides, transforms, toggles
 
-        // STEP 1: Apply media assignments via canonical restore path
-        // Uses MediaRestoreHelper for consistent restore semantics (emitSelectionPersistence: false,
-        // persisted video selection application, explicit failure marking)
+        // STEP 1: Apply media assignments via MediaRestoreCoordinator (unified slots)
         if let service = userMediaService {
-            MediaRestoreHelper.restore(
-                assignments: state.mediaAssignments,
-                userMediaPresent: state.userMediaPresent,
-                videoSelections: state.videoSelections,
+            MediaRestoreCoordinator.restore(
+                slots: state.mediaSlotsByBlockId,
                 to: service
             )
         }
 
-        // STEP 2: Apply explicit userMediaPresent overrides for non-video blocks.
-        // Video blocks are handled by setVideo(presentOnReady:) inside MediaRestoreHelper —
+        // STEP 2: Apply explicit visibility overrides for non-video blocks.
+        // Video blocks are handled by setVideo(presentOnReady:) inside MediaRestoreCoordinator —
         // unconditional replay here would break poster-gating (enable binding layer before poster ready).
-        // This matches SceneInstanceRuntime which does NOT replay userMediaPresent after restore.
-        if let userMediaPresent = state.userMediaPresent {
+        if let slots = state.mediaSlotsByBlockId {
             let videoBlockIds = Set(
-                (state.mediaAssignments ?? [:])
-                    .filter { $0.value.mediaKind == .video }
-                    .map(\.key)
+                slots.filter { $0.value.mediaRef.mediaKind == .video }.map(\.key)
             )
-            for (blockId, present) in userMediaPresent where !videoBlockIds.contains(blockId) {
-                player.setUserMediaPresent(blockId: blockId, present: present)
+            for (blockId, slot) in slots where !videoBlockIds.contains(blockId) {
+                player.setUserMediaPresent(blockId: blockId, present: slot.visibility)
             }
         }
 
@@ -1540,8 +1543,7 @@ final class PlayerViewController: UIViewController {
 
         #if DEBUG
         print("[PlayerVC] Applied state for instance \(instanceId): " +
-              "assignments=\(state.mediaAssignments?.count ?? 0), " +
-              "present=\(state.userMediaPresent?.count ?? 0), " +
+              "slots=\(state.mediaSlotsByBlockId?.count ?? 0), " +
               "variants=\(state.variantOverrides.count), " +
               "transforms=\(state.userTransforms.count), " +
               "toggles=\(state.layerToggles.count)")
@@ -1924,12 +1926,13 @@ final class PlayerViewController: UIViewController {
         let variants = player.availableVariants(blockId: blockId)
         let hasVariants = variants.count > 1
 
-        // Check if block has media assigned
+        // Check if block has media assigned (unified slots)
         let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId]
-        let hasMedia = sceneState?.mediaAssignments?[blockId] != nil
+        let slot = sceneState?.mediaSlotsByBlockId?[blockId]
+        let hasMedia = slot != nil
 
-        // Check if block is enabled (userMediaPresent)
-        let isEnabled = sceneState?.userMediaPresent?[blockId] ?? true
+        // Check if block is enabled (slot visibility)
+        let isEnabled = slot?.visibility ?? true
 
         editorLayoutContainer.configureMediaBlockActionBar(
             blockId: blockId,
@@ -2006,6 +2009,10 @@ final class PlayerViewController: UIViewController {
     /// PR-D: Re-applies runtime state for active scene instance to sync with restored snapshot.
     /// PR-F: Also refreshes bottom bars and syncs TimelineCompositionEngine.
     private func handleStateRestoredFromUndoRedo() {
+        // Conservatively cancel all in-flight ingests before reloading restored state.
+        // Undo/redo may have reverted the scene structure, making ongoing ingests stale.
+        mediaIngestCoordinator.cancelAll()
+
         if let targetId = sceneEditTargetInstanceId {
             reloadRuntimeState(for: targetId)
         } else if let runtimeId = activeSceneInstanceId {
@@ -2044,6 +2051,11 @@ final class PlayerViewController: UIViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+
+        // Cancel all in-flight ingests on permanent leave
+        if isMovingFromParent || isBeingDismissed {
+            mediaIngestCoordinator.cancelAll()
+        }
 
         // Safety net: save to active slot when leaving editor without explicit choice
         if (isMovingFromParent || isBeingDismissed) && !userMadeExplicitCloseChoice {
@@ -2400,13 +2412,17 @@ final class PlayerViewController: UIViewController {
             progressVC.updateState(.preparing)
 
             Task { @MainActor in
-                // Run preflight to get budget
-                let videoSelections = self.userMediaService?.exportVideoSelectionsSnapshot() ?? [:]
+                // Run preflight to get budget (persisted-only: read from draft slots)
+                let instanceId = self.activeSceneInstanceId
+                let mediaSlots: [String: SceneMediaSlot] = instanceId.flatMap {
+                    self.editorStore?.state.draft.sceneInstanceStates[$0]?.mediaSlotsByBlockId
+                } ?? [:]
+                let videoSlotCount = mediaSlots.values.filter { $0.mediaRef.mediaKind == .video }.count
                 let backgroundRegionCount = self.projectBackgroundOverride?.regions.count ?? 0
                 let preflightResult = ExportPreflightPlanner.plan(
                     sceneCount: 1,
                     canvasSize: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
-                    videoSlotCount: videoSelections.count,
+                    videoSlotCount: videoSlotCount,
                     backgroundRegionCount: backgroundRegionCount,
                     currentPreset: .high,
                     fps: runtime.fps
@@ -2450,7 +2466,7 @@ final class PlayerViewController: UIViewController {
                 let budget = ExportPreflightPlanner.plan(
                     sceneCount: 1,
                     canvasSize: exportSizePx,
-                    videoSlotCount: videoSelections.count,
+                    videoSlotCount: videoSlotCount,
                     backgroundRegionCount: backgroundRegionCount,
                     currentPreset: exportPreset,
                     fps: runtime.fps
@@ -2463,18 +2479,13 @@ final class PlayerViewController: UIViewController {
                     audio: audioConfig
                 )
 
-                // Build lightweight media snapshot (no heavy loads on MainActor)
-                let instanceId = self.activeSceneInstanceId
-                let mediaAssignments: [String: MediaRef] = instanceId.flatMap {
-                    self.editorStore?.state.draft.sceneInstanceStates[$0]?.mediaAssignments
-                } ?? [:]
+                // Build lightweight media snapshot from persisted slots (no runtime reads)
                 let mediaSnapshot: ExportMediaSnapshot
                 do {
                     mediaSnapshot = try ExportMediaSnapshot.build(
                         compiledScene: compiled,
-                        mediaAssignments: mediaAssignments,
+                        mediaSlots: mediaSlots,
                         projectStore: ProjectStore.shared,
-                        videoSelections: videoSelections,
                         runtime: runtime
                     )
                 } catch {
@@ -2505,7 +2516,6 @@ final class PlayerViewController: UIViewController {
                     textureProvider: exportTP,
                     pathRegistry: compiled.pathRegistry,
                     assetSizes: compiled.mergedAssetIndex.sizeById,
-                    userMediaService: self.userMediaService,
                     settings: settings,
                     backgroundState: self.effectiveBackgroundState,
                     budget: budget,
@@ -2617,7 +2627,7 @@ final class PlayerViewController: UIViewController {
                 let sceneCount = self.editorStore?.state.sceneItems.count ?? 1
                 let allStates = self.editorStore?.state.draft.sceneInstanceStates ?? [:]
                 let totalVideoSlots = allStates.values.reduce(0) { count, state in
-                    count + (state.mediaAssignments ?? [:]).values.filter { $0.mediaKind == .video }.count
+                    count + (state.mediaSlotsByBlockId ?? [:]).values.filter { $0.mediaRef.mediaKind == .video }.count
                 }
                 let backgroundRegionCount = self.projectBackgroundOverride?.regions.count ?? 0
                 let preflightResult = ExportPreflightPlanner.plan(
@@ -2880,139 +2890,54 @@ final class PlayerViewController: UIViewController {
         presentPhotoPicker(for: .images)
     }
 
-    /// PR9: Handles user media image picked from PHPicker.
-    /// Saves to persistent storage and dispatches to store.
-    private func handleUserMediaImagePicked(blockId: String, image: UIImage) {
-        // Step 1: Apply to runtime (for immediate preview)
-        let runtimeSuccess = userMediaService?.setPhoto(blockId: blockId, image: image) ?? false
+    /// Handles ingest completion from MediaIngestCoordinator.
+    ///
+    /// Identity contract:
+    /// 1. Check target scene still exists in timeline (prevent resurrection of deleted scene).
+    /// 2. Persist slot to store for result.sceneInstanceId (always, if scene exists).
+    /// 3. Runtime apply ONLY if activeSceneInstanceId == result.sceneInstanceId.
+    /// 4. If target scene was deleted, delete the persisted file (orphan cleanup).
+    private func handleIngestComplete(_ result: IngestResult) {
+        // Guard: target scene must still exist in the timeline
+        let sceneExists = editorStore?.state.canonicalTimeline.sceneItems
+            .contains(where: { $0.id == result.sceneInstanceId }) ?? false
 
-        if !runtimeSuccess {
-            log("[UserMedia] Failed to set photo for block '\(blockId)'")
-            metalView.setNeedsDisplay()
+        if !sceneExists {
+            // Scene was deleted while ingest was in-flight — clean up persisted file
+            try? FileManager.default.removeItem(at: result.persistedURL)
+            log("[UserMedia] Ingest completed for deleted scene \(result.sceneInstanceId), cleaned up orphan")
             return
         }
 
-        log("[UserMedia] Photo set for block '\(blockId)'")
-
-        // Step 2: Save to persistent storage and dispatch to store
-        assertSceneEditTargetMatchesRuntimeIfPossible()
-        guard let instanceId = sceneEditTargetInstanceId else {
-            log("[UserMedia] No active scene instance, skipping persistence")
-            metalView.setNeedsDisplay()
-            return
-        }
-
-        // Resize and save to disk
-        let maxDimension: CGFloat = 2048
-        let resizedImage = resizeImageIfNeeded(image, maxDimension: maxDimension)
-
-        guard let jpegData = resizedImage.jpegData(compressionQuality: 0.9) else {
-            log("[UserMedia] Failed to create JPEG data for block '\(blockId)'")
-            metalView.setNeedsDisplay()
-            return
-        }
-
-        do {
-            let mediaRef = try ProjectStore.shared.saveUserMedia(
-                jpegData,
-                sceneInstanceId: instanceId,
-                blockId: blockId
-            )
-
-            // Dispatch to store for persistence
-            editorStore?.dispatch(.setBlockMedia(
-                sceneInstanceId: instanceId,
-                blockId: blockId,
-                media: mediaRef
-            ))
-
-            log("[UserMedia] Saved media: \(mediaRef.id)")
-        } catch {
-            log("[UserMedia] Failed to save media: \(error)")
-        }
-
-        metalView.setNeedsDisplay()
-    }
-
-    /// PR-D: Handles video picked from PHPicker with full persistence flow.
-    /// - Parameters:
-    ///   - blockId: Target block ID
-    ///   - tempURL: Temporary URL of copied video file (will be deleted after processing)
-    private func handleUserMediaVideoPicked(blockId: String, tempURL: URL) {
-        // Step 1: Get active scene instance for persistence
-        assertSceneEditTargetMatchesRuntimeIfPossible()
-        guard let instanceId = sceneEditTargetInstanceId else {
-            log("[UserMedia] No active scene instance, skipping video persistence")
-            try? FileManager.default.removeItem(at: tempURL)
-            metalView.setNeedsDisplay()
-            return
-        }
-
-        // Step 2: Save video to persistent storage
-        let mediaRef: MediaRef
-        let persistedURL: URL
-        do {
-            mediaRef = try ProjectStore.shared.saveUserVideo(
-                from: tempURL,
-                sceneInstanceId: instanceId,
-                blockId: blockId
-            )
-            persistedURL = try ProjectStore.shared.absoluteURL(for: mediaRef)
-        } catch {
-            log("[UserMedia] Failed to save video: \(error)")
-            try? FileManager.default.removeItem(at: tempURL)
-            metalView.setNeedsDisplay()
-            return
-        }
-
-        // Step 3: Apply to runtime with persistent ownership
-        let runtimeSuccess = userMediaService?.setVideo(
-            blockId: blockId,
-            url: persistedURL,
-            ownership: .persistent
-        ) ?? false
-
-        if !runtimeSuccess {
-            log("[UserMedia] Failed to set video for block '\(blockId)'")
-            try? FileManager.default.removeItem(at: tempURL)
-            metalView.setNeedsDisplay()
-            return
-        }
-
-        // Step 4: Dispatch to store for persistence
-        editorStore?.dispatch(.setBlockMedia(
-            sceneInstanceId: instanceId,
-            blockId: blockId,
-            media: mediaRef
+        // Persist slot to store (safe: reducer has its own guard, but scene exists here)
+        editorStore?.dispatch(.setMediaSlot(
+            sceneInstanceId: result.sceneInstanceId,
+            blockId: result.blockId,
+            slot: result.slot
         ))
 
-        log("[UserMedia] Video saved and set for block '\(blockId)': \(mediaRef.id)")
-
-        // Step 5: Cleanup temp file (already copied to persistent storage)
-        try? FileManager.default.removeItem(at: tempURL)
-
-        metalView.setNeedsDisplay()
-    }
-
-    /// Resizes image if larger than maxDimension while preserving aspect ratio.
-    private func resizeImageIfNeeded(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
-        let size = image.size
-        guard size.width > maxDimension || size.height > maxDimension else {
-            return image
+        // Runtime apply ONLY if this is the currently active scene
+        if activeSceneInstanceId == result.sceneInstanceId {
+            switch result.slot.mediaRef.mediaKind {
+            case .photo:
+                if let image = UIImage(contentsOfFile: result.persistedURL.path) {
+                    userMediaService?.setPhoto(blockId: result.blockId, image: image, presentOnReady: result.slot.visibility)
+                }
+            case .video:
+                userMediaService?.setVideo(
+                    blockId: result.blockId,
+                    url: result.persistedURL,
+                    ownership: .persistent,
+                    presentOnReady: result.slot.visibility,
+                    emitSelectionPersistence: false,
+                    pendingPersistedSelection: result.slot.videoWindow
+                )
+            }
+            metalView.setNeedsDisplay()
         }
 
-        let scale: CGFloat
-        if size.width > size.height {
-            scale = maxDimension / size.width
-        } else {
-            scale = maxDimension / size.height
-        }
-
-        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: newSize)
-        return renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: newSize))
-        }
+        log("[UserMedia] Ingest complete for block '\(result.blockId)'@\(result.sceneInstanceId): \(result.slot.mediaRef.id)" +
+            (activeSceneInstanceId == result.sceneInstanceId ? " (applied to runtime)" : " (persisted only, different active scene)"))
     }
 
     private func presentPhotoPicker(for filter: PHPickerFilter) {
@@ -3031,9 +2956,13 @@ final class PlayerViewController: UIViewController {
     ///   - blockId: The block ID for which media is being picked
     ///   - kind: Whether to pick photo or video
     private func presentMediaPicker(for blockId: String, kind: MediaKind) {
-        // Store pending state for picker delegate
-        pendingPickedMediaBlockId = blockId
-        pendingMediaKind = kind
+        // Capture identity at picker-open time (not at callback time)
+        assertSceneEditTargetMatchesRuntimeIfPossible()
+        guard let instanceId = sceneEditTargetInstanceId else {
+            log("[UserMedia] No scene edit target, cannot open picker")
+            return
+        }
+        pendingPickerRequest = IngestSlotKey(sceneInstanceId: instanceId, blockId: blockId)
 
         var config = PHPickerConfiguration()
         config.filter = (kind == .photo) ? .images : .videos
@@ -4161,8 +4090,7 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
 
         guard let result = results.first else {
             // User cancelled - clear pending state
-            pendingPickedMediaBlockId = nil
-            pendingMediaKind = nil
+            pendingPickerRequest = nil
             return
         }
 
@@ -4173,98 +4101,18 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
             return
         }
 
-        // PR-E: Use pending blockId for deterministic tracking
-        // Fall back to state.selectedBlockId for backward compatibility with dev-UI
-        let blockId: String
-        let expectedKind: MediaKind?
-
-        if let pendingBlockId = pendingPickedMediaBlockId {
-            blockId = pendingBlockId
-            expectedKind = pendingMediaKind
-            // Clear pending state
-            pendingPickedMediaBlockId = nil
-            pendingMediaKind = nil
-        } else if let stateBlockId = editorStore?.state.selectedBlockId {
-            // Backward compatibility with dev-UI path
-            blockId = stateBlockId
-            expectedKind = nil
-        } else {
+        // Use the request captured at picker-open time — NOT current sceneEditTargetInstanceId.
+        // This ensures the media is attributed to the scene that was active when the user opened the picker.
+        guard let key = pendingPickerRequest else {
+            log("[UserMedia] No pending picker request, skipping ingest")
             return
         }
+        pendingPickerRequest = nil
 
-        // Determine actual type of picked media
-        let isImage = result.itemProvider.canLoadObject(ofClass: UIImage.self)
-        let isVideo = result.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
-
-        // PR-E: Validate against expected kind (if set)
-        if let expected = expectedKind {
-            switch expected {
-            case .photo where !isImage:
-                showMediaTypeMismatchAlert()
-                return
-            case .video where !isVideo:
-                showMediaTypeMismatchAlert()
-                return
-            default:
-                break
-            }
-        }
-
-        // Process based on actual type
-        if isImage {
-            // Load image
-            result.itemProvider.loadObject(ofClass: UIImage.self) { [weak self] object, error in
-                guard let self = self,
-                      let image = object as? UIImage else {
-                    if let error = error {
-                        DispatchQueue.main.async {
-                            self?.log("[UserMedia] Failed to load image: \(error)")
-                        }
-                    }
-                    return
-                }
-
-                DispatchQueue.main.async {
-                    // PR9: Save image to persistent storage and dispatch to store
-                    self.handleUserMediaImagePicked(blockId: blockId, image: image)
-                }
-            }
-        } else if isVideo {
-            // Load video
-            result.itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { [weak self] url, error in
-                guard let self = self,
-                      let sourceURL = url else {
-                    if let error = error {
-                        DispatchQueue.main.async {
-                            self?.log("[UserMedia] Failed to load video: \(error)")
-                        }
-                    }
-                    return
-                }
-
-                // PHPicker API: sourceURL is only valid inside this callback!
-                // Must copy BEFORE async dispatch, then pass copied URL to service
-                let tempDir = FileManager.default.temporaryDirectory
-                let tempURL = tempDir.appendingPathComponent("\(blockId)_\(UUID().uuidString).mov")
-
-                do {
-                    try FileManager.default.copyItem(at: sourceURL, to: tempURL)
-                } catch {
-                    DispatchQueue.main.async {
-                        self.log("[UserMedia] Failed to copy video: \(error)")
-                    }
-                    return
-                }
-
-                DispatchQueue.main.async {
-                    // PR-D: Use full persistence flow
-                    self.handleUserMediaVideoPicked(blockId: blockId, tempURL: tempURL)
-                }
-            }
-        }
+        mediaIngestCoordinator.ingest(pickerResult: result, key: key)
     }
 
-    /// Shows alert when picked media type doesn't match expected type (PR-E).
+    /// Shows alert when picked media type doesn't match expected type.
     private func showMediaTypeMismatchAlert() {
         let alert = UIAlertController(
             title: "Wrong Media Type",

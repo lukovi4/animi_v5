@@ -274,11 +274,9 @@ public final class SceneInstanceRuntime {
             }
         }
 
-        // Restore media assignments via MediaRestoreHelper (handles both photo and video)
-        let restoredCount = MediaRestoreHelper.restore(
-            assignments: state.mediaAssignments,
-            userMediaPresent: state.userMediaPresent,
-            videoSelections: state.videoSelections,
+        // Restore media assignments via MediaRestoreCoordinator (handles both photo and video)
+        let restoredCount = MediaRestoreCoordinator.restore(
+            slots: state.mediaSlotsByBlockId,
             to: userMediaService
         )
         runtimeDiagnosticsSink?.receive(.mediaRestore(instanceId: sceneInstanceId, restoredCount: restoredCount))
@@ -287,7 +285,7 @@ public final class SceneInstanceRuntime {
         print("[SceneInstanceRuntime] Applied state for \(sceneInstanceId): restored \(restoredCount) media items")
         #endif
 
-        // Note: userMediaPresent is now applied atomically via MediaRestoreHelper.restore()
+        // Note: visibility is now applied atomically via MediaRestoreCoordinator.restore()
         // which passes presentOnReady to both setPhoto() and setVideo() calls.
         // No unconditional replay needed - this preserves poster-gating semantics.
     }

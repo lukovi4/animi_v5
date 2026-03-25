@@ -110,17 +110,19 @@ public enum EditorAction: Sendable {
     ///   - enabled: Whether the toggle is enabled
     case setBlockToggle(sceneInstanceId: UUID, blockId: String, toggleId: String, enabled: Bool)
 
-    /// Sets a media assignment for a scene instance.
+    /// Sets a unified media slot for a scene instance.
     /// Pushes undo snapshot.
-    /// Also automatically sets userMediaPresent to true/false (PR-A).
+    /// Replaces old setBlockMedia — now writes full SceneMediaSlot (mediaRef + visibility + videoWindow).
+    /// Pass nil to clear the slot.
     /// - Parameters:
     ///   - sceneInstanceId: ID of the scene instance
     ///   - blockId: ID of the media block
-    ///   - media: MediaRef to assigned media, or nil to clear
-    case setBlockMedia(sceneInstanceId: UUID, blockId: String, media: MediaRef?)
+    ///   - slot: SceneMediaSlot to assign, or nil to clear
+    case setMediaSlot(sceneInstanceId: UUID, blockId: String, slot: SceneMediaSlot?)
 
     /// Persists video selection parameters (trim/offset/audio) for a block.
     /// Does NOT push undo snapshot — this is a continuous persistence operation.
+    /// Updates the videoWindow field of the existing SceneMediaSlot.
     case setVideoSelection(sceneInstanceId: UUID, blockId: String, selection: PersistedVideoSelection)
 
     // MARK: - Scene Focus (Playhead as Source of Truth)

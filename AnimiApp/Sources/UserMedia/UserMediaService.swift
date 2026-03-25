@@ -176,13 +176,11 @@ public enum UserMediaKind: Equatable {
     case none
 }
 
-// MARK: - Media Ownership (PR-D)
+// MARK: - Media Ownership (Legacy Compat)
 
 /// Ownership model for video files.
-///
-/// PR-D: Determines whether UserMediaService should delete the file on cleanup.
-/// - `temporary`: File was copied to temp by UserMediaService, delete on cleanup.
-/// - `persistent`: File is managed externally (e.g., ProjectStore), do NOT delete.
+/// In the new architecture all media files are persisted before binding,
+/// so ownership is always `.persistent`. Kept for API compatibility during transition.
 public enum MediaOwnership: Equatable, Sendable {
     /// Temporary file owned by UserMediaService. Deleted on cleanup.
     case temporary
@@ -288,23 +286,12 @@ public final class UserMediaService {
         VideoFrameProvider(device: device, commandQueue: queue, url: url, sceneFPS: fps)
     }
 
-    /// Temp video file URLs per block (PR1: for cleanup)
-    private var tempVideoURLByBlockId: [String: URL] = [:]
-
-    /// PR-D: Video file ownership per block (determines cleanup behavior)
-    private var videoOwnershipByBlockId: [String: MediaOwnership] = [:]
-
     /// Scene FPS (needed for video frame calculation)
     private var sceneFPS: Double = 30.0
 
     /// PR1.1: Callback for async updates that require MetalView redraw.
     /// Called after poster injection or clear/replace.
     public var onNeedsDisplay: (() -> Void)?
-
-    /// Emitted when a video selection is created or modified.
-    /// Payload: (blockId, PersistedVideoSelection).
-    /// Wire to EditorStore/sceneStates for persistence.
-    public var onVideoSelectionChanged: ((String, PersistedVideoSelection) -> Void)?
 
     // MARK: - Async Race Protection (PR-async-race)
 
@@ -480,14 +467,14 @@ public final class UserMediaService {
     ///   - url: URL of the video file
     ///   - ownership: Who owns the file lifecycle (default: `.temporary`)
     ///   - presentOnReady: Value for `userMediaPresent` after poster extraction (default: `true`)
-    ///   - emitSelectionPersistence: Whether to fire `onVideoSelectionChanged` callback (default: `true`).
+    ///   - emitSelectionPersistence: Whether to fire video selection persistence (default: `true`).
     ///     Pass `false` on restore path to avoid overwriting persisted state.
     ///   - pendingPersistedSelection: If non-nil, applied to the VideoSelection inside the async poster task
     ///     AFTER `mediaState` is written. This is the only safe place to apply persisted trim/offset/audio,
     ///     since `mediaState` is not populated until the poster completes.
     /// - Returns: `true` if video accepted (async poster generation started), `false` on validation error
     @discardableResult
-    public func setVideo(blockId: String, url: URL, ownership: MediaOwnership = .temporary, presentOnReady: Bool = true, emitSelectionPersistence: Bool = true, pendingPersistedSelection: PersistedVideoSelection? = nil) -> Bool {
+    public func setVideo(blockId: String, url: URL, ownership: MediaOwnership = .persistent, presentOnReady: Bool = true, emitSelectionPersistence: Bool = true, pendingPersistedSelection: PersistedVideoSelection? = nil) -> Bool {
         guard let player = activePlayer else {
             // P0: Mark as failed - no player available (symmetric with setPhoto)
             blockReadinessState[blockId] = .failed(reason: "no scene player")
@@ -495,7 +482,7 @@ public final class UserMediaService {
             return false
         }
 
-        // PR1: Clean up any existing video provider and temp file
+        // Clean up any existing video provider
         cleanupVideoResources(for: blockId)
 
         // PR-async-race: Increment generation and cancel previous setup task
@@ -504,10 +491,6 @@ public final class UserMediaService {
         let token = newGeneration
 
         videoSetupTasksByBlock[blockId]?.cancel()
-
-        // PR-D: Store URL and ownership for cleanup
-        tempVideoURLByBlockId[blockId] = url
-        videoOwnershipByBlockId[blockId] = ownership
 
         // Create video frame provider with scene FPS (uses injectable factory)
         let provider = makeVideoProvider(device, commandQueue, url, sceneFPS)
@@ -592,10 +575,6 @@ public final class UserMediaService {
                     self.applyPersistedVideoSelection(blockId: blockId, pending)
                 }
 
-                if emitSelectionPersistence {
-                    self.onVideoSelectionChanged?(blockId, PersistedVideoSelection(from: selection))
-                }
-
                 // Inject poster texture into all variant binding asset IDs
                 // (poster at winStart=0 is the default, which is what we already have)
                 let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
@@ -650,15 +629,6 @@ public final class UserMediaService {
         videoSetupTasksByBlock[blockId] = setupTask
 
         return true
-    }
-
-    /// Copies video to temp directory.
-    private func copyVideoToTemp(sourceURL: URL, blockId: String) throws -> URL {
-        let tempDir = FileManager.default.temporaryDirectory
-        let destURL = tempDir.appendingPathComponent("\(blockId)_\(UUID().uuidString).mov")
-
-        try FileManager.default.copyItem(at: sourceURL, to: destURL)
-        return destURL
     }
 
     // MARK: - TT-03 Budget-Aware Playback API
@@ -1024,10 +994,8 @@ public final class UserMediaService {
 
     /// Clears all user media for all blocks.
     public func clearAll() {
-        // P1-1 fix: Use union of all keys to catch pending tasks during poster gating
-        // P0: Include blockReadinessState.keys for failed blocks
+        // Use union of all keys to catch pending tasks during poster gating
         let allBlockIds = Set(mediaState.keys)
-            .union(tempVideoURLByBlockId.keys)
             .union(videoProviders.keys)
             .union(videoSetupTasksByBlock.keys)
             .union(blockReadinessState.keys)
@@ -1088,7 +1056,7 @@ public final class UserMediaService {
 
     /// Cleans up video resources for a block (provider + temp file).
     /// PR-async-race: Increments generation and cancels setup task to prevent stale updates.
-    /// PR-D: Only deletes file if ownership is `.temporary`.
+    /// All media files are now persistent (owned by ProjectStore), so no file deletion here.
     private func cleanupVideoResources(for blockId: String) {
         // PR-async-race: Invalidate pending async operations for this blockId
         videoSetupGenerationByBlock[blockId, default: 0] += 1
@@ -1098,27 +1066,6 @@ public final class UserMediaService {
         // Release video provider
         if let provider = videoProviders.removeValue(forKey: blockId) {
             provider.release()
-        }
-
-        // PR-D: Get ownership before removing URL
-        let ownership = videoOwnershipByBlockId.removeValue(forKey: blockId) ?? .temporary
-
-        // Delete file only if temporary (owned by UserMediaService)
-        if let fileURL = tempVideoURLByBlockId.removeValue(forKey: blockId) {
-            if ownership == .temporary {
-                do {
-                    try FileManager.default.removeItem(at: fileURL)
-                    #if DEBUG
-                    print("[UserMediaService] Deleted temp file: \(fileURL.lastPathComponent)")
-                    #endif
-                } catch {
-                    print("[UserMediaService] Failed to delete temp file: \(error.localizedDescription)")
-                }
-            } else {
-                #if DEBUG
-                print("[UserMediaService] Preserved persistent file: \(fileURL.lastPathComponent)")
-                #endif
-            }
         }
     }
 
@@ -1168,14 +1115,6 @@ public final class UserMediaService {
         // Mark as failed (preserves failure state for readiness check)
         blockReadinessState[blockId] = .failed(reason: reason)
 
-        // Clean up temp file (use ownership check)
-        let ownership = videoOwnershipByBlockId.removeValue(forKey: blockId) ?? .temporary
-        if let fileURL = tempVideoURLByBlockId.removeValue(forKey: blockId) {
-            if ownership == .temporary {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
-        }
-
         // Trigger redraw
         onNeedsDisplay?()
 
@@ -1185,22 +1124,8 @@ public final class UserMediaService {
     }
 
     deinit {
-        // Note: For @MainActor classes, deinit runs on main when last reference
-        // is released on main (which is the typical case for UI-owned services).
         // VideoFrameProvider.deinit handles its own cleanup (release()).
-        // Temp files are cleaned up here - FileManager operations are thread-safe.
-        //
-        // We access ivars directly without actor isolation because:
-        // 1. deinit is the final access point - no other references exist
-        // 2. No concurrent access is possible during deinitialization
-        //
-        // PR-D: Only delete files with .temporary ownership
-        for (blockId, fileURL) in tempVideoURLByBlockId {
-            let ownership = videoOwnershipByBlockId[blockId] ?? .temporary
-            if ownership == .temporary {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
-        }
+        // All media files are persistent (owned by ProjectStore), no temp cleanup needed.
     }
 
     // MARK: - State Query
@@ -1318,7 +1243,7 @@ public final class UserMediaService {
     }
 
     /// Applies persisted trim/offset/audio to an existing video selection.
-    /// Does NOT fire onVideoSelectionChanged (this IS the restore path).
+    /// Used on the restore path to apply persisted trim/offset/audio params.
     public func applyPersistedVideoSelection(blockId: String, _ persisted: PersistedVideoSelection) {
         guard case .video(var selection) = mediaState[blockId] else { return }
         selection.trimStart = persisted.trimStart

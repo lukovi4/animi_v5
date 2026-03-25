@@ -469,7 +469,6 @@ public final class VideoExporter: @unchecked Sendable {
     ///   - textureProvider: Thread-safe export texture provider
     ///   - pathRegistry: Path registry from compiled scene
     ///   - assetSizes: Asset sizes from mergedAssetIndex.sizeById
-    ///   - userMediaService: UserMediaService for video selections snapshot (PR-E3)
     ///   - settings: Export configuration
     ///   - backgroundState: Background state for rendering (PR5)
     ///   - progress: Progress callback (0.0 - 1.0), called on main queue
@@ -482,7 +481,6 @@ public final class VideoExporter: @unchecked Sendable {
         textureProvider: ExportTextureProvider,
         pathRegistry: PathRegistry,
         assetSizes: [String: AssetSize],
-        userMediaService: UserMediaService?,
         settings: VideoExportSettings,
         backgroundState: EffectiveBackgroundState?,
         budget: ExportResourceBudget = .default,
@@ -513,8 +511,15 @@ public final class VideoExporter: @unchecked Sendable {
         let snapshot = scenePlayer.exportStateSnapshot()
         let runtime = compiledScene.runtime
 
-        // PR-E3: Capture video selections snapshot on MainActor
-        let videoSelections = userMediaService?.exportVideoSelectionsSnapshot() ?? [:]
+        // Video selections are now included in ExportMediaSnapshot (from persisted slots)
+        let videoSelections: [String: VideoSelection] = {
+            guard let snapshot = mediaSnapshot else { return [:] }
+            var result: [String: VideoSelection] = [:]
+            for ref in snapshot.videoRefs {
+                result[ref.blockId] = ref.selection
+            }
+            return result
+        }()
 
         let exportRenderer: MetalRenderer
         do {

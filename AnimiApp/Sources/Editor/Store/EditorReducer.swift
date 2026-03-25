@@ -145,20 +145,27 @@ public enum EditorReducer {
                 enabled: enabled
             )
 
-        case .setBlockMedia(let sceneInstanceId, let blockId, let media):
-            return setBlockMedia(
+        case .setMediaSlot(let sceneInstanceId, let blockId, let slot):
+            return setMediaSlot(
                 state: newState,
                 sceneInstanceId: sceneInstanceId,
                 blockId: blockId,
-                media: media
+                slot: slot
             )
 
         case .setVideoSelection(let sceneInstanceId, let blockId, let selection):
+            // Guard: scene must exist in timeline
+            guard newState.canonicalTimeline.sceneItems.contains(where: { $0.id == sceneInstanceId }) else {
+                return ReducerResult(state: newState, shouldPushSnapshot: false)
+            }
             var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
-            var selections = sceneState.videoSelections ?? [:]
-            selections[blockId] = selection
-            sceneState.videoSelections = selections
-            newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+            var slots = sceneState.mediaSlotsByBlockId ?? [:]
+            if var existingSlot = slots[blockId] {
+                existingSlot.videoWindow = selection
+                slots[blockId] = existingSlot
+                sceneState.mediaSlotsByBlockId = slots
+                newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+            }
             return ReducerResult(state: newState, shouldPushSnapshot: false)
 
         // MARK: - Scene Edit Mode (PR-A)
@@ -836,38 +843,35 @@ private extension EditorReducer {
         return ReducerResult(state: newState, shouldPushSnapshot: true)
     }
 
-    /// Sets a media assignment for a scene instance.
-    /// PR-A: Also automatically sets userMediaPresent to sync persisted state with runtime.
-    static func setBlockMedia(
+    /// Sets a unified media slot for a scene instance.
+    /// Writes full SceneMediaSlot or clears it.
+    /// No-op if sceneInstanceId is not present in the timeline (prevents resurrection of deleted scenes).
+    static func setMediaSlot(
         state: EditorState,
         sceneInstanceId: UUID,
         blockId: String,
-        media: MediaRef?
+        slot: SceneMediaSlot?
     ) -> ReducerResult {
+        // Guard: scene must exist in timeline
+        guard state.canonicalTimeline.sceneItems.contains(where: { $0.id == sceneInstanceId }) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
         var newState = state
 
         // Get or create SceneState for this instance
         var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
 
-        // Ensure mediaAssignments exists
-        if sceneState.mediaAssignments == nil {
-            sceneState.mediaAssignments = [:]
+        // Ensure slots dict exists
+        if sceneState.mediaSlotsByBlockId == nil {
+            sceneState.mediaSlotsByBlockId = [:]
         }
 
-        // PR-A: Ensure userMediaPresent exists
-        if sceneState.userMediaPresent == nil {
-            sceneState.userMediaPresent = [:]
-        }
-
-        // Update or remove media
-        if let mediaRef = media {
-            // Add media: store assignment and make visible
-            sceneState.mediaAssignments?[blockId] = mediaRef
-            sceneState.userMediaPresent?[blockId] = true
+        // Update or remove slot
+        if let slot {
+            sceneState.mediaSlotsByBlockId?[blockId] = slot
         } else {
-            // Remove media: clear assignment and hide
-            sceneState.mediaAssignments?.removeValue(forKey: blockId)
-            sceneState.userMediaPresent?[blockId] = false
+            sceneState.mediaSlotsByBlockId?.removeValue(forKey: blockId)
         }
 
         // Store back
@@ -980,24 +984,30 @@ private extension EditorReducer {
     }
 
     /// Sets userMediaPresent for a block (disable/enable asset visibility).
+    /// No-op if sceneInstanceId is not present in the timeline (prevents resurrection of deleted scenes).
     static func setBlockMediaPresent(
         state: EditorState,
         sceneInstanceId: UUID,
         blockId: String,
         present: Bool
     ) -> ReducerResult {
+        // Guard: scene must exist in timeline
+        guard state.canonicalTimeline.sceneItems.contains(where: { $0.id == sceneInstanceId }) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
         var newState = state
 
         // Get or create SceneState for this instance
         var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
 
-        // Ensure userMediaPresent exists
-        if sceneState.userMediaPresent == nil {
-            sceneState.userMediaPresent = [:]
+        // Update visibility in existing slot (no-op if slot doesn't exist)
+        var slots = sceneState.mediaSlotsByBlockId ?? [:]
+        if var slot = slots[blockId] {
+            slot.visibility = present
+            slots[blockId] = slot
+            sceneState.mediaSlotsByBlockId = slots
         }
-
-        // Update present flag
-        sceneState.userMediaPresent?[blockId] = present
 
         // Store back
         newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState

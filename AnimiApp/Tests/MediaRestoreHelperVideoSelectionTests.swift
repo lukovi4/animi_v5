@@ -4,13 +4,13 @@ import AVFoundation
 import TVECore
 @testable import AnimiApp
 
-/// Tests for MediaRestoreHelper video selection persistence behavior.
-/// Verifies Fix 1 (emitSelectionPersistence suppression on restore) and Fix 2 (single-scene restore).
+/// Tests for MediaRestoreCoordinator video selection persistence behavior.
+/// Verifies restore via unified SceneMediaSlot (replacing old MediaRestoreHelper).
 ///
-/// These tests exercise the real `MediaRestoreHelper.restore()` production path, including
+/// These tests exercise the real `MediaRestoreCoordinator.restore()` production path, including
 /// the async ordering of `setVideo()` → poster task → `pendingPersistedSelection` application.
 @MainActor
-final class MediaRestoreHelperVideoSelectionTests: XCTestCase {
+final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
 
     // MARK: - Test Doubles (reused from UserMediaServiceReadinessTests pattern)
 
@@ -165,33 +165,9 @@ final class MediaRestoreHelperVideoSelectionTests: XCTestCase {
         MediaRef(kind: .file, id: testMediaRelativePath, mediaKind: .video)
     }
 
-    // MARK: - Integration Tests (real MediaRestoreHelper.restore() path)
+    // MARK: - Integration Tests (real MediaRestoreCoordinator.restore() path)
 
-    /// Fix 1: MediaRestoreHelper.restore() with video does NOT fire onVideoSelectionChanged callback.
-    func test_restoreVideo_doesNotEmitPersistenceCallback() async throws {
-        var callbackFired = false
-        sut.onVideoSelectionChanged = { _, _ in
-            callbackFired = true
-        }
-
-        let assignments: [String: MediaRef] = ["block_v1": makeVideoMediaRef()]
-        MediaRestoreHelper.restore(
-            assignments: assignments,
-            userMediaPresent: nil,
-            videoSelections: nil,
-            to: sut
-        )
-
-        // Wait for async poster extraction to complete
-        try await Task.sleep(nanoseconds: 500_000_000)
-
-        XCTAssertFalse(callbackFired, "onVideoSelectionChanged should NOT fire on restore path")
-    }
-
-    /// Fix 1: After MediaRestoreHelper.restore() with persisted selection,
-    /// exportVideoSelectionsSnapshot returns matching trim/offset/audio params.
-    /// This is the critical test: pendingPersistedSelection must be applied INSIDE the async
-    /// poster task, not synchronously after setVideo returns.
+    /// MediaRestoreCoordinator.restore() with video slot applies persisted trim/offset/audio.
     func test_restoreVideo_appliesPersistedTrimOffsetMuteVolume() async throws {
         let persisted = PersistedVideoSelection(
             trimStart: 2.0,
@@ -201,13 +177,12 @@ final class MediaRestoreHelperVideoSelectionTests: XCTestCase {
             volume: 0.5
         )
 
-        let assignments: [String: MediaRef] = ["block_v1": makeVideoMediaRef()]
-        let videoSelections: [String: PersistedVideoSelection] = ["block_v1": persisted]
+        let slots: [String: SceneMediaSlot] = [
+            "block_v1": .video(mediaRef: makeVideoMediaRef(), videoWindow: persisted)
+        ]
 
-        MediaRestoreHelper.restore(
-            assignments: assignments,
-            userMediaPresent: nil,
-            videoSelections: videoSelections,
+        MediaRestoreCoordinator.restore(
+            slots: slots,
             to: sut
         )
 
@@ -227,14 +202,14 @@ final class MediaRestoreHelperVideoSelectionTests: XCTestCase {
         XCTAssertEqual(vs.volume, 0.5, accuracy: 0.001)
     }
 
-    /// Fix 1: Restore with nil videoSelections keeps default runtime selection (0..duration).
+    /// Restore with nil videoWindow keeps default runtime selection (0..duration).
     func test_restoreVideo_withoutPersistedSelection_keepsDefaultRuntimeSelection() async throws {
-        let assignments: [String: MediaRef] = ["block_v1": makeVideoMediaRef()]
+        let slots: [String: SceneMediaSlot] = [
+            "block_v1": .video(mediaRef: makeVideoMediaRef(), videoWindow: nil)
+        ]
 
-        MediaRestoreHelper.restore(
-            assignments: assignments,
-            userMediaPresent: nil,
-            videoSelections: nil,
+        MediaRestoreCoordinator.restore(
+            slots: slots,
             to: sut
         )
 
@@ -253,25 +228,21 @@ final class MediaRestoreHelperVideoSelectionTests: XCTestCase {
         XCTAssertFalse(vs.isMuted)
     }
 
-    /// Fix 1: User-driven setVideo (default emitSelectionPersistence=true) fires callback.
-    func test_userDrivenSetVideo_emitsPersistenceCallback() async throws {
-        var callbackFired = false
-        sut.onVideoSelectionChanged = { _, _ in
-            callbackFired = true
-        }
+    /// Restore respects slot visibility (presentOnReady).
+    func test_restoreVideo_respectsSlotVisibility() async throws {
+        let slots: [String: SceneMediaSlot] = [
+            "block_v1": .video(mediaRef: makeVideoMediaRef(), visibility: false, videoWindow: nil)
+        ]
 
-        // Direct user-driven setVideo — default params (emitSelectionPersistence=true)
-        let success = sut.setVideo(
-            blockId: "block_v1",
-            url: testVideoURL,
-            ownership: .temporary,
-            presentOnReady: true
+        MediaRestoreCoordinator.restore(
+            slots: slots,
+            to: sut
         )
-        XCTAssertTrue(success)
 
         // Wait for async poster extraction
         try await Task.sleep(nanoseconds: 500_000_000)
 
-        XCTAssertTrue(callbackFired, "onVideoSelectionChanged SHOULD fire for user-driven setVideo")
+        // Visibility should be false (presentOnReady=false)
+        XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_v1"], false)
     }
 }

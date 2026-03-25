@@ -67,32 +67,33 @@ public struct ExportMediaSnapshot: Sendable {
     /// All asset IDs from the template asset index (for warm loading)
     public let allAssetIds: Set<String>
 
-    // MARK: - Factory (persisted media assignments)
+    // MARK: - Factory (unified media slots)
 
-    /// Builds an ExportMediaSnapshot from persisted media assignments.
+    /// Builds an ExportMediaSnapshot from persisted SceneMediaSlots.
     ///
-    /// Source of truth: `editorStore.state.draft.sceneInstanceStates[instanceId].mediaAssignments`
+    /// Source of truth: `editorStore.state.draft.sceneInstanceStates[instanceId].mediaSlotsByBlockId`
     /// resolved via `ProjectStore.absoluteURL(for:)`.
     ///
     /// - Parameters:
     ///   - compiledScene: Compiled scene with asset index
-    ///   - mediaAssignments: Persisted media assignments (blockId -> MediaRef) from EditorStore
+    ///   - mediaSlots: Unified media slots (blockId -> SceneMediaSlot) from EditorStore
     ///   - projectStore: Project store for URL resolution
-    ///   - videoSelections: Video selections by block ID
     ///   - runtime: Scene runtime for block/variant binding info
     /// - Returns: Snapshot with resolved user media references
     /// - Throws: `ExportMediaError.missingPersistedPhoto` if a photo file is not found
     public static func build(
         compiledScene: CompiledScene,
-        mediaAssignments: [String: MediaRef],
+        mediaSlots: [String: SceneMediaSlot],
         projectStore: ProjectStore,
-        videoSelections: [String: VideoSelection],
         runtime: SceneRuntime
     ) throws -> ExportMediaSnapshot {
         var imageRefs: [ImageRef] = []
         var videoRefs: [VideoRef] = []
 
-        for (blockId, mediaRef) in mediaAssignments {
+        for (blockId, slot) in mediaSlots {
+            // Skip hidden slots
+            guard slot.visibility else { continue }
+
             // Collect ALL binding asset IDs for this block from runtime
             var bindingAssetIds: [String] = []
             if let block = runtime.blocks.first(where: { $0.blockId == blockId }) {
@@ -104,9 +105,9 @@ public struct ExportMediaSnapshot: Sendable {
                 }
             }
 
-            switch mediaRef.mediaKind {
+            switch slot.mediaRef.mediaKind {
             case .photo:
-                guard let url = try? projectStore.absoluteURL(for: mediaRef),
+                guard let url = try? projectStore.absoluteURL(for: slot.mediaRef),
                       FileManager.default.fileExists(atPath: url.path) else {
                     let assetId = bindingAssetIds.first ?? "unknown"
                     throw ExportMediaError.missingPersistedPhoto(blockId: blockId, assetId: assetId)
@@ -118,30 +119,20 @@ public struct ExportMediaSnapshot: Sendable {
                 ))
 
             case .video:
-                // Video refs come from videoSelections — skip here
-                break
-            }
-        }
-
-        // Collect video refs from videoSelections
-        for (blockId, selection) in videoSelections {
-            guard selection.isValid else { continue }
-
-            var bindingAssetIds: [String] = []
-            if let block = runtime.blocks.first(where: { $0.blockId == blockId }) {
-                for variant in block.variants {
-                    let assetId = variant.animIR.binding.boundAssetId
-                    if !bindingAssetIds.contains(assetId) {
-                        bindingAssetIds.append(assetId)
-                    }
+                guard let videoWindow = slot.videoWindow else { continue }
+                guard let url = try? projectStore.absoluteURL(for: slot.mediaRef),
+                      FileManager.default.fileExists(atPath: url.path) else {
+                    throw ExportMediaError.missingPersistedVideo(blockId: blockId)
                 }
-            }
+                let selection = videoWindow.toVideoSelection(url: url)
+                guard selection.isValid else { continue }
 
-            videoRefs.append(VideoRef(
-                blockId: blockId,
-                selection: selection,
-                bindingAssetIds: bindingAssetIds
-            ))
+                videoRefs.append(VideoRef(
+                    blockId: blockId,
+                    selection: selection,
+                    bindingAssetIds: bindingAssetIds
+                ))
+            }
         }
 
         // Template asset IDs only (user photos are injected separately)

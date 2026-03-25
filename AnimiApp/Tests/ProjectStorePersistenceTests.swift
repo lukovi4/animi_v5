@@ -111,8 +111,7 @@ final class ProjectStorePersistenceTests: XCTestCase {
                 tx: Double(i) * 10, ty: Double(i) * 20
             )]
             s.layerToggles = ["block_\(i)": ["visible": true, "shadow": false]]
-            s.mediaAssignments = ["block_\(i)": MediaRef.file("Media/UserMedia/img_\(i).jpg")]
-            s.userMediaPresent = ["block_\(i)": i % 2 == 0]
+            s.mediaSlotsByBlockId = ["block_\(i)": .photo(mediaRef: MediaRef.file("Media/UserMedia/img_\(i).jpg"), visibility: i % 2 == 0)]
             states[item.id] = s
         }
 

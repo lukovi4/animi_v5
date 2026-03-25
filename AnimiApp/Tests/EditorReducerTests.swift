@@ -585,8 +585,8 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertTrue(result.shouldPushSnapshot)
     }
 
-    /// Test: setBlockMedia stores media reference in SceneState.
-    func testSetBlockMedia_storesInSceneState() {
+    /// Test: setMediaSlot stores slot in SceneState.
+    func testSetMediaSlot_storesInSceneState() {
         // Given
         let draft = makeDraft(sceneDurations: [2_000_000])
         let state = EditorReducer.reduce(
@@ -596,26 +596,27 @@ final class EditorReducerTests: XCTestCase {
 
         let sceneId = state.sceneItems[0].id
         let mediaRef = MediaRef.file("Media/UserMedia/test.jpg")
+        let slot = SceneMediaSlot.photo(mediaRef: mediaRef)
 
-        // When: set media
+        // When: set slot
         let result = EditorReducer.reduce(
             state: state,
-            action: .setBlockMedia(sceneInstanceId: sceneId, blockId: "block1", media: mediaRef)
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "block1", slot: slot)
         )
 
-        // Then: media stored in SceneState
+        // Then: slot stored in SceneState
         let sceneState = result.state.draft.sceneInstanceStates[sceneId]
-        XCTAssertEqual(sceneState?.mediaAssignments?["block1"], mediaRef)
+        XCTAssertEqual(sceneState?.mediaSlotsByBlockId?["block1"]?.mediaRef, mediaRef)
         XCTAssertTrue(result.shouldPushSnapshot)
     }
 
-    /// Test: setBlockMedia with nil clears media.
-    func testSetBlockMedia_nilClearsMedia() {
-        // Given: scene with media
+    /// Test: setMediaSlot with nil clears slot.
+    func testSetMediaSlot_nilClearsSlot() {
+        // Given: scene with slot
         var draft = makeDraft(sceneDurations: [2_000_000])
         let sceneId = draft.canonicalTimeline.sceneItems[0].id
         var sceneState = SceneState.empty
-        sceneState.mediaAssignments = ["block1": MediaRef.file("old.jpg")]
+        sceneState.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("old.jpg"))]
         draft.sceneInstanceStates[sceneId] = sceneState
 
         let state = EditorReducer.reduce(
@@ -623,14 +624,14 @@ final class EditorReducerTests: XCTestCase {
             action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
         ).state
 
-        // When: clear media
+        // When: clear slot
         let result = EditorReducer.reduce(
             state: state,
-            action: .setBlockMedia(sceneInstanceId: sceneId, blockId: "block1", media: nil)
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "block1", slot: nil)
         )
 
-        // Then: media cleared
-        XCTAssertNil(result.state.draft.sceneInstanceStates[sceneId]?.mediaAssignments?["block1"])
+        // Then: slot cleared
+        XCTAssertNil(result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block1"])
         XCTAssertTrue(result.shouldPushSnapshot)
     }
 
@@ -755,7 +756,7 @@ final class EditorReducerTests: XCTestCase {
 
         var stateA2 = SceneState.empty
         stateA2.variantOverrides["block1"] = "variant_a2"
-        stateA2.mediaAssignments = ["block1": MediaRef.file("media_a2.jpg")]
+        stateA2.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("media_a2.jpg"))]
         draft.sceneInstanceStates[sceneA2] = stateA2
 
         let state = EditorReducer.reduce(
@@ -793,7 +794,7 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneB]?.layerToggles["block1"]?["toggle1"], true)
 
         XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneA2]?.variantOverrides["block1"], "variant_a2")
-        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneA2]?.mediaAssignments?["block1"], MediaRef.file("media_a2.jpg"))
+        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneA2]?.mediaSlotsByBlockId?["block1"]?.mediaRef, MediaRef.file("media_a2.jpg"))
 
         // Then: payloadIds preserved
         let payloadIds = result.state.sceneItems.map { $0.payloadId }
@@ -1024,7 +1025,7 @@ final class EditorReducerTests: XCTestCase {
         state1.variantOverrides["block1"] = "variant_a"
         state1.userTransforms["block1"] = Matrix2D(a: 1.5, b: 0.1, c: -0.1, d: 1.5, tx: 10, ty: 20)
         state1.layerToggles["block1"] = ["toggle1": true, "toggle2": false]
-        state1.mediaAssignments = ["block1": MediaRef.file("Media/test.jpg")]
+        state1.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("Media/test.jpg"))]
         draft.sceneInstanceStates[scene1Id] = state1
 
         var state2 = SceneState.empty
@@ -1074,7 +1075,7 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.variantOverrides["block1"], "variant_a")
         XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.userTransforms["block1"]?.tx, 10)
         XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.layerToggles["block1"]?["toggle1"], true)
-        XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.mediaAssignments?["block1"], MediaRef.file("Media/test.jpg"))
+        XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.mediaSlotsByBlockId?["block1"]?.mediaRef, MediaRef.file("Media/test.jpg"))
         XCTAssertEqual(decoded.sceneInstanceStates[scene2Id]?.variantOverrides["block2"], "variant_b")
 
         // Then: overlay track preserved
@@ -1189,17 +1190,21 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertFalse(result.shouldPushSnapshot)
     }
 
-    /// Test: setBlockMediaPresent pushes snapshot.
+    /// Test: setBlockMediaPresent pushes snapshot and updates slot visibility.
     func test_setBlockMediaPresent_pushesSnapshot() {
-        let state = makeStateInSceneEdit()
+        var state = makeStateInSceneEdit()
         let sceneId = state.canonicalTimeline.sceneItems[0].id
+        // Need an existing slot for visibility to be updated
+        var sceneState = SceneState.empty
+        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"), visibility: true)]
+        state.draft.sceneInstanceStates[sceneId] = sceneState
 
         let result = EditorReducer.reduce(
             state: state,
             action: .setBlockMediaPresent(sceneInstanceId: sceneId, blockId: "block_1", present: false)
         )
 
-        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneId]?.userMediaPresent?["block_1"], false)
+        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_1"]?.visibility, false)
         XCTAssertTrue(result.shouldPushSnapshot)
     }
 
@@ -1207,9 +1212,9 @@ final class EditorReducerTests: XCTestCase {
     func test_setBlockMediaPresent_enablesVisibility() {
         var state = makeStateInSceneEdit()
         let sceneId = state.canonicalTimeline.sceneItems[0].id
-        // Start with disabled state
+        // Start with disabled slot
         var sceneState = SceneState.empty
-        sceneState.userMediaPresent = ["block_1": false]
+        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"), visibility: false)]
         state.draft.sceneInstanceStates[sceneId] = sceneState
 
         let result = EditorReducer.reduce(
@@ -1217,7 +1222,7 @@ final class EditorReducerTests: XCTestCase {
             action: .setBlockMediaPresent(sceneInstanceId: sceneId, blockId: "block_1", present: true)
         )
 
-        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneId]?.userMediaPresent?["block_1"], true)
+        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_1"]?.visibility, true)
     }
 
     /// Test: resetSceneState resets to empty and pushes snapshot.
@@ -1227,7 +1232,7 @@ final class EditorReducerTests: XCTestCase {
         // Add some state
         var sceneState = SceneState.empty
         sceneState.variantOverrides["block_1"] = "variant_a"
-        sceneState.userMediaPresent = ["block_1": true]
+        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"))]
         state.draft.sceneInstanceStates[sceneId] = sceneState
 
         let result = EditorReducer.reduce(
@@ -1239,42 +1244,40 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertTrue(result.shouldPushSnapshot)
     }
 
-    /// Test: setBlockMedia automatically sets userMediaPresent to true.
-    func test_setBlockMedia_setsUserMediaPresentTrue() {
+    /// Test: setMediaSlot stores slot with visibility=true.
+    func test_setMediaSlot_setsVisibilityTrue() {
         let state = makeStateInSceneEdit()
         let sceneId = state.canonicalTimeline.sceneItems[0].id
         let mediaRef = MediaRef.file("Media/UserMedia/test.jpg")
+        let slot = SceneMediaSlot.photo(mediaRef: mediaRef)
 
         let result = EditorReducer.reduce(
             state: state,
-            action: .setBlockMedia(sceneInstanceId: sceneId, blockId: "block_1", media: mediaRef)
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "block_1", slot: slot)
         )
 
-        // Then: media assigned
-        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneId]?.mediaAssignments?["block_1"], mediaRef)
-        // Then: userMediaPresent automatically set to true
-        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneId]?.userMediaPresent?["block_1"], true)
+        // Then: slot assigned with visibility=true
+        let storedSlot = result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_1"]
+        XCTAssertEqual(storedSlot?.mediaRef, mediaRef)
+        XCTAssertEqual(storedSlot?.visibility, true)
     }
 
-    /// Test: setBlockMedia with nil automatically sets userMediaPresent to false.
-    func test_setBlockMedia_nilSetsUserMediaPresentFalse() {
+    /// Test: setMediaSlot with nil clears slot.
+    func test_setMediaSlot_nilClearsSlot() {
         var state = makeStateInSceneEdit()
         let sceneId = state.canonicalTimeline.sceneItems[0].id
-        // Start with assigned media
+        // Start with assigned slot
         var sceneState = SceneState.empty
-        sceneState.mediaAssignments = ["block_1": MediaRef.file("old.jpg")]
-        sceneState.userMediaPresent = ["block_1": true]
+        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("old.jpg"))]
         state.draft.sceneInstanceStates[sceneId] = sceneState
 
         let result = EditorReducer.reduce(
             state: state,
-            action: .setBlockMedia(sceneInstanceId: sceneId, blockId: "block_1", media: nil)
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "block_1", slot: nil)
         )
 
-        // Then: media cleared
-        XCTAssertNil(result.state.draft.sceneInstanceStates[sceneId]?.mediaAssignments?["block_1"])
-        // Then: userMediaPresent automatically set to false
-        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneId]?.userMediaPresent?["block_1"], false)
+        // Then: slot cleared
+        XCTAssertNil(result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_1"])
     }
 
     /// Test: enterSceneEdit with invalid sceneId returns unchanged state.
@@ -1352,17 +1355,27 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertTrue(callbackFired)
     }
 
-    /// Test: userMediaPresent roundtrip through JSON.
-    func test_sceneState_userMediaPresent_jsonRoundtrip() throws {
+    /// Test: mediaSlotsByBlockId roundtrip through JSON.
+    func test_sceneState_mediaSlots_jsonRoundtrip() throws {
         var state = SceneState.empty
-        state.userMediaPresent = ["block_1": true, "block_2": false]
+        state.mediaSlotsByBlockId = [
+            "block_1": .photo(mediaRef: MediaRef.file("Media/test.jpg"), visibility: true),
+            "block_2": .video(
+                mediaRef: MediaRef.file("Media/video.mp4", mediaKind: .video),
+                visibility: false,
+                videoWindow: PersistedVideoSelection(trimStart: 1.0, trimEnd: 5.0, offset: 0.5)
+            )
+        ]
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(state)
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(SceneState.self, from: data)
 
-        XCTAssertEqual(decoded.userMediaPresent?["block_1"], true)
-        XCTAssertEqual(decoded.userMediaPresent?["block_2"], false)
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_1"]?.visibility, true)
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_1"]?.mediaRef, MediaRef.file("Media/test.jpg"))
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.visibility, false)
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.trimStart, 1.0)
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.offset, 0.5)
     }
 }

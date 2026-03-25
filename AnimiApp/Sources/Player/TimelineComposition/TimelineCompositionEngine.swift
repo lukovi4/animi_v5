@@ -500,15 +500,8 @@ public final class TimelineCompositionEngine {
         // Propagate diagnostics sink to runtime
         runtime.runtimeDiagnosticsSink = runtimeDiagnosticsSink
 
-        // Wire video selection persistence callback
-        runtime.userMediaService.onVideoSelectionChanged = { [weak self] blockId, persisted in
-            guard let self else { return }
-            var state = self.sceneStates[instanceId] ?? .empty
-            var selections = state.videoSelections ?? [:]
-            selections[blockId] = persisted
-            state.videoSelections = selections
-            self.sceneStates[instanceId] = state
-        }
+        // Video selection persistence is handled by MediaIngestCoordinator (slot includes videoWindow).
+        // No runtime → persistence callback needed in the new architecture.
 
         // Apply state if available
         if let state = sceneStates[instanceId] {
@@ -1062,33 +1055,28 @@ public final class TimelineCompositionEngine {
                 resources = try await resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
             }
 
-            // 3. Video selections: warm runtime > persisted state > empty
+            // 3. Persisted-only: assemble video selections from unified slots
             let state = sceneStates[instanceId] ?? .empty
-            let videoSelections: [String: VideoSelection]
-            if let warmRuntime = instanceRuntimes[instanceId] {
-                // Warm runtime has in-flight edits — authoritative source
-                videoSelections = warmRuntime.userMediaService.exportVideoSelectionsSnapshot()
-            } else {
-                // Cold scene: assemble from PersistedVideoSelection + MediaRef URLs
-                videoSelections = try await Self.assembleVideoSelections(from: state)
-            }
+            let mediaSlots = state.mediaSlotsByBlockId ?? [:]
+            let videoSelections = try await Self.assembleVideoSelections(from: state)
 
             // 4. Render state from sceneStates (no runtime needed)
+            let userMediaPresent: [String: Bool] = mediaSlots.reduce(into: [:]) { result, entry in
+                result[entry.key] = entry.value.visibility
+            }
             let renderState = SceneRenderStateSnapshot(
                 userTransforms: state.userTransforms,
                 variantOverrides: state.variantOverrides,
-                userMediaPresent: state.userMediaPresent ?? [:],
+                userMediaPresent: userMediaPresent,
                 layerToggleState: state.layerToggles
             )
 
             // 5. Build snapshot from cache resources
             let compiled = resources.compiled
-            let mediaAssignments = state.mediaAssignments ?? [:]
             let mediaSnapshot = try ExportMediaSnapshot.build(
                 compiledScene: compiled,
-                mediaAssignments: mediaAssignments,
+                mediaSlots: mediaSlots,
                 projectStore: ProjectStore.shared,
-                videoSelections: videoSelections,
                 runtime: compiled.runtime
             )
 
@@ -1124,58 +1112,55 @@ public final class TimelineCompositionEngine {
         )
     }
 
-    /// Assembles runtime VideoSelections from persisted PersistedVideoSelection + MediaRef URLs.
-    /// Handles legacy drafts (videoSelections == nil) by synthesizing defaults from file duration.
+    /// Assembles runtime VideoSelections from unified SceneMediaSlot.
+    /// Handles slots without videoWindow by probing file duration off MainActor.
     /// Throws typed error for assigned-but-missing video files (consistent with photo contract).
-    /// Duration probing runs off MainActor to avoid main-thread file I/O.
     private static func assembleVideoSelections(from state: SceneState) async throws -> [String: VideoSelection] {
-        let mediaAssignments = state.mediaAssignments ?? [:]
-        let persisted = state.videoSelections ?? [:]
+        let slots = state.mediaSlotsByBlockId ?? [:]
 
-        // Collect all video blockIds from mediaAssignments
-        var videoEntries: [(blockId: String, mediaRef: MediaRef)] = []
-        for (blockId, mediaRef) in mediaAssignments where mediaRef.mediaKind == .video {
-            videoEntries.append((blockId, mediaRef))
+        // Collect video slots
+        var videoEntries: [(blockId: String, slot: SceneMediaSlot)] = []
+        for (blockId, slot) in slots where slot.mediaRef.mediaKind == .video {
+            videoEntries.append((blockId, slot))
         }
         guard !videoEntries.isEmpty else { return [:] }
 
-        // Fast path: all video entries have persisted selections (no duration probing needed)
-        var needsLegacyProbing = false
+        // Fast path: all video slots have videoWindow (no duration probing needed)
+        var needsProbing = false
         var fastResult: [String: VideoSelection] = [:]
-        for (blockId, mediaRef) in videoEntries {
-            guard let url = try? ProjectStore.shared.absoluteURL(for: mediaRef) else {
+        for (blockId, slot) in videoEntries {
+            guard let url = try? ProjectStore.shared.absoluteURL(for: slot.mediaRef) else {
                 throw ExportMediaError.missingPersistedVideo(blockId: blockId)
             }
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw ExportMediaError.missingPersistedVideo(blockId: blockId)
             }
 
-            if let pvs = persisted[blockId] {
-                fastResult[blockId] = pvs.toVideoSelection(url: url)
+            if let vw = slot.videoWindow {
+                fastResult[blockId] = vw.toVideoSelection(url: url)
             } else {
-                needsLegacyProbing = true
+                needsProbing = true
                 break
             }
         }
 
-        // If all entries resolved from persisted state, return without async work
-        guard needsLegacyProbing else { return fastResult }
+        guard needsProbing else { return fastResult }
 
-        // Slow path: legacy draft needs AVURLAsset.duration probing off MainActor
+        // Slow path: needs AVURLAsset.duration probing off MainActor
         let resolved = try await Task.detached(priority: .userInitiated) {
             var result: [String: VideoSelection] = [:]
-            for (blockId, mediaRef) in videoEntries {
-                guard let url = try? ProjectStore.shared.absoluteURL(for: mediaRef) else {
+            for (blockId, slot) in videoEntries {
+                guard let url = try? ProjectStore.shared.absoluteURL(for: slot.mediaRef) else {
                     throw ExportMediaError.missingPersistedVideo(blockId: blockId)
                 }
                 guard FileManager.default.fileExists(atPath: url.path) else {
                     throw ExportMediaError.missingPersistedVideo(blockId: blockId)
                 }
 
-                if let pvs = persisted[blockId] {
-                    result[blockId] = pvs.toVideoSelection(url: url)
+                if let vw = slot.videoWindow {
+                    result[blockId] = vw.toVideoSelection(url: url)
                 } else {
-                    // Legacy draft: synthesize default from file duration
+                    // No videoWindow: synthesize default from file duration
                     let asset = AVURLAsset(url: url)
                     let durationSeconds = CMTimeGetSeconds(asset.duration)
                     guard durationSeconds > 0, durationSeconds.isFinite else {

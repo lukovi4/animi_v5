@@ -84,29 +84,29 @@ final class PersistedVideoSelectionTests: XCTestCase {
 
     // MARK: - SceneState Integration
 
-    func test_sceneState_withVideoSelections_encodesDecodes() throws {
+    func test_sceneState_withMediaSlots_encodesDecodes() throws {
         var state = SceneState.empty
-        state.videoSelections = [
-            "block1": PersistedVideoSelection(trimStart: 0, trimEnd: 5.0),
-            "block2": PersistedVideoSelection(trimStart: 1.0, trimEnd: 10.0, isMuted: true)
+        state.mediaSlotsByBlockId = [
+            "block1": .video(mediaRef: MediaRef.file("Media/video1.mp4"), videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)),
+            "block2": .video(mediaRef: MediaRef.file("Media/video2.mp4"), videoWindow: PersistedVideoSelection(trimStart: 1.0, trimEnd: 10.0, isMuted: true))
         ]
 
         let data = try JSONEncoder().encode(state)
         let decoded = try JSONDecoder().decode(SceneState.self, from: data)
 
-        XCTAssertEqual(decoded.videoSelections?.count, 2)
-        XCTAssertEqual(decoded.videoSelections?["block1"]?.trimEnd, 5.0)
-        XCTAssertEqual(decoded.videoSelections?["block2"]?.isMuted, true)
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?.count, 2)
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block1"]?.videoWindow?.trimEnd, 5.0)
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block2"]?.videoWindow?.isMuted, true)
     }
 
-    func test_sceneState_backwardCompat_nilVideoSelections() throws {
-        // Old JSON without videoSelections field
+    func test_sceneState_nilMediaSlots() throws {
+        // JSON without mediaSlotsByBlockId field
         let json = """
         {"variantOverrides":{},"userTransforms":{},"layerToggles":{}}
         """
         let data = json.data(using: .utf8)!
         let decoded = try JSONDecoder().decode(SceneState.self, from: data)
 
-        XCTAssertNil(decoded.videoSelections)
+        XCTAssertNil(decoded.mediaSlotsByBlockId)
     }
 }

@@ -707,13 +707,47 @@ public final class ProjectStore {
             }
         }
 
-        // User media from scene instance states
+        // User media from scene instance states (v7: unified media slots)
         for (_, sceneState) in draft.sceneInstanceStates {
-            if let assignments = sceneState.mediaAssignments {
-                for (_, mediaRef) in assignments {
-                    paths.insert(mediaRef.id)
+            if let slots = sceneState.mediaSlotsByBlockId {
+                for (_, slot) in slots {
+                    paths.insert(slot.mediaRef.id)
                 }
             }
+        }
+    }
+
+    // MARK: - Schema Purge (v7)
+
+    /// Purges saved projects with incompatible schema from the index.
+    /// Called on first launch with v7 schema — no users in prod, so safe to invalidate.
+    public func purgeIncompatibleSavedProjects() {
+        guard let index = try? loadSavedIndex() else { return }
+
+        var newIndex = index
+        var purgedCount = 0
+
+        for (projectId, _) in index.projects {
+            // loadSavedProject already returns nil for invalid schema
+            if loadSavedProject(projectId: projectId) == nil {
+                newIndex.projects.removeValue(forKey: projectId)
+                // Remove project file
+                if let url = try? projectURL(for: projectId),
+                   fileManager.fileExists(atPath: url.path) {
+                    try? fileManager.removeItem(at: url)
+                }
+                purgedCount += 1
+            }
+        }
+
+        if purgedCount > 0 {
+            try? saveSavedIndex(newIndex)
+            #if DEBUG
+            print("[ProjectStore] Purged \(purgedCount) incompatible saved project(s)")
+            #endif
+
+            // Clean up orphan media from purged projects
+            triggerAsyncGC()
         }
     }
 

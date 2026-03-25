@@ -208,9 +208,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             firstId: SceneState(
                 variantOverrides: ["block1": "variantA"],
                 userTransforms: ["block1": .identity],
-                layerToggles: ["block1": ["toggle1": false]],
-                mediaAssignments: nil,
-                userMediaPresent: ["block1": true]
+                layerToggles: ["block1": ["toggle1": false]]
             )
             // secondId intentionally missing -> .empty
         ]
@@ -222,7 +220,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         // First scene: matches provided state
         let snap1 = session.scenesByInstanceId[firstId]!
         XCTAssertEqual(snap1.renderState.variantOverrides, ["block1": "variantA"])
-        XCTAssertEqual(snap1.renderState.userMediaPresent, ["block1": true])
+        XCTAssertTrue(snap1.renderState.userMediaPresent.isEmpty)
         XCTAssertEqual(snap1.renderState.layerToggleState, ["block1": ["toggle1": false]])
 
         // Second scene: empty state
@@ -400,10 +398,10 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         }
     }
 
-    /// Fix 3: Cold scene with legacy video mediaAssignment (videoSelections: nil)
-    /// produces non-empty videoSelections via AVURLAsset.duration fallback.
+    /// Cold scene with video media slot (videoWindow present) produces
+    /// non-empty videoSelections via persisted videoWindow parameters.
     @MainActor
-    func testBuildExportSession_coldLegacyVideoAssignment_synthesizesDefaultVideoSelection() async throws {
+    func testBuildExportSession_coldVideoSlot_producesVideoSelection() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -411,7 +409,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
 
         // Create a real video file in ProjectStore's directory
         let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
-        let relativePath = "Media/TestLegacy/legacy_\(UUID().uuidString).mp4"
+        let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
         let videoURL = projectsDir.appendingPathComponent(relativePath)
         try await createMinimalVideoFile(at: videoURL)
         defer { try? FileManager.default.removeItem(at: videoURL) }
@@ -420,12 +418,15 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
         let instanceId = timeline.sceneItems[0].id
 
-        // Legacy draft: has mediaAssignments with .video but NO videoSelections
-        let legacyState = SceneState(
-            mediaAssignments: [
-                "block_v1": MediaRef(kind: .file, id: relativePath, mediaKind: .video)
-            ],
-            videoSelections: nil  // Legacy: field absent
+        // v7 state: video slot with persisted videoWindow
+        let state = SceneState(
+            mediaSlotsByBlockId: [
+                "block_v1": .video(
+                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    visibility: true,
+                    videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+                )
+            ]
         )
 
         let engine = makeEngine(
@@ -433,22 +434,22 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             commandQueue: commandQueue,
             timeline: timeline,
             resources: resources,
-            sceneStates: [instanceId: legacyState]
+            sceneStates: [instanceId: state]
         )
 
         let session = try await engine.buildExportSession()
 
-        // Verify the cold scene's videoSelections were synthesized (not empty)
+        // Verify the cold scene's videoSelections were assembled from persisted slot
         let snapshot = session.scenesByInstanceId[instanceId]!
-        XCTAssertFalse(snapshot.videoSelections.isEmpty, "Legacy draft should synthesize default video selections from file duration")
+        XCTAssertFalse(snapshot.videoSelections.isEmpty, "Video slot should produce video selections")
 
         guard let vs = snapshot.videoSelections["block_v1"] else {
-            XCTFail("Expected synthesized video selection for block_v1")
+            XCTFail("Expected video selection for block_v1")
             return
         }
         XCTAssertEqual(vs.url, videoURL)
-        XCTAssertGreaterThan(vs.trimEnd, 0, "trimEnd should be > 0 (from file duration)")
-        XCTAssertEqual(vs.trimStart, 0, accuracy: 0.001, "Default trimStart should be 0")
-        XCTAssertEqual(vs.offset, 0, accuracy: 0.001, "Default offset should be 0")
+        XCTAssertEqual(vs.trimEnd, 5.0, accuracy: 0.001, "trimEnd should match persisted videoWindow")
+        XCTAssertEqual(vs.trimStart, 0, accuracy: 0.001, "trimStart should match persisted videoWindow")
+        XCTAssertEqual(vs.offset, 0, accuracy: 0.001, "offset should match persisted videoWindow")
     }
 }

@@ -360,7 +360,7 @@ public final class EditorStore {
             return (instanceId, blockId)
         case .setBlockToggle(let instanceId, let blockId, _, _):
             return (instanceId, blockId)
-        case .setBlockMedia(let instanceId, let blockId, _):
+        case .setMediaSlot(let instanceId, let blockId, _):
             return (instanceId, blockId)
         case .setBlockMediaPresent(let instanceId, let blockId, _):
             return (instanceId, blockId)
@@ -386,7 +386,7 @@ public final class EditorStore {
         case .setBlockTransform(_, _, _, let phase): actionName = "setBlockTransform(\(phase))"
         case .setBlockVariant: actionName = "setBlockVariant"
         case .setBlockToggle: actionName = "setBlockToggle"
-        case .setBlockMedia: actionName = "setBlockMedia"
+        case .setMediaSlot: actionName = "setMediaSlot"
         case .focusScene: actionName = "focusScene"
         case .enterSceneEdit: actionName = "enterSceneEdit"
         case .exitSceneEdit: actionName = "exitSceneEdit"
