@@ -240,7 +240,7 @@ public final class UserMediaService {
     // MARK: - Constants
 
     /// Epsilon for hold-last clamp (1 tick in timescale 600)
-    private static let epsilon: Double = 1.0 / 600.0
+    private static let epsilon: Double = VideoWindowValidator.epsilon
 
     // MARK: - Properties
 
@@ -574,32 +574,17 @@ public final class UserMediaService {
                 // Get duration after provider is ready
                 let duration = provider.duration.seconds
 
-                // Validate duration
-                guard duration > Self.epsilon else {
-                    // P0: Use failure helper to preserve failure state
-                    self.markVideoSetupFailed(blockId: blockId, reason: "video duration too short (\(duration)s)", token: token)
-                    await self.posterSemaphore.release()
-                    return
-                }
-
-                // Build VideoSelection from persisted params
-                let selection = persistedSelection.toVideoSelection(url: url)
-
-                // Validate effective window: must be entirely within [0, duration]
-                guard selection.winStart >= 0 else {
-                    self.markVideoSetupFailed(blockId: blockId, reason: "effective winStart (\(selection.winStart)) is negative", token: token)
-                    await self.posterSemaphore.release()
-                    return
-                }
-
-                guard selection.winEnd <= duration + Self.epsilon else {
-                    self.markVideoSetupFailed(blockId: blockId, reason: "effective winEnd (\(selection.winEnd)) exceeds duration (\(duration))", token: token)
-                    await self.posterSemaphore.release()
-                    return
-                }
-
-                guard selection.winEnd > selection.winStart else {
-                    self.markVideoSetupFailed(blockId: blockId, reason: "invalid selection (winEnd <= winStart)", token: token)
+                // Validate video window via shared validator
+                let selection: VideoSelection
+                do {
+                    selection = try VideoWindowValidator.validate(
+                        selection: persistedSelection,
+                        url: url,
+                        actualDuration: duration,
+                        blockId: blockId
+                    )
+                } catch {
+                    self.markVideoSetupFailed(blockId: blockId, reason: error.localizedDescription, token: token)
                     await self.posterSemaphore.release()
                     return
                 }

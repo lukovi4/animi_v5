@@ -1055,10 +1055,9 @@ public final class TimelineCompositionEngine {
                 resources = try await resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
             }
 
-            // 3. Persisted-only: assemble video selections from unified slots
+            // 3. Persisted-only: state and media slots
             let state = sceneStates[instanceId] ?? .empty
             let mediaSlots = state.mediaSlotsByBlockId ?? [:]
-            let videoSelections = try await Self.assembleVideoSelections(from: state)
 
             // 4. Render state from sceneStates (no runtime needed)
             let userMediaPresent: [String: Bool] = mediaSlots.reduce(into: [:]) { result, entry in
@@ -1071,14 +1070,20 @@ public final class TimelineCompositionEngine {
                 layerToggleState: state.layerToggles
             )
 
-            // 5. Build snapshot from cache resources
+            // 5. Build snapshot from cache resources (async — probes video duration)
             let compiled = resources.compiled
-            let mediaSnapshot = try ExportMediaSnapshot.build(
+            let mediaSnapshot = try await ExportMediaSnapshot.build(
                 compiledScene: compiled,
                 mediaSlots: mediaSlots,
                 projectStore: ProjectStore.shared,
                 runtime: compiled.runtime
             )
+
+            // Derive videoSelections from validated mediaSnapshot.videoRefs
+            var videoSelections: [String: VideoSelection] = [:]
+            for ref in mediaSnapshot.videoRefs {
+                videoSelections[ref.blockId] = ref.selection
+            }
 
             let snapshot = TimelineExportSceneSnapshot(
                 sceneIndex: index,
@@ -1112,66 +1117,4 @@ public final class TimelineCompositionEngine {
         )
     }
 
-    /// Assembles runtime VideoSelections from unified SceneMediaSlot.
-    /// Handles slots without videoWindow by probing file duration off MainActor.
-    /// Throws typed error for assigned-but-missing video files (consistent with photo contract).
-    private static func assembleVideoSelections(from state: SceneState) async throws -> [String: VideoSelection] {
-        let slots = state.mediaSlotsByBlockId ?? [:]
-
-        // Collect video slots
-        var videoEntries: [(blockId: String, slot: SceneMediaSlot)] = []
-        for (blockId, slot) in slots where slot.mediaRef.mediaKind == .video {
-            videoEntries.append((blockId, slot))
-        }
-        guard !videoEntries.isEmpty else { return [:] }
-
-        // Fast path: all video slots have videoWindow (no duration probing needed)
-        var needsProbing = false
-        var fastResult: [String: VideoSelection] = [:]
-        for (blockId, slot) in videoEntries {
-            guard let url = try? ProjectStore.shared.absoluteURL(for: slot.mediaRef) else {
-                throw ExportMediaError.missingPersistedVideo(blockId: blockId)
-            }
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw ExportMediaError.missingPersistedVideo(blockId: blockId)
-            }
-
-            if let vw = slot.videoWindow {
-                fastResult[blockId] = vw.toVideoSelection(url: url)
-            } else {
-                needsProbing = true
-                break
-            }
-        }
-
-        guard needsProbing else { return fastResult }
-
-        // Slow path: needs AVURLAsset.duration probing off MainActor
-        let resolved = try await Task.detached(priority: .userInitiated) {
-            var result: [String: VideoSelection] = [:]
-            for (blockId, slot) in videoEntries {
-                guard let url = try? ProjectStore.shared.absoluteURL(for: slot.mediaRef) else {
-                    throw ExportMediaError.missingPersistedVideo(blockId: blockId)
-                }
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    throw ExportMediaError.missingPersistedVideo(blockId: blockId)
-                }
-
-                if let vw = slot.videoWindow {
-                    result[blockId] = vw.toVideoSelection(url: url)
-                } else {
-                    // No videoWindow: synthesize default from file duration
-                    let asset = AVURLAsset(url: url)
-                    let durationSeconds = CMTimeGetSeconds(asset.duration)
-                    guard durationSeconds > 0, durationSeconds.isFinite else {
-                        throw ExportMediaError.missingPersistedVideo(blockId: blockId)
-                    }
-                    result[blockId] = VideoSelection(url: url, duration: durationSeconds)
-                }
-            }
-            return result
-        }.value
-
-        return resolved
-    }
 }

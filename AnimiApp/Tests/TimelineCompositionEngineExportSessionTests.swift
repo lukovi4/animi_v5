@@ -351,8 +351,8 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
 
     // MARK: - Legacy Cold Export
 
-    /// Creates a minimal valid .mp4 file (~1 frame) so AVURLAsset.duration returns > 0.
-    private func createMinimalVideoFile(at url: URL) async throws {
+    /// Creates a minimal valid .mp4 file so AVURLAsset.duration returns > 0.
+    private func createMinimalVideoFile(at url: URL, durationFrames: Int = 2, fps: Int32 = 30) async throws {
 
         // Create directory if needed
         try FileManager.default.createDirectory(
@@ -380,15 +380,14 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
-        // Create a single black frame
         var pixelBuffer: CVPixelBuffer?
         CVPixelBufferCreate(nil, 16, 16, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
         guard let buffer = pixelBuffer else {
             throw NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create pixel buffer"])
         }
-        adaptor.append(buffer, withPresentationTime: .zero)
-        // Add second frame to ensure non-zero duration
-        adaptor.append(buffer, withPresentationTime: CMTime(value: 1, timescale: 30))
+        for i in 0..<durationFrames {
+            adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: fps))
+        }
 
         input.markAsFinished()
         await writer.finishWriting()
@@ -418,13 +417,18 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
         let instanceId = timeline.sceneItems[0].id
 
-        // v7 state: video slot with persisted videoWindow
+        // Probe actual duration so trimEnd stays within bounds
+        let asset = AVURLAsset(url: videoURL)
+        let duration = try await asset.load(.duration)
+        let durationSeconds = CMTimeGetSeconds(duration)
+
+        // v7 state: video slot with persisted videoWindow matching actual duration
         let state = SceneState(
             mediaSlotsByBlockId: [
                 "block_v1": .video(
                     mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
                     visibility: true,
-                    videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+                    videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: durationSeconds)
                 )
             ]
         )
@@ -448,8 +452,205 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             return
         }
         XCTAssertEqual(vs.url, videoURL)
-        XCTAssertEqual(vs.trimEnd, 5.0, accuracy: 0.001, "trimEnd should match persisted videoWindow")
+        XCTAssertEqual(vs.trimEnd, durationSeconds, accuracy: 0.001, "trimEnd should match persisted videoWindow")
         XCTAssertEqual(vs.trimStart, 0, accuracy: 0.001, "trimStart should match persisted videoWindow")
         XCTAssertEqual(vs.offset, 0, accuracy: 0.001, "offset should match persisted videoWindow")
+    }
+
+    // MARK: - Strict Video Contract Tests
+
+    /// Visible video without videoWindow causes buildExportSession to throw.
+    @MainActor
+    func testBuildExportSession_visibleVideoWithoutVideoWindow_throws() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
+        let videoURL = projectsDir.appendingPathComponent(relativePath)
+        try await createMinimalVideoFile(at: videoURL)
+        defer { try? FileManager.default.removeItem(at: videoURL) }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let instanceId = timeline.sceneItems[0].id
+
+        // Nil videoWindow on visible video slot
+        let state = SceneState(
+            mediaSlotsByBlockId: [
+                "block_v1": SceneMediaSlot(
+                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    visibility: true,
+                    videoWindow: nil
+                )
+            ]
+        )
+
+        let engine = makeEngine(
+            device: device,
+            commandQueue: commandQueue,
+            timeline: timeline,
+            resources: resources,
+            sceneStates: [instanceId: state]
+        )
+
+        do {
+            _ = try await engine.buildExportSession()
+            XCTFail("Expected missingVideoWindow error")
+        } catch let error as ExportMediaError {
+            if case .missingVideoWindow = error {
+                // Expected
+            } else {
+                XCTFail("Expected missingVideoWindow, got \(error)")
+            }
+        }
+    }
+
+    /// Invalid persisted window (winEnd past duration) causes buildExportSession to throw.
+    @MainActor
+    func testBuildExportSession_invalidPersistedWindow_throws() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
+        let videoURL = projectsDir.appendingPathComponent(relativePath)
+        try await createMinimalVideoFile(at: videoURL, durationFrames: 2, fps: 30)
+        defer { try? FileManager.default.removeItem(at: videoURL) }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let instanceId = timeline.sceneItems[0].id
+
+        // trimEnd far exceeds actual duration
+        let state = SceneState(
+            mediaSlotsByBlockId: [
+                "block_v1": .video(
+                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    visibility: true,
+                    videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 999.0)
+                )
+            ]
+        )
+
+        let engine = makeEngine(
+            device: device,
+            commandQueue: commandQueue,
+            timeline: timeline,
+            resources: resources,
+            sceneStates: [instanceId: state]
+        )
+
+        do {
+            _ = try await engine.buildExportSession()
+            XCTFail("Expected invalidVideoSelection error")
+        } catch let error as ExportMediaError {
+            if case .invalidVideoSelection = error {
+                // Expected
+            } else {
+                XCTFail("Expected invalidVideoSelection, got \(error)")
+            }
+        }
+    }
+
+    /// Hidden video slot is absent from both videoSelections and audioSceneData.videoSelections.
+    @MainActor
+    func testBuildExportSession_hiddenVideo_absentFromSelectionsAndAudio() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
+        let videoURL = projectsDir.appendingPathComponent(relativePath)
+        try await createMinimalVideoFile(at: videoURL)
+        defer { try? FileManager.default.removeItem(at: videoURL) }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let instanceId = timeline.sceneItems[0].id
+
+        // Hidden video slot
+        let state = SceneState(
+            mediaSlotsByBlockId: [
+                "block_v1": .video(
+                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    visibility: false,
+                    videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+                )
+            ]
+        )
+
+        let engine = makeEngine(
+            device: device,
+            commandQueue: commandQueue,
+            timeline: timeline,
+            resources: resources,
+            sceneStates: [instanceId: state]
+        )
+
+        let session = try await engine.buildExportSession()
+
+        let snapshot = session.scenesByInstanceId[instanceId]!
+        XCTAssertTrue(snapshot.videoSelections.isEmpty, "Hidden video should not appear in videoSelections")
+
+        let audioData = session.audioSceneData.first!
+        XCTAssertTrue(audioData.videoSelections.isEmpty, "Hidden video should not appear in audioSceneData.videoSelections")
+    }
+
+    /// Corrupt persisted video (exists, unreadable metadata) causes buildExportSession to throw typed error.
+    @MainActor
+    func testBuildExportSession_corruptPersistedVideo_throwsTypedError() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let relativePath = "Media/TestVideo/corrupt_\(UUID().uuidString).mp4"
+        let corruptURL = projectsDir.appendingPathComponent(relativePath)
+
+        // Write garbage bytes — file exists but AVURLAsset.load(.duration) will fail
+        try FileManager.default.createDirectory(
+            at: corruptURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(repeating: 0xFF, count: 256).write(to: corruptURL)
+        defer { try? FileManager.default.removeItem(at: corruptURL) }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let instanceId = timeline.sceneItems[0].id
+
+        let state = SceneState(
+            mediaSlotsByBlockId: [
+                "block_v1": .video(
+                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    visibility: true,
+                    videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+                )
+            ]
+        )
+
+        let engine = makeEngine(
+            device: device,
+            commandQueue: commandQueue,
+            timeline: timeline,
+            resources: resources,
+            sceneStates: [instanceId: state]
+        )
+
+        do {
+            _ = try await engine.buildExportSession()
+            XCTFail("Expected invalidVideoSelection error for corrupt video")
+        } catch let error as ExportMediaError {
+            if case .invalidVideoSelection(let blockId, let reason) = error {
+                XCTAssertEqual(blockId, "block_v1")
+                XCTAssertTrue(reason.contains("duration"), "Reason should mention duration load failure, got: \(reason)")
+            } else {
+                XCTFail("Expected invalidVideoSelection, got \(error)")
+            }
+        }
     }
 }

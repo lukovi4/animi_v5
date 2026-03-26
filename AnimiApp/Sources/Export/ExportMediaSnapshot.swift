@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import TVECore
 
@@ -7,6 +8,8 @@ import TVECore
 public enum ExportMediaError: Error, LocalizedError {
     case missingPersistedPhoto(blockId: String, assetId: String)
     case missingPersistedVideo(blockId: String)
+    case missingVideoWindow(blockId: String)
+    case invalidVideoSelection(blockId: String, reason: String)
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +17,10 @@ public enum ExportMediaError: Error, LocalizedError {
             return "Missing persisted photo for block '\(blockId)', assetId '\(assetId)'"
         case .missingPersistedVideo(let blockId):
             return "Missing persisted video for block '\(blockId)'"
+        case .missingVideoWindow(let blockId):
+            return "Missing video window for block '\(blockId)'"
+        case .invalidVideoSelection(let blockId, let reason):
+            return "Invalid video selection for block '\(blockId)': \(reason)"
         }
     }
 }
@@ -80,13 +87,13 @@ public struct ExportMediaSnapshot: Sendable {
     ///   - projectStore: Project store for URL resolution
     ///   - runtime: Scene runtime for block/variant binding info
     /// - Returns: Snapshot with resolved user media references
-    /// - Throws: `ExportMediaError.missingPersistedPhoto` if a photo file is not found
+    /// - Throws: `ExportMediaError` if a visible media slot has missing/invalid data
     public static func build(
         compiledScene: CompiledScene,
         mediaSlots: [String: SceneMediaSlot],
         projectStore: ProjectStore,
         runtime: SceneRuntime
-    ) throws -> ExportMediaSnapshot {
+    ) async throws -> ExportMediaSnapshot {
         var imageRefs: [ImageRef] = []
         var videoRefs: [VideoRef] = []
 
@@ -119,13 +126,41 @@ public struct ExportMediaSnapshot: Sendable {
                 ))
 
             case .video:
-                guard let videoWindow = slot.videoWindow else { continue }
+                guard let videoWindow = slot.videoWindow else {
+                    throw ExportMediaError.missingVideoWindow(blockId: blockId)
+                }
                 guard let url = try? projectStore.absoluteURL(for: slot.mediaRef),
                       FileManager.default.fileExists(atPath: url.path) else {
                     throw ExportMediaError.missingPersistedVideo(blockId: blockId)
                 }
-                let selection = videoWindow.toVideoSelection(url: url)
-                guard selection.isValid else { continue }
+
+                // Probe actual duration for strict validation
+                let asset = AVURLAsset(url: url)
+                let durationSeconds: Double
+                do {
+                    let duration = try await asset.load(.duration)
+                    durationSeconds = CMTimeGetSeconds(duration)
+                } catch {
+                    throw ExportMediaError.invalidVideoSelection(
+                        blockId: blockId,
+                        reason: "Failed to load video duration: \(error.localizedDescription)"
+                    )
+                }
+
+                let selection: VideoSelection
+                do {
+                    selection = try VideoWindowValidator.validate(
+                        selection: videoWindow,
+                        url: url,
+                        actualDuration: durationSeconds,
+                        blockId: blockId
+                    )
+                } catch let validationError {
+                    throw ExportMediaError.invalidVideoSelection(
+                        blockId: blockId,
+                        reason: validationError.localizedDescription
+                    )
+                }
 
                 videoRefs.append(VideoRef(
                     blockId: blockId,
@@ -137,60 +172,6 @@ public struct ExportMediaSnapshot: Sendable {
 
         // Template asset IDs only (user photos are injected separately)
         let allAssetIds = Set(compiledScene.mergedAssetIndex.basenameById.keys)
-
-        return ExportMediaSnapshot(
-            imageRefs: imageRefs,
-            videoRefs: videoRefs,
-            allAssetIds: allAssetIds
-        )
-    }
-
-    // MARK: - Legacy Factory (CompositeAssetResolver)
-
-    /// Legacy factory for backward compatibility.
-    /// Uses CompositeAssetResolver instead of persisted mediaAssignments.
-    public static func build(
-        from compiled: CompiledScene,
-        resolver: CompositeAssetResolver,
-        videoSelections: [String: VideoSelection],
-        runtime: SceneRuntime
-    ) -> ExportMediaSnapshot {
-        // Collect image refs for binding assets that have user photos
-        var imageRefs: [ImageRef] = []
-        for assetId in compiled.bindingAssetIds {
-            if let basename = compiled.mergedAssetIndex.basenameById[assetId],
-               let url = try? resolver.resolveURL(forKey: basename) {
-                imageRefs.append(ImageRef(
-                    blockId: assetId,
-                    bindingAssetIds: [assetId],
-                    url: url
-                ))
-            }
-        }
-
-        // Collect video refs
-        var videoRefs: [VideoRef] = []
-        for (blockId, selection) in videoSelections {
-            guard selection.isValid else { continue }
-
-            var bindingAssetIds: [String] = []
-            if let block = runtime.blocks.first(where: { $0.blockId == blockId }) {
-                for variant in block.variants {
-                    let assetId = variant.animIR.binding.boundAssetId
-                    if !bindingAssetIds.contains(assetId) {
-                        bindingAssetIds.append(assetId)
-                    }
-                }
-            }
-
-            videoRefs.append(VideoRef(
-                blockId: blockId,
-                selection: selection,
-                bindingAssetIds: bindingAssetIds
-            ))
-        }
-
-        let allAssetIds = Set(compiled.mergedAssetIndex.basenameById.keys)
 
         return ExportMediaSnapshot(
             imageRefs: imageRefs,

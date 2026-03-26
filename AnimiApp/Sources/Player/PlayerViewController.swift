@@ -2472,7 +2472,7 @@ final class PlayerViewController: UIViewController {
                 // Build lightweight media snapshot from persisted slots (no runtime reads)
                 let mediaSnapshot: ExportMediaSnapshot
                 do {
-                    mediaSnapshot = try ExportMediaSnapshot.build(
+                    mediaSnapshot = try await ExportMediaSnapshot.build(
                         compiledScene: compiled,
                         mediaSlots: mediaSlots,
                         projectStore: ProjectStore.shared,

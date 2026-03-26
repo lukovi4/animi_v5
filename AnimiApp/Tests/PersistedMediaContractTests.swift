@@ -1,11 +1,10 @@
 import XCTest
 @testable import AnimiApp
 
-/// Tests for v7 SceneMediaSlot persistence and ExportMediaError cases.
-/// Legacy backward compat tests removed — v7 schema invalidates old drafts.
-final class LegacyVideoSelectionCompatibilityTests: XCTestCase {
+/// Tests for persisted media contract: SceneState persistence, ExportMediaError cases.
+final class PersistedMediaContractTests: XCTestCase {
 
-    // MARK: - SceneState v7 Media Slots
+    // MARK: - SceneState v8 Media Slots
 
     /// SceneState JSON without mediaSlotsByBlockId decodes with nil slots.
     func test_sceneStateJSON_decodesWithNilMediaSlots() throws {
@@ -57,5 +56,21 @@ final class LegacyVideoSelectionCompatibilityTests: XCTestCase {
 
         XCTAssertNotNil(photoError.errorDescription)
         XCTAssertNotNil(videoError.errorDescription)
+    }
+
+    // MARK: - New ExportMediaError Cases (Phase 4)
+
+    /// missingVideoWindow error contains blockId.
+    func test_missingVideoWindow_errorDescription() {
+        let error = ExportMediaError.missingVideoWindow(blockId: "block_v1")
+        XCTAssertTrue(error.localizedDescription.contains("block_v1"))
+        XCTAssertTrue(error.localizedDescription.contains("video window") || error.localizedDescription.contains("Video window"))
+    }
+
+    /// invalidVideoSelection error contains blockId and reason.
+    func test_invalidVideoSelection_errorDescription() {
+        let error = ExportMediaError.invalidVideoSelection(blockId: "block_v2", reason: "winEnd exceeds duration")
+        XCTAssertTrue(error.localizedDescription.contains("block_v2"))
+        XCTAssertTrue(error.localizedDescription.contains("winEnd exceeds duration"))
     }
 }
