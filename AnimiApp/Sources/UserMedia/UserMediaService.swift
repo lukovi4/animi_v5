@@ -90,7 +90,7 @@ private actor AsyncSemaphore {
 ///
 /// Audio parameters are stored but not applied in PR1 (preview is always muted).
 public struct VideoSelection: Equatable, Sendable {
-    /// Source video URL (copied to temp directory by UserMediaService)
+    /// Persisted video file URL (owned by MediaAssetStore, not by UserMediaService)
     public let url: URL
 
     /// Trim start time in seconds (relative to video start)
@@ -163,18 +163,6 @@ public enum UserMediaKind: Equatable {
     case photo
     case video(VideoSelection)
     case none
-}
-
-// MARK: - Media Ownership (Legacy Compat)
-
-/// Ownership model for video files.
-/// In the new architecture all media files are persisted before binding,
-/// so ownership is always `.persistent`. Kept for API compatibility during transition.
-public enum MediaOwnership: Equatable, Sendable {
-    /// Temporary file owned by UserMediaService. Deleted on cleanup.
-    case temporary
-    /// Persistent file owned externally (ProjectStore). NOT deleted on cleanup.
-    case persistent
 }
 
 // MARK: - Video Budget Policy (PR-F)
@@ -511,27 +499,23 @@ public final class UserMediaService {
 
     /// Sets a video as user media for a block.
     ///
-    /// PR1: Creates provider, generates poster before enabling binding.
+    /// Creates provider, generates poster before enabling binding.
     /// Uses poster gating: `userMediaPresent` is only set to `true` after poster is ready.
-    /// PR-async-race: Token-protected to prevent stale updates on rapid replace.
+    /// Token-protected to prevent stale updates on rapid replace.
     ///
-    /// PR-D: Added ownership parameter to control cleanup behavior:
-    /// - `.temporary`: File will be deleted on cleanup (default, for PHPicker temp files)
-    /// - `.persistent`: File will NOT be deleted (for persisted videos from ProjectStore)
+    /// Synchronous return indicates acceptance only (player available).
+    /// All file/metadata/selection validation happens asynchronously — failures are reported
+    /// via `blockReadinessState = .failed` (observable through `hasFailedMedia`).
     ///
     /// - Parameters:
     ///   - blockId: Identifier of the media block
-    ///   - url: URL of the video file
-    ///   - ownership: Who owns the file lifecycle (default: `.temporary`)
+    ///   - url: URL of the video file (must be persisted — all videos are persisted before binding)
     ///   - presentOnReady: Value for `userMediaPresent` after poster extraction (default: `true`)
-    ///   - emitSelectionPersistence: Whether to fire video selection persistence (default: `true`).
-    ///     Pass `false` on restore path to avoid overwriting persisted state.
-    ///   - pendingPersistedSelection: If non-nil, applied to the VideoSelection inside the async poster task
-    ///     AFTER `mediaState` is written. This is the only safe place to apply persisted trim/offset/audio,
-    ///     since `mediaState` is not populated until the poster completes.
-    /// - Returns: `true` if video accepted (async poster generation started), `false` on validation error
+    ///   - persistedSelection: The persisted trim/offset/audio parameters to apply.
+    ///     Validated against actual duration inside the async poster task.
+    /// - Returns: `true` if accepted (async setup started), `false` if no scene player available
     @discardableResult
-    public func setVideo(blockId: String, url: URL, ownership: MediaOwnership = .persistent, presentOnReady: Bool = true, emitSelectionPersistence: Bool = true, pendingPersistedSelection: PersistedVideoSelection? = nil) -> Bool {
+    public func setVideo(blockId: String, url: URL, presentOnReady: Bool = true, persistedSelection: PersistedVideoSelection) -> Bool {
         guard let player = activePlayer else {
             // P0: Mark as failed - no player available (symmetric with setPhoto)
             blockReadinessState[blockId] = .failed(reason: "no scene player")
@@ -598,23 +582,33 @@ public final class UserMediaService {
                     return
                 }
 
-                // Create proper VideoSelection with duration
-                let selection = VideoSelection(url: url, duration: duration)
+                // Build VideoSelection from persisted params
+                let selection = persistedSelection.toVideoSelection(url: url)
 
-                // Validate selection
-                guard selection.isValid else {
-                    // P0: Use failure helper to preserve failure state
+                // Validate effective window: must be entirely within [0, duration]
+                guard selection.winStart >= 0 else {
+                    self.markVideoSetupFailed(blockId: blockId, reason: "effective winStart (\(selection.winStart)) is negative", token: token)
+                    await self.posterSemaphore.release()
+                    return
+                }
+
+                guard selection.winEnd <= duration + Self.epsilon else {
+                    self.markVideoSetupFailed(blockId: blockId, reason: "effective winEnd (\(selection.winEnd)) exceeds duration (\(duration))", token: token)
+                    await self.posterSemaphore.release()
+                    return
+                }
+
+                guard selection.winEnd > selection.winStart else {
                     self.markVideoSetupFailed(blockId: blockId, reason: "invalid selection (winEnd <= winStart)", token: token)
                     await self.posterSemaphore.release()
                     return
                 }
 
-                // PR-async-race: Final check before side effects
+                // Final check before side effects
                 guard self.mediaSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
                     #if DEBUG
                     print("[UserMediaService] setVideo: stale task ignored (pre-commit) for blockId=\(blockId)")
                     #endif
-                    // P0: Token-safe remove task (only if we're still current generation)
                     if self.mediaSetupGenerationByBlock[blockId] == token {
                         self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                     }
@@ -622,15 +616,8 @@ public final class UserMediaService {
                     return
                 }
 
-                // Update state with proper selection
+                // Update state with selection built from persisted params
                 self.mediaState[blockId] = .video(selection)
-
-                // Apply pending persisted trim/offset/audio if provided (restore path).
-                // Must happen AFTER mediaState is written, since applyPersistedVideoSelection
-                // reads from mediaState.
-                if let pending = pendingPersistedSelection {
-                    self.applyPersistedVideoSelection(blockId: blockId, pending)
-                }
 
                 // Inject poster texture into all variant binding asset IDs
                 // (poster at winStart=0 is the default, which is what we already have)
@@ -1021,7 +1008,8 @@ public final class UserMediaService {
 
     /// Clears user media for a block.
     ///
-    /// PR1: Full cleanup including provider release and temp file deletion.
+    /// Full runtime cleanup including provider release and texture/state removal.
+    /// Persisted media files are not deleted here — they are owned by MediaAssetStore.
     /// Removes textures from all variant binding asset IDs and marks the block
     /// as having no user media (binding layer will be hidden).
     ///
@@ -1029,7 +1017,7 @@ public final class UserMediaService {
     public func clear(blockId: String) {
         guard let player = activePlayer else { return }
 
-        // PR1: Clean up video resources (provider + temp file)
+        // Clean up runtime video resources (provider + pending setup), not persisted media files
         cleanupVideoResources(for: blockId)
 
         // Remove textures from all variant binding asset IDs
@@ -1113,7 +1101,7 @@ public final class UserMediaService {
 
     /// Cleans up video resources and invalidates pending media setup for a block.
     /// PR-async-race: Increments generation and cancels setup task to prevent stale updates.
-    /// All media files are now persistent (owned by ProjectStore), so no file deletion here.
+    /// All media files are persistent (owned by MediaAssetStore), so no file deletion here.
     private func cleanupVideoResources(for blockId: String) {
         // PR-async-race: Invalidate pending async operations for this blockId
         mediaSetupGenerationByBlock[blockId, default: 0] += 1
@@ -1182,7 +1170,7 @@ public final class UserMediaService {
 
     deinit {
         // VideoFrameProvider.deinit handles its own cleanup (release()).
-        // All media files are persistent (owned by ProjectStore), no temp cleanup needed.
+        // All media files are persistent (owned by MediaAssetStore), no temp cleanup needed.
     }
 
     // MARK: - State Query
@@ -1297,8 +1285,8 @@ public final class UserMediaService {
         return result
     }
 
-    /// Applies persisted trim/offset/audio to an existing video selection.
-    /// Used on the restore path to apply persisted trim/offset/audio params.
+    /// Applies persisted trim/offset/audio params to an already-bound runtime video selection.
+    /// Intended for post-assign selection updates (e.g. live trim edits), not initial restore/bind.
     public func applyPersistedVideoSelection(blockId: String, _ persisted: PersistedVideoSelection) {
         guard case .video(var selection) = mediaState[blockId] else { return }
         selection.trimStart = persisted.trimStart

@@ -209,7 +209,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         fakeProvider.mode = .pending
 
         // When: Start video setup
-        let accepted = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"))
+        let accepted = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
 
         // Then: Should be accepted but not ready
         XCTAssertTrue(accepted, "setVideo should return true")
@@ -225,7 +225,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
 
         // When: Start video setup and wait for completion
-        let accepted = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"))
+        let accepted = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
         XCTAssertTrue(accepted)
 
         // Wait for async poster generation to complete
@@ -245,7 +245,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         fakeProvider.mode = .failure(testError)
 
         // When: Start video setup
-        let accepted = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"))
+        let accepted = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
         XCTAssertTrue(accepted)
 
         // Wait for async poster generation to fail
@@ -262,7 +262,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
     func testFailedVideo_clearClearsFailure() async throws {
         // Given: Failed video
         fakeProvider.mode = .failure(NSError(domain: "Test", code: 1))
-        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"))
+        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
         try await Task.sleep(nanoseconds: 100_000_000)
 
         XCTAssertTrue(sut.hasFailedMedia, "Precondition: should have failed video")
@@ -281,7 +281,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
     func testFailedVideo_setPhotoClearsFailure() async throws {
         // Given: Failed video
         fakeProvider.mode = .failure(NSError(domain: "Test", code: 1))
-        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"))
+        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
         try await Task.sleep(nanoseconds: 100_000_000)
 
         XCTAssertTrue(sut.hasFailedMedia, "Precondition: should have failed video")
@@ -304,7 +304,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
     func testPendingVideo_setPhotoClearsPending() async throws {
         // Given: Pending video (never completes)
         fakeProvider.mode = .pending
-        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"))
+        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
 
         XCTAssertFalse(sut.isSceneMediaReady, "Precondition: should not be ready while pending")
 
@@ -351,7 +351,8 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         let accepted = sut.setVideo(
             blockId: "block_01",
             url: URL(fileURLWithPath: "/tmp/test.mov"),
-            presentOnReady: false
+            presentOnReady: false,
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
         )
 
         // Then: Video accepted but present not set
@@ -366,7 +367,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
 
         // When: Start video setup with presentOnReady: true (default)
-        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"))
+        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
 
         // Wait for async poster generation to complete
         try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
@@ -499,9 +500,10 @@ final class UserMediaServiceReadinessTests: XCTestCase {
             return provider
         }
 
-        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test1.mov"))
-        _ = sut.setVideo(blockId: "block_02", url: URL(fileURLWithPath: "/tmp/test2.mov"))
-        _ = sut.setVideo(blockId: "block_03", url: URL(fileURLWithPath: "/tmp/test3.mov"))
+        let defaultSel = PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+        _ = sut.setVideo(blockId: "block_01", url: URL(fileURLWithPath: "/tmp/test1.mov"), persistedSelection: defaultSel)
+        _ = sut.setVideo(blockId: "block_02", url: URL(fileURLWithPath: "/tmp/test2.mov"), persistedSelection: defaultSel)
+        _ = sut.setVideo(blockId: "block_03", url: URL(fileURLWithPath: "/tmp/test3.mov"), persistedSelection: defaultSel)
 
         try await Task.sleep(nanoseconds: 100_000_000)
 
@@ -564,6 +566,94 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         XCTAssertFalse(sut.isSceneMediaReady)
         XCTAssertTrue(sut.hasFailedMedia)
         XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_01"], false)
+    }
+
+    // MARK: - Test: Effective window exceeds duration via offset → Failed
+
+    /// Regression: persisted selection where offset pushes winEnd past actual duration must fail.
+    /// Example: duration=5, trimStart=0, trimEnd=4, offset=2 → winEnd=6 > 5.
+    func testSetVideo_offsetPushesWinEndPastDuration_fails() async throws {
+        // Given: Provider that succeeds with duration 5s
+        fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
+
+        // Persisted selection: trimEnd=4, offset=2 → effective winEnd = trimEnd+offset = 6 > 5
+        let badSelection = PersistedVideoSelection(
+            trimStart: 0,
+            trimEnd: 4.0,
+            offset: 2.0
+        )
+
+        // When
+        let accepted = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: badSelection
+        )
+        XCTAssertTrue(accepted, "setVideo should accept synchronously")
+
+        // Wait for async validation to fail
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Then: must be in failed state
+        XCTAssertTrue(sut.hasFailedMedia, "Should have failed media when winEnd exceeds duration")
+        XCTAssertFalse(sut.isSceneMediaReady, "Should not be ready")
+        XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_01"], false,
+                       "userMediaPresent should be false after validation failure")
+        XCTAssertNil(fakeTextureProvider.textures["binding_asset_01"],
+                     "No texture should be injected after validation failure")
+    }
+
+    /// Regression: persisted selection with negative offset producing negative winStart must fail.
+    /// Example: trimStart=0, trimEnd=2, offset=-1 → winStart=-1 < 0.
+    func testSetVideo_negativeWinStart_fails() async throws {
+        // Given: Provider with duration 5s
+        fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
+
+        let badSelection = PersistedVideoSelection(
+            trimStart: 0,
+            trimEnd: 2.0,
+            offset: -1.0  // winStart = 0 + (-1) = -1
+        )
+
+        // When
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: badSelection
+        )
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Then
+        XCTAssertTrue(sut.hasFailedMedia, "Should fail when winStart is negative")
+        XCTAssertFalse(sut.isSceneMediaReady)
+        XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_01"], false)
+    }
+
+    /// Valid selection with offset stays within duration → succeeds.
+    func testSetVideo_offsetWithinDuration_succeeds() async throws {
+        // Given: Provider with duration 10s
+        fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
+
+        // trimEnd=6, offset=2 → winEnd=8 <= 10 ✓
+        let goodSelection = PersistedVideoSelection(
+            trimStart: 1.0,
+            trimEnd: 6.0,
+            offset: 2.0
+        )
+
+        // When
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: goodSelection
+        )
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Then
+        XCTAssertTrue(sut.isSceneMediaReady, "Should be ready with valid offset selection")
+        XCTAssertFalse(sut.hasFailedMedia)
     }
 
     // MARK: - Test Helpers

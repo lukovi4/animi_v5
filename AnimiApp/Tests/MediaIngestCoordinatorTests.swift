@@ -158,6 +158,75 @@ final class MediaIngestCoordinatorTests: XCTestCase {
         // No crash = pass
     }
 
+    // MARK: - Orphan cleanup: saveMedia returns URL atomically
+
+    /// Verifies that saveMedia returns (MediaRef, URL) where the URL points to the
+    /// actually-persisted file. This is the production contract that eliminates the
+    /// orphan cleanup gap: after saveMedia, the caller has the absolute path immediately
+    /// without a separate resolve step that could fail.
+    ///
+    /// The coordinator uses this URL as `ownedPersistedURL` for cleanup on
+    /// cancel/generation-invalidation — verified here by deleting via the returned URL.
+    func test_saveMedia_returnsURL_thatPointsToPersistedFile() async throws {
+        let store = ProjectStore()
+        try store.ensureDirectoriesExist()
+        let assetStore = MediaAssetStore(projectStore: store)
+
+        // Create a temp source file
+        let tempDir = FileManager.default.temporaryDirectory
+        let sourceURL = tempDir.appendingPathComponent("test_orphan_\(UUID().uuidString).mov")
+        try Data([0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70]).write(to: sourceURL)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        // saveMedia now returns (MediaRef, URL) — the URL is the persisted file path
+        let sceneId = UUID()
+        let (_, persistedURL) = try assetStore.saveMedia(
+            from: sourceURL,
+            mediaKind: .video,
+            sceneInstanceId: sceneId,
+            blockId: "block_orphan"
+        )
+
+        // The returned URL must point to a real file on disk
+        XCTAssertTrue(FileManager.default.fileExists(atPath: persistedURL.path),
+                      "URL returned by saveMedia must point to persisted file")
+
+        // Simulate coordinator orphan cleanup using the returned URL directly.
+        // This is exactly what cleanupOrphan(ownedPersistedURL) does in production —
+        // no re-resolve via absoluteURL(for:) needed.
+        try? FileManager.default.removeItem(at: persistedURL)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: persistedURL.path),
+                       "Cleanup via returned URL must delete the persisted file")
+    }
+
+    /// Verifies that the URL returned by saveMedia matches what absoluteURL(for:) would return.
+    /// This ensures the two paths are consistent.
+    func test_saveMedia_returnedURL_matchesAbsoluteURLResolve() async throws {
+        let store = ProjectStore()
+        try store.ensureDirectoriesExist()
+        let assetStore = MediaAssetStore(projectStore: store)
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let sourceURL = tempDir.appendingPathComponent("test_match_\(UUID().uuidString).mov")
+        try Data([0x00, 0x00, 0x00, 0x1C]).write(to: sourceURL)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let sceneId = UUID()
+        let (mediaRef, persistedURL) = try assetStore.saveMedia(
+            from: sourceURL,
+            mediaKind: .video,
+            sceneInstanceId: sceneId,
+            blockId: "block_match"
+        )
+        defer { try? FileManager.default.removeItem(at: persistedURL) }
+
+        // The two resolution paths must agree
+        let resolvedURL = try assetStore.absoluteURL(for: mediaRef)
+        XCTAssertEqual(persistedURL, resolvedURL,
+                       "saveMedia returned URL must match absoluteURL(for:) resolution")
+    }
+
     // MARK: - Cross-scene non-interference (dictionary coexistence)
 
     /// Two ingest operations for different scenes with the same blockId

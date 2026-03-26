@@ -8,7 +8,7 @@ import TVECore
 /// Verifies restore via unified SceneMediaSlot (replacing old MediaRestoreHelper).
 ///
 /// These tests exercise the real `MediaRestoreCoordinator.restore()` production path, including
-/// the async ordering of `setVideo()` → poster task → `pendingPersistedSelection` application.
+/// the async ordering of `setVideo()` → poster task → `persistedSelection` validation and application.
 @MainActor
 final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
 
@@ -39,15 +39,6 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         func texture(for assetId: String) -> MTLTexture? { textures[assetId] }
         func setTexture(_ texture: MTLTexture, for assetId: String) { textures[assetId] = texture }
         func removeTexture(for assetId: String) { textures.removeValue(forKey: assetId) }
-    }
-
-    final class FakeTextureFactory: TextureFactoryForMedia {
-        private let device: MTLDevice
-        init(device: MTLDevice) { self.device = device }
-        func makeTexture(from image: UIImage) -> MTLTexture? {
-            let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 64, height: 64, mipmapped: false)
-            return device.makeTexture(descriptor: desc)
-        }
     }
 
     final class FakeVideoSetupProvider: VideoSetupProviding {
@@ -92,7 +83,6 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
     private var commandQueue: MTLCommandQueue!
     private var fakePlayer: FakeScenePlayer!
     private var fakeTextureProvider: FakeTextureProvider!
-    private var fakeTextureFactory: FakeTextureFactory!
     private var sut: UserMediaService!
     private var fakeProvider: FakeVideoSetupProvider!
     /// MediaRef relative path for test video (resolved by ProjectStore)
@@ -115,14 +105,12 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         fakePlayer.addBlock(blockId: "block_v1", assetId: "binding_v1")
 
         fakeTextureProvider = FakeTextureProvider()
-        fakeTextureFactory = FakeTextureFactory(device: device)
 
         sut = UserMediaService(
             device: device,
             commandQueue: commandQueue,
             scenePlayerForTest: fakePlayer,
-            textureProvider: fakeTextureProvider,
-            textureFactory: fakeTextureFactory
+            textureProvider: fakeTextureProvider
         )
 
         fakeProvider = FakeVideoSetupProvider()
@@ -149,7 +137,6 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         sut = nil
         fakePlayer = nil
         fakeTextureProvider = nil
-        fakeTextureFactory = nil
         device = nil
         commandQueue = nil
         fakeProvider = nil
@@ -202,10 +189,11 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         XCTAssertEqual(vs.volume, 0.5, accuracy: 0.001)
     }
 
-    /// Restore with nil videoWindow keeps default runtime selection (0..duration).
-    func test_restoreVideo_withoutPersistedSelection_keepsDefaultRuntimeSelection() async throws {
+    /// Restore with nil videoWindow explicitly fails (missing videoWindow).
+    func test_restoreVideo_withoutVideoWindow_failsExplicitly() async throws {
+        // Construct a slot with nil videoWindow (legacy/corrupt data)
         let slots: [String: SceneMediaSlot] = [
-            "block_v1": .video(mediaRef: makeVideoMediaRef(), videoWindow: nil)
+            "block_v1": SceneMediaSlot(mediaRef: makeVideoMediaRef(), visibility: true, videoWindow: nil)
         ]
 
         MediaRestoreCoordinator.restore(
@@ -213,25 +201,19 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
             to: sut
         )
 
-        // Wait for async poster extraction
-        try await Task.sleep(nanoseconds: 500_000_000)
+        // Wait for any async processing
+        try await Task.sleep(nanoseconds: 200_000_000)
 
-        let snapshot = sut.exportVideoSelectionsSnapshot()
-        guard let vs = snapshot["block_v1"] else {
-            XCTFail("Expected default video selection for block_v1")
-            return
-        }
-
-        // Default selection: trimStart=0, trimEnd=duration, offset=0
-        XCTAssertEqual(vs.trimStart, 0, accuracy: 0.001)
-        XCTAssertEqual(vs.offset, 0, accuracy: 0.001)
-        XCTAssertFalse(vs.isMuted)
+        // Should be marked as failed, not silently accepted
+        XCTAssertTrue(sut.hasFailedMedia, "Video with nil videoWindow should fail restore")
+        XCTAssertFalse(sut.isSceneMediaReady, "Scene should not be ready with failed video")
     }
 
     /// Restore respects slot visibility (presentOnReady).
     func test_restoreVideo_respectsSlotVisibility() async throws {
+        let persisted = PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         let slots: [String: SceneMediaSlot] = [
-            "block_v1": .video(mediaRef: makeVideoMediaRef(), visibility: false, videoWindow: nil)
+            "block_v1": .video(mediaRef: makeVideoMediaRef(), visibility: false, videoWindow: persisted)
         ]
 
         MediaRestoreCoordinator.restore(

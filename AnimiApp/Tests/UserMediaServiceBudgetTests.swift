@@ -59,25 +59,6 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         }
     }
 
-    /// Fake texture factory.
-    final class FakeTextureFactory: TextureFactoryForMedia {
-        private let device: MTLDevice
-
-        init(device: MTLDevice) {
-            self.device = device
-        }
-
-        func makeTexture(from image: UIImage) -> MTLTexture? {
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .rgba8Unorm,
-                width: 64,
-                height: 64,
-                mipmapped: false
-            )
-            return device.makeTexture(descriptor: descriptor)
-        }
-    }
-
     /// Controllable fake video provider with tracking for playback calls.
     final class TrackingVideoProvider: VideoSetupProviding {
         var isReady: Bool = true
@@ -146,7 +127,6 @@ final class UserMediaServiceBudgetTests: XCTestCase {
     private var commandQueue: MTLCommandQueue!
     private var fakePlayer: FakeScenePlayer!
     private var fakeTextureProvider: FakeTextureProvider!
-    private var fakeTextureFactory: FakeTextureFactory!
     private var sut: UserMediaService!
     private var providers: [String: TrackingVideoProvider] = [:]
 
@@ -163,15 +143,13 @@ final class UserMediaServiceBudgetTests: XCTestCase {
 
         fakePlayer = FakeScenePlayer()
         fakeTextureProvider = FakeTextureProvider()
-        fakeTextureFactory = FakeTextureFactory(device: device)
         providers = [:]
 
         sut = UserMediaService(
             device: device,
             commandQueue: commandQueue,
             scenePlayerForTest: fakePlayer,
-            textureProvider: fakeTextureProvider,
-            textureFactory: fakeTextureFactory
+            textureProvider: fakeTextureProvider
         )
 
         // Configure factory to create tracking providers
@@ -186,7 +164,6 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         sut = nil
         fakePlayer = nil
         fakeTextureProvider = nil
-        fakeTextureFactory = nil
         providers = [:]
         device = nil
         commandQueue = nil
@@ -240,7 +217,7 @@ final class UserMediaServiceBudgetTests: XCTestCase {
 
         // Set videos
         for config in blockConfigs {
-            _ = sut.setVideo(blockId: config.id, url: URL(fileURLWithPath: "/tmp/\(config.id).mov"))
+            _ = sut.setVideo(blockId: config.id, url: URL(fileURLWithPath: "/tmp/\(config.id).mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
         }
 
         // Wait for setup
@@ -305,8 +282,8 @@ final class UserMediaServiceBudgetTests: XCTestCase {
             return TrackingVideoProvider(device: device)
         }
 
-        _ = sut.setVideo(blockId: "block_ready", url: URL(fileURLWithPath: "/tmp/ready.mov"))
-        _ = sut.setVideo(blockId: "block_pending", url: URL(fileURLWithPath: "/tmp/pending.mov"))
+        _ = sut.setVideo(blockId: "block_ready", url: URL(fileURLWithPath: "/tmp/ready.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
+        _ = sut.setVideo(blockId: "block_pending", url: URL(fileURLWithPath: "/tmp/pending.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
         try await Task.sleep(nanoseconds: 100_000_000)
 
         // When
@@ -365,8 +342,8 @@ final class UserMediaServiceBudgetTests: XCTestCase {
             return TrackingVideoProvider(device: device)
         }
 
-        _ = sut.setVideo(blockId: "block_a", url: URL(fileURLWithPath: "/tmp/a.mov"))
-        _ = sut.setVideo(blockId: "block_b", url: URL(fileURLWithPath: "/tmp/b.mov"))
+        _ = sut.setVideo(blockId: "block_a", url: URL(fileURLWithPath: "/tmp/a.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
+        _ = sut.setVideo(blockId: "block_b", url: URL(fileURLWithPath: "/tmp/b.mov"), persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
         try await Task.sleep(nanoseconds: 100_000_000)
 
         // Simulate both providers are active

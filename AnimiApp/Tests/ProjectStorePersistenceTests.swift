@@ -2,7 +2,7 @@ import XCTest
 import TVECore
 @testable import AnimiApp
 
-/// Disk-roundtrip tests for ProjectStore + SavedProjectRecord + ActiveDraftSlot (v6 schema).
+/// Disk-roundtrip tests for ProjectStore + SavedProjectRecord + ActiveDraftSlot (v8 schema).
 /// Validates current-schema persistence contract with SavedProjects API.
 final class ProjectStorePersistenceTests: XCTestCase {
 

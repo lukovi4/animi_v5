@@ -564,32 +564,6 @@ public final class ProjectStore {
         return MediaRef.file(relativePath, mediaKind: .photo)
     }
 
-    /// Saves user video to the user media directory.
-    /// Uses `FileManager.copyItem` instead of loading video into memory.
-    public func saveUserVideo(
-        from sourceURL: URL,
-        sceneInstanceId: UUID,
-        blockId: String
-    ) throws -> MediaRef {
-        try ensureDirectoriesExist()
-
-        let uuid = UUID().uuidString
-        let ext = sourceURL.pathExtension.lowercased()
-        let filename = "\(sceneInstanceId.uuidString)_\(blockId)_\(uuid).\(ext)"
-        let relativePath = "\(Self.mediaDirectoryName)/\(Self.userMediaDirectoryName)/\(filename)"
-
-        let mediaDir = try userMediaDirectoryURL()
-        let destURL = mediaDir.appendingPathComponent(filename)
-
-        if fileManager.fileExists(atPath: destURL.path) {
-            try fileManager.removeItem(at: destURL)
-        }
-
-        try fileManager.copyItem(at: sourceURL, to: destURL)
-
-        return MediaRef.file(relativePath, mediaKind: .video)
-    }
-
     /// Returns the absolute URL for a media reference.
     public func absoluteURL(for mediaRef: MediaRef) throws -> URL {
         let projectsDir = try projectsDirectoryURL()
@@ -704,7 +678,7 @@ public final class ProjectStore {
             }
         }
 
-        // User media from scene instance states (v7: unified media slots)
+        // User media from scene instance states (v8: unified media slots)
         for (_, sceneState) in draft.sceneInstanceStates {
             if let slots = sceneState.mediaSlotsByBlockId {
                 for (_, slot) in slots {
@@ -714,10 +688,10 @@ public final class ProjectStore {
         }
     }
 
-    // MARK: - Schema Purge (v7)
+    // MARK: - Schema Purge (v8)
 
     /// Purges saved projects with incompatible schema from the index.
-    /// Called on first launch with v7 schema — no users in prod, so safe to invalidate.
+    /// Called on first launch with v8 schema — no users in prod, so safe to invalidate.
     public func purgeIncompatibleSavedProjects() {
         guard let index = try? loadSavedIndex() else { return }
 

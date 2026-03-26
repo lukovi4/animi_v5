@@ -4,7 +4,7 @@ import Foundation
 
 /// Unified file-based persistence for user media assets.
 /// Single entry point for saving both photos and videos to the project media directory.
-/// Replaces separate `ProjectStore.saveUserMedia` / `ProjectStore.saveUserVideo` APIs.
+/// For video: this is the single durable copy from the PHPicker file representation (no temp copy).
 public final class MediaAssetStore {
 
     private let projectStore: ProjectStore
@@ -23,13 +23,14 @@ public final class MediaAssetStore {
     ///   - mediaKind: Whether this is a photo or video
     ///   - sceneInstanceId: Scene instance owning this media
     ///   - blockId: Block ID this media is assigned to
-    /// - Returns: MediaRef pointing to the persisted file
+    /// - Returns: Tuple of (MediaRef, absolute destination URL). Both are available atomically
+    ///   after the copy succeeds — no separate resolve step needed.
     public func saveMedia(
         from fileURL: URL,
         mediaKind: MediaKind,
         sceneInstanceId: UUID,
         blockId: String
-    ) throws -> MediaRef {
+    ) throws -> (MediaRef, URL) {
         try projectStore.ensureDirectoriesExist()
 
         let uuid = UUID().uuidString
@@ -53,7 +54,7 @@ public final class MediaAssetStore {
 
         try FileManager.default.copyItem(at: fileURL, to: destURL)
 
-        return MediaRef.file(relativePath, mediaKind: mediaKind)
+        return (MediaRef.file(relativePath, mediaKind: mediaKind), destURL)
     }
 
     /// Returns the absolute URL for a media reference.

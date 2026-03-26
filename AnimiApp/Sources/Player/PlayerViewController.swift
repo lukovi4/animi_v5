@@ -2915,10 +2915,8 @@ final class PlayerViewController: UIViewController {
                 userMediaService?.setVideo(
                     blockId: result.blockId,
                     url: result.persistedURL,
-                    ownership: .persistent,
                     presentOnReady: result.slot.visibility,
-                    emitSelectionPersistence: false,
-                    pendingPersistedSelection: result.slot.videoWindow
+                    persistedSelection: result.slot.videoWindow!
                 )
             }
             metalView.setNeedsDisplay()

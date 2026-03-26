@@ -1,36 +1,57 @@
 import Foundation
 import AVFoundation
-import UIKit
 
 // MARK: - Video Prepare Pipeline
 
-/// File-based video preparation pipeline.
-/// Single-copy persist of the video file.
+/// Validates a persisted video file and extracts duration.
+/// Single-copy persist happens upstream (PickerAssetAdapter → MediaAssetStore).
 /// Poster extraction is delegated to VideoPosterCache (derived artifact).
 public enum VideoPreparePipeline {
 
-    /// Prepares a video file for persistence.
-    /// The source file is ready to be copied via MediaAssetStore (no transcoding needed).
-    ///
-    /// - Parameter sourceURL: Source video file URL (from PHPicker temp copy)
-    /// - Returns: The same URL (video files are persisted as-is via single copy)
-    public static func prepare(sourceURL: URL) -> URL {
-        // Videos are persisted as-is — no transcoding.
-        // The single copy happens in MediaAssetStore.saveMedia.
-        return sourceURL
+    // MARK: - Errors
+
+    public enum VideoPreparePipelineError: Error, LocalizedError {
+        case fileNotReadable
+        case invalidDuration(Double)
+        case metadataLoadFailed(Error)
+
+        public var errorDescription: String? {
+            switch self {
+            case .fileNotReadable:
+                return "Video file is not readable"
+            case .invalidDuration(let value):
+                return "Video has invalid duration: \(value)"
+            case .metadataLoadFailed(let error):
+                return "Failed to load video metadata: \(error.localizedDescription)"
+            }
+        }
     }
 
-    /// Extracts video duration from a file.
+    // MARK: - Validation
+
+    /// Validates a persisted video file and returns a default video selection.
     ///
-    /// - Parameter url: Video file URL
-    /// - Returns: Duration in seconds
-    public static func videoDuration(at url: URL) async -> Double {
-        let asset = AVURLAsset(url: url)
-        do {
-            let duration = try await asset.load(.duration)
-            return duration.seconds
-        } catch {
-            return 0
+    /// - Parameter url: Absolute URL of the persisted video file
+    /// - Returns: `PersistedVideoSelection` with trimStart=0, trimEnd=duration
+    /// - Throws: `VideoPreparePipelineError` if the file is unreadable or has invalid duration
+    public static func validatePersistedVideo(at url: URL) async throws -> PersistedVideoSelection {
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            throw VideoPreparePipelineError.fileNotReadable
         }
+
+        let asset = AVURLAsset(url: url)
+        let duration: CMTime
+        do {
+            duration = try await asset.load(.duration)
+        } catch {
+            throw VideoPreparePipelineError.metadataLoadFailed(error)
+        }
+
+        let seconds = duration.seconds
+        guard seconds.isFinite, seconds > 0.001 else {
+            throw VideoPreparePipelineError.invalidDuration(seconds)
+        }
+
+        return PersistedVideoSelection(trimStart: 0, trimEnd: seconds)
     }
 }

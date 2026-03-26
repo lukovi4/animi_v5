@@ -41,10 +41,11 @@ public struct SceneMediaSlot: Codable, Equatable, Sendable {
     }
 
     /// Creates a video slot.
+    /// `videoWindow` is required — a persisted video slot without a valid window is not allowed.
     public static func video(
         mediaRef: MediaRef,
         visibility: Bool = true,
-        videoWindow: PersistedVideoSelection? = nil
+        videoWindow: PersistedVideoSelection
     ) -> SceneMediaSlot {
         SceneMediaSlot(mediaRef: mediaRef, visibility: visibility, videoWindow: videoWindow)
     }

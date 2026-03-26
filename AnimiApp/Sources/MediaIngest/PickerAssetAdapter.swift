@@ -5,46 +5,73 @@ import UniformTypeIdentifiers
 // MARK: - Picker Asset Adapter
 
 /// Extracts file representations from PHPicker results.
-/// Replaces inline loadObject(UIImage.self) and loadFileRepresentation in PlayerViewController.
+/// All media paths are file-based — no UIImage materialization.
 ///
-/// Usage:
-/// ```swift
-/// let asset = try await PickerAssetAdapter.extract(from: result)
-/// // asset is .photo(UIImage) or .video(URL)
-/// ```
+/// Photo path: `extract(from:)` → temp copy → returned as `.photo(URL)`
+/// Video path: `withVideoFileRepresentation(from:perform:)` — caller does persistent copy inside callback
 public enum PickerAssetAdapter {
 
-    /// Extracted asset from PHPicker.
+    /// Extracted asset from PHPicker (photo only — video uses withVideoFileRepresentation).
     public enum PickedAsset: Sendable {
-        case photo(UIImage)
-        case video(URL)  // Temporary URL — valid only until consumed by ingest pipeline
+        case photo(URL)  // Temporary URL — valid only until consumed by ingest pipeline
     }
 
-    // MARK: - Extraction
+    // MARK: - Photo Extraction
 
-    /// Extracts the media asset from a PHPicker result.
-    /// Copies video files to temp before returning (PHPicker URLs expire after callback).
+    /// Extracts a photo asset from a PHPicker result.
+    /// Copies file to temp before returning (PHPicker URLs expire after callback).
     ///
     /// - Parameter result: PHPicker result
-    /// - Returns: Extracted asset
+    /// - Returns: Extracted photo asset
     /// - Throws: If loading fails or media type is unsupported
     @MainActor
-    public static func extract(from result: PHPickerResult) async throws -> PickedAsset {
+    public static func extractPhoto(from result: PHPickerResult) async throws -> PickedAsset {
         let provider = result.itemProvider
 
-        // Try video first (loadFileRepresentation)
-        if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-            let tempURL = try await loadVideoRepresentation(provider: provider)
-            return .video(tempURL)
+        guard provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
+            throw PickerAssetError.unsupportedMediaType
         }
 
-        // Try photo
-        if provider.canLoadObject(ofClass: UIImage.self) {
-            let image = try await loadImage(provider: provider)
-            return .photo(image)
+        let tempURL = try await loadImageFileRepresentation(provider: provider)
+        return .photo(tempURL)
+    }
+
+    // MARK: - Video File Representation
+
+    /// Provides access to the PHPicker video file URL inside a scoped callback.
+    /// The callback runs on a system thread while the PHPicker URL is still valid.
+    /// Use this to perform the single persistent copy (MediaAssetStore.saveMedia) directly.
+    ///
+    /// - Parameters:
+    ///   - result: PHPicker result
+    ///   - perform: Closure called with the source URL while it's valid. Must be Sendable.
+    /// - Returns: Result of the perform closure
+    /// - Throws: If loading fails or the perform closure throws
+    public static func withVideoFileRepresentation<T: Sendable>(
+        from result: PHPickerResult,
+        perform: @escaping @Sendable (URL) throws -> T
+    ) async throws -> T {
+        let provider = result.itemProvider
+
+        guard provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) else {
+            throw PickerAssetError.unsupportedMediaType
         }
 
-        throw PickerAssetError.unsupportedMediaType
+        return try await withCheckedThrowingContinuation { continuation in
+            provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+                guard let sourceURL = url else {
+                    continuation.resume(throwing: error ?? PickerAssetError.videoLoadFailed)
+                    return
+                }
+
+                do {
+                    let result = try perform(sourceURL)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     /// Determines the expected media kind from a PHPicker result without loading.
@@ -53,7 +80,7 @@ public enum PickerAssetAdapter {
         if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
             return .video
         }
-        if provider.canLoadObject(ofClass: UIImage.self) {
+        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
             return .photo
         }
         return nil
@@ -61,23 +88,11 @@ public enum PickerAssetAdapter {
 
     // MARK: - Private Loaders
 
-    private static func loadImage(provider: NSItemProvider) async throws -> UIImage {
+    private static func loadImageFileRepresentation(provider: NSItemProvider) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            provider.loadObject(ofClass: UIImage.self) { object, error in
-                if let image = object as? UIImage {
-                    continuation.resume(returning: image)
-                } else {
-                    continuation.resume(throwing: error ?? PickerAssetError.imageLoadFailed)
-                }
-            }
-        }
-    }
-
-    private static func loadVideoRepresentation(provider: NSItemProvider) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+            provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, error in
                 guard let sourceURL = url else {
-                    continuation.resume(throwing: error ?? PickerAssetError.videoLoadFailed)
+                    continuation.resume(throwing: error ?? PickerAssetError.imageLoadFailed)
                     return
                 }
 
@@ -89,7 +104,7 @@ public enum PickerAssetAdapter {
                     try FileManager.default.copyItem(at: sourceURL, to: tempURL)
                     continuation.resume(returning: tempURL)
                 } catch {
-                    continuation.resume(throwing: PickerAssetError.videoCopyFailed(error))
+                    continuation.resume(throwing: PickerAssetError.imageCopyFailed(error))
                 }
             }
         }
@@ -101,8 +116,8 @@ public enum PickerAssetAdapter {
 public enum PickerAssetError: Error, LocalizedError {
     case unsupportedMediaType
     case imageLoadFailed
+    case imageCopyFailed(Error)
     case videoLoadFailed
-    case videoCopyFailed(Error)
 
     public var errorDescription: String? {
         switch self {
@@ -110,10 +125,10 @@ public enum PickerAssetError: Error, LocalizedError {
             return "Unsupported media type from picker"
         case .imageLoadFailed:
             return "Failed to load image from picker"
+        case .imageCopyFailed(let error):
+            return "Failed to copy image from picker: \(error.localizedDescription)"
         case .videoLoadFailed:
             return "Failed to load video from picker"
-        case .videoCopyFailed(let error):
-            return "Failed to copy video from picker: \(error.localizedDescription)"
         }
     }
 }

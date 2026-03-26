@@ -96,6 +96,74 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
         XCTAssertNil(result.state.draft.sceneInstanceStates[deletedSceneId])
     }
 
+    /// setVideoSelection on a photo slot is a no-op (mediaKind guard).
+    func test_setVideoSelection_onPhotoSlot_isNoOp() {
+        var state = makeStateWithOneScene()
+        let sceneId = state.sceneItems[0].id
+        let photoSlot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"))
+
+        // First, assign a photo slot
+        state = EditorReducer.reduce(
+            state: state,
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: photoSlot)
+        ).state
+
+        // Then try to set video selection on the photo slot
+        let selection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 4.0)
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: selection)
+        )
+
+        // Should be a no-op — videoWindow should remain nil
+        let slot = result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_01"]
+        XCTAssertNil(slot?.videoWindow, "setVideoSelection on photo slot should be a no-op")
+    }
+
+    /// setVideoSelection on a missing slot is a no-op.
+    func test_setVideoSelection_onMissingSlot_isNoOp() {
+        let state = makeStateWithOneScene()
+        let sceneId = state.sceneItems[0].id
+        let selection = PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .setVideoSelection(sceneInstanceId: sceneId, blockId: "nonexistent_block", selection: selection)
+        )
+
+        // Should be a no-op — no slot created
+        let slot = result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["nonexistent_block"]
+        XCTAssertNil(slot, "setVideoSelection on missing slot should not create one")
+    }
+
+    /// setVideoSelection on a video slot updates videoWindow.
+    func test_setVideoSelection_onVideoSlot_updatesVideoWindow() {
+        var state = makeStateWithOneScene()
+        let sceneId = state.sceneItems[0].id
+        let videoSlot = SceneMediaSlot.video(
+            mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+
+        // First, assign a video slot
+        state = EditorReducer.reduce(
+            state: state,
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot)
+        ).state
+
+        // Then update video selection
+        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0, offset: 1.0)
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: newSelection)
+        )
+
+        let slot = result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_01"]
+        XCTAssertEqual(slot?.videoWindow?.trimStart, 2.0)
+        XCTAssertEqual(slot?.videoWindow?.trimEnd, 8.0)
+        XCTAssertEqual(slot?.videoWindow?.offset, 1.0)
+    }
+
     // MARK: - setBlockMediaPresent
 
     /// setBlockMediaPresent for a deleted scene is a no-op.

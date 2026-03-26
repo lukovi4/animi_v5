@@ -1,12 +1,12 @@
 import Foundation
-import UIKit
 
 // MARK: - Media Restore Coordinator
 
 /// Restores persisted media from SceneMediaSlot to UserMediaRuntimeService.
 /// Replaces MediaRestoreHelper with the same contract but using unified slots.
 ///
-/// Phase 1 Contract:
+/// Phase 2 Contract:
+/// - Photo restore is file-based (no UIImage). Uses `setPhoto(blockId:fileURL:)`.
 /// - Any persisted media that cannot be restored MUST mark the block as failed.
 /// - No silent `continue` on restore failure.
 /// - Every slot must either succeed or fail explicitly.
@@ -20,7 +20,7 @@ public enum MediaRestoreCoordinator {
     ///   - slots: Media slots from SceneState (blockId -> SceneMediaSlot).
     ///   - service: UserMediaService to apply media to.
     ///   - projectStore: Project store for URL resolution.
-    /// - Returns: Number of successfully restored media items.
+    /// - Returns: Number of successfully accepted media items.
     @MainActor
     @discardableResult
     public static func restore(
@@ -55,26 +55,27 @@ public enum MediaRestoreCoordinator {
 
             switch slot.mediaRef.mediaKind {
             case .photo:
-                guard let image = UIImage(contentsOfFile: url.path) else {
-                    service.markRestoreFailed(blockId: blockId, reason: "unreadable photo: \(url.lastPathComponent)")
-                    continue
-                }
-
-                let success = service.setPhoto(blockId: blockId, image: image, presentOnReady: presentOnReady)
-                if success { restored += 1 }
+                let accepted = service.setPhoto(blockId: blockId, fileURL: url, presentOnReady: presentOnReady)
+                if accepted { restored += 1 }
 
                 #if DEBUG
-                print("[MediaRestoreCoordinator] Restored photo for \(blockId): presentOnReady=\(presentOnReady), \(success ? "success" : "failed")")
+                print("[MediaRestoreCoordinator] Restored photo for \(blockId): presentOnReady=\(presentOnReady), \(accepted ? "accepted" : "rejected")")
                 #endif
 
             case .video:
+                guard let videoWindow = slot.videoWindow else {
+                    service.markRestoreFailed(blockId: blockId, reason: "missing videoWindow")
+                    #if DEBUG
+                    print("[MediaRestoreCoordinator] Video slot missing videoWindow for \(blockId)")
+                    #endif
+                    continue
+                }
+
                 let success = service.setVideo(
                     blockId: blockId,
                     url: url,
-                    ownership: .persistent,
                     presentOnReady: presentOnReady,
-                    emitSelectionPersistence: false,
-                    pendingPersistedSelection: slot.videoWindow
+                    persistedSelection: videoWindow
                 )
                 if success { restored += 1 }
 

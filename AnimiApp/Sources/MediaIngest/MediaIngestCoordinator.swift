@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 import PhotosUI
 
 // MARK: - Ingest Slot Key
@@ -111,35 +110,37 @@ public final class MediaIngestCoordinator {
             var ownedPersistedURL: URL?
 
             do {
-                // Step 1: Extract asset from picker
-                let asset = try await PickerAssetAdapter.extract(from: result)
+                // Determine media kind before extraction
+                let mediaKind = PickerAssetAdapter.mediaKind(of: result)
 
-                guard self.isCurrentGeneration(key: key, gen: newGen) else {
-                    self.cleanupOrphan(ownedPersistedURL)
-                    return
-                }
-
-                // Step 2: Prepare + persist
                 let slot: SceneMediaSlot
                 let persistedURL: URL
 
-                switch asset {
-                case .photo(let image):
-                    let tempURL = try PhotoPreparePipeline.prepare(image: image)
-                    defer { try? FileManager.default.removeItem(at: tempURL) }
+                switch mediaKind {
+                case .photo:
+                    // Step 1: Extract photo from picker (temp copy)
+                    let pickedAsset = try await PickerAssetAdapter.extractPhoto(from: result)
+                    let tempPickerURL: URL
+                    switch pickedAsset {
+                    case .photo(let url): tempPickerURL = url
+                    }
 
                     guard self.isCurrentGeneration(key: key, gen: newGen) else {
+                        try? FileManager.default.removeItem(at: tempPickerURL)
                         self.cleanupOrphan(ownedPersistedURL)
                         return
                     }
 
-                    let mediaRef = try self.assetStore.saveMedia(
-                        from: tempURL,
-                        mediaKind: .photo,
+                    defer { try? FileManager.default.removeItem(at: tempPickerURL) }
+
+                    // Prepare + persist off MainActor
+                    let (mediaRef, resolved) = try await Self.prepareAndPersistPhoto(
+                        tempPickerURL: tempPickerURL,
+                        assetStore: self.assetStore,
                         sceneInstanceId: key.sceneInstanceId,
                         blockId: key.blockId
                     )
-                    persistedURL = try self.assetStore.absoluteURL(for: mediaRef)
+                    persistedURL = resolved
                     ownedPersistedURL = persistedURL
 
                     guard self.isCurrentGeneration(key: key, gen: newGen) else {
@@ -149,34 +150,35 @@ public final class MediaIngestCoordinator {
 
                     slot = .photo(mediaRef: mediaRef)
 
-                case .video(let tempURL):
-                    defer { try? FileManager.default.removeItem(at: tempURL) }
-
-                    guard self.isCurrentGeneration(key: key, gen: newGen) else {
-                        self.cleanupOrphan(ownedPersistedURL)
-                        return
-                    }
-
-                    let mediaRef = try self.assetStore.saveMedia(
-                        from: tempURL,
-                        mediaKind: .video,
+                case .video:
+                    // Step 1: Persist video directly from PHPicker callback (single copy, no temp)
+                    // saveMedia returns (MediaRef, URL) atomically — no separate resolve step.
+                    let (mediaRef, resolved) = try await Self.persistVideoFromPicker(
+                        result: result,
+                        assetStore: self.assetStore,
                         sceneInstanceId: key.sceneInstanceId,
                         blockId: key.blockId
                     )
-                    persistedURL = try self.assetStore.absoluteURL(for: mediaRef)
+                    persistedURL = resolved
                     ownedPersistedURL = persistedURL
-
-                    let duration = await VideoPreparePipeline.videoDuration(at: persistedURL)
 
                     guard self.isCurrentGeneration(key: key, gen: newGen) else {
                         self.cleanupOrphan(ownedPersistedURL)
                         return
                     }
 
-                    let videoWindow = duration > 0
-                        ? PersistedVideoSelection(trimStart: 0, trimEnd: duration)
-                        : nil
-                    slot = .video(mediaRef: mediaRef, videoWindow: videoWindow)
+                    // Step 2: Validate persisted video off MainActor
+                    let validatedSelection = try await Self.validatePersistedVideo(at: persistedURL)
+
+                    guard self.isCurrentGeneration(key: key, gen: newGen) else {
+                        self.cleanupOrphan(ownedPersistedURL)
+                        return
+                    }
+
+                    slot = .video(mediaRef: mediaRef, videoWindow: validatedSelection)
+
+                case nil:
+                    throw PickerAssetError.unsupportedMediaType
                 }
 
                 guard self.isCurrentGeneration(key: key, gen: newGen) else {
@@ -213,6 +215,59 @@ public final class MediaIngestCoordinator {
         }
 
         ingestTasks[key] = task
+    }
+
+    // MARK: - Off-Main Photo Prepare + Persist
+
+    /// Runs PhotoPreparePipeline + MediaAssetStore.saveMedia off the MainActor.
+    /// Returns (mediaRef, absoluteURL) for the caller to use on MainActor.
+    private static nonisolated func prepareAndPersistPhoto(
+        tempPickerURL: URL,
+        assetStore: MediaAssetStore,
+        sceneInstanceId: UUID,
+        blockId: String
+    ) async throws -> (MediaRef, URL) {
+        let preparedURL = try PhotoPreparePipeline.prepare(fileURL: tempPickerURL)
+        defer { try? FileManager.default.removeItem(at: preparedURL) }
+
+        let (mediaRef, absoluteURL) = try assetStore.saveMedia(
+            from: preparedURL,
+            mediaKind: .photo,
+            sceneInstanceId: sceneInstanceId,
+            blockId: blockId
+        )
+        return (mediaRef, absoluteURL)
+    }
+
+    // MARK: - Off-Main Video Persist + Resolve
+
+    /// Persists a video from PHPicker via single-copy into MediaAssetStore.
+    /// Returns (mediaRef, absoluteURL) atomically from `saveMedia` — no separate resolve step.
+    /// The destURL is produced by `saveMedia` itself, so there is no window where the file
+    /// exists on disk but the caller doesn't hold its absolute path.
+    private static nonisolated func persistVideoFromPicker(
+        result: PHPickerResult,
+        assetStore: MediaAssetStore,
+        sceneInstanceId: UUID,
+        blockId: String
+    ) async throws -> (MediaRef, URL) {
+        try await PickerAssetAdapter.withVideoFileRepresentation(
+            from: result
+        ) { sourceURL in
+            try assetStore.saveMedia(
+                from: sourceURL,
+                mediaKind: .video,
+                sceneInstanceId: sceneInstanceId,
+                blockId: blockId
+            )
+        }
+    }
+
+    // MARK: - Off-Main Video Validation
+
+    /// Runs VideoPreparePipeline.validatePersistedVideo off the MainActor.
+    private static nonisolated func validatePersistedVideo(at url: URL) async throws -> PersistedVideoSelection {
+        try await VideoPreparePipeline.validatePersistedVideo(at: url)
     }
 
     // MARK: - Cancel
@@ -294,4 +349,5 @@ public final class MediaIngestCoordinator {
         print("[MediaIngestCoordinator] Cleaned up orphan: \(url.lastPathComponent)")
         #endif
     }
+
 }

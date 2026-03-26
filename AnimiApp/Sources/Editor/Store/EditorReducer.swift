@@ -160,7 +160,8 @@ public enum EditorReducer {
             }
             var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
             var slots = sceneState.mediaSlotsByBlockId ?? [:]
-            if var existingSlot = slots[blockId] {
+            // Guard: slot must exist and be a video slot
+            if var existingSlot = slots[blockId], existingSlot.mediaRef.mediaKind == .video {
                 existingSlot.videoWindow = selection
                 slots[blockId] = existingSlot
                 sceneState.mediaSlotsByBlockId = slots
