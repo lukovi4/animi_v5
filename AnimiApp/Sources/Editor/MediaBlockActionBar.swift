@@ -20,6 +20,9 @@ final class MediaBlockActionBar: UIView {
     /// Called when Disable/Enable button is tapped. Parameter: blockId.
     var onToggleEnabled: ((String) -> Void)?
 
+    /// Called when Edit Video button is tapped. Parameter: blockId.
+    var onEditVideo: ((String) -> Void)?
+
     /// Called when Remove button is tapped. Parameter: blockId.
     var onRemove: ((String) -> Void)?
 
@@ -75,6 +78,20 @@ final class MediaBlockActionBar: UIView {
         let button = UIButton(configuration: config)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.addTarget(self, action: #selector(addVideoTapped), for: .touchUpInside)
+        return button
+    }()
+
+    private lazy var editVideoButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "slider.horizontal.below.rectangle")
+        config.title = "Edit Video"
+        config.imagePlacement = .top
+        config.imagePadding = 4
+        config.baseForegroundColor = .label
+
+        let button = UIButton(configuration: config)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(editVideoTapped), for: .touchUpInside)
         return button
     }()
 
@@ -142,6 +159,7 @@ final class MediaBlockActionBar: UIView {
 
         stackView.addArrangedSubview(addPhotoButton)
         stackView.addArrangedSubview(addVideoButton)
+        stackView.addArrangedSubview(editVideoButton)
         stackView.addArrangedSubview(animationButton)
         stackView.addArrangedSubview(toggleEnabledButton)
         stackView.addArrangedSubview(removeButton)
@@ -182,7 +200,9 @@ final class MediaBlockActionBar: UIView {
         allowedMedia: [String]?,
         hasVariants: Bool,
         hasMedia: Bool,
-        isEnabled: Bool
+        isEnabled: Bool,
+        mediaKind: MediaKind? = nil,
+        canEditVideoSelection: Bool = false
     ) {
         self.blockId = blockId
         // Photo button: shown if allowedMedia contains "photo" or is nil (backward compat)
@@ -192,6 +212,12 @@ final class MediaBlockActionBar: UIView {
         // Video button: shown if allowedMedia contains "video" or is nil (backward compat)
         let canVideo = allowedMedia?.contains("video") ?? true
         addVideoButton.isHidden = !canVideo
+
+        // Edit Video button: shown only for video slots, enabled when edit context available
+        let isVideoSlot = mediaKind == .video
+        editVideoButton.isHidden = !isVideoSlot
+        editVideoButton.isEnabled = canEditVideoSelection
+        editVideoButton.alpha = canEditVideoSelection ? 1.0 : 0.5
 
         // Animation button: shown if block has variants
         animationButton.isHidden = !hasVariants
@@ -235,6 +261,11 @@ final class MediaBlockActionBar: UIView {
     @objc private func addVideoTapped() {
         guard let id = blockId else { return }
         onAddVideo?(id)
+    }
+
+    @objc private func editVideoTapped() {
+        guard let id = blockId else { return }
+        onEditVideo?(id)
     }
 
     @objc private func animationTapped() {

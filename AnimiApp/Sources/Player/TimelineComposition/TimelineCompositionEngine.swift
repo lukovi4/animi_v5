@@ -162,6 +162,37 @@ public final class TimelineCompositionEngine {
         }
     }
 
+    /// Fast-path: applies committed video selection to cached state and loaded runtime.
+    /// Defensive: only updates existing video slots in cache, no-ops for missing/photo.
+    /// Cache update is authoritative. Runtime fast-apply is best-effort.
+    /// Does NOT call reloadState on the runtime.
+    public func applyPersistedVideoSelection(
+        _ selection: PersistedVideoSelection,
+        blockId: String,
+        for instanceId: UUID
+    ) {
+        // 1. Defensive authoritative cache update (only existing video slots)
+        if var sceneState = sceneStates[instanceId],
+           var slots = sceneState.mediaSlotsByBlockId,
+           var slot = slots[blockId],
+           slot.mediaRef.mediaKind == .video {
+            slot.videoWindow = selection
+            slots[blockId] = slot
+            sceneState.mediaSlotsByBlockId = slots
+            sceneStates[instanceId] = sceneState
+        }
+        // 2. Best-effort runtime fast-apply (failure does NOT roll back cache)
+        if let runtime = instanceRuntimes[instanceId] {
+            do {
+                try runtime.applyPersistedVideoSelection(blockId: blockId, selection)
+            } catch {
+                #if DEBUG
+                print("[Phase5] Engine runtime fast-apply failed (best-effort): \(error)")
+                #endif
+            }
+        }
+    }
+
     /// Increments generation counter to invalidate stale async results.
     /// Call this when playhead changes to ensure fast scrub works correctly.
     public func invalidateScrub() {

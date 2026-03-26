@@ -1378,4 +1378,95 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.trimStart, 1.0)
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.offset, 0.5)
     }
+
+    // MARK: - Phase 5: Video Selection Store Routing
+
+    /// onVideoSelectionChanged fires on committed setVideoSelection.
+    @MainActor func test_onVideoSelectionChanged_firesOnCommit() {
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let store = EditorStore(initialState: EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state)
+
+        let sceneId = store.state.sceneItems[0].id
+        let videoSlot = SceneMediaSlot.video(
+            mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+        store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
+
+        var videoChangeFired = false
+        store.onVideoSelectionChanged = { _, _, _ in
+            videoChangeFired = true
+        }
+
+        var sceneChangeFired = false
+        store.onSceneStateChanged = { _, _ in
+            sceneChangeFired = true
+        }
+
+        let newSelection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 9.0)
+        store.dispatch(.setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: newSelection))
+
+        XCTAssertTrue(videoChangeFired, "onVideoSelectionChanged should fire")
+        XCTAssertFalse(sceneChangeFired, "onSceneStateChanged should NOT fire for video selection")
+    }
+
+    /// onSceneStateChanged does NOT fire for setVideoSelection.
+    @MainActor func test_onSceneStateChanged_doesNotFireForVideoSelection() {
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let store = EditorStore(initialState: EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state)
+
+        let sceneId = store.state.sceneItems[0].id
+        let videoSlot = SceneMediaSlot.video(
+            mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+        store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
+
+        var sceneChangeFired = false
+        store.onSceneStateChanged = { _, _ in
+            sceneChangeFired = true
+        }
+
+        let newSelection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 9.0)
+        store.dispatch(.setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: newSelection))
+
+        XCTAssertFalse(sceneChangeFired, "onSceneStateChanged must not fire for video selection changes")
+    }
+
+    /// Undo after committed setVideoSelection restores previous selection.
+    @MainActor func test_undoAfterVideoSelection_restoresPrevious() {
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let store = EditorStore(initialState: EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state)
+
+        let sceneId = store.state.sceneItems[0].id
+        let originalSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        let videoSlot = SceneMediaSlot.video(
+            mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            videoWindow: originalSelection
+        )
+        store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
+
+        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0, offset: 1.0)
+        store.dispatch(.setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: newSelection))
+
+        // Verify new selection applied
+        let afterSlot = store.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_01"]
+        XCTAssertEqual(afterSlot?.videoWindow?.trimStart, 2.0)
+
+        // Undo
+        store.dispatch(.undo)
+
+        let undoneSlot = store.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_01"]
+        XCTAssertEqual(undoneSlot?.videoWindow?.trimStart, 0, "Undo should restore original trimStart")
+        XCTAssertEqual(undoneSlot?.videoWindow?.trimEnd, 10.0, "Undo should restore original trimEnd")
+    }
 }

@@ -153,6 +153,35 @@ public struct VideoSelection: Equatable, Sendable {
     }
 }
 
+// MARK: - Video Selection Edit Context (Phase 5)
+
+/// Preflight context for video selection editing.
+/// Contains the current persisted selection and actual file duration for UI bounds.
+public struct VideoSelectionEditContext: Sendable {
+    public let currentSelection: PersistedVideoSelection
+    public let actualDuration: Double
+}
+
+// MARK: - Video Selection Apply Error (Phase 5)
+
+/// Errors from validated video selection apply.
+enum VideoSelectionApplyError: Error, LocalizedError {
+    case blockNotVideo(blockId: String)
+    case providerNotReady(blockId: String)
+    case validationFailed(underlying: VideoWindowValidationError)
+
+    var errorDescription: String? {
+        switch self {
+        case .blockNotVideo(let blockId):
+            return "Block '\(blockId)' is not a video block"
+        case .providerNotReady(let blockId):
+            return "Video provider not ready for block '\(blockId)'"
+        case .validationFailed(let underlying):
+            return underlying.localizedDescription
+        }
+    }
+}
+
 // MARK: - User Media Kind
 
 /// Represents the type of user media for a block.
@@ -1270,15 +1299,40 @@ public final class UserMediaService {
         return result
     }
 
+    /// Returns edit context for an already-bound video block, or nil if not editable.
+    /// Used by UI to determine if "Edit Video" should be enabled and to provide bounds for sliders.
+    public func videoSelectionEditContext(blockId: String) -> VideoSelectionEditContext? {
+        guard case .video(let selection) = mediaState[blockId] else { return nil }
+        guard let provider = videoProviders[blockId], provider.isReady else { return nil }
+        let duration = provider.duration.seconds
+        guard duration.isFinite, duration > VideoWindowValidator.epsilon else { return nil }
+        return VideoSelectionEditContext(
+            currentSelection: PersistedVideoSelection(from: selection),
+            actualDuration: duration
+        )
+    }
+
     /// Applies persisted trim/offset/audio params to an already-bound runtime video selection.
-    /// Intended for post-assign selection updates (e.g. live trim edits), not initial restore/bind.
-    public func applyPersistedVideoSelection(blockId: String, _ persisted: PersistedVideoSelection) {
-        guard case .video(var selection) = mediaState[blockId] else { return }
-        selection.trimStart = persisted.trimStart
-        selection.trimEnd = persisted.trimEnd
-        selection.offset = persisted.offset
-        selection.isMuted = persisted.isMuted
-        selection.volume = persisted.volume
-        mediaState[blockId] = .video(selection)
+    /// Validates via VideoWindowValidator before mutation. Throws on invalid selection.
+    /// On throw: mediaState NOT mutated, blockReadinessState NOT changed, videoProviders NOT touched.
+    public func applyPersistedVideoSelection(blockId: String, _ persisted: PersistedVideoSelection) throws {
+        guard case .video(let currentSelection) = mediaState[blockId] else {
+            throw VideoSelectionApplyError.blockNotVideo(blockId: blockId)
+        }
+        guard let provider = videoProviders[blockId], provider.isReady else {
+            throw VideoSelectionApplyError.providerNotReady(blockId: blockId)
+        }
+        let validated: VideoSelection
+        do {
+            validated = try VideoWindowValidator.validate(
+                selection: persisted,
+                url: currentSelection.url,
+                actualDuration: provider.duration.seconds,
+                blockId: blockId
+            )
+        } catch let error as VideoWindowValidationError {
+            throw VideoSelectionApplyError.validationFailed(underlying: error)
+        }
+        mediaState[blockId] = .video(validated)
     }
 }

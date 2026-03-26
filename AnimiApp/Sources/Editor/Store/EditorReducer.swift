@@ -161,13 +161,18 @@ public enum EditorReducer {
             var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
             var slots = sceneState.mediaSlotsByBlockId ?? [:]
             // Guard: slot must exist and be a video slot
-            if var existingSlot = slots[blockId], existingSlot.mediaRef.mediaKind == .video {
-                existingSlot.videoWindow = selection
-                slots[blockId] = existingSlot
-                sceneState.mediaSlotsByBlockId = slots
-                newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+            guard var existingSlot = slots[blockId], existingSlot.mediaRef.mediaKind == .video else {
+                return ReducerResult(state: newState, shouldPushSnapshot: false)
             }
-            return ReducerResult(state: newState, shouldPushSnapshot: false)
+            // No-op check: skip if selection is identical
+            guard existingSlot.videoWindow != selection else {
+                return ReducerResult(state: newState, shouldPushSnapshot: false)
+            }
+            existingSlot.videoWindow = selection
+            slots[blockId] = existingSlot
+            sceneState.mediaSlotsByBlockId = slots
+            newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+            return ReducerResult(state: newState, shouldPushSnapshot: true)
 
         // MARK: - Scene Edit Mode (PR-A)
 

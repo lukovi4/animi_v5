@@ -120,8 +120,8 @@ public enum EditorAction: Sendable {
     ///   - slot: SceneMediaSlot to assign, or nil to clear
     case setMediaSlot(sceneInstanceId: UUID, blockId: String, slot: SceneMediaSlot?)
 
-    /// Persists video selection parameters (trim/offset/audio) for a block.
-    /// Does NOT push undo snapshot — this is a continuous persistence operation.
+    /// Commits video selection parameters (trim/offset/audio) for a block.
+    /// Pushes undo snapshot when selection actually changed.
     /// Updates the videoWindow field of the existing SceneMediaSlot.
     case setVideoSelection(sceneInstanceId: UUID, blockId: String, selection: PersistedVideoSelection)
 

@@ -80,6 +80,9 @@ final class EditorLayoutContainerView: UIView {
     /// Called when Disable/Enable button is tapped
     var onToggleEnabled: ((String) -> Void)?
 
+    /// Called when Edit Video button is tapped
+    var onEditVideo: ((String) -> Void)?
+
     /// Called when Remove button is tapped
     var onRemove: ((String) -> Void)?
 
@@ -356,6 +359,9 @@ final class EditorLayoutContainerView: UIView {
         mediaBlockActionBar.onAddVideo = { [weak self] blockId in
             self?.onAddVideo?(blockId)
         }
+        mediaBlockActionBar.onEditVideo = { [weak self] blockId in
+            self?.onEditVideo?(blockId)
+        }
         mediaBlockActionBar.onAnimation = { [weak self] blockId in
             self?.onAnimation?(blockId)
         }
@@ -512,14 +518,18 @@ final class EditorLayoutContainerView: UIView {
         allowedMedia: [String]?,
         hasVariants: Bool,
         hasMedia: Bool,
-        isEnabled: Bool
+        isEnabled: Bool,
+        mediaKind: MediaKind? = nil,
+        canEditVideoSelection: Bool = false
     ) {
         mediaBlockActionBar.configure(
             blockId: blockId,
             allowedMedia: allowedMedia,
             hasVariants: hasVariants,
             hasMedia: hasMedia,
-            isEnabled: isEnabled
+            isEnabled: isEnabled,
+            mediaKind: mediaKind,
+            canEditVideoSelection: canEditVideoSelection
         )
     }
 

@@ -79,7 +79,8 @@ final class UserMediaServiceReadinessTests: XCTestCase {
             }
         }
 
-        var isReady: Bool { true }
+        var overrideIsReady: Bool?
+        var isReady: Bool { overrideIsReady ?? true }
         var state: VideoProviderState { .ready }
         var isPlaybackActive: Bool { false }
 
@@ -689,5 +690,140 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         guard CGImageDestinationFinalize(dest) else {
             throw NSError(domain: "Test", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to finalize"])
         }
+    }
+
+    // MARK: - Phase 5: Video Selection Edit Context
+
+    /// videoSelectionEditContext returns context for ready video block.
+    func testVideoSelectionEditContext_readyVideo_returnsContext() async throws {
+        fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
+        let url = URL(fileURLWithPath: "/tmp/test.mov")
+
+        let accepted = sut.setVideo(
+            blockId: "block_01", url: url,
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+        XCTAssertTrue(accepted)
+
+        // Wait for setup to complete
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let context = sut.videoSelectionEditContext(blockId: "block_01")
+        XCTAssertNotNil(context, "Should return context for ready video")
+        if let ctx = context {
+            XCTAssertEqual(ctx.actualDuration, 10.0, accuracy: 0.01)
+            XCTAssertEqual(ctx.currentSelection.trimEnd, 10.0)
+        }
+    }
+
+    /// videoSelectionEditContext returns nil for missing block.
+    func testVideoSelectionEditContext_missingBlock_returnsNil() {
+        let context = sut.videoSelectionEditContext(blockId: "nonexistent")
+        XCTAssertNil(context, "Should return nil for missing block")
+    }
+
+    /// videoSelectionEditContext returns nil when provider is not ready.
+    func testVideoSelectionEditContext_providerNotReady_returnsNil() async throws {
+        fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
+        let url = URL(fileURLWithPath: "/tmp/test.mov")
+
+        _ = sut.setVideo(
+            blockId: "block_01", url: url,
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+
+        // Wait for setup to complete so mediaState has .video
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Now simulate provider becoming not-ready (e.g. budget eviction)
+        fakeProvider.overrideIsReady = false
+
+        let context = sut.videoSelectionEditContext(blockId: "block_01")
+        XCTAssertNil(context, "Should return nil when provider is not ready")
+    }
+
+    // MARK: - Phase 5: Validated Apply
+
+    /// applyPersistedVideoSelection with valid selection updates mediaState.
+    func testApplyPersistedVideoSelection_valid_updatesMediaState() async throws {
+        fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
+        let url = URL(fileURLWithPath: "/tmp/test.mov")
+
+        _ = sut.setVideo(
+            blockId: "block_01", url: url,
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+
+        // Wait for setup to complete
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let newSelection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 8.0, offset: 0.5)
+        XCTAssertNoThrow(
+            try sut.applyPersistedVideoSelection(blockId: "block_01", newSelection),
+            "Valid selection should not throw"
+        )
+
+        // Verify updated via videoSelectionEditContext
+        let context = sut.videoSelectionEditContext(blockId: "block_01")
+        XCTAssertEqual(context?.currentSelection.trimStart, 1.0)
+        XCTAssertEqual(context?.currentSelection.trimEnd, 8.0)
+        XCTAssertEqual(context?.currentSelection.offset, 0.5)
+    }
+
+    /// applyPersistedVideoSelection with invalid selection throws and keeps previous.
+    func testApplyPersistedVideoSelection_invalid_throwsKeepsPrevious() async throws {
+        fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
+        let url = URL(fileURLWithPath: "/tmp/test.mov")
+
+        _ = sut.setVideo(
+            blockId: "block_01", url: url,
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+
+        // Wait for setup to complete
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Invalid: trimEnd exceeds duration significantly
+        let badSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 100.0, offset: 50.0)
+        XCTAssertThrowsError(
+            try sut.applyPersistedVideoSelection(blockId: "block_01", badSelection),
+            "Invalid selection should throw"
+        )
+
+        // Verify previous selection preserved
+        let context = sut.videoSelectionEditContext(blockId: "block_01")
+        XCTAssertEqual(context?.currentSelection.trimEnd, 10.0, "Previous selection should be preserved on throw")
+    }
+
+    /// applyPersistedVideoSelection on non-video block throws blockNotVideo.
+    func testApplyPersistedVideoSelection_nonVideoBlock_throws() {
+        let selection = PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+        XCTAssertThrowsError(
+            try sut.applyPersistedVideoSelection(blockId: "nonexistent", selection)
+        ) { error in
+            guard case VideoSelectionApplyError.blockNotVideo = error else {
+                XCTFail("Expected blockNotVideo error, got \(error)")
+                return
+            }
+        }
+    }
+
+    /// applyPersistedVideoSelection does NOT mark block as failed on invalid selection.
+    func testApplyPersistedVideoSelection_invalid_doesNotMarkFailed() async throws {
+        fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
+        let url = URL(fileURLWithPath: "/tmp/test.mov")
+
+        _ = sut.setVideo(
+            blockId: "block_01", url: url,
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let badSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 100.0, offset: 50.0)
+        _ = try? sut.applyPersistedVideoSelection(blockId: "block_01", badSelection)
+
+        XCTAssertFalse(sut.hasFailedMedia, "Invalid apply should not mark media as failed")
+        XCTAssertTrue(sut.isSceneMediaReady, "Media should still be ready after invalid apply")
     }
 }

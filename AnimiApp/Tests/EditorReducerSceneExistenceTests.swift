@@ -136,7 +136,7 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
         XCTAssertNil(slot, "setVideoSelection on missing slot should not create one")
     }
 
-    /// setVideoSelection on a video slot updates videoWindow.
+    /// setVideoSelection on a video slot updates videoWindow and pushes snapshot.
     func test_setVideoSelection_onVideoSlot_updatesVideoWindow() {
         var state = makeStateWithOneScene()
         let sceneId = state.sceneItems[0].id
@@ -162,6 +162,32 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
         XCTAssertEqual(slot?.videoWindow?.trimStart, 2.0)
         XCTAssertEqual(slot?.videoWindow?.trimEnd, 8.0)
         XCTAssertEqual(slot?.videoWindow?.offset, 1.0)
+        XCTAssertTrue(result.shouldPushSnapshot, "Changed selection should push undo snapshot")
+    }
+
+    /// setVideoSelection with identical selection is a no-op (no snapshot).
+    func test_setVideoSelection_unchangedSelection_noSnapshot() {
+        var state = makeStateWithOneScene()
+        let sceneId = state.sceneItems[0].id
+        let selection = PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        let videoSlot = SceneMediaSlot.video(
+            mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            videoWindow: selection
+        )
+
+        // Assign a video slot
+        state = EditorReducer.reduce(
+            state: state,
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot)
+        ).state
+
+        // Set the same selection again
+        let result = EditorReducer.reduce(
+            state: state,
+            action: .setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: selection)
+        )
+
+        XCTAssertFalse(result.shouldPushSnapshot, "Unchanged selection should not push snapshot")
     }
 
     // MARK: - setBlockMediaPresent

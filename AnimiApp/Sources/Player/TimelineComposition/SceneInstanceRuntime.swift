@@ -299,6 +299,31 @@ public final class SceneInstanceRuntime {
         // NO auto-prepare
     }
 
+    // MARK: - Phase 5: Video Selection Fast Path
+
+    /// Fast-path: applies video selection without full reload.
+    /// Defensive: only updates existing video slots, no-ops for missing/photo slots.
+    /// Throws if UMS validation fails; appliedState unchanged on throw.
+    public func applyPersistedVideoSelection(blockId: String, _ selection: PersistedVideoSelection) throws {
+        // Defensive: only update existing video slot in appliedState
+        guard let state = appliedState,
+              let slots = state.mediaSlotsByBlockId,
+              let slot = slots[blockId],
+              slot.mediaRef.mediaKind == .video else {
+            return // no-op for missing/photo slots
+        }
+        // Delegate to UMS (validates, throws on failure)
+        try userMediaService.applyPersistedVideoSelection(blockId: blockId, selection)
+        // Update appliedState cache only after successful UMS apply
+        var mutableState = state
+        var mutableSlots = slots
+        var mutableSlot = slot
+        mutableSlot.videoWindow = selection
+        mutableSlots[blockId] = mutableSlot
+        mutableState.mediaSlotsByBlockId = mutableSlots
+        appliedState = mutableState
+    }
+
     // MARK: - TT-02: Readiness State Machine
 
     /// TT-02: Internal helper to sync frozen frame with clamping.

@@ -288,6 +288,9 @@ final class PlayerViewController: UIViewController {
         }
     }
 
+    /// Phase 5: Active video selection editor session key. Nil when no editor is open.
+    private var videoEditorSessionKey: (instanceId: UUID, blockId: String)?
+
     // MARK: - PR2: Visual Editor Timeline
     private var currentProjectDraft: ProjectDraft?
     /// Tracks whether draft has unsaved changes.
@@ -666,6 +669,10 @@ final class PlayerViewController: UIViewController {
 
         editorLayoutContainer.onAddVideo = { [weak self] blockId in
             self?.presentMediaPicker(for: blockId, kind: .video)
+        }
+
+        editorLayoutContainer.onEditVideo = { [weak self] blockId in
+            self?.presentVideoSelectionEditor(for: blockId)
         }
 
         editorLayoutContainer.onAnimation = { [weak self] blockId in
@@ -1149,6 +1156,11 @@ final class PlayerViewController: UIViewController {
         // PR-F: Scene state change callback for incremental engine sync
         store.onSceneStateChanged = { [weak self] instanceId, sceneState in
             self?.handleSceneStateChanged(instanceId: instanceId, sceneState: sceneState)
+        }
+
+        // Phase 5: Video selection committed callback
+        store.onVideoSelectionChanged = { [weak self] instanceId, blockId, selection in
+            self?.handleVideoSelectionChanged(instanceId: instanceId, blockId: blockId, selection: selection)
         }
 
         // PR-G: Notice callback for user-facing feedback (e.g., transition reset alerts)
@@ -1924,12 +1936,18 @@ final class PlayerViewController: UIViewController {
         // Check if block is enabled (slot visibility)
         let isEnabled = slot?.visibility ?? true
 
+        // Phase 5: Determine media kind and edit-video capability
+        let mediaKind = slot?.mediaRef.mediaKind
+        let canEditVideoSelection = userMediaService?.videoSelectionEditContext(blockId: blockId) != nil
+
         editorLayoutContainer.configureMediaBlockActionBar(
             blockId: blockId,
             allowedMedia: allowedMedia,
             hasVariants: hasVariants,
             hasMedia: hasMedia,
-            isEnabled: isEnabled
+            isEnabled: isEnabled,
+            mediaKind: mediaKind,
+            canEditVideoSelection: canEditVideoSelection
         )
     }
 
@@ -1947,6 +1965,83 @@ final class PlayerViewController: UIViewController {
         if editorStore?.state.selectedBlockId != nil {
             updateMediaBlockActionBarForSelectedBlock()
         }
+    }
+
+    // MARK: - Phase 5: Video Selection Editing
+
+    /// Presents the video selection editor for the given block.
+    private func presentVideoSelectionEditor(for blockId: String) {
+        guard let instanceId = sceneEditTargetInstanceId,
+              let ums = userMediaService,
+              let context = ums.videoSelectionEditContext(blockId: blockId) else { return }
+
+        // Verify slot is actually video
+        guard let slot = editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
+              slot.mediaRef.mediaKind == .video else { return }
+
+        // Stop playback if playing
+        if isPlaying {
+            stopPlayback()
+        }
+
+        // Store session key
+        videoEditorSessionKey = (instanceId, blockId)
+
+        // Create and present editor
+        let editorVC = VideoSelectionEditorViewController(
+            blockId: blockId,
+            actualDuration: context.actualDuration,
+            initialSelection: context.currentSelection
+        )
+        editorVC.delegate = self
+
+        let nav = UINavigationController(rootViewController: editorVC)
+        if let sheet = nav.sheetPresentationController {
+            sheet.detents = [.medium()]
+            sheet.prefersGrabberVisible = true
+        }
+        present(nav, animated: true)
+    }
+
+    /// Returns true if the video editor session is still valid for the given blockId.
+    private func isVideoEditorSessionValid(for blockId: String) -> Bool {
+        Self.isVideoEditorSessionValid(
+            for: blockId,
+            sessionKey: videoEditorSessionKey,
+            sceneEditTargetInstanceId: sceneEditTargetInstanceId,
+            sceneInstanceStates: editorStore?.state.draft.sceneInstanceStates ?? [:]
+        )
+    }
+
+    /// Pure-function session validation, testable without PlayerViewController.
+    static func isVideoEditorSessionValid(
+        for blockId: String,
+        sessionKey: (instanceId: UUID, blockId: String)?,
+        sceneEditTargetInstanceId: UUID?,
+        sceneInstanceStates: [UUID: SceneState]
+    ) -> Bool {
+        guard let session = sessionKey,
+              session.blockId == blockId,
+              session.instanceId == sceneEditTargetInstanceId,
+              let slot = sceneInstanceStates[session.instanceId]?
+                  .mediaSlotsByBlockId?[blockId],
+              slot.mediaRef.mediaKind == .video else {
+            return false
+        }
+        return true
+    }
+
+    /// Handles committed video selection change from store callback.
+    private func handleVideoSelectionChanged(instanceId: UUID, blockId: String, selection: PersistedVideoSelection) {
+        // Fast-path engine update (non-throwing, best-effort)
+        timelineCompositionEngine?.applyPersistedVideoSelection(selection, blockId: blockId, for: instanceId)
+
+        // Sync local draft cache
+        currentProjectDraft = editorStore?.currentDraft
+        draftIsDirty = true
+
+        // Refresh bars (edit button state may have changed)
+        refreshSceneEditBars()
     }
 
     /// Reloads runtime state for a given scene instance.
@@ -4209,5 +4304,109 @@ private extension DateFormatter {
 private extension Collection {
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+// MARK: - Phase 5: VideoSelectionEditorDelegate
+
+extension PlayerViewController: VideoSelectionEditorDelegate {
+
+    func videoSelectionEditorDidChange(blockId: String, selection: PersistedVideoSelection) {
+        guard isVideoEditorSessionValid(for: blockId) else { return }
+        guard let ums = userMediaService else { return }
+        // Live preview: apply to runtime, sync frame
+        do {
+            try ums.applyPersistedVideoSelection(blockId: blockId, selection)
+            syncPausedVideoFrame(force: true)
+        } catch {
+            #if DEBUG
+            print("[Phase5] Live preview apply failed: \(error)")
+            #endif
+        }
+    }
+
+    func videoSelectionEditorDidConfirm(blockId: String, selection: PersistedVideoSelection) {
+        // 1. Stale session check
+        guard isVideoEditorSessionValid(for: blockId) else {
+            dismiss(animated: true)
+            videoEditorSessionKey = nil
+            return
+        }
+
+        // 2. Runtime service must be available to commit
+        guard let ums = userMediaService else {
+            // Cannot validate — abort commit, cleanup session, dismiss
+            videoEditorSessionKey = nil
+            dismiss(animated: true)
+            return
+        }
+
+        // 3. Validate+apply to active runtime
+        do {
+            try ums.applyPersistedVideoSelection(blockId: blockId, selection)
+        } catch {
+            // Show error alert, do NOT dismiss, do NOT dispatch
+            let alert = UIAlertController(
+                title: "Invalid Selection",
+                message: error.localizedDescription,
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            presentedViewController?.present(alert, animated: true)
+            return
+        }
+
+        // 4. Sync frame
+        syncPausedVideoFrame(force: true)
+
+        // 5. Capture session info
+        let instanceId = videoEditorSessionKey?.instanceId
+
+        // 6. Clear session
+        videoEditorSessionKey = nil
+
+        // 7. Dismiss editor
+        dismiss(animated: true)
+
+        // 8. Dispatch to store
+        if let instanceId = instanceId {
+            editorStore?.dispatch(.setVideoSelection(
+                sceneInstanceId: instanceId,
+                blockId: blockId,
+                selection: selection
+            ))
+        }
+    }
+
+    func videoSelectionEditorDidFinishUnchanged(blockId: String) {
+        // Full staleness guard — same contract as didConfirm/didCancel.
+        // Only clear session if fully valid (instanceId + blockId + target + video slot).
+        if isVideoEditorSessionValid(for: blockId) {
+            videoEditorSessionKey = nil
+        }
+        dismiss(animated: true)
+    }
+
+    func videoSelectionEditorDidCancel(blockId: String) {
+        // 1. Dismiss editor
+        dismiss(animated: true)
+
+        // 2. Stale session check
+        guard isVideoEditorSessionValid(for: blockId) else {
+            videoEditorSessionKey = nil
+            return
+        }
+
+        // 3. Clear session
+        videoEditorSessionKey = nil
+
+        // 4. Revert to persisted videoWindow
+        if let ums = userMediaService,
+           let instanceId = sceneEditTargetInstanceId,
+           let persisted = editorStore?.state.draft.sceneInstanceStates[instanceId]?
+               .mediaSlotsByBlockId?[blockId]?.videoWindow {
+            try? ums.applyPersistedVideoSelection(blockId: blockId, persisted)
+            syncPausedVideoFrame(force: true)
+        }
     }
 }
