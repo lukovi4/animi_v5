@@ -1,11 +1,13 @@
 import XCTest
 import Metal
+import ImageIO
 import AVFoundation
 import TVECore
 @testable import AnimiApp
 
 /// P0: Tests for UserMediaService readiness contract via public API.
 /// Uses injectable seam for VideoSetupProviding to control setup outcomes.
+/// Phase 2: Photo tests use file URL fixtures and await async completion.
 @MainActor
 final class UserMediaServiceReadinessTests: XCTestCase {
 
@@ -51,25 +53,6 @@ final class UserMediaServiceReadinessTests: XCTestCase {
 
         func removeTexture(for assetId: String) {
             textures.removeValue(forKey: assetId)
-        }
-    }
-
-    /// Fake texture factory for testing setPhoto() path.
-    final class FakeTextureFactory: TextureFactoryForMedia {
-        private let device: MTLDevice
-
-        init(device: MTLDevice) {
-            self.device = device
-        }
-
-        func makeTexture(from image: UIImage) -> MTLTexture? {
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .rgba8Unorm,
-                width: 64,
-                height: 64,
-                mipmapped: false
-            )
-            return device.makeTexture(descriptor: descriptor)
         }
     }
 
@@ -153,9 +136,11 @@ final class UserMediaServiceReadinessTests: XCTestCase {
     private var commandQueue: MTLCommandQueue!
     private var fakePlayer: FakeScenePlayer!
     private var fakeTextureProvider: FakeTextureProvider!
-    private var fakeTextureFactory: FakeTextureFactory!
     private var sut: UserMediaService!
     private var fakeProvider: FakeVideoSetupProvider!
+
+    /// Temporary photo fixture URL — valid JPEG for setPhoto tests.
+    private var photoFixtureURL: URL!
 
     // MARK: - Setup / Teardown
 
@@ -172,30 +157,36 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         fakePlayer.addBlock(blockId: "block_01", assetId: "binding_asset_01")
 
         fakeTextureProvider = FakeTextureProvider()
-        fakeTextureFactory = FakeTextureFactory(device: device)
 
         sut = UserMediaService(
             device: device,
             commandQueue: commandQueue,
             scenePlayerForTest: fakePlayer,
-            textureProvider: fakeTextureProvider,
-            textureFactory: fakeTextureFactory
+            textureProvider: fakeTextureProvider
         )
 
         fakeProvider = FakeVideoSetupProvider()
         sut.makeVideoProvider = { [weak self] _, _, _, _ in
             self?.fakeProvider ?? FakeVideoSetupProvider()
         }
+
+        // Create photo fixture (64x64 red PNG on disk)
+        photoFixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test_photo_\(UUID().uuidString).png")
+        try createTestImage(at: photoFixtureURL, width: 64, height: 64)
     }
 
     override func tearDown() async throws {
+        if let url = photoFixtureURL {
+            try? FileManager.default.removeItem(at: url)
+        }
         sut = nil
         fakePlayer = nil
         fakeTextureProvider = nil
-        fakeTextureFactory = nil
         device = nil
         commandQueue = nil
         fakeProvider = nil
+        photoFixtureURL = nil
         try await super.tearDown()
     }
 
@@ -295,19 +286,21 @@ final class UserMediaServiceReadinessTests: XCTestCase {
 
         XCTAssertTrue(sut.hasFailedMedia, "Precondition: should have failed video")
 
-        // When: Replace with photo using real setPhoto() API
-        let testImage = createTestImage()
-        let success = sut.setPhoto(blockId: "block_01", image: testImage)
+        // When: Replace with photo using file URL
+        let accepted = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        XCTAssertTrue(accepted, "setPhoto should accept")
+
+        // Wait for async texture load
+        try await Task.sleep(nanoseconds: 200_000_000)  // 200ms
 
         // Then
-        XCTAssertTrue(success, "setPhoto should succeed")
         XCTAssertTrue(sut.isSceneMediaReady, "Should be ready after photo replacement")
-        XCTAssertFalse(sut.hasFailedMedia, "Should have no failed videos after photo replacement")
+        XCTAssertFalse(sut.hasFailedMedia, "Should have no failed media after photo replacement")
     }
 
     // MARK: - Test: Pending Video → setPhoto() Clears Pending
 
-    /// Test: setPhoto() on pending video clears the pending state.
+    /// Test: setPhoto() on pending video cancels video and eventually becomes ready.
     func testPendingVideo_setPhotoClearsPending() async throws {
         // Given: Pending video (never completes)
         fakeProvider.mode = .pending
@@ -315,36 +308,34 @@ final class UserMediaServiceReadinessTests: XCTestCase {
 
         XCTAssertFalse(sut.isSceneMediaReady, "Precondition: should not be ready while pending")
 
-        // When: Replace with photo using real setPhoto() API
-        let testImage = createTestImage()
-        let success = sut.setPhoto(blockId: "block_01", image: testImage)
+        // When: Replace with photo
+        let accepted = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        XCTAssertTrue(accepted, "setPhoto should accept")
+
+        // Wait for async texture load
+        try await Task.sleep(nanoseconds: 200_000_000)  // 200ms
 
         // Then
-        XCTAssertTrue(success, "setPhoto should succeed")
         XCTAssertTrue(sut.isSceneMediaReady, "Should be ready after photo replacement")
-        XCTAssertFalse(sut.hasFailedMedia, "Should have no failed videos")
+        XCTAssertFalse(sut.hasFailedMedia, "Should have no failed media")
     }
 
     // MARK: - Test: Photo Failure → Not Ready
 
-    /// Test: setPhoto failure (texture creation failed) sets hasFailedMedia == true.
+    /// Test: setPhoto with missing file sets hasFailedMedia == true.
     func testPhotoFailure_hasFailedMedia() async throws {
-        // Given: Texture factory that fails
-        let failingFactory = FailingTextureFactory()
-        sut = UserMediaService(
-            device: device,
-            commandQueue: commandQueue,
-            scenePlayerForTest: fakePlayer,
-            textureProvider: fakeTextureProvider,
-            textureFactory: failingFactory
-        )
+        // Given: Non-existent file
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nonexistent_\(UUID().uuidString).png")
 
-        // When: Try to set photo
-        let testImage = createTestImage()
-        let success = sut.setPhoto(blockId: "block_01", image: testImage)
+        // When: Try to set photo with missing file
+        let accepted = sut.setPhoto(blockId: "block_01", fileURL: missingURL)
+        XCTAssertTrue(accepted, "setPhoto should accept (failure is async)")
+
+        // Wait for async failure
+        try await Task.sleep(nanoseconds: 200_000_000)  // 200ms
 
         // Then
-        XCTAssertFalse(success, "setPhoto should fail with failing texture factory")
         XCTAssertFalse(sut.isSceneMediaReady, "Should not be ready after photo failure")
         XCTAssertTrue(sut.hasFailedMedia, "Should have failed media after photo failure")
     }
@@ -387,28 +378,52 @@ final class UserMediaServiceReadinessTests: XCTestCase {
 
     // MARK: - Test: setPhoto with presentOnReady
 
-    /// Test: setPhoto with presentOnReady: false does NOT set userMediaPresent.
-    func testPhotoWithPresentOnReadyFalse_doesNotSetPresent() {
+    /// Test: setPhoto with presentOnReady: false respects the flag after async completion.
+    func testPhotoWithPresentOnReadyFalse_doesNotSetPresent() async throws {
         // When: Set photo with presentOnReady: false
-        let testImage = createTestImage()
-        let success = sut.setPhoto(blockId: "block_01", image: testImage, presentOnReady: false)
+        let accepted = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL, presentOnReady: false)
+        XCTAssertTrue(accepted)
+
+        // Wait for async texture load
+        try await Task.sleep(nanoseconds: 200_000_000)  // 200ms
 
         // Then
-        XCTAssertTrue(success, "setPhoto should succeed")
         XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_01"], false,
                        "userMediaPresent should be false with presentOnReady: false")
     }
 
-    /// Test: setPhoto with presentOnReady: true (default) DOES set userMediaPresent.
-    func testPhotoWithPresentOnReadyTrue_setsPresent() {
+    /// Test: setPhoto with presentOnReady: true (default) DOES set userMediaPresent after completion.
+    func testPhotoWithPresentOnReadyTrue_setsPresent() async throws {
         // When: Set photo with default presentOnReady (true)
-        let testImage = createTestImage()
-        let success = sut.setPhoto(blockId: "block_01", image: testImage)
+        let accepted = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        XCTAssertTrue(accepted)
+
+        // Wait for async texture load
+        try await Task.sleep(nanoseconds: 200_000_000)  // 200ms
 
         // Then
-        XCTAssertTrue(success, "setPhoto should succeed")
         XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_01"], true,
                        "userMediaPresent should be true with presentOnReady: true")
+    }
+
+    // MARK: - Test: Accepted Photo → Eventually Ready
+
+    /// Test: accepted photo file → eventually ready.
+    func testAcceptedPhotoFile_eventuallyReady() async throws {
+        // When
+        let accepted = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        XCTAssertTrue(accepted)
+
+        // Immediately after: should be pending
+        XCTAssertFalse(sut.isSceneMediaReady, "Should not be ready immediately (async)")
+
+        // Wait for async texture load
+        try await Task.sleep(nanoseconds: 200_000_000)  // 200ms
+
+        // Then
+        XCTAssertTrue(sut.isSceneMediaReady, "Should be ready after async load")
+        XCTAssertFalse(sut.hasFailedMedia)
+        XCTAssertNotNil(fakeTextureProvider.textures["binding_asset_01"], "Texture should be injected")
     }
 
     // MARK: - Test: markRestoreFailed
@@ -429,10 +444,10 @@ final class UserMediaServiceReadinessTests: XCTestCase {
     }
 
     /// Test: markRestoreFailed clears existing textures.
-    func testMarkRestoreFailed_clearsTextures() {
+    func testMarkRestoreFailed_clearsTextures() async throws {
         // Given: Photo already set
-        let testImage = createTestImage()
-        _ = sut.setPhoto(blockId: "block_01", image: testImage)
+        _ = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertNotNil(fakeTextureProvider.textures["binding_asset_01"], "Precondition: texture should exist")
 
         // When: Mark restore failed
@@ -456,26 +471,6 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         // Then: Service should be ready again
         XCTAssertTrue(sut.isSceneMediaReady, "Should be ready after clear")
         XCTAssertFalse(sut.hasFailedMedia, "Should have no failed media after clear")
-    }
-
-    // MARK: - Test Helpers
-
-    /// Failing texture factory for testing photo failure path.
-    final class FailingTextureFactory: TextureFactoryForMedia {
-        func makeTexture(from image: UIImage) -> MTLTexture? {
-            return nil  // Always fail
-        }
-    }
-
-    /// Creates a minimal test image for setPhoto() tests.
-    private func createTestImage() -> UIImage {
-        let size = CGSize(width: 64, height: 64)
-        UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
-        UIColor.red.setFill()
-        UIRectFill(CGRect(origin: .zero, size: size))
-        let image = UIGraphicsGetImageFromCurrentImageContext()!
-        UIGraphicsEndImageContext()
-        return image
     }
 
     // MARK: - Test: clearAll() Removes All State
@@ -519,5 +514,90 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         // Then
         XCTAssertTrue(sut.isSceneMediaReady, "Should be ready after clearAll")
         XCTAssertFalse(sut.hasFailedMedia, "Should have no failed videos after clearAll")
+    }
+
+    // MARK: - Test: Valid Photo → Replace with Corrupt/Missing File
+
+    /// Regression: replacing a valid photo with a corrupt file must clean up the old texture and mediaState.
+    func testValidPhoto_thenReplaceWithUnreadableFile_clearsOldTexture() async throws {
+        // Given: Valid photo loaded
+        _ = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(sut.isSceneMediaReady, "Precondition: should be ready")
+        XCTAssertNotNil(fakeTextureProvider.textures["binding_asset_01"], "Precondition: texture should exist")
+
+        // When: Replace with corrupt file
+        let corruptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corrupt_\(UUID().uuidString).jpg")
+        try Data([0xDE, 0xAD]).write(to: corruptURL)
+        defer { try? FileManager.default.removeItem(at: corruptURL) }
+
+        _ = sut.setPhoto(blockId: "block_01", fileURL: corruptURL)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Then: Old texture cleaned up, block in failed state, no stale mediaState
+        XCTAssertNil(fakeTextureProvider.textures["binding_asset_01"], "Old texture should be removed")
+        XCTAssertFalse(sut.hasMedia(blockId: "block_01"), "Stale mediaState should be cleared")
+        XCTAssertFalse(sut.isSceneMediaReady)
+        XCTAssertTrue(sut.hasFailedMedia)
+        XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_01"], false)
+    }
+
+    /// Regression: replacing a valid photo with a missing file must clean up the old texture and mediaState.
+    func testValidPhoto_thenReplaceWithMissingFile_clearsOldTexture() async throws {
+        // Given: Valid photo loaded
+        _ = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(sut.isSceneMediaReady, "Precondition: should be ready")
+        XCTAssertNotNil(fakeTextureProvider.textures["binding_asset_01"], "Precondition: texture should exist")
+
+        // When: Replace with non-existent file
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nonexistent_\(UUID().uuidString).png")
+
+        _ = sut.setPhoto(blockId: "block_01", fileURL: missingURL)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Then: Old texture cleaned up, block in failed state, no stale mediaState
+        XCTAssertNil(fakeTextureProvider.textures["binding_asset_01"], "Old texture should be removed")
+        XCTAssertFalse(sut.hasMedia(blockId: "block_01"), "Stale mediaState should be cleared")
+        XCTAssertFalse(sut.isSceneMediaReady)
+        XCTAssertTrue(sut.hasFailedMedia)
+        XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_01"], false)
+    }
+
+    // MARK: - Test Helpers
+
+    /// Creates a test image on disk using CGContext + CGImageDestination (no UIKit).
+    private func createTestImage(at url: URL, width: Int, height: Int) throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo.rawValue
+        ) else {
+            throw NSError(domain: "Test", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create context"])
+        }
+
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+
+        guard let cgImage = context.makeImage() else {
+            throw NSError(domain: "Test", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to make image"])
+        }
+
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+            throw NSError(domain: "Test", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create destination"])
+        }
+
+        CGImageDestinationAddImage(dest, cgImage, nil)
+        guard CGImageDestinationFinalize(dest) else {
+            throw NSError(domain: "Test", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to finalize"])
+        }
     }
 }

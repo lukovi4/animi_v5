@@ -317,6 +317,132 @@ final class ProjectStorePersistenceTests: XCTestCase {
         XCTAssertFalse(store.hasActiveDraft())
     }
 
+    // MARK: - Schema Purge Tests
+
+    /// allSavedProjectEntries filters out incompatible (old schema) projects.
+    func testAllSavedProjectEntries_filtersIncompatibleProjects() throws {
+        let store = ProjectStore()
+        let fm = FileManager.default
+
+        // 1. Create a valid project via normal API
+        let validId = UUID()
+        let validDraft = ProjectDraft.create(for: "valid-template", projectId: validId)
+        var validSlot = ActiveDraftSlot(
+            entryContext: .newFromTemplate(templateId: "valid-template"),
+            sourceTemplateId: "valid-template",
+            linkedSavedProjectId: nil,
+            draft: validDraft
+        )
+        try store.materializeSavedProject(from: &validSlot)
+
+        // 2. Inject an incompatible project directly on disk (schema version 1)
+        let invalidId = UUID()
+        let projectsDir = try store.projectsDirectoryURL()
+        let indexURL = projectsDir.appendingPathComponent("index.json")
+        let invalidProjectURL = projectsDir.appendingPathComponent("\(invalidId.uuidString).json")
+        let invalidJSON = """
+        {
+            "sourceTemplateId": "old-template",
+            "savedAt": "2024-01-01T00:00:00Z",
+            "draft": {
+                "schemaVersion": 1,
+                "id": "\(invalidId.uuidString)",
+                "templateId": "old-template",
+                "createdAt": "2024-01-01T00:00:00Z",
+                "updatedAt": "2024-01-01T00:00:00Z"
+            }
+        }
+        """
+        try invalidJSON.data(using: .utf8)!.write(to: invalidProjectURL, options: .atomic)
+
+        // Add entry to index
+        let currentIndexData = try Data(contentsOf: indexURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var currentIndex = try decoder.decode(SavedProjectsIndex.self, from: currentIndexData)
+        currentIndex.projects[invalidId] = SavedProjectIndexEntry(
+            projectId: invalidId,
+            sourceTemplateId: "old-template",
+            savedAt: Date(timeIntervalSince1970: 1704067200)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(currentIndex).write(to: indexURL, options: .atomic)
+
+        // Clear cache so store re-reads from disk
+        store.clearCache()
+
+        defer {
+            try? store.deleteSavedProject(projectId: validId)
+            try? fm.removeItem(at: invalidProjectURL)
+        }
+
+        // 3. Verify: allSavedProjectEntries returns only the valid project
+        let entries = store.allSavedProjectEntries()
+        let entryIds = Set(entries.map(\.projectId))
+
+        XCTAssertTrue(entryIds.contains(validId), "Valid project should be in list")
+        XCTAssertFalse(entryIds.contains(invalidId), "Incompatible project should be filtered out")
+    }
+
+    /// Purge physically removes incompatible project file and index entry.
+    func testPurge_removesIncompatibleProjectFileAndIndexEntry() throws {
+        let store = ProjectStore()
+        let fm = FileManager.default
+
+        let invalidId = UUID()
+        let projectsDir = try store.projectsDirectoryURL()
+        try fm.createDirectory(at: projectsDir, withIntermediateDirectories: true)
+
+        let indexURL = projectsDir.appendingPathComponent("index.json")
+        let invalidProjectURL = projectsDir.appendingPathComponent("\(invalidId.uuidString).json")
+
+        // Write incompatible project file
+        let invalidJSON = """
+        {
+            "sourceTemplateId": "old-template",
+            "savedAt": "2024-01-01T00:00:00Z",
+            "draft": {
+                "schemaVersion": 1,
+                "id": "\(invalidId.uuidString)",
+                "templateId": "old-template",
+                "createdAt": "2024-01-01T00:00:00Z",
+                "updatedAt": "2024-01-01T00:00:00Z"
+            }
+        }
+        """
+        try invalidJSON.data(using: .utf8)!.write(to: invalidProjectURL, options: .atomic)
+
+        // Write index with just this entry
+        var index = SavedProjectsIndex()
+        index.projects[invalidId] = SavedProjectIndexEntry(
+            projectId: invalidId,
+            sourceTemplateId: "old-template",
+            savedAt: Date(timeIntervalSince1970: 1704067200)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(index).write(to: indexURL, options: .atomic)
+
+        store.clearCache()
+
+        // Trigger listing (which runs purge internally)
+        let entries = store.allSavedProjectEntries()
+
+        // Verify: no entries returned
+        XCTAssertTrue(entries.isEmpty, "Incompatible project should not appear")
+
+        // Verify: project file physically removed
+        XCTAssertFalse(fm.fileExists(atPath: invalidProjectURL.path), "Incompatible project file should be deleted")
+
+        // Verify: index no longer contains the entry
+        store.clearCache()
+        let reloadedEntries = store.allSavedProjectEntries()
+        XCTAssertTrue(reloadedEntries.isEmpty, "Index should be clean after purge")
+    }
+
     /// Empty draft roundtrips correctly through SavedProjectRecord.
     func testSavedProjectRecord_emptyDraft_roundtrip() throws {
         let templateId = "tt11-\(UUID())"

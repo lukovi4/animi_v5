@@ -1,7 +1,7 @@
-import UIKit
 import Metal
 import AVFoundation
 import TVECore
+import ImageIO
 
 // MARK: - Video Setup Provider Protocol (P0 Testing Seam)
 
@@ -46,17 +46,6 @@ protocol ScenePlayerForMedia: AnyObject {
 
 /// Conform ScenePlayer to protocol.
 extension ScenePlayer: ScenePlayerForMedia {}
-
-// MARK: - Texture Factory Protocol (P0 Testing Seam)
-
-/// Protocol for texture factory used by UserMediaService.
-/// Internal seam for dependency injection in tests.
-protocol TextureFactoryForMedia {
-    func makeTexture(from image: UIImage) -> MTLTexture?
-}
-
-/// Conform UserMediaTextureFactory to protocol.
-extension UserMediaTextureFactory: TextureFactoryForMedia {}
 
 // MARK: - Async Semaphore (P1: Poster Throttling)
 
@@ -253,7 +242,7 @@ struct PlaybackVideoCandidate: Sendable {
 /// Usage:
 /// ```swift
 /// let service = UserMediaService(device: device, commandQueue: queue, scenePlayer: player, textureProvider: provider)
-/// service.setPhoto(blockId: "block_01", image: userSelectedImage)
+/// service.setPhoto(blockId: "block_01", fileURL: photoFileURL)
 /// // Later...
 /// service.clear(blockId: "block_01")
 /// ```
@@ -272,7 +261,6 @@ public final class UserMediaService {
     private weak var scenePlayer: ScenePlayer?
     private weak var scenePlayerForTest: (any ScenePlayerForMedia)?
     private let textureProvider: any MutableTextureProvider
-    private var textureFactory: (any TextureFactoryForMedia)?
 
     /// Current media state per block
     private var mediaState: [String: UserMediaKind] = [:]
@@ -296,15 +284,16 @@ public final class UserMediaService {
     // MARK: - Async Race Protection (PR-async-race)
 
     /// Generation token per blockId for async race protection.
-    /// Incremented on setVideo/cleanup to invalidate pending async operations.
-    private var videoSetupGenerationByBlock: [String: UInt64] = [:]
+    /// Incremented on setPhoto/setVideo/cleanup to invalidate pending async operations.
+    private var mediaSetupGenerationByBlock: [String: UInt64] = [:]
 
-    /// Active video setup tasks per blockId (for cancellation on replace/cleanup).
-    private var videoSetupTasksByBlock: [String: Task<Void, Never>] = [:]
+    /// Active media setup tasks per blockId (for cancellation on replace/cleanup).
+    /// Used by both photo (async texture load) and video (async poster extraction) paths.
+    private var mediaSetupTasksByBlock: [String: Task<Void, Never>] = [:]
 
     // MARK: - Block Readiness State (P0 Readiness Contract)
 
-    /// Per-block readiness state for video restore.
+    /// Per-block readiness state for media setup (photo and video).
     /// Source of truth for scene-level readiness check.
     private enum BlockReadinessState: Equatable {
         case pending
@@ -314,7 +303,7 @@ public final class UserMediaService {
 
     /// Readiness state per blockId.
     /// - `.pending`: setup task in progress
-    /// - `.ready`: poster injected, userMediaPresent applied
+    /// - `.ready`: texture/poster injected, userMediaPresent applied
     /// - `.failed`: setup failed, resources cleaned up
     private var blockReadinessState: [String: BlockReadinessState] = [:]
 
@@ -358,24 +347,21 @@ public final class UserMediaService {
         self.scenePlayer = scenePlayer
         self.scenePlayerForTest = nil
         self.textureProvider = textureProvider
-        self.textureFactory = UserMediaTextureFactory(device: device, commandQueue: commandQueue)
     }
 
     /// Internal initializer for testing.
-    /// P0 Testing Seam: Allows injecting protocol-based fakes for ScenePlayer and TextureFactory.
+    /// P0 Testing Seam: Allows injecting protocol-based fakes for ScenePlayer.
     init(
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
         scenePlayerForTest: any ScenePlayerForMedia,
-        textureProvider: any MutableTextureProvider,
-        textureFactory: any TextureFactoryForMedia
+        textureProvider: any MutableTextureProvider
     ) {
         self.device = device
         self.commandQueue = commandQueue
         self.scenePlayer = nil
         self.scenePlayerForTest = scenePlayerForTest
         self.textureProvider = textureProvider
-        self.textureFactory = textureFactory
     }
 
     // MARK: - Player Access
@@ -398,56 +384,127 @@ public final class UserMediaService {
 
     /// Sets a photo as user media for a block.
     ///
-    /// Creates a Metal texture from the image and injects it into ALL variant
-    /// binding asset IDs, ensuring the photo persists across variant switches.
+    /// Loads the file into a Metal texture via `DownsampledImageLoader` on a background task,
+    /// then injects it into ALL variant binding asset IDs on the MainActor.
+    /// Does NOT block the MainActor during texture load (GPU blit + waitUntilCompleted).
     ///
     /// P0 Readiness Contract: Updates `blockReadinessState` on success/failure.
-    /// Photo failures now affect scene-level readiness like video failures.
+    /// Photo failures affect scene-level readiness like video failures.
     ///
     /// - Parameters:
     ///   - blockId: Identifier of the media block
-    ///   - image: User-selected photo
+    ///   - fileURL: URL to the persisted photo file
     ///   - presentOnReady: Value for `userMediaPresent` after texture injection (default: `true`)
-    /// - Returns: `true` if successful, `false` if texture creation failed
+    /// - Returns: `true` if accepted (async texture load started), `false` if no scene player available.
+    ///   File-level errors (missing/corrupt file) are reported asynchronously via `blockReadinessState`.
     @discardableResult
-    public func setPhoto(blockId: String, image: UIImage, presentOnReady: Bool = true) -> Bool {
+    public func setPhoto(blockId: String, fileURL: URL, presentOnReady: Bool = true) -> Bool {
         guard let player = activePlayer else {
-            // P0: Mark as failed - no player available
             blockReadinessState[blockId] = .failed(reason: "no scene player")
             return false
         }
-        guard let factory = textureFactory else {
-            // P0: Mark as failed - no texture factory (test-only case)
-            blockReadinessState[blockId] = .failed(reason: "no texture factory")
-            return false
-        }
 
-        // PR1: Clean up any existing video provider and temp file
+        // Clean up any existing video provider
         cleanupVideoResources(for: blockId)
 
-        // Create texture from image
-        guard let texture = factory.makeTexture(from: image) else {
-            // P0: Mark as failed - texture creation failed
-            blockReadinessState[blockId] = .failed(reason: "texture creation failed")
-            return false
+        // Increment generation and cancel previous setup task
+        let newGeneration = (mediaSetupGenerationByBlock[blockId] ?? 0) + 1
+        mediaSetupGenerationByBlock[blockId] = newGeneration
+        let token = newGeneration
+
+        mediaSetupTasksByBlock[blockId]?.cancel()
+
+        // Mark as pending
+        blockReadinessState[blockId] = .pending
+
+        // Capture dependencies for background task
+        let device = self.device
+        let commandQueue = self.commandQueue
+
+        let setupTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                // Load texture off MainActor via nonisolated helper
+                let texture = try await Self.loadPhotoTexture(
+                    fileURL: fileURL,
+                    device: device,
+                    commandQueue: commandQueue
+                )
+
+                // Check generation after await
+                guard self.mediaSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
+                    if self.mediaSetupGenerationByBlock[blockId] == token {
+                        self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
+                    }
+                    return
+                }
+
+                // Inject texture into all variant binding asset IDs
+                let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+                for (_, assetId) in assetIds {
+                    self.textureProvider.setTexture(texture, for: assetId)
+                }
+
+                // Update state
+                self.mediaState[blockId] = .photo
+                self.blockReadinessState[blockId] = .ready
+                player.setUserMediaPresent(blockId: blockId, present: presentOnReady)
+
+                // Token-safe remove task
+                if self.mediaSetupGenerationByBlock[blockId] == token {
+                    self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
+                }
+
+                self.onNeedsDisplay?()
+
+                #if DEBUG
+                print("[UserMediaService] setPhoto success: blockId=\(blockId), needsDisplay fired")
+                #endif
+
+            } catch is CancellationError {
+                if self.mediaSetupGenerationByBlock[blockId] == token {
+                    self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
+                }
+            } catch {
+                guard self.mediaSetupGenerationByBlock[blockId] == token else { return }
+
+                // Remove stale textures from previous setup
+                let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+                for (_, assetId) in assetIds {
+                    self.textureProvider.removeTexture(for: assetId)
+                }
+
+                // Clear stale media state
+                self.mediaState.removeValue(forKey: blockId)
+
+                self.blockReadinessState[blockId] = .failed(reason: "photo texture load failed - \(error.localizedDescription)")
+                self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
+                player.setUserMediaPresent(blockId: blockId, present: false)
+                self.onNeedsDisplay?()
+
+                #if DEBUG
+                print("[UserMediaService] setPhoto failed: blockId=\(blockId), error=\(error)")
+                #endif
+            }
         }
 
-        // Inject texture into all variant binding asset IDs
-        let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
-        for (_, assetId) in assetIds {
-            textureProvider.setTexture(texture, for: assetId)
-        }
-
-        // Update state (lightweight marker, no UIImage storage)
-        mediaState[blockId] = .photo
-
-        // P0: Mark as ready - photo successfully injected
-        blockReadinessState[blockId] = .ready
-
-        // Apply visibility (respects presentOnReady for restore semantics)
-        player.setUserMediaPresent(blockId: blockId, present: presentOnReady)
-
+        mediaSetupTasksByBlock[blockId] = setupTask
         return true
+    }
+
+    /// Loads a photo texture off the MainActor using DownsampledImageLoader.
+    private static nonisolated func loadPhotoTexture(
+        fileURL: URL,
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue
+    ) async throws -> MTLTexture {
+        try DownsampledImageLoader.loadTexture(
+            from: fileURL,
+            device: device,
+            commandQueue: commandQueue,
+            maxDimensionPx: 2048
+        )
     }
 
     // MARK: - Video API
@@ -486,11 +543,11 @@ public final class UserMediaService {
         cleanupVideoResources(for: blockId)
 
         // PR-async-race: Increment generation and cancel previous setup task
-        let newGeneration = (videoSetupGenerationByBlock[blockId] ?? 0) + 1
-        videoSetupGenerationByBlock[blockId] = newGeneration
+        let newGeneration = (mediaSetupGenerationByBlock[blockId] ?? 0) + 1
+        mediaSetupGenerationByBlock[blockId] = newGeneration
         let token = newGeneration
 
-        videoSetupTasksByBlock[blockId]?.cancel()
+        mediaSetupTasksByBlock[blockId]?.cancel()
 
         // Create video frame provider with scene FPS (uses injectable factory)
         let provider = makeVideoProvider(device, commandQueue, url, sceneFPS)
@@ -518,13 +575,13 @@ public final class UserMediaService {
                 let poster = try await provider.requestPoster(at: 0)
 
                 // PR-async-race: Check token after await — abort if generation changed
-                guard self.videoSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
+                guard self.mediaSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
                     #if DEBUG
                     print("[UserMediaService] setVideo: stale task ignored for blockId=\(blockId)")
                     #endif
                     // P0: Token-safe remove task (only if we're still current generation)
-                    if self.videoSetupGenerationByBlock[blockId] == token {
-                        self.videoSetupTasksByBlock.removeValue(forKey: blockId)
+                    if self.mediaSetupGenerationByBlock[blockId] == token {
+                        self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                     }
                     await self.posterSemaphore.release()
                     return
@@ -553,13 +610,13 @@ public final class UserMediaService {
                 }
 
                 // PR-async-race: Final check before side effects
-                guard self.videoSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
+                guard self.mediaSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
                     #if DEBUG
                     print("[UserMediaService] setVideo: stale task ignored (pre-commit) for blockId=\(blockId)")
                     #endif
                     // P0: Token-safe remove task (only if we're still current generation)
-                    if self.videoSetupGenerationByBlock[blockId] == token {
-                        self.videoSetupTasksByBlock.removeValue(forKey: blockId)
+                    if self.mediaSetupGenerationByBlock[blockId] == token {
+                        self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                     }
                     await self.posterSemaphore.release()
                     return
@@ -590,8 +647,8 @@ public final class UserMediaService {
                 self.blockReadinessState[blockId] = .ready
 
                 // P0: Token-safe remove task from task map
-                if self.videoSetupGenerationByBlock[blockId] == token {
-                    self.videoSetupTasksByBlock.removeValue(forKey: blockId)
+                if self.mediaSetupGenerationByBlock[blockId] == token {
+                    self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                 }
 
                 // PR1.1: Trigger redraw after async poster injection
@@ -610,13 +667,13 @@ public final class UserMediaService {
                 print("[UserMediaService] setVideo: cancelled for blockId=\(blockId)")
                 #endif
                 // P0: Token-safe remove task (only if we're still current generation)
-                if self.videoSetupGenerationByBlock[blockId] == token {
-                    self.videoSetupTasksByBlock.removeValue(forKey: blockId)
+                if self.mediaSetupGenerationByBlock[blockId] == token {
+                    self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                 }
                 await self.posterSemaphore.release()
             } catch {
                 // PR-async-race: Only mark failed if still current generation
-                guard self.videoSetupGenerationByBlock[blockId] == token else {
+                guard self.mediaSetupGenerationByBlock[blockId] == token else {
                     await self.posterSemaphore.release()
                     return
                 }
@@ -626,7 +683,7 @@ public final class UserMediaService {
             }
         }
 
-        videoSetupTasksByBlock[blockId] = setupTask
+        mediaSetupTasksByBlock[blockId] = setupTask
 
         return true
     }
@@ -997,7 +1054,7 @@ public final class UserMediaService {
         // Use union of all keys to catch pending tasks during poster gating
         let allBlockIds = Set(mediaState.keys)
             .union(videoProviders.keys)
-            .union(videoSetupTasksByBlock.keys)
+            .union(mediaSetupTasksByBlock.keys)
             .union(blockReadinessState.keys)
         for blockId in allBlockIds {
             clear(blockId: blockId)
@@ -1054,14 +1111,14 @@ public final class UserMediaService {
 
     // MARK: - Private Cleanup
 
-    /// Cleans up video resources for a block (provider + temp file).
+    /// Cleans up video resources and invalidates pending media setup for a block.
     /// PR-async-race: Increments generation and cancels setup task to prevent stale updates.
     /// All media files are now persistent (owned by ProjectStore), so no file deletion here.
     private func cleanupVideoResources(for blockId: String) {
         // PR-async-race: Invalidate pending async operations for this blockId
-        videoSetupGenerationByBlock[blockId, default: 0] += 1
-        videoSetupTasksByBlock[blockId]?.cancel()
-        videoSetupTasksByBlock.removeValue(forKey: blockId)
+        mediaSetupGenerationByBlock[blockId, default: 0] += 1
+        mediaSetupTasksByBlock[blockId]?.cancel()
+        mediaSetupTasksByBlock.removeValue(forKey: blockId)
 
         // Release video provider
         if let provider = videoProviders.removeValue(forKey: blockId) {
@@ -1084,7 +1141,7 @@ public final class UserMediaService {
         guard let player = activePlayer else { return }
 
         // Token check - abort if generation changed (new setup in progress)
-        guard videoSetupGenerationByBlock[blockId] == token else {
+        guard mediaSetupGenerationByBlock[blockId] == token else {
             #if DEBUG
             print("[UserMediaService] markVideoSetupFailed: stale token for blockId=\(blockId)")
             #endif
@@ -1092,8 +1149,8 @@ public final class UserMediaService {
         }
 
         // Cancel and remove in-flight task (token-safe)
-        videoSetupTasksByBlock[blockId]?.cancel()
-        videoSetupTasksByBlock.removeValue(forKey: blockId)
+        mediaSetupTasksByBlock[blockId]?.cancel()
+        mediaSetupTasksByBlock.removeValue(forKey: blockId)
 
         // Release provider
         if let provider = videoProviders.removeValue(forKey: blockId) {
@@ -1169,12 +1226,12 @@ public final class UserMediaService {
     /// P0 Readiness Contract: Uses blockReadinessState as source of truth.
     ///
     /// Ready when:
-    /// - All video blocks have state `.ready`
-    /// - Or no video blocks at all
+    /// - All media blocks have state `.ready`
+    /// - Or no media blocks at all
     ///
     /// Not ready when:
-    /// - Any video block has state `.pending` (still loading)
-    /// - Any video block has state `.failed` (cannot render)
+    /// - Any media block has state `.pending` (still loading)
+    /// - Any media block has state `.failed` (cannot render)
     public var isSceneMediaReady: Bool {
         for (_, state) in blockReadinessState {
             switch state {
@@ -1186,12 +1243,10 @@ public final class UserMediaService {
                 continue // This block is ready
             }
         }
-        // All blocks ready or no video blocks at all
+        // All blocks ready or no media blocks at all
         return true
     }
 
-    /// Returns whether any video restore has failed.
-    /// P0 Readiness Contract: Uses blockReadinessState as source of truth.
     /// Returns whether any media restore has failed (photo or video).
     /// P0 Readiness Contract: Uses blockReadinessState as source of truth.
     public var hasFailedMedia: Bool {

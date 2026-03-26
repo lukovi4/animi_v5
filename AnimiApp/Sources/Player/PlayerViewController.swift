@@ -1502,11 +1502,13 @@ final class PlayerViewController: UIViewController {
         }
 
         // PR-D: Correct order for state restoration:
-        // 1. Media assignments (auto sets present=true)
-        // 2. Explicit userMediaPresent overrides (can disable)
-        // 3. Variant overrides, transforms, toggles
+        // 1. Media assignments (visibility is atomic via presentOnReady for both photo and video)
+        // 2. Variant overrides, transforms, toggles
 
-        // STEP 1: Apply media assignments via MediaRestoreCoordinator (unified slots)
+        // STEP 1: Apply media assignments via MediaRestoreCoordinator (unified slots).
+        // Visibility is handled atomically inside setPhoto/setVideo via presentOnReady —
+        // no separate replay needed. This preserves poster-gating for video and
+        // texture-gating for photo (Phase 2 async photo load contract).
         if let service = userMediaService {
             MediaRestoreCoordinator.restore(
                 slots: state.mediaSlotsByBlockId,
@@ -1514,27 +1516,15 @@ final class PlayerViewController: UIViewController {
             )
         }
 
-        // STEP 2: Apply explicit visibility overrides for non-video blocks.
-        // Video blocks are handled by setVideo(presentOnReady:) inside MediaRestoreCoordinator —
-        // unconditional replay here would break poster-gating (enable binding layer before poster ready).
-        if let slots = state.mediaSlotsByBlockId {
-            let videoBlockIds = Set(
-                slots.filter { $0.value.mediaRef.mediaKind == .video }.map(\.key)
-            )
-            for (blockId, slot) in slots where !videoBlockIds.contains(blockId) {
-                player.setUserMediaPresent(blockId: blockId, present: slot.visibility)
-            }
-        }
-
-        // STEP 3: Apply variant overrides
+        // STEP 2: Apply variant overrides
         player.applyVariantSelection(state.variantOverrides)
 
-        // STEP 4: Apply user transforms
+        // STEP 3: Apply user transforms
         for (blockId, transform) in state.userTransforms {
             player.setUserTransform(blockId: blockId, transform: transform)
         }
 
-        // STEP 5: Apply layer toggles
+        // STEP 4: Apply layer toggles
         for (blockId, toggles) in state.layerToggles {
             for (toggleId, enabled) in toggles {
                 player.setLayerToggle(blockId: blockId, toggleId: toggleId, enabled: enabled)
@@ -2920,9 +2910,7 @@ final class PlayerViewController: UIViewController {
         if activeSceneInstanceId == result.sceneInstanceId {
             switch result.slot.mediaRef.mediaKind {
             case .photo:
-                if let image = UIImage(contentsOfFile: result.persistedURL.path) {
-                    userMediaService?.setPhoto(blockId: result.blockId, image: image, presentOnReady: result.slot.visibility)
-                }
+                userMediaService?.setPhoto(blockId: result.blockId, fileURL: result.persistedURL, presentOnReady: result.slot.visibility)
             case .video:
                 userMediaService?.setVideo(
                     blockId: result.blockId,

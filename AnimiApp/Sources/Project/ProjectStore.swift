@@ -102,6 +102,9 @@ public final class ProjectStore {
     /// Tracks whether one-time migration has been attempted this session
     private var migrationAttempted = false
 
+    /// Tracks whether one-time schema purge has been performed this session
+    private var purgeAttempted = false
+
     // MARK: - Initialization
 
     public init(fileManager: FileManager = .default) {
@@ -377,9 +380,23 @@ public final class ProjectStore {
     }
 
     /// Returns all saved project index entries, sorted by savedAt descending.
+    /// Runs one-time schema purge on first call, then defensively filters out
+    /// any entries whose project file cannot be loaded (incompatible schema, missing file, etc.).
     func allSavedProjectEntries() -> [SavedProjectIndexEntry] {
+        // One-time purge: physically remove incompatible projects and rewrite index
+        if !purgeAttempted {
+            purgeAttempted = true
+            purgeIncompatibleSavedProjects()
+        }
+
         guard let index = try? loadSavedIndex() else { return [] }
-        return index.projects.values.sorted { $0.savedAt > $1.savedAt }
+
+        // Defensive filter: even after purge, only return entries that can actually be loaded
+        let validEntries = index.projects.values.filter { entry in
+            loadSavedProject(projectId: entry.projectId) != nil
+        }
+
+        return validEntries.sorted { $0.savedAt > $1.savedAt }
     }
 
     // MARK: - Internal IO Helpers
@@ -540,26 +557,6 @@ public final class ProjectStore {
         let relativePath = "\(Self.mediaDirectoryName)/\(Self.backgroundMediaDirectoryName)/\(filename)"
 
         let mediaDir = try backgroundMediaDirectoryURL()
-        let fileURL = mediaDir.appendingPathComponent(filename)
-
-        try imageData.write(to: fileURL, options: .atomic)
-
-        return MediaRef.file(relativePath, mediaKind: .photo)
-    }
-
-    /// Saves user media (photo) to the user media directory.
-    public func saveUserMedia(
-        _ imageData: Data,
-        sceneInstanceId: UUID,
-        blockId: String
-    ) throws -> MediaRef {
-        try ensureDirectoriesExist()
-
-        let uuid = UUID().uuidString
-        let filename = "\(sceneInstanceId.uuidString)_\(blockId)_\(uuid).jpg"
-        let relativePath = "\(Self.mediaDirectoryName)/\(Self.userMediaDirectoryName)/\(filename)"
-
-        let mediaDir = try userMediaDirectoryURL()
         let fileURL = mediaDir.appendingPathComponent(filename)
 
         try imageData.write(to: fileURL, options: .atomic)
@@ -757,5 +754,6 @@ public final class ProjectStore {
     public func clearCache() {
         cachedIndex = nil
         migrationAttempted = false
+        purgeAttempted = false
     }
 }
