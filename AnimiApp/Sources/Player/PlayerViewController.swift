@@ -325,10 +325,18 @@ final class PlayerViewController: UIViewController {
 
     /// Media ingest coordinator — handles PHPicker → prepare → persist → bind pipeline.
     /// Initialized once on VC lifecycle, not lazily in delegate callback.
+    private var showsMediaIngestStatusOverlay = true
+    private var showsMediaIngestStatusInActionBar = true
+    private lazy var ingestStatusOverlayView = MediaIngestStatusOverlayView()
+    private var ingestFailureAlertedKeys: Set<IngestSlotKey> = []
+
     private lazy var mediaIngestCoordinator: MediaIngestCoordinator = {
         let coordinator = MediaIngestCoordinator()
         coordinator.onIngestComplete = { [weak self] result in
             self?.handleIngestComplete(result)
+        }
+        coordinator.onStatusChanged = { [weak self] key, status in
+            self?.handleIngestStatusChanged(key: key, status: status)
         }
         return coordinator
     }()
@@ -537,6 +545,9 @@ final class PlayerViewController: UIViewController {
 
         // PR-E: Embed overlayView for gesture handling in Scene Edit
         editorLayoutContainer.embedOverlayView(overlayView)
+
+        // Phase 6: Embed ingest status overlay (above outline overlay, below menuStrip)
+        editorLayoutContainer.embedStatusOverlayView(ingestStatusOverlayView)
 
         // PR-E: Add preparingOverlay for loading states
         preparingOverlay.translatesAutoresizingMaskIntoConstraints = false
@@ -1184,6 +1195,13 @@ final class PlayerViewController: UIViewController {
             // Apply to runtime
             self.scenePlayer?.setUserTransform(blockId: blockId, transform: transform)
             self.metalView.setNeedsDisplay()
+        }
+
+        // Phase 6: Wire ingest status overlay
+        sceneEditCtrl.ingestStatusOverlayView = ingestStatusOverlayView
+        sceneEditCtrl.showsIngestStatusOverlay = showsMediaIngestStatusOverlay
+        sceneEditCtrl.getIngestStatusesByBlockId = { [weak self] in
+            self?.currentIngestStatusesByBlockId() ?? [:]
         }
 
         self.sceneEditController = sceneEditCtrl
@@ -1931,14 +1949,25 @@ final class PlayerViewController: UIViewController {
         // Check if block has media assigned (unified slots)
         let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId]
         let slot = sceneState?.mediaSlotsByBlockId?[blockId]
-        let hasMedia = slot != nil
+        var hasMedia = slot != nil
 
         // Check if block is enabled (slot visibility)
         let isEnabled = slot?.visibility ?? true
 
         // Phase 5: Determine media kind and edit-video capability
-        let mediaKind = slot?.mediaRef.mediaKind
-        let canEditVideoSelection = userMediaService?.videoSelectionEditContext(blockId: blockId) != nil
+        var mediaKind = slot?.mediaRef.mediaKind
+        var canEditVideoSelection = userMediaService?.videoSelectionEditContext(blockId: blockId) != nil
+
+        // Phase 6: Restore-failed blocks treated as empty in scene-edit UI
+        if userMediaService?.didBlockFailRestore(blockId: blockId) == true {
+            hasMedia = false
+            mediaKind = nil
+            canEditVideoSelection = false
+        }
+
+        // Phase 6: Get ingest status for this block
+        let ingestKey = IngestSlotKey(sceneInstanceId: instanceId, blockId: blockId)
+        let ingestStatus = mediaIngestCoordinator.status(for: ingestKey)
 
         editorLayoutContainer.configureMediaBlockActionBar(
             blockId: blockId,
@@ -1947,7 +1976,9 @@ final class PlayerViewController: UIViewController {
             hasMedia: hasMedia,
             isEnabled: isEnabled,
             mediaKind: mediaKind,
-            canEditVideoSelection: canEditVideoSelection
+            canEditVideoSelection: canEditVideoSelection,
+            ingestStatus: ingestStatus,
+            showsIngestStatus: showsMediaIngestStatusInActionBar
         )
     }
 
@@ -1964,6 +1995,53 @@ final class PlayerViewController: UIViewController {
         // 2. Update MediaBlockActionBar if block is selected
         if editorStore?.state.selectedBlockId != nil {
             updateMediaBlockActionBarForSelectedBlock()
+        }
+    }
+
+    // MARK: - Phase 6: Ingest Status
+
+    /// Returns current ingest statuses keyed by blockId for the active scene-edit scene.
+    private func currentIngestStatusesByBlockId() -> [String: IngestSlotStatus] {
+        guard let instanceId = sceneEditTargetInstanceId else { return [:] }
+        var result: [String: IngestSlotStatus] = [:]
+        for (key, status) in mediaIngestCoordinator.slotStatus
+            where key.sceneInstanceId == instanceId {
+            result[key.blockId] = status
+        }
+        return result
+    }
+
+    /// Handles ingest status changes: updates overlay, action bar, and shows failure alerts.
+    private func handleIngestStatusChanged(key: IngestSlotKey, status: IngestSlotStatus) {
+        // Only update UI if this status change is for the active scene-edit scene
+        guard key.sceneInstanceId == sceneEditTargetInstanceId else { return }
+
+        // Update ingest status overlay
+        sceneEditController?.updateOverlay()
+
+        // Update action bar if this block is selected
+        if editorStore?.state.selectedBlockId == key.blockId {
+            updateMediaBlockActionBarForSelectedBlock()
+        }
+
+        // Alert dedupe
+        switch status {
+        case .processing, .idle:
+            ingestFailureAlertedKeys.remove(key)
+
+        case .failed(let reason):
+            guard !ingestFailureAlertedKeys.contains(key) else { return }
+            ingestFailureAlertedKeys.insert(key)
+            let alert = UIAlertController(
+                title: "Media Import Failed",
+                message: reason,
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
+
+        case .ready:
+            break // Transient, no action
         }
     }
 

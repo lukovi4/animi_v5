@@ -188,15 +188,7 @@ public final class MediaIngestCoordinator {
 
                 // Step 3: Complete — file is now owned by the store, not us
                 ownedPersistedURL = nil
-                self.updateStatus(key: key, status: .ready)
-                self.ingestTasks.removeValue(forKey: key)
-
-                let ingestResult = IngestResult(
-                    key: key,
-                    slot: slot,
-                    persistedURL: persistedURL
-                )
-                self.onIngestComplete?(ingestResult)
+                self.finalizeSuccess(key: key, slot: slot, persistedURL: persistedURL)
 
             } catch is CancellationError {
                 self.cleanupOrphan(ownedPersistedURL)
@@ -327,6 +319,26 @@ public final class MediaIngestCoordinator {
     /// Returns ingest status for a slot.
     public func status(for key: IngestSlotKey) -> IngestSlotStatus {
         slotStatus[key] ?? .idle
+    }
+
+    // MARK: - Success Finalization
+
+    /// Shared success finalization: .ready → onIngestComplete → .idle
+    private func finalizeSuccess(key: IngestSlotKey, slot: SceneMediaSlot, persistedURL: URL) {
+        updateStatus(key: key, status: .ready)
+        ingestTasks.removeValue(forKey: key)
+        let result = IngestResult(key: key, slot: slot, persistedURL: persistedURL)
+        onIngestComplete?(result)
+        // Transient ready: immediately transition to idle
+        slotStatus.removeValue(forKey: key)
+        onStatusChanged?(key, .idle)
+    }
+
+    /// Test-only: simulates a complete ingest success for lifecycle testing.
+    /// Calls the same finalizeSuccess path as production code.
+    internal func simulateIngestCompletion(key: IngestSlotKey, slot: SceneMediaSlot, persistedURL: URL) {
+        updateStatus(key: key, status: .processing)
+        finalizeSuccess(key: key, slot: slot, persistedURL: persistedURL)
     }
 
     // MARK: - Private

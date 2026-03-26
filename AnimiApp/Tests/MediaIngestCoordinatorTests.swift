@@ -246,6 +246,60 @@ final class MediaIngestCoordinatorTests: XCTestCase {
         coordinator.cancelAll(for: sceneA)
         XCTAssertEqual(coordinator.status(for: keyB), .idle)
     }
+
+    // MARK: - Phase 6: Transient .ready + simulateIngestCompletion
+
+    /// simulateIngestCompletion emits .processing → .ready → .idle via onStatusChanged.
+    func test_simulateIngestCompletion_emitsProcessingReadyIdle() {
+        let coordinator = MediaIngestCoordinator()
+        let key = IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")
+
+        var statusChanges: [(IngestSlotKey, IngestSlotStatus)] = []
+        coordinator.onStatusChanged = { key, status in
+            statusChanges.append((key, status))
+        }
+
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"))
+        let url = URL(fileURLWithPath: "/tmp/test.jpg")
+        coordinator.simulateIngestCompletion(key: key, slot: slot, persistedURL: url)
+
+        // Should emit: .processing, .ready, .idle
+        XCTAssertEqual(statusChanges.count, 3)
+        XCTAssertEqual(statusChanges[0].1, .processing)
+        XCTAssertEqual(statusChanges[1].1, .ready)
+        XCTAssertEqual(statusChanges[2].1, .idle)
+    }
+
+    /// status(for:) returns .idle after simulateIngestCompletion (not stuck at .ready).
+    func test_simulateIngestCompletion_statusReturnsIdleAfter() {
+        let coordinator = MediaIngestCoordinator()
+        let key = IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")
+
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"))
+        let url = URL(fileURLWithPath: "/tmp/test.jpg")
+        coordinator.simulateIngestCompletion(key: key, slot: slot, persistedURL: url)
+
+        XCTAssertEqual(coordinator.status(for: key), .idle)
+    }
+
+    /// simulateIngestCompletion fires onIngestComplete callback.
+    func test_simulateIngestCompletion_firesOnIngestComplete() {
+        let coordinator = MediaIngestCoordinator()
+        let key = IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")
+
+        var receivedResult: IngestResult?
+        coordinator.onIngestComplete = { result in
+            receivedResult = result
+        }
+
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"))
+        let url = URL(fileURLWithPath: "/tmp/test.jpg")
+        coordinator.simulateIngestCompletion(key: key, slot: slot, persistedURL: url)
+
+        XCTAssertNotNil(receivedResult)
+        XCTAssertEqual(receivedResult?.key, key)
+        XCTAssertEqual(receivedResult?.persistedURL, url)
+    }
 }
 
 // MARK: - EditorReducer Scene Existence + Routing Tests

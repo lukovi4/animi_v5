@@ -34,6 +34,27 @@ final class MediaBlockActionBar: UIView {
     /// Current enabled state of the block
     private var isBlockEnabled: Bool = true
 
+    // MARK: - Ingest Status Subviews
+
+    private lazy var statusContainer: UIStackView = {
+        let spinner = UIActivityIndicatorView(style: .medium)
+        spinner.startAnimating()
+        spinner.tag = 1  // Tag for lookup
+
+        let label = UILabel()
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .secondaryLabel
+        label.tag = 2  // Tag for lookup
+
+        let stack = UIStackView(arrangedSubviews: [spinner, label])
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.isHidden = true
+        return stack
+    }()
+
     // MARK: - Subviews
 
     private lazy var scrollView: UIScrollView = {
@@ -157,6 +178,7 @@ final class MediaBlockActionBar: UIView {
         addSubview(scrollView)
         scrollView.addSubview(stackView)
 
+        stackView.addArrangedSubview(statusContainer)
         stackView.addArrangedSubview(addPhotoButton)
         stackView.addArrangedSubview(addVideoButton)
         stackView.addArrangedSubview(editVideoButton)
@@ -202,16 +224,22 @@ final class MediaBlockActionBar: UIView {
         hasMedia: Bool,
         isEnabled: Bool,
         mediaKind: MediaKind? = nil,
-        canEditVideoSelection: Bool = false
+        canEditVideoSelection: Bool = false,
+        ingestStatus: IngestSlotStatus = .idle,
+        showsIngestStatus: Bool = false
     ) {
         self.blockId = blockId
         // Photo button: shown if allowedMedia contains "photo" or is nil (backward compat)
         let canPhoto = allowedMedia?.contains("photo") ?? true
         addPhotoButton.isHidden = !canPhoto
+        addPhotoButton.isEnabled = canPhoto
+        addPhotoButton.alpha = canPhoto ? 1.0 : 0.5
 
         // Video button: shown if allowedMedia contains "video" or is nil (backward compat)
         let canVideo = allowedMedia?.contains("video") ?? true
         addVideoButton.isHidden = !canVideo
+        addVideoButton.isEnabled = canVideo
+        addVideoButton.alpha = canVideo ? 1.0 : 0.5
 
         // Edit Video button: shown only for video slots, enabled when edit context available
         let isVideoSlot = mediaKind == .video
@@ -230,6 +258,9 @@ final class MediaBlockActionBar: UIView {
         // Toggle button: update title/icon based on current state
         isBlockEnabled = isEnabled
         updateToggleButton()
+
+        // Ingest status indicator
+        applyIngestStatus(ingestStatus, showsIngestStatus: showsIngestStatus)
     }
 
     // MARK: - Private
@@ -249,6 +280,42 @@ final class MediaBlockActionBar: UIView {
         config.imagePadding = 4
         config.baseForegroundColor = .label
         toggleEnabledButton.configuration = config
+    }
+
+    private func applyIngestStatus(_ status: IngestSlotStatus, showsIngestStatus: Bool) {
+        guard showsIngestStatus else {
+            statusContainer.isHidden = true
+            return
+        }
+
+        let statusLabel = statusContainer.viewWithTag(2) as? UILabel
+        let spinner = statusContainer.viewWithTag(1) as? UIActivityIndicatorView
+
+        switch status {
+        case .processing:
+            statusContainer.isHidden = false
+            statusLabel?.text = "Loading..."
+            statusLabel?.textColor = .secondaryLabel
+            spinner?.startAnimating()
+            spinner?.isHidden = false
+            // Disable media buttons during processing
+            addPhotoButton.isEnabled = false
+            addPhotoButton.alpha = 0.5
+            addVideoButton.isEnabled = false
+            addVideoButton.alpha = 0.5
+            editVideoButton.isEnabled = false
+            editVideoButton.alpha = 0.5
+
+        case .failed:
+            statusContainer.isHidden = false
+            statusLabel?.text = "Failed"
+            statusLabel?.textColor = .systemRed
+            spinner?.stopAnimating()
+            spinner?.isHidden = true
+
+        case .idle, .ready:
+            statusContainer.isHidden = true
+        }
     }
 
     // MARK: - Actions (PR-E: pass blockId)

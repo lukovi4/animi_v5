@@ -25,6 +25,15 @@ final class SceneEditInteractionController {
     /// Overlay view for displaying block outlines.
     weak var overlayView: EditorOverlayView?
 
+    /// Overlay view for displaying ingest status indicators.
+    weak var ingestStatusOverlayView: MediaIngestStatusOverlayView?
+
+    /// Closure to get current ingest statuses by block ID.
+    var getIngestStatusesByBlockId: (() -> [String: IngestSlotStatus])?
+
+    /// Whether to show ingest status in the overlay.
+    var showsIngestStatusOverlay: Bool = true
+
     /// Closure to get current ScenePlayer instance.
     var getScenePlayer: (() -> ScenePlayer?)?
 
@@ -75,10 +84,12 @@ final class SceneEditInteractionController {
     func updateOverlay() {
         guard case .sceneEdit = getUIMode?() else {
             overlayView?.update(overlays: [], selectedBlockId: nil)
+            ingestStatusOverlayView?.update(overlays: [], statusesByBlockId: [:], showsStatus: false)
             return
         }
         guard let player = getScenePlayer?() else {
             overlayView?.update(overlays: [], selectedBlockId: nil)
+            ingestStatusOverlayView?.update(overlays: [], statusesByBlockId: [:], showsStatus: false)
             return
         }
 
@@ -86,6 +97,15 @@ final class SceneEditInteractionController {
         let canvasToView = mapper.canvasToViewTransform()
         overlayView?.canvasToView = canvasToView
         overlayView?.update(overlays: overlays, selectedBlockId: getSelectedBlockId?())
+
+        // Update ingest status overlay
+        ingestStatusOverlayView?.canvasToView = canvasToView
+        let statuses = getIngestStatusesByBlockId?() ?? [:]
+        ingestStatusOverlayView?.update(
+            overlays: overlays,
+            statusesByBlockId: statuses,
+            showsStatus: showsIngestStatusOverlay
+        )
     }
 
     // MARK: - Pan Gesture

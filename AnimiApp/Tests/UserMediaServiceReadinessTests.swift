@@ -826,4 +826,73 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         XCTAssertFalse(sut.hasFailedMedia, "Invalid apply should not mark media as failed")
         XCTAssertTrue(sut.isSceneMediaReady, "Media should still be ready after invalid apply")
     }
+
+    // MARK: - Phase 6: Restore-Specific Failure Tracking
+
+    /// didBlockFailRestore returns true after markRestoreFailed.
+    func test_didBlockFailRestore_trueAfterMarkRestoreFailed() {
+        sut.markRestoreFailed(blockId: "block_01", reason: "file not found")
+        XCTAssertTrue(sut.didBlockFailRestore(blockId: "block_01"))
+    }
+
+    /// didBlockFailRestore returns false for blocks that haven't failed restore.
+    func test_didBlockFailRestore_falseForUnknownBlock() {
+        XCTAssertFalse(sut.didBlockFailRestore(blockId: "block_01"))
+    }
+
+    /// didBlockFailRestore returns false after normal video setup failure (not restore failure).
+    func test_didBlockFailRestore_falseAfterNormalVideoFailure() async throws {
+        fakeProvider.mode = .failure(NSError(domain: "Test", code: 1))
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        // hasFailedMedia is true (generic failure), but didBlockFailRestore is false
+        XCTAssertTrue(sut.hasFailedMedia)
+        XCTAssertFalse(sut.didBlockFailRestore(blockId: "block_01"),
+                       "Normal video setup failure should NOT set restore-failed flag")
+    }
+
+    /// didBlockFailRestore clears on successful setPhoto rebind.
+    func test_didBlockFailRestore_clearsOnSetPhoto() async throws {
+        sut.markRestoreFailed(blockId: "block_01", reason: "file not found")
+        XCTAssertTrue(sut.didBlockFailRestore(blockId: "block_01"))
+
+        let accepted = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        XCTAssertTrue(accepted)
+
+        // After setPhoto acceptance, restore-failed flag is cleared immediately
+        XCTAssertFalse(sut.didBlockFailRestore(blockId: "block_01"),
+                       "setPhoto should clear restore-failed flag")
+    }
+
+    /// didBlockFailRestore clears on successful setVideo rebind.
+    func test_didBlockFailRestore_clearsOnSetVideo() {
+        sut.markRestoreFailed(blockId: "block_01", reason: "file not found")
+        XCTAssertTrue(sut.didBlockFailRestore(blockId: "block_01"))
+
+        fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+        )
+
+        // After setVideo acceptance, restore-failed flag is cleared immediately
+        XCTAssertFalse(sut.didBlockFailRestore(blockId: "block_01"),
+                       "setVideo should clear restore-failed flag")
+    }
+
+    /// didBlockFailRestore clears on clear(blockId:).
+    func test_didBlockFailRestore_clearsOnClear() {
+        sut.markRestoreFailed(blockId: "block_01", reason: "file not found")
+        XCTAssertTrue(sut.didBlockFailRestore(blockId: "block_01"))
+
+        sut.clear(blockId: "block_01")
+        XCTAssertFalse(sut.didBlockFailRestore(blockId: "block_01"),
+                       "clear(blockId:) should clear restore-failed flag")
+    }
 }

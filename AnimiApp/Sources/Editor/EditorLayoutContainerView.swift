@@ -444,6 +444,19 @@ final class EditorLayoutContainerView: UIView {
         ])
     }
 
+    /// Adds MediaIngestStatusOverlayView to previewContainer.
+    /// Inserted above EditorOverlayView, below menuStrip.
+    func embedStatusOverlayView(_ statusOverlay: UIView) {
+        statusOverlay.translatesAutoresizingMaskIntoConstraints = false
+        previewContainer.insertSubview(statusOverlay, belowSubview: menuStrip)
+        NSLayoutConstraint.activate([
+            statusOverlay.topAnchor.constraint(equalTo: previewContainer.topAnchor),
+            statusOverlay.leadingAnchor.constraint(equalTo: previewContainer.leadingAnchor),
+            statusOverlay.trailingAnchor.constraint(equalTo: previewContainer.trailingAnchor),
+            statusOverlay.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor),
+        ])
+    }
+
     /// Switches between timeline mode and scene edit mode (PR-C).
     /// In scene edit mode: timeline hidden, preview expands, menuStrip hidden.
     /// - Parameters:
@@ -520,7 +533,9 @@ final class EditorLayoutContainerView: UIView {
         hasMedia: Bool,
         isEnabled: Bool,
         mediaKind: MediaKind? = nil,
-        canEditVideoSelection: Bool = false
+        canEditVideoSelection: Bool = false,
+        ingestStatus: IngestSlotStatus = .idle,
+        showsIngestStatus: Bool = false
     ) {
         mediaBlockActionBar.configure(
             blockId: blockId,
@@ -529,7 +544,9 @@ final class EditorLayoutContainerView: UIView {
             hasMedia: hasMedia,
             isEnabled: isEnabled,
             mediaKind: mediaKind,
-            canEditVideoSelection: canEditVideoSelection
+            canEditVideoSelection: canEditVideoSelection,
+            ingestStatus: ingestStatus,
+            showsIngestStatus: showsIngestStatus
         )
     }
 

@@ -324,6 +324,10 @@ public final class UserMediaService {
     /// - `.failed`: setup failed, resources cleaned up
     private var blockReadinessState: [String: BlockReadinessState] = [:]
 
+    /// Tracks blocks that failed specifically during media restore (not runtime setup).
+    /// Used by scene-edit UI to treat restore-failed blocks as empty.
+    private var restoreFailedBlockIds: Set<String> = []
+
     // MARK: - Poster Throttling (P1)
 
     /// Semaphore to limit concurrent poster generations.
@@ -433,6 +437,7 @@ public final class UserMediaService {
 
         // Mark as pending
         blockReadinessState[blockId] = .pending
+        restoreFailedBlockIds.remove(blockId)
 
         // Capture dependencies for background task
         let device = self.device
@@ -568,6 +573,7 @@ public final class UserMediaService {
 
         // P0: Mark block as pending (setup task in progress)
         blockReadinessState[blockId] = .pending
+        restoreFailedBlockIds.remove(blockId)
 
         // PR1: Store state immediately but userMediaPresent = false (poster gating)
         // We'll set the proper VideoSelection after we know the duration
@@ -1046,6 +1052,7 @@ public final class UserMediaService {
 
         // P0: Remove readiness state (user explicitly cleared media)
         blockReadinessState.removeValue(forKey: blockId)
+        restoreFailedBlockIds.remove(blockId)
 
         // PR1.1: Trigger redraw after clear
         onNeedsDisplay?()
@@ -1102,6 +1109,7 @@ public final class UserMediaService {
 
         // 5. Record failure in readiness state
         blockReadinessState[blockId] = .failed(reason: reason)
+        restoreFailedBlockIds.insert(blockId)
 
         #if DEBUG
         print("[UserMediaService] markRestoreFailed: blockId=\(blockId), reason=\(reason)")
@@ -1256,6 +1264,13 @@ public final class UserMediaService {
             if case .failed = state { return true }
             return false
         }
+    }
+
+    /// Returns whether the specified block failed during media restore.
+    /// Used by scene-edit UI to treat restore-failed blocks as empty.
+    /// Does NOT return true for normal runtime setup failures (photo load, video setup).
+    public func didBlockFailRestore(blockId: String) -> Bool {
+        restoreFailedBlockIds.contains(blockId)
     }
 
     /// Returns all block IDs that have video media (for render-tick updates).
