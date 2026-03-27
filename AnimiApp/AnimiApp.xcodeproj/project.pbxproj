@@ -3,13 +3,10 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D4E5F6A7B8C9D0E1F2A3B4C5 /* MediaIngestStatusOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F6A7B8C9D0E1F2A3B4C5D6 /* MediaIngestStatusOverlayView.swift */; };
-		F6A7B8C9D0E1F2A3B4C5D6E7 /* MediaBlockActionBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B8C9D0E1F2A3B4C5D6E7F8 /* MediaBlockActionBarTests.swift */; };
-		B8C9D0E1F2A3B4C5D6E7F8A9 /* MediaIngestStatusOverlayViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9D0E1F2A3B4C5D6E7F8A9B0 /* MediaIngestStatusOverlayViewTests.swift */; };
 		013731CC3FC39787721CDE70 /* EditorReducerPlayheadSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CE2CD88AC9A98A104AADE80 /* EditorReducerPlayheadSelectionTests.swift */; };
 		01AB418C3CAE1E5415B6C2E5 /* MediaIngestCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF15C5036CF4943914841FDA /* MediaIngestCoordinatorTests.swift */; };
 		027F8E8E35674B1C890A533E /* MediaBlockActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 341DB1C8476CB51E6A7DF543 /* MediaBlockActionBar.swift */; };
@@ -94,26 +91,18 @@
 		8B1AE5FEAAA7FC56548F6624 /* TimelineSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12222EECEE4BF66B830A41A /* TimelineSelection.swift */; };
 		8B250EE681BECBBE0BC1224E /* EditorConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA08D7E49AF2FAED41B3739D /* EditorConfig.swift */; };
 		8C5D68D2752FF42C00D0F093 /* UserMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC49A46FA18BE025E45C3184 /* UserMediaService.swift */; };
-		B4E7F1A2C3D5E8F901A2B3C4 /* VideoWindowValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5A1B2C3E4F5067812345678 /* VideoWindowValidator.swift */; };
-		C1A2B3D4E5F6071823456789 /* VideoSelectionEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071823456789 /* VideoSelectionEditorViewController.swift */; };
 		8C7E40E257296FDDE6326467 /* EditorNavBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AD0CC2427FEECE70284560E /* EditorNavBar.swift */; };
 		8D19E23F30E735031E32657D /* TimelineExportResidencyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50A4C0DA120CFE5DC366C4D8 /* TimelineExportResidencyController.swift */; };
 		8D691BE6A5CB108B0C1A236B /* MyProjectsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85E4BDD8DA7A501B77716769 /* MyProjectsViewController.swift */; };
 		8DD3C6CC034CA08370D56E17 /* ExportRequestGatingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F788A4FD2D4CB955104DFC4 /* ExportRequestGatingTests.swift */; };
 		8E10312933F00CF946AC6294 /* PhotoLibraryVideoSaveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD7887AA1FBAF5B99F82831B /* PhotoLibraryVideoSaveService.swift */; };
-		8E9D3945030E03E20245EAE3 /* BackgroundImageTransformViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E46BB327022D25C2BAEBD96 /* BackgroundImageTransformViewController.swift */; };
 		8F2BE947369ABB1EACF82319 /* TransitionPickerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C41D98D66DEA22977CA2D4E /* TransitionPickerViewController.swift */; };
 		902EAF22F2E3D1840F714372 /* DownsampledImageLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F9CDE81C26B36887FEDB85F /* DownsampledImageLoaderTests.swift */; };
-		F2E1D0C9A8B7C6D5E4F3A2B1 /* MediaRestoreCoordinatorPhotoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F7A8B9C0D1E2F /* MediaRestoreCoordinatorPhotoTests.swift */; };
-		F2E1D0C9B8A7F6E5D4C3B2A1 /* PhotoPreparePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* PhotoPreparePipelineTests.swift */; };
-		B3C4D5E6F7A8B9C0D1E2F3A4 /* VideoPreparePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D5E6F7A8B9C0D1E2F3A4B5 /* VideoPreparePipelineTests.swift */; };
 		912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945142E5769BD54EFED06588 /* EditorOverlayView.swift */; };
 		921C1521C032FB6559CA59C4 /* ProjectDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24544FC9E0EAD15CABC4A7B4 /* ProjectDraft.swift */; };
 		922CE2947E366BB7AA099C5A /* MediaRestoreCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70AC3142E27D4ED857F8809 /* MediaRestoreCoordinator.swift */; };
 		9456988608740988E5F27700 /* TimeRulerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 385E496113EA1117E64E135D /* TimeRulerView.swift */; };
 		94EB8142D7B85A8E1678BEE7 /* VideoExportSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28AB08B4C98FC7129375B576 /* VideoExportSessionTests.swift */; };
-		B2C3D4E5F6A7081923456789 /* VideoSelectionEditorOrchestrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B3C4D5E6F7081923456789 /* VideoSelectionEditorOrchestrationTests.swift */; };
-		C3D4E5F6A7B8091923456789 /* VideoSelectionFastPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C4D5E6F7A8091923456789 /* VideoSelectionFastPathTests.swift */; };
 		94ED980CC3D00FD0142D1669 /* TimelineBoundaryInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4422AFA3764A632FEEC94640 /* TimelineBoundaryInteractionTests.swift */; };
 		9679197E9E746DC549BDD438 /* SceneLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 278EBCE880F11881818C5A11 /* SceneLibrary.swift */; };
 		968F63459420D7EAAF660A2C /* TemplateDetailsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6B0E0125B6479C561D538B /* TemplateDetailsViewController.swift */; };
@@ -122,6 +111,7 @@
 		9D6CC0B0ECE73ED9570FC35E /* SceneEditIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44EE94FCA3769870D92C18AC /* SceneEditIsolationTests.swift */; };
 		9D70FA35BD5E939170C249F0 /* MediaAssetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9847B0F4918281B0B3CF17EC /* MediaAssetStore.swift */; };
 		A186364CE2CCC2BE749BC300 /* ExportWriterPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5FDCD5EF953CE8453952AD5 /* ExportWriterPipelineTests.swift */; };
+		A1B2C3D4E5F60001AABBCCDD /* ImageFilePreparePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002AABBCCDD /* ImageFilePreparePipeline.swift */; };
 		A200AB2DA8A8FB5D874D1D60 /* Point2.swift in Sources */ = {isa = PBXBuildFile; fileRef = B807292DC00C6DF32839947B /* Point2.swift */; };
 		A3688DDDC19367EE6ADE92F7 /* TimelinePlayheadMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEFEE6F4025544E7BE2AAF4C /* TimelinePlayheadMapperTests.swift */; };
 		A6DC1038620A832F521C9B9C /* EditorRenderCommandResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260C009859590F4ABA66E9E0 /* EditorRenderCommandResolverTests.swift */; };
@@ -132,19 +122,26 @@
 		A956B2EB979D8706B45CDBA5 /* ExportPreflightPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DEB28A29AE20EDADB118DB1 /* ExportPreflightPlannerTests.swift */; };
 		AA0C0B31DF6DEE1EA72C083C /* WriterPumpProtocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D28A21C0AC2850C95C3A29 /* WriterPumpProtocols.swift */; };
 		AA36F6FF0710EA0B01CBEB30 /* SavedProjectRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DA27EA890266DDAE46FB0F3 /* SavedProjectRecord.swift */; };
+		AABB0001CCDD0001EEFF0001 /* BackgroundTextureServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0001CCDD0001EEFF0002 /* BackgroundTextureServiceTests.swift */; };
 		ACCC758ED3D98AE45D2DC578 /* TimelineExportRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA0A2B411C42C0C947DA93AC /* TimelineExportRuntime.swift */; };
 		AFA01B49A8710FCC6CF73C21 /* EditorReducerSceneExistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D70F924E64D3CC5524CA26 /* EditorReducerSceneExistenceTests.swift */; };
 		B07EC5C63C9C3134A7A6BE12 /* RenderDiagnosticEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 173D7F30D8FABC0547EB1C4A /* RenderDiagnosticEvent.swift */; };
+		B2C3D4E5F6A7081923456789 /* VideoSelectionEditorOrchestrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B3C4D5E6F7081923456789 /* VideoSelectionEditorOrchestrationTests.swift */; };
 		B319D3EED1F23C34885E8646 /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B68FDC0B5B9E176AEECBF7BF /* ProjectStore.swift */; };
 		B32E00282D93D218EFFDE577 /* EditorReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F5EF817846AED742165D197 /* EditorReducer.swift */; };
 		B3797DBA5A2809079BD00023 /* TimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F2AE9AABEA22194B49C3A4 /* TimelineView.swift */; };
+		B3C4D5E6F7A8B9C0D1E2F3A4 /* VideoPreparePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D5E6F7A8B9C0D1E2F3A4B5 /* VideoPreparePipelineTests.swift */; };
+		B4E7F1A2C3D5E8F901A2B3C4 /* VideoWindowValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5A1B2C3E4F5067812345678 /* VideoWindowValidator.swift */; };
 		B77095075AB7C55898B21242 /* UndoStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CBFAA44A3E3195D060D6D72 /* UndoStack.swift */; };
 		B84709F0505F73334D485886 /* VideoExporterTimelineExportSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B039E906F9F24BD020F3B03F /* VideoExporterTimelineExportSessionTests.swift */; };
+		B8C9D0E1F2A3B4C5D6E7F8A9 /* MediaIngestStatusOverlayViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9D0E1F2A3B4C5D6E7F8A9B0 /* MediaIngestStatusOverlayViewTests.swift */; };
 		B9DE907658522310F2EC88E3 /* UserMediaServiceReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE83C97F893ECB40F45E4309 /* UserMediaServiceReadinessTests.swift */; };
 		BB56874175D0D84955195BB6 /* BackgroundEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CEF30C879280B5B61779F14 /* BackgroundEditorViewController.swift */; };
 		BC75DACCE9D206A0C9160C0C /* SceneTypeResourcesCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2899EE222D11CFD172C78743 /* SceneTypeResourcesCache.swift */; };
 		BD6CDED31CADDB057B7FB98C /* BackgroundPresets in Resources */ = {isa = PBXBuildFile; fileRef = EFFC65D891ED4DE5B877E8F1 /* BackgroundPresets */; };
 		BF8EAF1575596502BB26D048 /* RenderDiagnosticsSink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5424BAA0FD5F46EFDF8BC217 /* RenderDiagnosticsSink.swift */; };
+		C1A2B3D4E5F6071823456789 /* VideoSelectionEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071823456789 /* VideoSelectionEditorViewController.swift */; };
+		C3D4E5F6A7B8091923456789 /* VideoSelectionFastPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C4D5E6F7A8091923456789 /* VideoSelectionFastPathTests.swift */; };
 		C4071986B9BC622B346488AB /* SceneLibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7386B6921BAF86E88B6FE1D0 /* SceneLibraryModels.swift */; };
 		C5D500A921DF5C5F4217977C /* SharedAssets in Resources */ = {isa = PBXBuildFile; fileRef = 9FA23A16733352E76F88080F /* SharedAssets */; };
 		C792AB83AD2AA9EADF6164E8 /* MediaRef.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D5135EA575C330539D1FD0A /* MediaRef.swift */; };
@@ -157,6 +154,7 @@
 		CFA21B26DC5ED99D4D976271 /* SceneInstanceRuntimeReadinessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F8A65192D762DE89C5D164B /* SceneInstanceRuntimeReadinessTests.swift */; };
 		D2AFCF642E69E8DA0BE06307 /* EditorReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008B456A6D18BC55E52A997F /* EditorReducerTests.swift */; };
 		D376231D7921639C84E1AC6A /* ExportMediaSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE3662424B8D35F76D23F799 /* ExportMediaSnapshotTests.swift */; };
+		D4E5F6A7B8C9D0E1F2A3B4C5 /* MediaIngestStatusOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F6A7B8C9D0E1F2A3B4C5D6 /* MediaIngestStatusOverlayView.swift */; };
 		D50A8104DC75F005771E3189 /* ExportProgressViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 405CA61F8D950F938A7C179C /* ExportProgressViewController.swift */; };
 		D51C35ED6BE07BBA89EE3CBE /* EditorStoreTimelinePreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2C27B66A7FD3D45BCA3E634 /* EditorStoreTimelinePreviewTests.swift */; };
 		D5568C9185447FE2389AE27A /* TrackViewContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */; };
@@ -181,11 +179,14 @@
 		F059A3DD3D82CF5803F3CE2B /* PreparingOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85271CBA652BF18E5476B593 /* PreparingOverlayView.swift */; };
 		F200089354BE041C4F9D88C9 /* PreviewMenuStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF4B6CA0A1B351C520F00915 /* PreviewMenuStrip.swift */; };
 		F27623BA827E217DDDCC4FF3 /* ScrubDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10365D40F7866CDC3383B1F0 /* ScrubDiagnostics.swift */; };
+		F2E1D0C9A8B7C6D5E4F3A2B1 /* MediaRestoreCoordinatorPhotoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F7A8B9C0D1E2F /* MediaRestoreCoordinatorPhotoTests.swift */; };
+		F2E1D0C9B8A7F6E5D4C3B2A1 /* PhotoPreparePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* PhotoPreparePipelineTests.swift */; };
 		F559E08D57AFB0EC6087FF8A /* EditorLayoutContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4EBB70D610E864BB54F5058 /* EditorLayoutContainerView.swift */; };
 		F5C114671E2811827AB06760 /* EditorAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4057F5327F4F91E6220168 /* EditorAction.swift */; };
 		F6282E7E21B82388F3CC2243 /* TimelinePlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE5E9CF111CD6CF5A6213688 /* TimelinePlaybackCoordinator.swift */; };
 		F667186CEDCA0E891BCABC81 /* PhotoPreparePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89F241B3218F3666EB5C72A1 /* PhotoPreparePipeline.swift */; };
 		F69A4CE0C87E4F294A365892 /* VideoExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41ECBBE27F729040A4BA24F9 /* VideoExporter.swift */; };
+		F6A7B8C9D0E1F2A3B4C5D6E7 /* MediaBlockActionBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B8C9D0E1F2A3B4C5D6E7F8 /* MediaBlockActionBarTests.swift */; };
 		F6AC83B484ABBE744C991938 /* MediaRestoreHelperVideoSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BADE2C25A73924C2B3793A4D /* MediaRestoreHelperVideoSelectionTests.swift */; };
 		F932EAEEDC5C62AE1243FA68 /* GlobalVideoBudgetCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC0A332A9804FD46A50F4BF3 /* GlobalVideoBudgetCoordinator.swift */; };
 		F961CD47EE4C66EE891B00AF /* ExportResourceBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5C7008F00886664C0E46721 /* ExportResourceBudget.swift */; };
@@ -219,13 +220,11 @@
 		173D7F30D8FABC0547EB1C4A /* RenderDiagnosticEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderDiagnosticEvent.swift; sourceTree = "<group>"; };
 		17978D254FF4A01AF6C27265 /* EditorStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStore.swift; sourceTree = "<group>"; };
 		18A2B083177B5FEF1FD7C1A9 /* ActiveDraftSlot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActiveDraftSlot.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F7A8B9C0D1E2F /* MediaRestoreCoordinatorPhotoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRestoreCoordinatorPhotoTests.swift; sourceTree = "<group>"; };
 		1CBFAA44A3E3195D060D6D72 /* UndoStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoStack.swift; sourceTree = "<group>"; };
 		1D2F81B686E29455B8A0D22E /* EditorReducerNormalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerNormalizationTests.swift; sourceTree = "<group>"; };
 		1F8A65192D762DE89C5D164B /* SceneInstanceRuntimeReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInstanceRuntimeReadinessTests.swift; sourceTree = "<group>"; };
 		1F9CDE81C26B36887FEDB85F /* DownsampledImageLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownsampledImageLoaderTests.swift; sourceTree = "<group>"; };
-		1A2B3C4D5E6F7A8B9C0D1E2F /* MediaRestoreCoordinatorPhotoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRestoreCoordinatorPhotoTests.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6A7B8C9D0E1F2 /* PhotoPreparePipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoPreparePipelineTests.swift; sourceTree = "<group>"; };
-		C4D5E6F7A8B9C0D1E2F3A4B5 /* VideoPreparePipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPreparePipelineTests.swift; sourceTree = "<group>"; };
 		2071A955010C325833347D9F /* ExportDeliveryCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportDeliveryCoordinatorTests.swift; sourceTree = "<group>"; };
 		212495D3F0034E5DF8679EAE /* AnimiAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AnimiAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		21BCAE9CA856E61018333E4F /* AudioCompositionBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCompositionBuilder.swift; sourceTree = "<group>"; };
@@ -238,8 +237,6 @@
 		278EBCE880F11881818C5A11 /* SceneLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneLibrary.swift; sourceTree = "<group>"; };
 		2899EE222D11CFD172C78743 /* SceneTypeResourcesCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneTypeResourcesCache.swift; sourceTree = "<group>"; };
 		28AB08B4C98FC7129375B576 /* VideoExportSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExportSessionTests.swift; sourceTree = "<group>"; };
-		A2B3C4D5E6F7081923456789 /* VideoSelectionEditorOrchestrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSelectionEditorOrchestrationTests.swift; sourceTree = "<group>"; };
-		B3C4D5E6F7A8091923456789 /* VideoSelectionFastPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSelectionFastPathTests.swift; sourceTree = "<group>"; };
 		2983D652F29529B0182FFBDD /* ExportPipelineRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportPipelineRegressionTests.swift; sourceTree = "<group>"; };
 		2CFCF74F9E5906B8855CBA71 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2E91BE384A5A403B670219FC /* PickerAssetAdapter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PickerAssetAdapter.swift; sourceTree = "<group>"; };
@@ -275,10 +272,6 @@
 		61F2AE9AABEA22194B49C3A4 /* TimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineView.swift; sourceTree = "<group>"; };
 		62B86D0621E024C2C3AA5296 /* ResolvedTimelineFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResolvedTimelineFrame.swift; sourceTree = "<group>"; };
 		631D07258A72196FBA9F3CF5 /* SceneEditInteractionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEditInteractionController.swift; sourceTree = "<group>"; };
-		E5F6A7B8C9D0E1F2A3B4C5D6 /* MediaIngestStatusOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaIngestStatusOverlayView.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071823456789 /* VideoSelectionEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSelectionEditorViewController.swift; sourceTree = "<group>"; };
-		A7B8C9D0E1F2A3B4C5D6E7F8 /* MediaBlockActionBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaBlockActionBarTests.swift; sourceTree = "<group>"; };
-		C9D0E1F2A3B4C5D6E7F8A9B0 /* MediaIngestStatusOverlayViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaIngestStatusOverlayViewTests.swift; sourceTree = "<group>"; };
 		670E0A34E07E457820B5E3A0 /* ExportMediaSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportMediaSnapshot.swift; sourceTree = "<group>"; };
 		674596031572692DF249640B /* AudioWriterPumpTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWriterPumpTests.swift; sourceTree = "<group>"; };
 		695CDA66BFAAF9E9490AFDFA /* TemplateCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateCatalog.swift; sourceTree = "<group>"; };
@@ -286,7 +279,6 @@
 		6D36D08905D1AEBFD5A46644 /* SceneEditBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEditBar.swift; sourceTree = "<group>"; };
 		6D5135EA575C330539D1FD0A /* MediaRef.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRef.swift; sourceTree = "<group>"; };
 		6DEB28A29AE20EDADB118DB1 /* ExportPreflightPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportPreflightPlannerTests.swift; sourceTree = "<group>"; };
-		6E46BB327022D25C2BAEBD96 /* BackgroundImageTransformViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundImageTransformViewController.swift; sourceTree = "<group>"; };
 		6EF91B900FF78191D281BB73 /* PreviewVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewVideoView.swift; sourceTree = "<group>"; };
 		6F1811C646979CF0638C6195 /* SceneState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneState.swift; sourceTree = "<group>"; };
 		6F788A4FD2D4CB955104DFC4 /* ExportRequestGatingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportRequestGatingTests.swift; sourceTree = "<group>"; };
@@ -321,24 +313,31 @@
 		9E6AC73310CA7321E9EDD226 /* SceneTypeResourcesCacheProviderSplitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneTypeResourcesCacheProviderSplitTests.swift; sourceTree = "<group>"; };
 		9FA23A16733352E76F88080F /* SharedAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SharedAssets; path = ../SharedAssets; sourceTree = SOURCE_ROOT; };
 		A19F78E6B097B29EDF323138 /* VideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameProvider.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60002AABBCCDD /* ImageFilePreparePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageFilePreparePipeline.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6071823456789 /* VideoSelectionEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSelectionEditorViewController.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* PhotoPreparePipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoPreparePipelineTests.swift; sourceTree = "<group>"; };
 		A2AE63601480F8396642D30C /* DownsampledImageLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownsampledImageLoader.swift; sourceTree = "<group>"; };
+		A2B3C4D5E6F7081923456789 /* VideoSelectionEditorOrchestrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSelectionEditorOrchestrationTests.swift; sourceTree = "<group>"; };
 		A5FDCD5EF953CE8453952AD5 /* ExportWriterPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportWriterPipelineTests.swift; sourceTree = "<group>"; };
 		A6D3806B17B9B6C58A594411 /* ExportWriterPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportWriterPipeline.swift; sourceTree = "<group>"; };
+		A7B8C9D0E1F2A3B4C5D6E7F8 /* MediaBlockActionBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaBlockActionBarTests.swift; sourceTree = "<group>"; };
 		A929B98AF54DA5E1DF38755B /* EditorCanvasMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorCanvasMapper.swift; sourceTree = "<group>"; };
 		A9681217003171DED246CF7A /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		AA4057F5327F4F91E6220168 /* EditorAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorAction.swift; sourceTree = "<group>"; };
+		AABB0001CCDD0001EEFF0002 /* BackgroundTextureServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundTextureServiceTests.swift; sourceTree = "<group>"; };
 		AB6B0E0125B6479C561D538B /* TemplateDetailsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateDetailsViewController.swift; sourceTree = "<group>"; };
 		ABF918E552EBE09CDD55C2A5 /* VideoPosterCache.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VideoPosterCache.swift; sourceTree = "<group>"; };
 		AF4B6CA0A1B351C520F00915 /* PreviewMenuStrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewMenuStrip.swift; sourceTree = "<group>"; };
 		B039E906F9F24BD020F3B03F /* VideoExporterTimelineExportSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporterTimelineExportSessionTests.swift; sourceTree = "<group>"; };
 		B05A4F385A358366E47B026B /* SceneClipSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneClipSnapshot.swift; sourceTree = "<group>"; };
 		B1C6721DDF84A3D3E800B6D2 /* TemplateModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateModels.swift; sourceTree = "<group>"; };
+		B3C4D5E6F7A8091923456789 /* VideoSelectionFastPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSelectionFastPathTests.swift; sourceTree = "<group>"; };
 		B685C4E5B201E8A6899D2B21 /* TimelinePayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePayload.swift; sourceTree = "<group>"; };
 		B68FDC0B5B9E176AEECBF7BF /* ProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStore.swift; sourceTree = "<group>"; };
 		B70AC3142E27D4ED857F8809 /* MediaRestoreCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MediaRestoreCoordinator.swift; sourceTree = "<group>"; };
 		B807292DC00C6DF32839947B /* Point2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Point2.swift; sourceTree = "<group>"; };
 		B853898BDFB63E02EA083BD5 /* CategoryTemplatesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryTemplatesViewController.swift; sourceTree = "<group>"; };
-		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BADE2C25A73924C2B3793A4D /* MediaRestoreHelperVideoSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRestoreHelperVideoSelectionTests.swift; sourceTree = "<group>"; };
 		BC0A332A9804FD46A50F4BF3 /* GlobalVideoBudgetCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalVideoBudgetCoordinator.swift; sourceTree = "<group>"; };
 		BC6933EA029405A549FACE1A /* SceneCatalogViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneCatalogViewController.swift; sourceTree = "<group>"; };
@@ -349,7 +348,9 @@
 		C1244C22C36801F4B52AFE62 /* ExportVideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProvider.swift; sourceTree = "<group>"; };
 		C3D70F924E64D3CC5524CA26 /* EditorReducerSceneExistenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorReducerSceneExistenceTests.swift; sourceTree = "<group>"; };
 		C463B57720E8B12E559B2CA6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C4D5E6F7A8B9C0D1E2F3A4B5 /* VideoPreparePipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPreparePipelineTests.swift; sourceTree = "<group>"; };
 		C5C7008F00886664C0E46721 /* ExportResourceBudget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportResourceBudget.swift; sourceTree = "<group>"; };
+		C9D0E1F2A3B4C5D6E7F8A9B0 /* MediaIngestStatusOverlayViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaIngestStatusOverlayViewTests.swift; sourceTree = "<group>"; };
 		CA08D7E49AF2FAED41B3739D /* EditorConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorConfig.swift; sourceTree = "<group>"; };
 		CA0A2B411C42C0C947DA93AC /* TimelineExportRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineExportRuntime.swift; sourceTree = "<group>"; };
 		CEFEE6F4025544E7BE2AAF4C /* TimelinePlayheadMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePlayheadMapperTests.swift; sourceTree = "<group>"; };
@@ -360,6 +361,7 @@
 		D3EBC10C4E9B647A3CDA82C0 /* TimelineTransitionMath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineTransitionMath.swift; sourceTree = "<group>"; };
 		D531F2B70470609DAAEC0E92 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		D59971755844E2F253995D2F /* EditorRenderContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorRenderContract.swift; sourceTree = "<group>"; };
+		D5A1B2C3E4F5067812345678 /* VideoWindowValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoWindowValidator.swift; sourceTree = "<group>"; };
 		D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackViewContracts.swift; sourceTree = "<group>"; };
 		D910D732A40F53C827CAF44B /* ContextBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBar.swift; sourceTree = "<group>"; };
 		D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePerfCounters.swift; sourceTree = "<group>"; };
@@ -377,6 +379,7 @@
 		E56BFF2BB1A7C43D61EF8402 /* TimelineEngineLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineEngineLifecycleTests.swift; sourceTree = "<group>"; };
 		E5AF506783B23A9AA032D9B5 /* ExportDeliveryPlayerFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportDeliveryPlayerFlowTests.swift; sourceTree = "<group>"; };
 		E5EBE43F440A0F041741913D /* TimelineCompositionEngineReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineCompositionEngineReadinessTests.swift; sourceTree = "<group>"; };
+		E5F6A7B8C9D0E1F2A3B4C5D6 /* MediaIngestStatusOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaIngestStatusOverlayView.swift; sourceTree = "<group>"; };
 		EF894A5BD8FDCD16513F4379 /* ExportVideoSlotsCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoSlotsCoordinator.swift; sourceTree = "<group>"; };
 		EFFC65D891ED4DE5B877E8F1 /* BackgroundPresets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BackgroundPresets; path = Resources/BackgroundPresets; sourceTree = SOURCE_ROOT; };
 		F021BB129038E3FCA07AC7A8 /* PersistedMediaContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistedMediaContractTests.swift; sourceTree = "<group>"; };
@@ -387,7 +390,6 @@
 		F4613B149DEB66964BDE84F9 /* SceneTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneTrackView.swift; sourceTree = "<group>"; };
 		F65D289FDE2F35791BF6D9E7 /* ProjectStorePersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStorePersistenceTests.swift; sourceTree = "<group>"; };
 		FC49A46FA18BE025E45C3184 /* UserMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaService.swift; sourceTree = "<group>"; };
-		D5A1B2C3E4F5067812345678 /* VideoWindowValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoWindowValidator.swift; sourceTree = "<group>"; };
 		FD3BB901AAEF5AABB661A7A5 /* TimelineRenderExecutorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineRenderExecutorTests.swift; sourceTree = "<group>"; };
 		FD7887AA1FBAF5B99F82831B /* PhotoLibraryVideoSaveService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryVideoSaveService.swift; sourceTree = "<group>"; };
 		FFCE62B62C430828423FC8DB /* ProjectPreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPreviewCell.swift; sourceTree = "<group>"; };
@@ -422,6 +424,7 @@
 			isa = PBXGroup;
 			children = (
 				674596031572692DF249640B /* AudioWriterPumpTests.swift */,
+				AABB0001CCDD0001EEFF0002 /* BackgroundTextureServiceTests.swift */,
 				1F9CDE81C26B36887FEDB85F /* DownsampledImageLoaderTests.swift */,
 				1D2F81B686E29455B8A0D22E /* EditorReducerNormalizationTests.swift */,
 				3CE2CD88AC9A98A104AADE80 /* EditorReducerPlayheadSelectionTests.swift */,
@@ -561,6 +564,7 @@
 		4FE2CC9310BB6D337228386D /* MediaIngest */ = {
 			isa = PBXGroup;
 			children = (
+				A1B2C3D4E5F60002AABBCCDD /* ImageFilePreparePipeline.swift */,
 				9847B0F4918281B0B3CF17EC /* MediaAssetStore.swift */,
 				60D7F84050117D4171177D3C /* MediaIngestCoordinator.swift */,
 				B70AC3142E27D4ED857F8809 /* MediaRestoreCoordinator.swift */,
@@ -570,7 +574,6 @@
 				ABF918E552EBE09CDD55C2A5 /* VideoPosterCache.swift */,
 				3D0DEC10C96D52A8A160DA78 /* VideoPreparePipeline.swift */,
 			);
-			name = MediaIngest;
 			path = MediaIngest;
 			sourceTree = "<group>";
 		};
@@ -578,7 +581,6 @@
 			isa = PBXGroup;
 			children = (
 				8CEF30C879280B5B61779F14 /* BackgroundEditorViewController.swift */,
-				6E46BB327022D25C2BAEBD96 /* BackgroundImageTransformViewController.swift */,
 				F0DA8EAE80803A7290A0AC34 /* BackgroundPresetLibrary.swift */,
 				5CA7A6FD8503DAF43604786F /* BackgroundTextureService.swift */,
 				4F32D1C7C5D29936244DF41F /* EffectiveBackgroundBuilder.swift */,
@@ -808,7 +810,6 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					10B17D6EDD6B127CDCBC280E = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					65136F447BC60C8FF7FDE046 = {
@@ -828,9 +829,8 @@
 			mainGroup = CB301D244C5CC9EE6C9D6BA2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "TVECore" */,
+				94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "../TVECore" */,
 			);
-			preferredProjectObjectVersion = 77;
 			productRefGroup = 8405B0FB569F6CFAD1EB74CF /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -918,6 +918,7 @@
 				01AB418C3CAE1E5415B6C2E5 /* MediaIngestCoordinatorTests.swift in Sources */,
 				B8C9D0E1F2A3B4C5D6E7F8A9 /* MediaIngestStatusOverlayViewTests.swift in Sources */,
 				AFA01B49A8710FCC6CF73C21 /* EditorReducerSceneExistenceTests.swift in Sources */,
+				AABB0001CCDD0001EEFF0001 /* BackgroundTextureServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -931,7 +932,7 @@
 				57C23E798E20C6709A23C537 /* AudioTrackView.swift in Sources */,
 				CC20D98CF2C2D50F0579DDAF /* AudioWriterPump.swift in Sources */,
 				BB56874175D0D84955195BB6 /* BackgroundEditorViewController.swift in Sources */,
-				8E9D3945030E03E20245EAE3 /* BackgroundImageTransformViewController.swift in Sources */,
+				A1B2C3D4E5F60001AABBCCDD /* ImageFilePreparePipeline.swift in Sources */,
 				85DF4E86681E99E8A748BF67 /* BackgroundPresetLibrary.swift in Sources */,
 				E25698A846DA76F3CA4038B4 /* BackgroundTextureService.swift in Sources */,
 				283620DB39148AB24A06ECC1 /* BundleSceneLibraryLoader.swift in Sources */,
@@ -1187,7 +1188,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = KRX7JQ8GTF;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1230,7 +1231,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = KRX7JQ8GTF;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1298,7 +1299,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "TVECore" */ = {
+		94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "../TVECore" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../TVECore;
 		};

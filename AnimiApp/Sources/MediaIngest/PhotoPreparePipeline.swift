@@ -1,6 +1,3 @@
-import ImageIO
-import CoreGraphics
-import UniformTypeIdentifiers
 import Foundation
 
 // MARK: - Photo Prepare Pipeline
@@ -25,55 +22,11 @@ public enum PhotoPreparePipeline {
     /// - Returns: URL to a temporary JPEG file ready for persistence
     /// - Throws: `PhotoPrepareError` if any step fails
     public static func prepare(fileURL: URL) throws -> URL {
-        // 1. Create image source
-        guard let imageSource = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
-            throw PhotoPrepareError.failedToCreateImageSource
-        }
-
-        // 2. Read original dimensions to avoid upscaling
-        let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
-        let originalWidth = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
-        let originalHeight = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
-        let originalLongestSide = max(originalWidth, originalHeight)
-
-        // Target: min(2048, originalLongestSide) — never upscale
-        let targetMaxDimension = originalLongestSide > 0 ? min(maxDimension, originalLongestSide) : maxDimension
-
-        // 3. Create downsampled thumbnail with EXIF orientation applied
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: targetMaxDimension,
-            kCGImageSourceShouldCacheImmediately: true
-        ]
-
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary) else {
-            throw PhotoPrepareError.failedToCreateThumbnail
-        }
-
-        // 4. Write to temp JPEG
-        let tempDir = FileManager.default.temporaryDirectory
-        let tempURL = tempDir.appendingPathComponent("\(UUID().uuidString).jpg")
-
-        guard let destination = CGImageDestinationCreateWithURL(
-            tempURL as CFURL,
-            UTType.jpeg.identifier as CFString,
-            1,
-            nil
-        ) else {
-            throw PhotoPrepareError.jpegWriteFailed
-        }
-
-        let writeOptions: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: jpegQuality
-        ]
-        CGImageDestinationAddImage(destination, cgImage, writeOptions as CFDictionary)
-
-        guard CGImageDestinationFinalize(destination) else {
-            throw PhotoPrepareError.jpegWriteFailed
-        }
-
-        return tempURL
+        try ImageFilePreparePipeline.prepareJPEG(
+            fileURL: fileURL,
+            maxDimension: maxDimension,
+            jpegQuality: jpegQuality
+        )
     }
 }
 

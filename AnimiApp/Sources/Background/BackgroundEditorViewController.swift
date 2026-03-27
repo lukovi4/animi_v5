@@ -32,8 +32,13 @@ final class BackgroundEditorViewController: UIViewController {
     private var currentOverride: ProjectBackgroundOverride
     private var currentPresetId: String
 
-    /// Cached images for regions (for transform editor preview)
-    private var regionImages: [String: UIImage] = [:]
+    /// When true, a background image import is in progress — Done is disabled
+    /// to prevent dismissing before the import can commit its result.
+    var isImportInFlight: Bool = false {
+        didSet {
+            navigationItem.rightBarButtonItem?.isEnabled = !isImportInFlight
+        }
+    }
 
     // MARK: - UI Components
 
@@ -77,16 +82,6 @@ final class BackgroundEditorViewController: UIViewController {
         stack.axis = .vertical
         stack.spacing = 16
         return stack
-    }()
-
-    private lazy var doneButton: UIButton = {
-        var config = UIButton.Configuration.filled()
-        config.title = "Done"
-        config.cornerStyle = .medium
-        let btn = UIButton(configuration: config)
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.addTarget(self, action: #selector(doneTapped), for: .touchUpInside)
-        return btn
     }()
 
     // MARK: - Initialization
@@ -310,7 +305,7 @@ final class BackgroundEditorViewController: UIViewController {
                 source: .gradient(gradientOverride)
             )
         case 2: // Image
-            // Request image picker from delegate
+            guard !isImportInFlight else { return }
             delegate?.backgroundEditorDidRequestImagePicker(for: regionId)
         default:
             break
@@ -330,6 +325,7 @@ final class BackgroundEditorViewController: UIViewController {
             case .gradient:
                 presentGradientEditor(for: regionId)
             case .image:
+                guard !isImportInFlight else { return }
                 delegate?.backgroundEditorDidRequestImagePicker(for: regionId)
             }
         } else {
@@ -414,8 +410,7 @@ final class BackgroundEditorViewController: UIViewController {
     // MARK: - Image Configuration
 
     /// Called by PlayerViewController after image is selected and saved.
-    /// Also stores the image for transform editor preview.
-    func setImage(for regionId: String, mediaRef: MediaRef, image: UIImage? = nil) {
+    func setImage(for regionId: String, mediaRef: MediaRef) {
         let imageOverride = ImageOverride(
             mediaRef: mediaRef,
             transform: .identity
@@ -424,46 +419,7 @@ final class BackgroundEditorViewController: UIViewController {
             source: .image(imageOverride)
         )
 
-        // Store image for transform editor preview
-        if let img = image {
-            regionImages[regionId] = img
-        }
-
         notifyStateChanged()
-    }
-
-    /// Opens gesture-based transform editor for an image region.
-    func presentImageTransformEditor(for regionId: String) {
-        guard let override = currentOverride.regions[regionId],
-              case .image(let imageOverride) = override.source,
-              let image = regionImages[regionId] else {
-            return
-        }
-
-        // Get region bbox from preset
-        guard let preset = presetLibrary.preset(for: currentPresetId),
-              let regionPreset = preset.regions.first(where: { $0.regionId == regionId }) else {
-            return
-        }
-
-        // Calculate bbox from mask vertices
-        let vertices = regionPreset.mask.vertices
-        let minX = vertices.map { $0.x }.min() ?? 0
-        let minY = vertices.map { $0.y }.min() ?? 0
-        let maxX = vertices.map { $0.x }.max() ?? 1
-        let maxY = vertices.map { $0.y }.max() ?? 1
-        let bbox = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-
-        let transformVC = BackgroundImageTransformViewController(
-            regionId: regionId,
-            image: image,
-            regionBbox: bbox,
-            currentTransform: imageOverride.transform
-        )
-        transformVC.delegate = self
-
-        let nav = UINavigationController(rootViewController: transformVC)
-        present(nav, animated: true)
     }
 
     // MARK: - State Updates
@@ -538,26 +494,3 @@ extension BackgroundEditorViewController: UIColorPickerViewControllerDelegate {
     }
 }
 
-// MARK: - BackgroundImageTransformDelegate
-
-extension BackgroundEditorViewController: BackgroundImageTransformDelegate {
-
-    func transformEditorDidConfirm(regionId: String, transform: BgImageTransformOverride) {
-        guard var override = currentOverride.regions[regionId],
-              case .image(var imageOverride) = override.source else {
-            return
-        }
-
-        // Update transform in image override
-        imageOverride.transform = transform
-        override.source = .image(imageOverride)
-        currentOverride.regions[regionId] = override
-
-        // Notify delegate to update main MetalView
-        notifyStateChanged()
-    }
-
-    func transformEditorDidCancel(regionId: String) {
-        // No changes needed - transform editor was dismissed without saving
-    }
-}

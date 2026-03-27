@@ -316,7 +316,11 @@ final class PlayerViewController: UIViewController {
     private var projectBackgroundOverride: ProjectBackgroundOverride?
     private var currentTemplateId: String?
     private var pendingBackgroundRegionId: String?
+    private weak var pendingBackgroundEditor: BackgroundEditorViewController?
     private var lastBackgroundPresetId: String?
+    /// Generation counter for background image imports. Incremented on each new picker request
+    /// and on editor dismiss, so stale async completions detect they are no longer current.
+    private var backgroundImportGeneration: UInt = 0
 
     /// PR-G: Shared background texture provider for project-level background images.
     /// Written by BackgroundTextureService, read by all render paths (preview, transition, export).
@@ -1358,23 +1362,6 @@ final class PlayerViewController: UIViewController {
         editorLayoutContainer.setMapper(mapper)
     }
 
-    /// Resolves a MediaRef to UIImage for the composition engine.
-    private func resolveMediaRef(_ mediaRef: MediaRef) async -> UIImage? {
-        // Only handle file-based media refs
-        guard mediaRef.kind == .file else { return nil }
-
-        // Resolve URL from relative path via ProjectStore
-        guard let url = try? ProjectStore.shared.absoluteURL(for: mediaRef) else {
-            return nil
-        }
-
-        // Load image from URL
-        guard let data = try? Data(contentsOf: url),
-              let image = UIImage(data: data) else {
-            return nil
-        }
-        return image
-    }
 
     /// Loads a scene type asynchronously for the coordinator.
     /// Heavy IO (file loading, decoding) runs on background thread to avoid main thread freezes.
@@ -2325,72 +2312,98 @@ final class PlayerViewController: UIViewController {
         editor.delegate = self
 
         let nav = UINavigationController(rootViewController: editor)
+        // Prevent interactive dismiss — override commit must go through Done button
+        // (backgroundEditorWillDismiss) to guarantee consistent state.
+        nav.isModalInPresentation = true
         present(nav, animated: true)
     }
 
     /// Handles background image selection from PHPicker.
     private func handleBackgroundImagePicked(result: PHPickerResult, regionId: String) {
-        guard result.itemProvider.canLoadObject(ofClass: UIImage.self) else {
-            log("[Background] Selected item is not an image")
-            return
-        }
-
-        result.itemProvider.loadObject(ofClass: UIImage.self) { [weak self] object, error in
-            guard let self = self,
-                  let image = object as? UIImage else {
-                if let error = error {
-                    DispatchQueue.main.async {
-                        self?.log("[Background] Failed to load image: \(error)")
-                    }
-                }
-                return
-            }
-
-            DispatchQueue.main.async {
-                self.saveAndSetBackgroundImage(image, for: regionId)
+        pendingBackgroundEditor?.isImportInFlight = true
+        Task { @MainActor in
+            defer { pendingBackgroundEditor?.isImportInFlight = false }
+            do {
+                let picked = try await PickerAssetAdapter.extractPhoto(from: result)
+                guard case .photo(let tempURL) = picked else { return }
+                defer { try? FileManager.default.removeItem(at: tempURL) }
+                try await saveAndSetBackgroundImage(from: tempURL, for: regionId)
+            } catch {
+                log("[Background] Failed to handle picked image: \(error.localizedDescription)")
             }
         }
     }
 
-    /// Saves background image to project and updates editor.
-    private func saveAndSetBackgroundImage(_ image: UIImage, for regionId: String) {
+    /// Persists background image, loads texture, and updates editor.
+    ///
+    /// Session-safe: captures import generation + preset ID at call time and verifies both
+    /// after each async boundary. If a newer import was requested, the editor closed, or
+    /// the preset changed mid-flight, the persisted file is cleaned up as orphan.
+    private func saveAndSetBackgroundImage(from sourceFileURL: URL, for regionId: String) async throws {
         guard let service = backgroundTextureService,
               let state = effectiveBackgroundState else {
             log("[Background] Service or state not available")
             return
         }
 
-        do {
-            // Save image to project store
-            let mediaRef = try service.saveImage(image)
-            log("[Background] Saved image: \(mediaRef.id)")
+        // Capture session identity at call time
+        let capturedGeneration = backgroundImportGeneration
+        let sessionPresetId = state.preset.presetId
 
-            // Load texture
-            let slotKey = EffectiveBackgroundBuilder.makeSlotKey(
-                presetId: state.preset.presetId,
-                regionId: regionId
-            )
+        // 1. Persist image (off-main-actor work)
+        let (mediaRef, _) = try await service.persistImage(from: sourceFileURL)
+        log("[Background] Persisted image: \(mediaRef.id)")
 
-            Task {
-                do {
-                    try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef)
-
-                    // Update editor if visible
-                    if let nav = presentedViewController as? UINavigationController,
-                       let editor = nav.viewControllers.first as? BackgroundEditorViewController {
-                        editor.setImage(for: regionId, mediaRef: mediaRef, image: image)
-                    }
-
-                    // Old media file cleanup deferred to GC (Phase 1E)
-
-                    metalView.setNeedsDisplay()
-                } catch {
-                    log("[Background] Failed to load texture: \(error.localizedDescription)")
-                }
-            }
-        } catch {
-            log("[Background] Failed to save image: \(error.localizedDescription)")
+        // 2. Generation + preset guard after persist
+        guard backgroundImportGeneration == capturedGeneration,
+              effectiveBackgroundState?.preset.presetId == sessionPresetId else {
+            log("[Background] Import generation stale after persist — cleaning up orphan")
+            try? service.deleteMediaFile(mediaRef)
+            return
         }
+
+        // 3. Load texture
+        let slotKey = EffectiveBackgroundBuilder.makeSlotKey(
+            presetId: sessionPresetId,
+            regionId: regionId
+        )
+
+        do {
+            try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef)
+        } catch {
+            try? service.deleteMediaFile(mediaRef)
+            throw error
+        }
+
+        // 4. Generation + preset guard after texture load
+        guard backgroundImportGeneration == capturedGeneration,
+              effectiveBackgroundState?.preset.presetId == sessionPresetId else {
+            log("[Background] Import generation stale after texture load — clearing stale texture")
+            service.clearTexture(slotKey: slotKey)
+            try? service.deleteMediaFile(mediaRef)
+            return
+        }
+
+        // 5. Commit to editor or directly to persisted override
+        if let editor = pendingBackgroundEditor {
+            editor.setImage(for: regionId, mediaRef: mediaRef)
+        } else {
+            let imageOverride = ImageOverride(mediaRef: mediaRef, transform: .identity)
+            projectBackgroundOverride?.regions[regionId] = RegionOverride(
+                source: .image(imageOverride)
+            )
+            let templateBackground = compiledScene?.runtime.scene.background
+            effectiveBackgroundState = EffectiveBackgroundBuilder.build(
+                templateBackground: templateBackground,
+                projectOverride: projectBackgroundOverride ?? .empty,
+                presetLibrary: BackgroundPresetLibrary.shared
+            )
+            draftIsDirty = true
+        }
+        pendingBackgroundEditor = nil
+
+        // 6. Refresh display
+        metalView.setNeedsDisplay()
     }
 
     // MARK: - Export Mode
@@ -4293,8 +4306,15 @@ extension PlayerViewController: BackgroundEditorDelegate {
     }
 
     func backgroundEditorDidRequestImagePicker(for regionId: String) {
-        // Store regionId for callback
+        // Invalidate any in-flight import from a previous picker request
+        backgroundImportGeneration &+= 1
+
+        // Store regionId and editor ref for callback
         pendingBackgroundRegionId = regionId
+        if let nav = presentedViewController as? UINavigationController,
+           let editor = nav.viewControllers.first as? BackgroundEditorViewController {
+            pendingBackgroundEditor = editor
+        }
 
         var config = PHPickerConfiguration()
         config.filter = .images
@@ -4324,6 +4344,11 @@ extension PlayerViewController: BackgroundEditorDelegate {
     }
 
     func backgroundEditorWillDismiss(override: ProjectBackgroundOverride, presetId: String) {
+        // End editor session — invalidate any in-flight async background import so its
+        // stale completion cannot apply to a future editor session or persisted state.
+        backgroundImportGeneration &+= 1
+        pendingBackgroundEditor = nil
+
         // Mark dirty — will be persisted via saveDraftToActiveSlot/materialize
         draftIsDirty = true
 

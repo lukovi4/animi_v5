@@ -546,10 +546,10 @@ public final class ProjectStore {
 
     // MARK: - Media File API
 
-    /// Saves an image to the background media directory.
-    /// - Parameter imageData: JPEG image data
-    /// - Returns: MediaRef with relative path
-    public func saveBackgroundImage(_ imageData: Data) throws -> MediaRef {
+    /// Saves a prepared image file to the background media directory.
+    /// - Parameter preparedFileURL: URL to the prepared JPEG file (e.g. from ImageFilePreparePipeline)
+    /// - Returns: Tuple of (MediaRef with relative path, absolute URL of persisted file)
+    public func saveBackgroundImage(from preparedFileURL: URL) throws -> (MediaRef, URL) {
         try ensureDirectoriesExist()
 
         let uuid = UUID().uuidString
@@ -557,11 +557,11 @@ public final class ProjectStore {
         let relativePath = "\(Self.mediaDirectoryName)/\(Self.backgroundMediaDirectoryName)/\(filename)"
 
         let mediaDir = try backgroundMediaDirectoryURL()
-        let fileURL = mediaDir.appendingPathComponent(filename)
+        let destURL = mediaDir.appendingPathComponent(filename)
 
-        try imageData.write(to: fileURL, options: .atomic)
+        try fileManager.copyItem(at: preparedFileURL, to: destURL)
 
-        return MediaRef.file(relativePath, mediaKind: .photo)
+        return (MediaRef.file(relativePath, mediaKind: .photo), destURL)
     }
 
     /// Returns the absolute URL for a media reference.
