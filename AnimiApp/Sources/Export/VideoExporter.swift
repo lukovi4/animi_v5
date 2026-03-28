@@ -683,6 +683,7 @@ public final class VideoExporter: @unchecked Sendable {
             let coordinator = ExportVideoSlotsCoordinator(
                 device: metalDevice,
                 textureCache: textureCache,
+                commandQueue: renderer.commandQueue,
                 runtime: runtime,
                 sceneFPS: Double(runtime.fps),
                 exportTextureProvider: textureProvider,

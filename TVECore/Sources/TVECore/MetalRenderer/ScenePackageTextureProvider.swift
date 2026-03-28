@@ -232,12 +232,15 @@ public final class ScenePackageBaseTextureProvider: TextureProvider {
 /// `removeTexture(for:)` removes only the overlay override, revealing base texture if present.
 ///
 /// Conforms to `MutableTextureProvider` (PR-32) for user media injection.
-public final class ScenePackageTextureProvider: MutableTextureProvider {
+public final class ScenePackageTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
 
     private let core: TexturePreloadCore
 
     /// Per-instance overlay cache for injected textures (user media).
     private var overlayCache: [String: MTLTexture] = [:]
+
+    /// Per-instance video presentation metadata (analogous to overlayCache).
+    private var presentationInfos: [String: VideoPresentationInfo] = [:]
 
     /// PR-B: Last preload statistics (available after preloadAll(commandQueue:) call).
     public var lastPreloadStats: PreloadStats? {
@@ -334,10 +337,30 @@ public final class ScenePackageTextureProvider: MutableTextureProvider {
         core.preloadAll(commandQueue: commandQueue)
     }
 
+    // MARK: - MutableAssetPresentationInfoProvider
+
+    public func presentationInfo(for assetId: String) -> VideoPresentationInfo? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return presentationInfos[assetId]
+    }
+
+    public func setPresentationInfo(_ info: VideoPresentationInfo, for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        presentationInfos[assetId] = info
+    }
+
+    public func removePresentationInfo(for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        presentationInfos.removeValue(forKey: assetId)
+    }
+
+    // MARK: - Cache Management
+
     /// Clears both base and overlay caches.
     public func clearCache() {
         core.clearCache()
         overlayCache.removeAll()
+        presentationInfos.removeAll()
     }
 }
 

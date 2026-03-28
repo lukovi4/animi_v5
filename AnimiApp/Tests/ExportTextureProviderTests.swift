@@ -81,11 +81,67 @@ final class ExportTextureProviderTests: XCTestCase {
         provider.setTexture(tex1, for: "id_1")
         provider.setTexture(tex2, for: "id_2")
 
+        // Also set presentation info on both
+        let info = VideoPresentationInfo(
+            rawTrackSize: CGSize(width: 1920, height: 1080),
+            preferredTransform: .identity
+        )
+        provider.setPresentationInfo(info, for: "id_1")
+        provider.setPresentationInfo(info, for: "id_2")
+
         // Clear only id_1
         provider.clear(assetIds: ["id_1"])
 
         XCTAssertNil(provider.texture(for: "id_1"), "Cleared asset should be nil")
         XCTAssertNotNil(provider.texture(for: "id_2"), "Non-cleared asset should remain")
+        XCTAssertNil(provider.presentationInfo(for: "id_1"), "Cleared asset presentation info should be nil")
+        XCTAssertNotNil(provider.presentationInfo(for: "id_2"), "Non-cleared asset presentation info should remain")
+    }
+
+    // MARK: - Presentation Info Metadata
+
+    func test_presentationInfo_setGetRemove() {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            XCTSkip("Metal not available")
+            return
+        }
+
+        let assetIndex = AssetIndexIR()
+        let resolver = CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty)
+        let provider = ExportTextureProvider(device: device, assetIndex: assetIndex, resolver: resolver)
+
+        let info = VideoPresentationInfo(
+            rawTrackSize: CGSize(width: 1920, height: 1080),
+            preferredTransform: .identity
+        )
+
+        XCTAssertNil(provider.presentationInfo(for: "asset_1"))
+
+        provider.setPresentationInfo(info, for: "asset_1")
+        XCTAssertEqual(provider.presentationInfo(for: "asset_1"), info)
+
+        provider.removePresentationInfo(for: "asset_1")
+        XCTAssertNil(provider.presentationInfo(for: "asset_1"))
+    }
+
+    func test_clearAll_removesPresentationInfo() {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            XCTSkip("Metal not available")
+            return
+        }
+
+        let assetIndex = AssetIndexIR()
+        let resolver = CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty)
+        let provider = ExportTextureProvider(device: device, assetIndex: assetIndex, resolver: resolver)
+
+        let info = VideoPresentationInfo(
+            rawTrackSize: CGSize(width: 1920, height: 1080),
+            preferredTransform: .identity
+        )
+
+        provider.setPresentationInfo(info, for: "asset_1")
+        provider.clearAll()
+        XCTAssertNil(provider.presentationInfo(for: "asset_1"))
     }
 
 }

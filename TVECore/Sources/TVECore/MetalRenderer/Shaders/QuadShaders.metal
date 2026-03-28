@@ -47,6 +47,41 @@ fragment float4 quad_fragment(
     return color * in.opacity;
 }
 
+// MARK: - Video Quad Shaders (orientation-aware)
+
+struct VideoQuadUniforms {
+    float4x4 mvp;        // 64 bytes
+    float opacity;        // 4 bytes
+    float _pad0;          // 4 bytes
+    float _pad1;          // 4 bytes
+    float _pad2;          // 4 bytes
+    float3 _padding;      // 16 bytes (alignment to 96)
+    float4x4 uvTransform; // 64 bytes
+    // Total: 160 bytes
+};
+
+vertex QuadVertexOut quad_video_vertex(
+    QuadVertexIn in [[stage_in]],
+    constant VideoQuadUniforms& uniforms [[buffer(1)]]
+) {
+    QuadVertexOut out;
+    out.position = uniforms.mvp * float4(in.position, 0.0, 1.0);
+    // Apply UV transform for video orientation
+    float4 transformedUV = uniforms.uvTransform * float4(in.texCoord, 0.0, 1.0);
+    out.texCoord = transformedUV.xy;
+    out.opacity = uniforms.opacity;
+    return out;
+}
+
+fragment float4 quad_video_fragment(
+    QuadVertexOut in [[stage_in]],
+    texture2d<float> tex [[texture(0)]],
+    sampler samp [[sampler(0)]]
+) {
+    float4 color = tex.sample(samp, in.texCoord);
+    return color * in.opacity;
+}
+
 // MARK: - Mask Shaders
 
 struct MaskVertexOut {
@@ -254,6 +289,21 @@ kernel void mask_combine_kernel(
     }
 
     accumOutTex.write(float4(result, 0.0, 0.0, 0.0), gid);
+}
+
+// MARK: - Video Frame Blend Kernel
+
+kernel void video_frame_blend_kernel(
+    texture2d<float, access::read> prevTex [[texture(0)]],
+    texture2d<float, access::read> nextTex [[texture(1)]],
+    texture2d<float, access::write> outTex [[texture(2)]],
+    constant float& alpha [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= outTex.get_width() || gid.y >= outTex.get_height()) {
+        return;
+    }
+    outTex.write(mix(prevTex.read(gid), nextTex.read(gid), alpha), gid);
 }
 
 // MARK: - Background Region Shaders

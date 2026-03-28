@@ -1,564 +1,573 @@
-**Финальное каноническое ТЗ: Phase 3 — Video Ingest Rewrite**
-
-Это **финальная редакция** Phase 3.  
-Она уже включает ответы на все вопросы, которые возникали по ходу обсуждения.  
-Программист должен исправлять **только этот scope**, без самовольного добавления UI-фаз, export-рефакторинга или дополнительных архитектурных изменений.
-
----
-
-## **1. Цель Phase 3**
-
-Переписать **scene user-video ingest path** на канонический контракт:
-
-`PHPicker file representation -> single persistent copy -> persisted metadata validation -> persisted SceneMediaSlot(videoWindow required) -> runtime bind from persisted URL`
-
-Главная цель фазы:
-- убрать double-copy видео;
-- сделать persisted video contract строгим;
-- убрать legacy API и transitional параметры из runtime video path;
-- зафиксировать, что post-assign trim edits живут **отдельно** от ingest.
-
----
-
-## **2. Зафиксированные решения по продукту и поведению**
-
-Ниже решения уже утверждены и **не обсуждаются заново**:
-
-1. **Phase 3 не включает новый video settings UI.**  
-   Никакого нового экрана confirm/trim/settings в этой фазе не делаем.  
-   Это **plumbing-only phase**.
-
-2. **Из-за отсутствия нового UI в Phase 3 video commit остаётся immediate.**  
-   То есть после успешного ingest и validation видео по-прежнему сразу попадает в slot/runtime, **но уже через правильный технический контракт**.
-
-3. **После первого назначения видео дальнейшие trim/offset/audio edits не должны вызывать повторный `setVideo()` и не должны запускать повторный ingest.**  
-   Это отдельное обновление persisted state через:
-   - [EditorAction.swift:126](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorAction.swift:126)
-   - [EditorReducer.swift:156](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorReducer.swift:156)
-
-4. **Если persisted trim/window выходит за фактическую длительность файла, блок должен жёстко падать в failed.**  
-   Никакого silent clamp, никакого auto-fix.
-
-5. **Если metadata validation упала уже после persistent copy, файл удаляется сразу.**  
-   Не через GC, не “потом”.
-
-6. **`VideoPreparePipeline` должен возвращать готовый default `PersistedVideoSelection`, а не просто `duration`.**
-
-7. **Future UI constraint зафиксирован на будущее, но не реализуется сейчас:**  
-   когда позже появится video settings screen, новый pick во время открытого settings screen должен быть **запрещён**, а не auto-replace.  
-   В текущей Phase 3 это **не реализуется**, потому что самого экрана нет.
-
----
-
-## **3. Что подтверждено текущим кодом и почему Phase 3 нужна**
-
-### **3.1 Double-copy video ingest существует сейчас**
-- В [PickerAssetAdapter.swift:88](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/PickerAssetAdapter.swift:88) видео из `PHPicker` копируется в `temporaryDirectory`.
-- В [MediaAssetStore.swift:54](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/MediaAssetStore.swift:54) потом тот же файл копируется ещё раз в persistent store.
-
-Это надо удалить.
-
-### **3.2 Video validation сейчас нестрогая**
-- [VideoPreparePipeline.swift:19](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/VideoPreparePipeline.swift:19) фактически ничего не валидирует.
-- [VideoPreparePipeline.swift:27](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/VideoPreparePipeline.swift:27) на metadata error возвращает `0`.
-- [MediaIngestCoordinator.swift:175](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/MediaIngestCoordinator.swift:175) превращает это в `videoWindow = nil`.
-
-Это нельзя оставлять.
-
-### **3.3 Persisted video slot contract сейчас допускает невалидное состояние**
-- [SceneMediaSlot.swift:22](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/SceneMediaSlot.swift:22) хранит `videoWindow` как optional.
-- [MediaRestoreCoordinator.swift:65](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/MediaRestoreCoordinator.swift:65) позволяет restore video slot без persisted selection.
-
-Для persisted video это нужно запретить.
-
-### **3.4 Runtime video API содержит мёртвый и transitional legacy**
-- [UserMediaService.swift:173](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift:173) `MediaOwnership` — legacy compat.
-- [UserMediaService.swift:534](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift:534) `setVideo(...)` всё ещё принимает:
-  - `ownership`
-  - `emitSelectionPersistence`
-  - `pendingPersistedSelection`
-- `emitSelectionPersistence` реально **мёртвый**: в коде он больше нигде не используется, кроме сигнатуры и комментария.
-
-Это надо убрать.
-
-### **3.5 Post-assign trim path уже существует отдельно**
-- [EditorAction.swift:126](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorAction.swift:126) `setVideoSelection`
-- [EditorReducer.swift:156](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorReducer.swift:156)
-- [UserMediaService.swift:1302](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift:1302) `applyPersistedVideoSelection`
-
-Значит trim edits должны быть привязаны именно к этому пути, а не к re-ingest.
-
----
-
-## **4. Финальный scope Phase 3**
-
-### **Входит в scope**
-- video picker extraction
-- video persistent copy
-- video metadata validation
-- strict `SceneMediaSlot.videoWindow` contract
-- runtime `setVideo(...)` API cleanup
-- `ProjectDraft` schema bump
-- update tests under new contract
-
-### **Не входит в scope**
-- новый video settings screen
-- trim UI / scrubber / handles / audio controls
-- apply/cancel candidate flow
-- export parity / export snapshot rewrite
-- background media
-- video playback budget logic
-- `VideoPosterCache`
-- full runtime trim editor flow
-
----
-
-## **5. Канонический технический контракт после Phase 3**
-
-После завершения фазы должно быть так:
-
-1. Пользователь выбирает видео через `PHPicker`.
-2. Приложение **один раз** копирует файл в persistent store `Media/UserMedia/`.
-3. По persisted URL выполняется metadata validation.
-4. Если validation успешна:
-   - строится `PersistedVideoSelection(trimStart: 0, trimEnd: duration, offset: 0, ...)`
-   - строится `SceneMediaSlot.video(mediaRef:, videoWindow:)`
-   - slot сразу коммитится в draft
-   - если сцена активна, runtime получает `setVideo(...)`
-5. Если validation неуспешна:
-   - persisted файл удаляется сразу
-   - slot не коммитится
-   - runtime не вызывается
-   - ingest status = failed
-6. Когда в будущем пользователь меняет trim/offset/audio уже назначенного видео:
-   - это **не ingest**
-   - это update существующего slot через `setVideoSelection`
-
----
-
-## **6. Обязательные изменения по файлам**
-
-### **6.1 [PickerAssetAdapter.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/PickerAssetAdapter.swift)**
-
-#### **Что сделать**
-Photo path не трогать.  
-Video path переписать так, чтобы убрать промежуточную temp-copy.
-
-#### **Требование**
-Новый канонический video API adapter’а должен позволять **непосредственно использовать ephemeral picker URL внутри callback** для immediate persistent copy.
-
-Допустимая форма API:
-- closure-based helper по смыслу:
-  - `withVideoFileRepresentation(from: PHPickerResult, perform: (URL) throws -> T) async throws -> T`
-- или эквивалентный API, который гарантирует:
-  - video file не копируется в `temporaryDirectory`
-  - persistent copy происходит, пока picker URL ещё валиден
-
-#### **Что удалить**
-- `loadVideoRepresentation(provider:)` в нынешнем виде
-- intermediate `tempURL` для video path
-- `videoCopyFailed` как ошибка именно temp-copy шага, если temp-copy path исчезает
-
-#### **Что оставить**
-- `mediaKind(of:)`
-- photo path
-- общий PHPicker classifier
-
-#### **Запрещено**
-- Нельзя возвращать наружу video URL, который живёт только до конца picker callback и ещё не persisted.
-- Нельзя повторно вводить temp video file как промежуточный этап ingest.
-
----
-
-### **6.2 [MediaAssetStore.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/MediaAssetStore.swift)**
-
-#### **Что сделать**
-Оставить `MediaAssetStore` единственным persistence API для scene user media.
-
-#### **Новый контракт**
-Для video:
-- `saveMedia(...)` должен быть тем **единственным durable copy**, который переносит файл из picker representation в canonical persistent storage.
-
-#### **Что важно**
-- Видео persist’ится “как есть”, без transcoding.
-- Persistent path и naming contract можно оставить текущий:
-  - `Media/UserMedia/<sceneId>_<blockId>_<uuid>.<ext>`
-
-#### **Комментарии**
-Обновить комментарии: это уже не “copy from temp picker copy”, а прямой single-copy persist.
-
----
-
-### **6.3 [VideoPreparePipeline.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/VideoPreparePipeline.swift)**
-
-#### **Что сделать**
-Переписать файл в строгий metadata-validation layer.
-
-#### **Удалить**
-- `import UIKit`
-- no-op `prepare(sourceURL:)`
-
-#### **Новый API**
-Канонический API pipeline должен принимать **persisted URL** и возвращать **готовый default `PersistedVideoSelection`**.
-
-По смыслу:
-```swift
-validatePersistedVideo(at url: URL) async throws -> PersistedVideoSelection
-```
-
-#### **Обязательная логика**
-- использовать `AVURLAsset`
-- асинхронно загрузить duration
-- duration должна быть:
-  - finite
-  - > минимального порога
-- на успехе вернуть:
-  - `PersistedVideoSelection(trimStart: 0, trimEnd: duration, offset: 0, isMuted: false, volume: 1.0)`
-- на любой ошибке или invalid duration — throw
-
-#### **Запрещено**
-- Возвращать `0` вместо ошибки
-- silently создавать default persisted selection из invalid duration
-
----
-
-### **6.4 [MediaIngestCoordinator.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/MediaIngestCoordinator.swift)**
-
-#### **Что сделать**
-Переписать только video branch ingest.
-
-#### **Старый path удалить**
-- `.video(let tempURL)`
-- temp file cleanup через `defer`
-- `assetStore.saveMedia(from: tempURL, ...)`
-
-#### **Новый path**
-1. получить picker video file representation без temp-copy
-2. сразу сделать persistent copy через `MediaAssetStore`
-3. получить `persistedURL`
-4. прогнать `VideoPreparePipeline.validatePersistedVideo(at:)`
-5. построить:
-   - `SceneMediaSlot.video(mediaRef: mediaRef, videoWindow: validatedSelection)`
-
-#### **Обязательный инвариант**
-Успешный video ingest **всегда** заканчивается slot’ом с валидным `videoWindow`.  
-`videoWindow == nil` в `IngestResult` для `.video` недопустим.
-
-#### **На error после persist**
-- удалить persisted файл немедленно через orphan cleanup
-- `onIngestComplete` не вызывать
-- status -> `.failed`
-
-#### **Concurrency**
-Video persist и metadata validation должны выполняться вне `MainActor`.
-
-На `MainActor` остаются только:
-- generation checks
-- status updates
-- bookkeeping
-- `onIngestComplete`
-
----
-
-### **6.5 [SceneMediaSlot.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/SceneMediaSlot.swift)**
-
-#### **Что сделать**
-Оставить `videoWindow` property optional на уровне общей модели, потому что photo slots её не имеют.  
-Но ужесточить contract:
-
-- для photo: `videoWindow == nil`
-- для video: `videoWindow != nil`
-
-#### **Конкретные изменения**
-- `SceneMediaSlot.video(...)` должен требовать **неoptional** `videoWindow`
-- комментарии обновить:
-  - persisted video slot без `videoWindow` больше не считается валидным состоянием
-
----
-
-### **6.6 [SceneState.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/SceneState.swift)**
-
-#### **Что сделать**
-Оставить `PersistedVideoSelection` текущей persisted-моделью.  
-Новый формат не вводить.
-
-#### **Допустимое улучшение**
-Если удобно, можно добавить helper для default full-duration selection, но это не обязательно.  
-Главное: source of truth для persisted video trim остаётся именно `PersistedVideoSelection`.
-
----
-
-### **6.7 [UserMediaService.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift)**
-
-#### **Что сделать**
-Упростить runtime video API до persisted-only contract.
-
-#### **Удалить из API**
-- `MediaOwnership`
-- `ownership`
-- `emitSelectionPersistence`
-- `pendingPersistedSelection`
-
-#### **Почему**
-- `emitSelectionPersistence` уже мёртвый
-- `MediaOwnership` уже legacy compat
-- persisted-only path уже является фактическим production direction
-
-#### **Новый production signature**
-По смыслу:
-```swift
-setVideo(
-  blockId: String,
-  url: URL,
-  presentOnReady: Bool = true,
-  persistedSelection: PersistedVideoSelection
-) -> Bool
-```
-
-#### **Что должен делать метод**
-- создать provider
-- poster-gated async setup
-- когда provider готов:
-  - получить фактическую duration
-  - собрать runtime `VideoSelection` через `persistedSelection.toVideoSelection(url:)`
-  - проверить, что selection валидна относительно фактической длительности
-- только потом:
-  - записать `mediaState[blockId] = .video(selection)`
-  - инжектить poster
-  - выставить `userMediaPresent(blockId: presentOnReady)`
-  - `blockReadinessState = .ready`
-
-#### **Если persisted selection невалидна**
-- вызвать failure cleanup path
-- слот не должен silently корректироваться
-
-#### **Что оставить**
-- `applyPersistedVideoSelection(blockId:_:)` оставить
-- это и есть канонический путь для future trim edits после первого назначения
-
-#### **Что важно**
-После Phase 3 `setVideo()` вызывается только:
-- при первом назначении видео
-- при замене файла на другой файл
-
-При обычном trim/offset/audio редактировании `setVideo()` больше не должен быть частью flow.
-
----
-
-### **6.8 [MediaRestoreCoordinator.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/MediaRestoreCoordinator.swift)**
-
-#### **Что сделать**
-Сделать video restore строгим.
-
-#### **Новый контракт**
-Если:
-- `slot.mediaRef.mediaKind == .video`
-- и `slot.videoWindow == nil`
-
-то restore обязан:
-- вызвать `service.markRestoreFailed(...)`
-- не пытаться запускать `setVideo(...)`
-
-#### **Вызов runtime**
-Перевести на новый `setVideo(..., persistedSelection:)` signature.
-
-#### **Что удалить**
-- implicit default-runtime-selection semantics для persisted video slot без `videoWindow`
-
----
-
-### **6.9 [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift)**
-
-#### **Что сделать**
-Поскольку UI-фаза отложена, текущий immediate commit остаётся, но с новым строгим contract.
-
-В `handleIngestComplete(_:)`:
-- video branch должна вызывать новый `setVideo(..., persistedSelection:)`
-- selection берётся только из `result.slot.videoWindow`
-- `result.slot.videoWindow` должен уже гарантированно существовать
-
-#### **Что не менять**
-- не вводить candidate UI
-- не вводить apply/cancel flow
-- не добавлять новый settings screen
-- не менять photo path
-
----
-
-### **6.10 [EditorAction.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorAction.swift)** и [EditorReducer.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorReducer.swift)
-
-#### **Что сделать**
-Зафиксировать `setVideoSelection` как единственный persisted path для trim/offset/audio edits уже назначенного видео.
-
-#### **Обязательное ужесточение**
-В [EditorReducer.swift:156](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorReducer.swift:156) `setVideoSelection` сейчас обновляет `existingSlot.videoWindow = selection` без проверки media kind.
-
-Это нужно исправить:
-- если slot отсутствует -> no-op
-- если slot существует, но `mediaRef.mediaKind != .video` -> no-op
-- только существующий video slot можно обновлять через `setVideoSelection`
-
-#### **Почему**
-Это часть строгого video contract и future trim-edit path.
-
----
-
-### **6.11 [ProjectStore.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectStore.swift)**
-
-#### **Что сделать**
-Удалить [ProjectStore.swift:568](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectStore.swift:568) `saveUserVideo(...)`.
-
-#### **Почему**
-После Phase 3 у scene user-video persistence должен остаться только один официальный путь: `MediaAssetStore`.
-
----
-
-### **6.12 [ProjectDraft.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectDraft.swift)**
-
-#### **Что сделать**
-Bump schema version:
-- `7 -> 8`
-
-#### **Почему**
-Persisted video-slot contract ужесточается:
-- persisted video slot без `videoWindow` становится невалидным состоянием
-
-#### **Что не делать**
-- не писать migration
-- не делать compatibility shim
-
-Старые drafts invalidated существующим schema gate + purge lifecycle.
-
----
-
-## **7. Тесты**
-
-### **7.1 Новый `VideoPreparePipelineTests`**
-Обязательные кейсы:
-- valid video -> returns default `PersistedVideoSelection`
-- missing file -> throws
-- corrupt/unreadable video -> throws
-- zero/invalid duration -> throws
-
-### **7.2 Обновить [MediaRestoreHelperVideoSelectionTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/MediaRestoreHelperVideoSelectionTests.swift)**
-Убрать старый контракт:
-- `videoWindow == nil` для video restore -> default selection
-
-Заменить на новый:
-- `videoWindow == nil` для video slot -> explicit failure
-
-Оставить:
-- visibility through `presentOnReady`
-- persisted trim/offset/audio restore for valid video slot
-
-### **7.3 Обновить [UserMediaServiceReadinessTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/UserMediaServiceReadinessTests.swift)**
-Переписать `setVideo(...)` tests под новый signature.
-
-Обязательные кейсы:
-- valid persisted selection -> `.ready`
-- invalid persisted selection vs actual duration -> `.failed`
-- missing file -> `.failed`
-- unreadable file -> `.failed`
-- replace pending video with another video -> generation safety preserved
-- `presentOnReady: false` respected
-- trim updates after initial assign не re-call `setVideo()`
-
-### **7.4 Обновить ingest tests**
-Если меняется public/testable seam у coordinator, покрыть:
-- success video ingest -> slot has non-nil `videoWindow`
-- metadata failure after persist -> file deleted immediately
-- no temp-copy path in video ingest
-
-### **7.5 Обновить reducer tests**
-Добавить/обновить:
-- `setVideoSelection` on photo slot -> no-op
-- `setVideoSelection` on missing slot -> no-op
-- `setVideoSelection` on existing video slot -> updates `videoWindow`
-
-### **7.6 Schema tests**
-- ожидания schema version -> `8`
-- incompatible old video drafts do not leak through saved project list
-
----
-
-## **8. Точечные статические проверки**
-
-После реализации должны выполняться:
-
-1. `MediaOwnership` отсутствует в production code:
-```sh
-rg -n "MediaOwnership" /Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources
-```
-
-2. `saveUserVideo(` отсутствует как живой API/callsite:
-```sh
-rg -n "saveUserVideo\\(" /Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp
-```
-
-3. В `PickerAssetAdapter` нет temp video copy:
-```sh
-rg -n "temporaryDirectory|copyItem\\(at: sourceURL, to: tempURL\\)|videoCopyFailed" /Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/MediaIngest/PickerAssetAdapter.swift
-```
-
-4. В production code нет legacy video API params:
-```sh
-rg -n "ownership:|emitSelectionPersistence|pendingPersistedSelection" /Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources
-```
-
-5. В production code нет persisted video slot construction с `videoWindow: nil`:
-```sh
-rg -n "\\.video\\(.*videoWindow:\\s*nil" /Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources
-```
-
----
-
-## **9. Verification**
-
-1. `xcodebuild build`
-2. `xcodebuild test`
-3. targeted test suites:
-- `VideoPreparePipelineTests`
-- `UserMediaServiceReadinessTests`
-- `MediaRestoreCoordinatorVideoSelectionTests`
-- reducer tests for `setVideoSelection`
-- schema/persistence tests for v8
-
-4. manual sanity:
-- выбрать валидное видео -> оно сразу применяется в block с full-duration default selection
-- выбрать битое/нечитаемое видео -> block не меняется, файл не остаётся на диске
-- reopen project -> persisted video slot restore only with valid `videoWindow`
-- trim update future path still uses `setVideoSelection`, not re-ingest
-
----
-
-## **10. Жёсткие запреты**
-
-В этой фазе **запрещено**:
-- добавлять новый video settings screen
-- добавлять candidate/apply/cancel flow
-- менять export code
-- silently clamp persisted trim/window к shorter file
-- оставлять persisted video slot без `videoWindow`
-- оставлять temp-copy video ingest
-- re-call `setVideo()` при обычном trim edit
-- оставлять `MediaOwnership`, `emitSelectionPersistence`, `pendingPersistedSelection`
-- решать эту фазу через workaround в `PlayerViewController` вместо нормального contract cleanup
-
----
-
-## **11. Definition of Done**
-
-Phase 3 считается завершённой только если одновременно выполнено всё:
-
-- video ingest больше не делает temp-copy перед persist
-- durable copy для video ровно один
-- success video ingest всегда создаёт persisted slot с валидным `videoWindow`
-- metadata failure после persist немедленно удаляет файл
-- `MediaRestoreCoordinator` больше не допускает video slot без `videoWindow`
-- `UserMediaService.setVideo` переведён на persisted-only contract без legacy параметров
-- `setVideoSelection` является единственным persisted path для post-assign trim edits
-- `ProjectStore.saveUserVideo(...)` удалён
-- schema bumped до `v8`
-- Phase 3 не добавила новый UI и не полезла в export
-
-Это и есть финальное каноническое ТЗ для Phase 3.
+# Video Pipeline Rewrite: Финальное PR-by-PR ТЗ
+
+## Summary
+- Проект и сцены остаются на `30 fps`.
+- Видео переводится на единый **time-based contract**.
+- Preview перестаёт жить на `synthetic frame`.
+- Export остаётся deterministic `30 fps`, но default resampling меняется на `blend`.
+- Orientation становится частью общего render contract через video metadata seam.
+- Persisted schema, store shape, ingest/photo/background pipelines не меняются.
+
+## Locked Decisions
+- `RenderCommand`, `AnimIR`, `ScenePlayer`, `RenderContext` не получают video-specific поля.
+- Metadata идёт через optional provider seam, а не через `RenderContext` dictionary.
+- `QuadUniforms` не меняется; для video вводится отдельный shader path.
+- `VideoSetupProviding` мигрирует атомарно на time-based API.
+- `ExportVideoFrameProvider` получает `MTLCommandQueue` сверху от `VideoExporter` через `ExportVideoSlotsCoordinator`.
+- Poster больше не живёт на oriented `UIImage` path.
+- Drift correction в preview остаётся disabled.
+- Default export policy = `.blend`.
+- Optical flow / interpolation вне scope.
+
+## Implementation Decisions
+- **Q1**: orientation = `orientedSize` для geometry + `uvTransform` для sampling.
+- **Q2**: `VideoPresentationInfo` вычисляет и кэширует сам provider.
+- **Q3**: seam = отдельные протоколы `AssetPresentationInfoProvider` и `MutableAssetPresentationInfoProvider`.
+- **Q4/Q5**: preview playback остаётся AVPlayer-native; `expectedVideoTime` используется только для drift/debug, не для per-tick seek.
+- **Q6/Q9**: `MTLCommandQueue` пробрасывается `VideoExporter -> ExportVideoSlotsCoordinator -> ExportVideoFrameProvider`. Provider не создаёт свою queue.
+- **Q7**: exact-sample tolerance = `1/600`.
+- **Q8**: реализация несколькими PR.
+- **Q10**: `VideoSetupProviding` мигрирует атомарно, без coexistence старого и нового API.
+- **Q11**: scrub cache становится time-based, сравнение только через `abs(delta) < 1/600`.
+- **Q12**: mutable metadata нужны для `InMemoryTextureProvider`, `ThreadSafeInMemoryTextureProvider`, `ExportTextureProvider`, `ScenePackageTextureProvider`, `LayeredTextureProvider`; не нужны для `ScenePackageBaseTextureProvider`.
+- **Q13**: отдельный `quad_video_*` shader path и отдельный `VideoQuadUniforms`; общий `QuadUniforms` не расширять.
+- **Q14**: убрать `appliesPreferredTrackTransform` из poster path; poster должен стать raw + GPU orientation.
+- **Q16**: `VideoPresentationInfo` вычисляется в provider **на стадии ready/prepare**, то есть в текущем lifecycle-месте, эквивалентном `loadDuration(from:)`, а не в `UserMediaService` и не как post-step после poster injection.
+  - Канонический выбор: **вариант B**.
+  - Provider должен расширить current async prepare task так, чтобы он загружал:
+    - `duration`
+    - video track
+    - `VideoPresentationInfo`
+  - Только после этого provider переходит в `.ready`.
+  - `requestPoster(...)` уже сейчас ждёт `state == .ready`, значит после его успешного завершения `UserMediaService` может безопасно читать `provider.presentationInfo` и инжектить poster texture + metadata одновременно.
+  - Если provider не смог вычислить `VideoPresentationInfo`, он не должен переходить в `.ready`; это provider failure, не service fallback.
+
+## PR 1. Shared VideoTimelineTimeMapper ✅
+**Goal**
+- Один source of truth для scene-frame -> target-video-time.
+
+**Changes**
+- Добавить shared helper `VideoTimelineTimeMapper`.
+- Вход:
+  - `sceneFrameIndex`
+  - `BlockTiming`
+  - `sceneFPS`
+  - `VideoSelection`
+- Выход:
+  - `blockTimeSeconds`
+  - `targetVideoTimeSeconds`
+  - clamped target time
+- Заменить внутреннюю math ownership в:
+  - [UserMediaService.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift)
+  - [ExportVideoFrameProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Export/ExportVideoFrameProvider.swift)
+- Epsilon зафиксировать как `1/600`.
+
+**Not in scope**
+- Никаких protocol/shader/provider API changes.
+
+**Tests**
+- Unit tests на trim, offset, block start, end clamp, before-start, after-end.
+- Preview/export parity test на одинаковый input.
+
+**Done**
+- Один shared mapper.
+- Preview/export больше не держат независимую формулу.
+
+## PR 2. VideoPresentationInfo + metadata seam + video shader path ✅
+**Goal**
+- Добавить orientation-aware render seam без поломки non-video пути.
+
+**Changes**
+- Добавить `VideoPresentationInfo`:
+  - `rawTrackSize`
+  - `preferredTransform`
+  - `orientedSize`
+  - `uvTransform`
+- Добавить протоколы:
+  - `AssetPresentationInfoProvider`
+  - `MutableAssetPresentationInfoProvider`
+- Реализовать metadata storage для:
+  - `InMemoryTextureProvider`
+  - `ThreadSafeInMemoryTextureProvider`
+  - `ExportTextureProvider`
+  - `ScenePackageTextureProvider`
+  - `LayeredTextureProvider`
+- Не добавлять mutable metadata в `ScenePackageBaseTextureProvider`.
+- Ввести отдельные:
+  - `VideoQuadUniforms`
+  - `quad_video_vertex`
+  - `quad_video_fragment`
+- В `drawImage(...)`:
+  - если metadata нет, current path unchanged
+  - если metadata есть, использовать video path
+  - size priority: `orientedSize -> assetSizes -> texture.size`
+
+**Not in scope**
+- Ещё не инжектить live/export metadata.
+- Не менять sampling/export logic.
+
+**Tests**
+- Provider metadata lifecycle tests.
+- Renderer tests на video path.
+- Regression: non-video path unchanged.
+- Existing quad size/stride assertions remain green.
+
+**Done**
+- Renderer умеет рисовать video-oriented texture через metadata seam.
+
+## PR 3. Poster raw parity cleanup ✅
+**Goal**
+- Привести poster к тому же contract, что и live/export.
+
+**Changes**
+- В [VideoFrameProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/VideoFrameProvider.swift):
+  - убрать `appliesPreferredTrackTransform = true`
+  - расширить current prepare task так, чтобы до `.ready` provider вычислял `VideoPresentationInfo`
+  - добавить cached `presentationInfo` property
+- В [UserMediaTextureFactory.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaTextureFactory.swift):
+  - добавить `makeTexture(from cgImage: CGImage) -> MTLTexture?`
+  - poster path переводится на `CGImage -> MTLTexture`
+  - poster path больше не использует `UIImage`
+  - poster path не использует `normalizeImage(_:)`
+- В [UserMediaService.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift):
+  - после `requestPoster(...)` читать `provider.presentationInfo`
+  - инжектить **одновременно**:
+    - poster texture
+    - presentation metadata
+  - затем включать binding layer как и раньше
+
+**Not in scope**
+- Ещё не time-based preview migration.
+- Ещё не export changes.
+
+**Tests**
+- Poster orientation == live orientation.
+- Poster orientation == export orientation.
+- `makeTexture(from cgImage:)` tests.
+- Provider never enters `.ready` without valid presentation info.
+
+**Done**
+- Poster больше не является отдельным CPU-oriented special case.
+
+## PR 4. Preview migration to time-based API ✅
+**Goal**
+- Убрать synthetic-frame ownership из preview runtime.
+
+**Changes**
+- Атомарно мигрировать `VideoSetupProviding`:
+  - `startPlayback(atVideoTime:)`
+  - `frameTextureForPlayback(expectedVideoTime:)`
+  - `frameTextureForScrub(atVideoTime:)`
+  - `frameTextureForFrozen(atVideoTime:)`
+- Удалить старые frame-based playback methods.
+- В [UserMediaService.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift):
+  - убрать `computeSyntheticSceneFrame(...)`
+  - использовать shared mapper
+  - service становится owner’ом time mapping
+  - `updateDivider` оставить `1`
+- В [VideoFrameProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/VideoFrameProvider.swift):
+  - убрать scene-frame-based public playback API
+  - `startPlayback(atVideoTime:)` делает seek + `rate = 1.0`
+  - `frameTextureForPlayback(expectedVideoTime:)` остаётся host-time driven
+  - scrub cache становится time-based
+  - drift correction remains disabled
+- Обновить 3 test fake’а и все связанные тесты.
+
+**Not in scope**
+- Export migration.
+- Blend.
+
+**Tests**
+- Existing readiness/budget/restore tests after atomic migration.
+- New tests на time-based scrub cache и mapper usage.
+- Regression: no production path sets `updateDivider > 1`.
+
+**Done**
+- Preview API полностью time-based.
+- `VideoSetupProviding` больше не содержит frame-based playback contract.
+
+## PR 5. Export migration to time-based API + queue plumbing ✅
+**Goal**
+- Убрать synthetic-frame ownership из export path и подготовить provider к blend.
+
+**Changes**
+- В `VideoExporter` пробросить `renderer.commandQueue` в `ExportVideoSlotsCoordinator`.
+- В `ExportVideoSlotsCoordinator` пробросить queue в `ExportVideoFrameProvider`.
+- Обновить init signatures.
+- В `ExportVideoSlotsCoordinator`:
+  - считать `targetVideoTime` через shared mapper
+  - вызывать provider time-based API
+  - инжектить texture + metadata одновременно
+- В `ExportVideoFrameProvider`:
+  - убрать ownership scene/block timing math из sampling API
+  - `Config` больше не держит `blockTiming` и `sceneFPS`
+  - provider становится owner’ом decode + sample buffers + future resampling resources
+
+**Not in scope**
+- Включение blend как default quality.
+- Optical flow.
+
+**Tests**
+- Export provider time-based API tests.
+- Preview/export trim parity.
+- Export orientation parity.
+
+**Done**
+- Export и preview используют одинаковый targetVideoTime contract.
+- Queue ownership детерминирован и идёт сверху вниз.
+
+## PR 6. Temporal blend export policy
+**Goal**
+- Заменить default `hold-last` cadence на perceptually smoother export resampling.
+
+**Changes**
+- Ввести `VideoResamplingPolicy`:
+  - `.nearest`
+  - `.blend`
+- Default = `.blend`
+- В `ExportVideoFrameProvider` держать:
+  - `previous sample`
+  - `current sample`
+  - `pending next sample`
+- Exact rules:
+  - epsilon `1/600`
+- Blend path:
+  - reusable scratch texture
+  - blend pipeline state
+  - GPU blend pass на shared queue
+- Hold-last только для:
+  - end of window
+  - no next sample
+  - reader exhaustion
+- `.nearest` оставить internal/debug only.
+
+**Not in scope**
+- Motion interpolation.
+- User-facing quality selector.
+
+**Tests**
+- `30 -> 30` exact path.
+- `24/25 -> 30` default blend path.
+- `60 -> 30` monotonic downsample path.
+- GPU resource cleanup tests.
+
+**Done**
+- Export default behavior больше не pure repeated-frame cadence.
+
+## PR 7. Hardening, parity, perf verification
+**Goal**
+- Закрепить parity и закрыть regression surface.
+
+**Changes**
+- Проверить и зафиксировать:
+  - poster/live/scrub/frozen/export parity
+  - portrait/landscape parity
+  - trim/offset parity
+  - metadata lifecycle parity
+- Убедиться, что `updateDivider` нигде не уходит выше `1`.
+- Сохранить optional diagnostics только там, где они реально нужны.
+
+**Manual matrix**
+- `24/25/30/60 fps`
+- portrait + landscape
+- trimmed + untrimmed
+- preview playback
+- scrub
+- frozen/edit
+- single-scene export
+- timeline export
+
+**Done**
+- Вся video pipeline parity закреплена тестами и ручной матрицей.
+- Non-video rendering unchanged.
+- Existing renderer assertions/tests remain green.
+
+## Assumptions
+- `30 fps` project timeline остаётся фиксированным.
+- `ScenePackageBaseTextureProvider` не участвует в mutable video metadata lifecycle.
+- Provider `.ready` теперь означает: `duration + presentationInfo` загружены.
+- `requestPoster(...)` не должен быть owner’ом metadata calculation; он только использует уже готовый provider state.
+
+## Acceptance Criteria
+- Synthetic-frame contract исчезает как основа video playback/export.
+- Preview time-based и native-cadence.
+- Export deterministic `30 fps` с default blend resampling.
+- Portrait video больше не повёрнуты на 90°.
+- Poster/live/export используют один orientation contract.
+- `QuadUniforms` и non-video path не сломаны.
+- Persisted schema/store shape не меняются.
+
+## Platform References
+- Orientation: [Apple QA1744](https://developer.apple.com/library/archive/qa/qa1744/_index.html)
+- Playback composition seam: [AVPlayerItem.videoComposition](https://developer.apple.com/documentation/avfoundation/avplayeritem/videocomposition)
+- Fixed-rate timing: [AVVideoComposition.frameDuration](https://developer.apple.com/documentation/avfoundation/avvideocomposition/frameduration)
+- High-frame-rate / CFR workflows: [AVFoundation Programming Guide](https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/AVFoundationPG/Articles/04_MediaCapture.html)
+
+------
+
+# Video Pipeline Rewrite
+
+**Summary**
+- Цель: оставить проект и сцены на `30 fps`, но полностью перевести video subsystem на **единый time-based contract**.
+- Результат рефактора должен дать:
+  - одинаково правильную orientation в poster/live/export,
+  - native-cadence preview без synthetic-frame quantization,
+  - export `30 fps` с temporal blend вместо текущего `hold-last`,
+  - единый preview/export time mapping без расхождения по trim/offset/block timing.
+- Это **не** schema/store refactor. Persisted `VideoSelection`, `SceneMediaSlot`, `ExportMediaSnapshot`, timeline/store shape и photo/background pipelines не меняются.
+
+## 1. Зафиксированные ответы и решения
+
+### Q1. Orientation: UV transform vs quad geometry
+- Делать **оба**.
+- `drawImage(...)` обязан использовать `VideoPresentationInfo.orientedSize` для quad geometry.
+- `uvTransform` применяется только для sampling.
+- Приоритет размера становится таким:
+  - `VideoPresentationInfo.orientedSize`
+  - затем `assetSizes[assetId]`
+  - затем `texture.width/height`
+- `assetSizes` не переписывается и остаётся raw compiled metadata.
+
+### Q2. Кто владеет `VideoPresentationInfo`
+- `VideoPresentationInfo` вычисляет и кэширует **сам video provider** один раз при `prepare/ready`.
+- Это статическая metadata track’а, она не должна считаться каждый кадр и не должна жить в `UserMediaService`.
+- Инжекция metadata в texture layer делается owner’ом injection path:
+  - preview: `UserMediaService`
+  - export: `ExportVideoSlotsCoordinator`
+- Provider хранит info и отдаёт её наружу, service/coordinator синхронно делает:
+  - `setTexture(texture, for: assetId)`
+  - `setPresentationInfo(info, for: assetId)`
+
+### Q3. Какой seam для metadata
+- Канонический вариант: **отдельный optional protocol**, а не `RenderContext` dictionary и не расширение базового `TextureProvider` обязательным методом.
+- Вводятся:
+  - `AssetPresentationInfoProvider`
+  - `MutableAssetPresentationInfoProvider`
+- `MetalRenderer` делает optional cast `ctx.textureProvider as? AssetPresentationInfoProvider`.
+- `RenderCommand`, `RenderContext`, `AnimIR`, `ScenePlayer` по форме не меняются.
+
+### Q4. `startPlayback(atVideoTime:)` и drift correction
+- `UserMediaService` заранее считает `targetVideoTime` через shared mapper и передаёт его в provider.
+- `startPlayback(atVideoTime:)` делает initial seek + `rate = 1.0`.
+- Drift correction в preview остаётся **disabled**.
+- Этот рефактор не включает periodic corrective seeks и не меняет текущую policy preview stability.
+
+### Q5. `frameTextureForPlayback(expectedVideoTime:)`
+- `expectedVideoTime` — это **подсказка для drift/debug**, а не per-tick seek target.
+- Playback extraction продолжает идти через `videoOutput.itemTime(forHostTime:)`.
+- Provider не делает corrective seek на каждом tick.
+- В этом рефакторе аргумент нужен для internal comparison/assertions и future-safe contract, но не для постоянного пересинхрона.
+
+### Q6. Blend GPU resources
+- Blend остаётся self-contained внутри `ExportVideoFrameProvider`.
+- Provider получает `MTLCommandQueue` и сам владеет:
+  - scratch texture,
+  - blend pipeline state,
+  - command buffer для blend pass.
+- Blend не выносится в coordinator, renderer или Core Image / MPS.
+
+### Q7. Tolerance для exact sampling
+- Не использовать float equality.
+- Exact sample rules:
+  - exact `prev`, если `abs(target - prevPTS) <= 1/600`
+  - exact `next`, если `abs(target - nextPTS) <= 1/600`
+  - иначе blend
+- Канонический epsilon: `1/600`, потому что он уже является текущим time contract в preview/export clamp logic.
+
+### Q8. Порядок фаз
+- Реализация идёт несколькими PR:
+  1. Shared mapper
+  2. Presentation metadata seam
+  3. Preview migration
+  4. Export migration
+  5. Temporal blend
+  6. Hardening/tests/manual matrix
+
+### Q9. Откуда брать `MTLCommandQueue` для export blend
+- Канонический выбор: **shared queue сверху вниз**.
+- `VideoExporter` уже владеет `MTLCommandQueue`; он должен пробросить её в `ExportVideoSlotsCoordinator`, а coordinator — в `ExportVideoFrameProvider`.
+- `ExportVideoFrameProvider` **не** создаёт свою queue через `device.makeCommandQueue()`.
+- Значит:
+  - init `ExportVideoSlotsCoordinator` расширяется `commandQueue: MTLCommandQueue`
+  - init `ExportVideoFrameProvider` тоже расширяется `commandQueue: MTLCommandQueue`
+- Это обязательное решение. Вариант с per-provider queue запрещён.
+
+### Q10. Миграция `VideoSetupProviding`
+- Миграция делается **атомарно в Phase 3**.
+- Старые frame-based методы не живут рядом с новыми.
+- Причина:
+  - protocol internal, не public API,
+  - параллельное существование двух контрактов создаст дублирование и риск расхождения logic.
+- В том же PR обновляются все test fakes:
+  - `UserMediaServiceReadinessTests`
+  - `MediaRestoreHelperVideoSelectionTests`
+  - `UserMediaServiceBudgetTests`
+- Existing `frameTexture(atVideoTime:)` в `VideoFrameProvider` можно использовать как migration helper, но финальный protocol должен остаться **только time-based**.
+
+### Q11. Scrub throttle cache
+- Scrub cache становится time-based.
+- `lastScrubbedFrameIndex` заменяется на `lastScrubbedVideoTime`.
+- Сравнение только через epsilon:
+  - `abs(newTime - lastTime) < 1/600`
+- Exact `Double ==` запрещён.
+- `lastScrubSeekTime` и existing wall-clock scrub throttle сохраняются.
+
+### Q12. Для каких provider’ов нужен mutable metadata protocol
+- Нужен:
+  - `InMemoryTextureProvider`
+  - `ThreadSafeInMemoryTextureProvider`
+  - `ExportTextureProvider`
+  - `ScenePackageTextureProvider`
+  - `LayeredTextureProvider` как delegating wrapper
+- Не нужен:
+  - `ScenePackageBaseTextureProvider`
+- Подтверждение:
+  - `ScenePackageBaseTextureProvider` содержит только compiled template assets,
+  - user media туда не инжектится,
+  - video runtime metadata там не живёт.
+- Он может вообще не conform’ить к metadata protocol; optional cast просто вернёт `nil`.
+
+### Q13. Shader strategy для video uvTransform
+- Канонический выбор: **отдельный video shader path**, не расширение общего `QuadUniforms`.
+- Причина:
+  - сейчас `QuadUniforms` и `quad_vertex/quad_fragment` используются широко, включая transition/composite paths,
+  - есть существующие stride assertions на `96 bytes`,
+  - добавление `float4x4 uvTransform` в общий quad path создаст избыточный runtime cost и затронет много non-video callsites.
+- Значит:
+  - current `quad_vertex/quad_fragment` остаются для non-video
+  - вводится отдельный `quad_video_vertex/quad_video_fragment`
+  - для video-only draw path используется отдельный `VideoQuadUniforms`
+- Background shader seam не переиспользуется напрямую, но подход по смыслу тот же: orientation через GPU uv transform.
+
+### Q14. Poster path после Phase 2
+- Канонический выбор: **убрать `appliesPreferredTrackTransform` из poster path**.
+- Poster должен стать таким же raw-source texture + GPU orientation metadata, как live/export.
+- Специальные варианты `identity VideoPresentationInfo` или “не инжектить metadata для poster” запрещены.
+- Значит:
+  - `requestPoster(...)` перестаёт применять CPU-side orientation
+  - poster texture остаётся raw
+  - `VideoPresentationInfo` инжектится так же, как и для live/export
+- Обязательный regression test:
+  - poster orientation == live frame orientation == export orientation
+
+## 2. Поэтапная реализация
+
+### Phase 1. Shared time mapping
+- Создать shared helper, например `VideoTimelineTimeMapper`.
+- Он становится single source of truth для:
+  - `sceneFrameIndex`
+  - `BlockTiming`
+  - `sceneFPS`
+  - `VideoSelection`
+  - `targetVideoTime`
+- Удаляется ownership дублирующей формулы из:
+  - `UserMediaService.computeSyntheticSceneFrame(...)`
+  - `ExportVideoFrameProvider.computeTargetVideoTime(...)`
+- После этой фазы preview/export пользуются одной функцией расчёта времени.
+
+### Phase 2. Presentation metadata seam
+- Создать `VideoPresentationInfo`.
+- Создать:
+  - `AssetPresentationInfoProvider`
+  - `MutableAssetPresentationInfoProvider`
+- Добавить storage metadata в mutable providers.
+- `LayeredTextureProvider` обязан:
+  - читать overlay metadata first,
+  - fallback to base if ever needed,
+  - но base video metadata в текущем продукте не ожидается.
+- В renderer добавить отдельный video draw path:
+  - `VideoQuadUniforms`
+  - `quad_video_vertex`
+  - `quad_video_fragment`
+- `drawImage(...)` делает:
+  - если metadata нет → текущий quad path
+  - если metadata есть → video quad path с `orientedSize + uvTransform`
+
+### Phase 3. Preview migration
+- `VideoSetupProviding` мигрирует атомарно:
+  - `startPlayback(atVideoTime:)`
+  - `frameTextureForPlayback(expectedVideoTime:)`
+  - `frameTextureForScrub(atVideoTime:)`
+  - `frameTextureForFrozen(atVideoTime:)`
+- Удаляются frame-based protocol methods.
+- `UserMediaService` становится owner’ом time mapping и перестаёт оперировать synthetic frame.
+- `updateDivider` остаётся `1`; production overrides не вводятся.
+- `VideoFrameProvider`:
+  - больше не владеет scene-frame mapping,
+  - `frameTexture(atVideoTime:)` используется как existing migration building block,
+  - scrub cache становится time-based,
+  - poster path становится raw + GPU orientation.
+
+### Phase 4. Export migration
+- `ExportVideoSlotsCoordinator` получает `commandQueue` из `VideoExporter`.
+- `ExportVideoFrameProvider` получает `commandQueue` в init.
+- `ExportVideoFrameProvider.Config` больше не владеет scene/block time mapping.
+- Coordinator сам считает `targetVideoTime` через shared mapper и вызывает provider time-based API.
+- Provider остаётся owner’ом sequential decode, pending sample, last sample, previous sample и resampling logic.
+
+### Phase 5. Temporal blend
+- Ввести `VideoResamplingPolicy`:
+  - `.nearest`
+  - `.blend`
+- Default = `.blend`.
+- Provider держит:
+  - `previous sample`
+  - `current/last sample`
+  - `pending next sample`
+- Blend path:
+  - exact sample if within epsilon
+  - blend between `prev` and `next`
+  - hold-last only at window end / no-next / reader exhaustion
+- `.nearest` сохраняется только как internal comparison/debug mode.
+
+### Phase 6. Hardening
+- Provider/service/coordinator обязаны set/remove texture и metadata синхронно.
+- Poster/live/scrub/frozen/export обязаны давать одинаковый oriented результат.
+- Manual matrix и perf regression pass обязательны.
+
+## 3. Public / internal interface changes
+
+- `VideoSetupProviding` становится time-based и ломается атомарно в одном PR.
+- `ExportVideoSlotsCoordinator.init(...)` расширяется `commandQueue: MTLCommandQueue`.
+- `ExportVideoFrameProvider.init(...)` расширяется `commandQueue: MTLCommandQueue`.
+- `TextureProvider` не ломается.
+- Добавляются новые optional companion protocols для metadata.
+- `QuadUniforms` не меняется.
+- Добавляются новые video-only uniforms/shaders.
+
+## 4. Тесты
+
+- Unit: shared mapper parity preview/export.
+- Unit: scrub cache использует epsilon time comparison, а не exact equality.
+- Unit: mutable providers set/remove metadata вместе с texture.
+- Unit: `ScenePackageBaseTextureProvider` не участвует в metadata lifecycle и не нужен для video path.
+- Unit: `30 -> 30` exact sample без blend.
+- Unit: `24/25 -> 30` default blend path.
+- Unit: `60 -> 30` monotonic blend/downsample path.
+- Integration: portrait/landscape orientation parity across poster/live/export.
+- Integration: trim/offset parity preview/export.
+- Regression: existing `FakeVideoSetupProvider` tests переписаны на time-based contract и остаются зелёными.
+
+## 5. Acceptance criteria
+
+- Synthetic-frame contract больше не является owner’ом video playback/export.
+- Preview time-based и native-cadence.
+- Export deterministic `30 fps`, но default policy = blend.
+- Portrait video не повернуты на 90° нигде.
+- Poster/live/export используют один orientation contract.
+- Non-video renderer path не затронут по behavior.
+- Production code нигде не поднимает `updateDivider` выше `1` в этом рефакторе.
+
+## 6. Locked non-goals
+
+- Никакого optical flow / ML interpolation.
+- Никакого variable project fps.
+- Никакого UI transform hack.
+- Никакого CPU-side per-frame rotation/compositing.
+- Никакого временного coexistence старого frame-based и нового time-based protocol.
+
+**Платформенные опоры**
+- Orientation: [Apple QA1744](https://developer.apple.com/library/archive/qa/qa1744/_index.html)
+- Playback composition seam: [AVPlayerItem.videoComposition](https://developer.apple.com/documentation/avfoundation/avplayeritem/videocomposition)
+- Fixed-rate composition timing: [AVVideoComposition.frameDuration](https://developer.apple.com/documentation/avfoundation/avvideocomposition/frameduration)
+- High-frame-rate / constant-frame-rate workflows: [AVFoundation Programming Guide](https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/AVFoundationPG/Articles/04_MediaCapture.html)

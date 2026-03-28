@@ -1887,10 +1887,18 @@ extension MetalRenderer {
         guard let texture = ctx.textureProvider.texture(for: assetId) else {
             throw MetalRendererError.noTextureForAsset(assetId: assetId)
         }
-        // Use asset size from metadata if available, otherwise fallback to texture size
+
+        // Check for video presentation metadata (orientation-aware path)
+        let videoInfo = (ctx.textureProvider as? AssetPresentationInfoProvider)?
+            .presentationInfo(for: assetId)
+
+        // Size priority: orientedSize → assetSizes → texture.size
         let quadWidth: Float
         let quadHeight: Float
-        if let assetSize = ctx.assetSizes[assetId] {
+        if let videoInfo {
+            quadWidth = Float(videoInfo.orientedSize.width)
+            quadHeight = Float(videoInfo.orientedSize.height)
+        } else if let assetSize = ctx.assetSizes[assetId] {
             quadWidth = Float(assetSize.width)
             quadHeight = Float(assetSize.height)
         } else {
@@ -1907,18 +1915,41 @@ extension MetalRenderer {
         ) else { return }
 
         let mvp = ctx.viewportToNDC.concatenating(fullTransform).toFloat4x4()
-        var uniforms = QuadUniforms(mvp: mvp, opacity: Float(opacity))
 
-        ctx.encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-        ctx.encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)
-        ctx.encoder.setFragmentTexture(texture, index: 0)
-        ctx.encoder.drawIndexedPrimitives(
-            type: .triangle,
-            indexCount: resources.quadIndexCount,
-            indexType: .uint16,
-            indexBuffer: resources.quadIndexBuffer,
-            indexBufferOffset: 0
-        )
+        if let videoInfo {
+            // Video shader path: apply UV transform for orientation
+            var uniforms = VideoQuadUniforms(
+                mvp: mvp,
+                opacity: Float(opacity),
+                uvTransform: videoInfo.uvTransform
+            )
+            ctx.encoder.setRenderPipelineState(resources.videoQuadPipelineState)
+            ctx.encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+            ctx.encoder.setVertexBytes(&uniforms, length: MemoryLayout<VideoQuadUniforms>.stride, index: 1)
+            ctx.encoder.setFragmentTexture(texture, index: 0)
+            ctx.encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: resources.quadIndexCount,
+                indexType: .uint16,
+                indexBuffer: resources.quadIndexBuffer,
+                indexBufferOffset: 0
+            )
+            // Restore default pipeline for subsequent draws
+            ctx.encoder.setRenderPipelineState(resources.pipelineState)
+        } else {
+            // Standard quad path (unchanged)
+            var uniforms = QuadUniforms(mvp: mvp, opacity: Float(opacity))
+            ctx.encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+            ctx.encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 1)
+            ctx.encoder.setFragmentTexture(texture, index: 0)
+            ctx.encoder.drawIndexedPrimitives(
+                type: .triangle,
+                indexCount: resources.quadIndexCount,
+                indexType: .uint16,
+                indexBuffer: resources.quadIndexBuffer,
+                indexBufferOffset: 0
+            )
+        }
     }
 
     // swiftlint:disable:next function_parameter_count

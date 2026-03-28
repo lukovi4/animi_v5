@@ -23,7 +23,7 @@ import Metal
 /// // Base textures remain unchanged
 /// let baseTexture = layered.texture(for: "preloaded_asset_id")
 /// ```
-public final class LayeredTextureProvider: MutableTextureProvider {
+public final class LayeredTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
 
     // MARK: - Layers
 
@@ -32,6 +32,9 @@ public final class LayeredTextureProvider: MutableTextureProvider {
 
     /// Overlay texture provider (mutable, per sceneInstanceId).
     private let overlay: MutableTextureProvider
+
+    /// Per-instance video presentation metadata.
+    private var presentationInfos: [String: VideoPresentationInfo] = [:]
 
     // MARK: - Init
 
@@ -75,5 +78,26 @@ public final class LayeredTextureProvider: MutableTextureProvider {
     /// Model A contract: texture mutations happen only on main during playback/render.
     public func removeTexture(for assetId: String) {
         overlay.removeTexture(for: assetId)
+    }
+
+    // MARK: - MutableAssetPresentationInfoProvider
+
+    /// Returns presentation info: own dict first, then overlay, then base.
+    public func presentationInfo(for assetId: String) -> VideoPresentationInfo? {
+        if let info = presentationInfos[assetId] {
+            return info
+        }
+        if let info = (overlay as? AssetPresentationInfoProvider)?.presentationInfo(for: assetId) {
+            return info
+        }
+        return (base as? AssetPresentationInfoProvider)?.presentationInfo(for: assetId)
+    }
+
+    public func setPresentationInfo(_ info: VideoPresentationInfo, for assetId: String) {
+        presentationInfos[assetId] = info
+    }
+
+    public func removePresentationInfo(for assetId: String) {
+        presentationInfos.removeValue(forKey: assetId)
     }
 }

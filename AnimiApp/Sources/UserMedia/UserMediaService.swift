@@ -18,12 +18,15 @@ protocol VideoSetupProviding: AnyObject {
     var state: VideoProviderState { get }
     var isPlaybackActive: Bool { get }
 
-    // Playback
-    func startPlayback(atSceneFrame sceneFrameIndex: Int)
+    // Presentation metadata (orientation, size, UV transform)
+    var presentationInfo: VideoPresentationInfo? { get }
+
+    // Playback (time-based — PR 4)
+    func startPlayback(atVideoTime videoTimeSeconds: Double)
     func stopPlayback(flush: Bool)
-    func frameTextureForPlayback(sceneFrameIndex: Int) -> MTLTexture?
-    func frameTextureForScrub(sceneFrameIndex: Int) -> MTLTexture?
-    func frameTextureForFrozen(sceneFrameIndex: Int) -> MTLTexture?
+    func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture?
+    func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture?
+    func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture?
 }
 
 /// Conform VideoFrameProvider to protocol.
@@ -207,9 +210,9 @@ public struct VideoBudgetPolicy {
     public var maxActiveProviders: Int
 
     /// Frame update divider — video textures are updated every N-th displayLink tick.
-    /// - `1` = update every tick (e.g., 60fps video at 60fps render)
-    /// - `2` = update every 2nd tick (e.g., 30fps video at 60fps render)
-    /// Default: 2
+    /// - `1` = update every tick (default; matches displayLink cadence driven by sceneFPS)
+    /// - `2+` = explicit budget degradation, skips intermediate ticks
+    /// Default: 1
     public var updateDivider: Int
 
     /// Behavior when a video provider becomes inactive (exceeds budget).
@@ -226,7 +229,7 @@ public struct VideoBudgetPolicy {
     /// Creates a budget policy with default values.
     public init(
         maxActiveProviders: Int = 3,
-        updateDivider: Int = 2,
+        updateDivider: Int = 1,
         holdMode: HoldMode = .lastFrame
     ) {
         self.maxActiveProviders = maxActiveProviders
@@ -268,8 +271,7 @@ public final class UserMediaService {
 
     // MARK: - Constants
 
-    /// Epsilon for hold-last clamp (1 tick in timescale 600)
-    private static let epsilon: Double = VideoWindowValidator.epsilon
+    // Epsilon lives in VideoTimelineTimeMapper (canonical owner: VideoWindowValidator)
 
     // MARK: - Properties
 
@@ -466,6 +468,9 @@ public final class UserMediaService {
                 let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
                 for (_, assetId) in assetIds {
                     self.textureProvider.setTexture(texture, for: assetId)
+                    // PR7: Remove stale video presentation metadata (video→photo replace)
+                    (self.textureProvider as? MutableAssetPresentationInfoProvider)?
+                        .removePresentationInfo(for: assetId)
                 }
 
                 // Update state
@@ -495,6 +500,9 @@ public final class UserMediaService {
                 let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
                 for (_, assetId) in assetIds {
                     self.textureProvider.removeTexture(for: assetId)
+                    // PR7: Remove stale video presentation metadata on photo load failure
+                    (self.textureProvider as? MutableAssetPresentationInfoProvider)?
+                        .removePresentationInfo(for: assetId)
                 }
 
                 // Clear stale media state
@@ -590,8 +598,9 @@ public final class UserMediaService {
 
             do {
                 // PR1 FIX: requestPoster waits for ready internally, no need for separate polling
-                // Request poster at time 0 first to ensure provider is ready
-                let poster = try await provider.requestPoster(at: 0)
+                // PR7: Request poster at winStart so the initial frame matches the selection
+                let posterTime = persistedSelection.trimStart + persistedSelection.offset
+                let poster = try await provider.requestPoster(at: posterTime)
 
                 // PR-async-race: Check token after await — abort if generation changed
                 guard self.mediaSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
@@ -639,11 +648,15 @@ public final class UserMediaService {
                 // Update state with selection built from persisted params
                 self.mediaState[blockId] = .video(selection)
 
-                // Inject poster texture into all variant binding asset IDs
-                // (poster at winStart=0 is the default, which is what we already have)
+                // Inject poster texture + presentation metadata into all variant binding asset IDs
                 let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
                 for (_, assetId) in assetIds {
                     self.textureProvider.setTexture(poster, for: assetId)
+                    // Inject video presentation metadata for orientation-aware rendering
+                    if let presInfo = provider.presentationInfo {
+                        (self.textureProvider as? MutableAssetPresentationInfoProvider)?
+                            .setPresentationInfo(presInfo, for: assetId)
+                    }
                 }
 
                 // NOW enable binding layer (poster gating complete)
@@ -763,13 +776,13 @@ public final class UserMediaService {
                 continue
             }
 
-            // Compute synthetic frame and start playback
-            let syntheticFrame = computeSyntheticSceneFrame(
+            // Compute target video time and start playback
+            let videoTime = computeTargetVideoTime(
                 sceneFrameIndex: sceneFrameIndex,
                 blockId: blockId,
                 selection: selection
             )
-            provider.startPlayback(atSceneFrame: syntheticFrame)
+            provider.startPlayback(atVideoTime: videoTime)
         }
 
         // Update active set for diagnostics
@@ -815,8 +828,8 @@ public final class UserMediaService {
                 continue
             }
 
-            // Compute synthetic frame
-            let syntheticFrame = computeSyntheticSceneFrame(
+            // Compute target video time
+            let videoTime = computeTargetVideoTime(
                 sceneFrameIndex: sceneFrameIndex,
                 blockId: blockId,
                 selection: selection
@@ -824,14 +837,14 @@ public final class UserMediaService {
 
             // Ensure playback is running
             if !provider.isPlaybackActive {
-                provider.startPlayback(atSceneFrame: syntheticFrame)
+                provider.startPlayback(atVideoTime: videoTime)
             }
 
             // Only update texture on divider ticks
             guard shouldUpdateTextures else { continue }
 
             // Get frame texture using playback mode (drift correction, no seek per tick)
-            guard let texture = provider.frameTextureForPlayback(sceneFrameIndex: syntheticFrame) else { continue }
+            guard let texture = provider.frameTextureForPlayback(expectedVideoTime: videoTime) else { continue }
 
             // Update texture in all variant binding asset IDs
             let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
@@ -910,7 +923,7 @@ public final class UserMediaService {
 
     /// Updates video textures for scrub mode (throttled seek).
     ///
-    /// PR1 FIX: Uses syntheticFrame + frameTextureForScrub to preserve throttling.
+    /// Computes target video time via shared mapper and passes it to provider's time-based scrub API.
     /// Seeks are throttled to ~30Hz max to avoid overwhelming the decoder.
     ///
     /// - Parameter sceneFrameIndex: Target scene frame
@@ -929,15 +942,15 @@ public final class UserMediaService {
             // Skip if provider not ready
             guard provider.isReady else { continue }
 
-            // PR1 FIX: Compute synthetic frame, use existing scrub method (throttled)
-            let syntheticFrame = computeSyntheticSceneFrame(
+            // Compute target video time, use scrub method (throttled)
+            let videoTime = computeTargetVideoTime(
                 sceneFrameIndex: sceneFrameIndex,
                 blockId: blockId,
                 selection: selection
             )
 
             // Get frame texture using scrub mode (throttled seek)
-            guard let texture = provider.frameTextureForScrub(sceneFrameIndex: syntheticFrame) else { continue }
+            guard let texture = provider.frameTextureForScrub(atVideoTime: videoTime) else { continue }
 
             // Update texture in all variant binding asset IDs
             let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
@@ -957,7 +970,7 @@ public final class UserMediaService {
 
     /// Updates video textures for frozen/edit mode.
     ///
-    /// PR1 FIX: Uses syntheticFrame + frameTextureForFrozen to preserve caching.
+    /// Computes target video time via shared mapper and passes it to provider's time-based frozen API.
     /// In edit mode, scene is frozen at editFrameIndex.
     ///
     /// - Parameter sceneFrameIndex: Edit frame index
@@ -971,15 +984,15 @@ public final class UserMediaService {
             // Skip if provider not ready
             guard provider.isReady else { continue }
 
-            // PR1 FIX: Compute synthetic frame, use existing frozen method (cached)
-            let syntheticFrame = computeSyntheticSceneFrame(
+            // Compute target video time, use frozen method (cached)
+            let videoTime = computeTargetVideoTime(
                 sceneFrameIndex: sceneFrameIndex,
                 blockId: blockId,
                 selection: selection
             )
 
             // Get frozen frame texture (with caching)
-            guard let texture = provider.frameTextureForFrozen(sceneFrameIndex: syntheticFrame) else { continue }
+            guard let texture = provider.frameTextureForFrozen(atVideoTime: videoTime) else { continue }
 
             // Update texture in all variant binding asset IDs
             let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
@@ -989,18 +1002,10 @@ public final class UserMediaService {
         }
     }
 
-    /// Computes synthetic scene frame for video provider.
+    /// Computes target video time for a block using shared mapper.
     ///
-    /// PR1 FIX: Transforms scene frame → video time → synthetic frame.
-    /// This preserves provider's NO-seek-per-frame behavior while accounting for trim/offset.
-    ///
-    /// Formula:
-    /// 1. tBlock = (sceneFrameIndex - blockStartFrame) / sceneFPS
-    /// 2. tVideo = winStart + tBlock
-    /// 3. tVideoClamped = clamp(tVideo, winStart, winEnd - epsilon)
-    /// 4. syntheticFrame = Int((tVideoClamped * sceneFPS).rounded(.down))
-    private func computeSyntheticSceneFrame(sceneFrameIndex: Int, blockId: String, selection: VideoSelection) -> Int {
-        // Get block timing (startFrame)
+    /// PR4: Returns video time in seconds directly. No synthetic frame conversion.
+    private func computeTargetVideoTime(sceneFrameIndex: Int, blockId: String, selection: VideoSelection) -> Double {
         let blockStartFrame: Int
         if let timing = activePlayer?.blockTiming(for: blockId) {
             blockStartFrame = timing.startFrame
@@ -1008,20 +1013,13 @@ public final class UserMediaService {
             blockStartFrame = 0
         }
 
-        // Compute tBlock (time from block start)
-        let framesIntoBlock = sceneFrameIndex - blockStartFrame
-        let tBlock = max(0.0, Double(framesIntoBlock) / sceneFPS)
-
-        // Compute tVideo with window
-        let tVideo = selection.winStart + tBlock
-
-        // Clamp to window (hold-last)
-        let tVideoClamped = min(max(tVideo, selection.winStart), selection.winEnd - Self.epsilon)
-
-        // Convert back to synthetic scene frame
-        let syntheticFrame = Int((tVideoClamped * sceneFPS).rounded(.down))
-
-        return syntheticFrame
+        let mapped = VideoTimelineTimeMapper.targetVideoTime(
+            sceneFrameIndex: sceneFrameIndex,
+            blockStartFrame: blockStartFrame,
+            sceneFPS: sceneFPS,
+            selection: selection
+        )
+        return mapped.targetVideoTimeSeconds
     }
 
     // MARK: - Clear API
@@ -1040,10 +1038,12 @@ public final class UserMediaService {
         // Clean up runtime video resources (provider + pending setup), not persisted media files
         cleanupVideoResources(for: blockId)
 
-        // Remove textures from all variant binding asset IDs
+        // Remove textures and presentation metadata from all variant binding asset IDs
         let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
         for (_, assetId) in assetIds {
             textureProvider.removeTexture(for: assetId)
+            (textureProvider as? MutableAssetPresentationInfoProvider)?
+                .removePresentationInfo(for: assetId)
         }
 
         // Update state
@@ -1093,11 +1093,13 @@ public final class UserMediaService {
         // 1. Clean up any stale video resources
         cleanupVideoResources(for: blockId)
 
-        // 2. Remove injected textures for all asset IDs
+        // 2. Remove injected textures and presentation metadata for all asset IDs
         if let player = activePlayer {
             let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
             for (_, assetId) in assetIds {
                 textureProvider.removeTexture(for: assetId)
+                (textureProvider as? MutableAssetPresentationInfoProvider)?
+                    .removePresentationInfo(for: assetId)
             }
 
             // 3. Set visibility to safe state
@@ -1167,10 +1169,12 @@ public final class UserMediaService {
             provider.release()
         }
 
-        // Remove injected textures for all variant assetIds
+        // Remove injected textures and presentation metadata for all variant assetIds
         let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
         for (_, assetId) in assetIds {
             textureProvider.removeTexture(for: assetId)
+            (textureProvider as? MutableAssetPresentationInfoProvider)?
+                .removePresentationInfo(for: assetId)
         }
 
         // Clear media state

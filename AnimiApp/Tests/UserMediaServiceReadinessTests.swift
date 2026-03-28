@@ -40,8 +40,9 @@ final class UserMediaServiceReadinessTests: XCTestCase {
     }
 
     /// Fake texture provider for testing.
-    final class FakeTextureProvider: MutableTextureProvider {
+    final class FakeTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
         private(set) var textures: [String: MTLTexture] = [:]
+        private(set) var presentationInfos: [String: VideoPresentationInfo] = [:]
 
         func texture(for assetId: String) -> MTLTexture? {
             textures[assetId]
@@ -53,6 +54,20 @@ final class UserMediaServiceReadinessTests: XCTestCase {
 
         func removeTexture(for assetId: String) {
             textures.removeValue(forKey: assetId)
+        }
+
+        // MARK: - MutableAssetPresentationInfoProvider
+
+        func presentationInfo(for assetId: String) -> VideoPresentationInfo? {
+            presentationInfos[assetId]
+        }
+
+        func setPresentationInfo(_ info: VideoPresentationInfo, for assetId: String) {
+            presentationInfos[assetId] = info
+        }
+
+        func removePresentationInfo(for assetId: String) {
+            presentationInfos.removeValue(forKey: assetId)
         }
     }
 
@@ -67,6 +82,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         var mode: Mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
         var releaseCallCount = 0
         var posterRequestCallCount = 0
+        var lastPosterRequestTime: Double?
 
         private var pendingContinuation: CheckedContinuation<MTLTexture, Error>?
 
@@ -83,9 +99,14 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         var isReady: Bool { overrideIsReady ?? true }
         var state: VideoProviderState { .ready }
         var isPlaybackActive: Bool { false }
+        var presentationInfo: VideoPresentationInfo? = VideoPresentationInfo(
+            rawTrackSize: CGSize(width: 64, height: 64),
+            preferredTransform: .identity
+        )
 
         func requestPoster(at time: Double) async throws -> MTLTexture {
             posterRequestCallCount += 1
+            lastPosterRequestTime = time
 
             switch mode {
             case .success:
@@ -108,11 +129,11 @@ final class UserMediaServiceReadinessTests: XCTestCase {
             pendingContinuation = nil
         }
 
-        func startPlayback(atSceneFrame sceneFrameIndex: Int) {}
+        func startPlayback(atVideoTime videoTimeSeconds: Double) {}
         func stopPlayback(flush: Bool) {}
-        func frameTextureForPlayback(sceneFrameIndex: Int) -> MTLTexture? { nil }
-        func frameTextureForScrub(sceneFrameIndex: Int) -> MTLTexture? { nil }
-        func frameTextureForFrozen(sceneFrameIndex: Int) -> MTLTexture? { nil }
+        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
+        func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
+        func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
 
         private func createFakeTexture() async throws -> MTLTexture {
             guard let device = MTLCreateSystemDefaultDevice() else {
@@ -894,5 +915,94 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         sut.clear(blockId: "block_01")
         XCTAssertFalse(sut.didBlockFailRestore(blockId: "block_01"),
                        "clear(blockId:) should clear restore-failed flag")
+    }
+
+    // MARK: - PR7: Stale Presentation Info Cleanup
+
+    /// PR7: setPhoto after setVideo removes stale VideoPresentationInfo.
+    func test_setPhoto_afterVideo_removesPresentationInfo() async throws {
+        // Given: Video set up successfully → presentationInfo injected
+        fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+        )
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Precondition: presentationInfo should be set
+        XCTAssertNotNil(fakeTextureProvider.presentationInfo(for: "binding_asset_01"),
+                        "Precondition: presentationInfo should exist after setVideo")
+
+        // When: Replace with photo
+        let accepted = sut.setPhoto(blockId: "block_01", fileURL: photoFixtureURL)
+        XCTAssertTrue(accepted)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Then: presentationInfo should be removed
+        XCTAssertNil(fakeTextureProvider.presentationInfo(for: "binding_asset_01"),
+                     "presentationInfo should be removed after video→photo replace")
+        XCTAssertTrue(sut.isSceneMediaReady)
+    }
+
+    /// PR7: setPhoto failure after setVideo removes stale VideoPresentationInfo.
+    func test_setPhoto_failure_removesPresentationInfo() async throws {
+        // Given: Video set up successfully → presentationInfo injected
+        fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+        )
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Precondition: presentationInfo should be set
+        XCTAssertNotNil(fakeTextureProvider.presentationInfo(for: "binding_asset_01"),
+                        "Precondition: presentationInfo should exist after setVideo")
+
+        // When: Replace with bad photo (missing file)
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nonexistent_\(UUID().uuidString).png")
+        _ = sut.setPhoto(blockId: "block_01", fileURL: missingURL)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Then: presentationInfo should be removed even on failure
+        XCTAssertNil(fakeTextureProvider.presentationInfo(for: "binding_asset_01"),
+                     "presentationInfo should be removed on photo load failure")
+        XCTAssertTrue(sut.hasFailedMedia)
+    }
+
+    // MARK: - PR7: Poster Time Parity
+
+    /// PR7: setVideo requests poster at winStart (trimStart + offset), not time 0.
+    func test_setVideo_posterRequestedAtWinStart() async throws {
+        fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
+
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0, offset: 0.5)
+        )
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // winStart = trimStart + offset = 2.0 + 0.5 = 2.5
+        XCTAssertEqual(fakeProvider.lastPosterRequestTime!, 2.5, accuracy: 0.001,
+                       "Poster should be requested at winStart (trimStart + offset)")
+    }
+
+    /// PR7: setVideo with zero trim/offset requests poster at time 0 (default case).
+    func test_setVideo_zeroTrim_posterRequestedAtZero() async throws {
+        fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
+
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: URL(fileURLWithPath: "/tmp/test.mov"),
+            persistedSelection: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
+        )
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // winStart = 0 + 0 = 0
+        XCTAssertEqual(fakeProvider.lastPosterRequestTime!, 0.0, accuracy: 0.001,
+                       "Poster should be requested at 0 for default selection")
     }
 }

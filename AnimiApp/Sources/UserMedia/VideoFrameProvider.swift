@@ -3,6 +3,7 @@ import Metal
 import AVFoundation
 import CoreVideo
 import UIKit
+import TVECore
 
 // MARK: - Video Provider State
 
@@ -40,6 +41,10 @@ public final class VideoFrameProvider {
 
     /// Video duration for loop calculation
     public private(set) var duration: CMTime = .zero
+
+    /// Video presentation metadata (orientation, size, UV transform).
+    /// Computed during prepare phase, available after `.ready`.
+    public private(set) var presentationInfo: VideoPresentationInfo?
 
     /// Current provider state
     public private(set) var state: VideoProviderState = .idle
@@ -83,6 +88,8 @@ public final class VideoFrameProvider {
     private var lastDiagnosticLogTime: CFTimeInterval = 0
     /// Diagnostic log interval (2 seconds)
     private let diagnosticLogInterval: CFTimeInterval = 2.0
+    /// Whether metadata has been logged for this provider
+    private var didLogMetadata: Bool = false
     #endif
 
     // MARK: - Scrub State
@@ -93,8 +100,8 @@ public final class VideoFrameProvider {
     /// Scrub throttle interval (~30Hz = 33ms)
     private let scrubThrottle: CFTimeInterval = 0.033
 
-    /// Last scrubbed frame index (to avoid redundant seeks)
-    private var lastScrubbedFrameIndex: Int = -1
+    /// Last scrubbed video time (to avoid redundant seeks)
+    private var lastScrubbedVideoTime: CMTime = .invalid
 
     // MARK: - Async Race Protection (PR-async-race)
 
@@ -156,16 +163,16 @@ public final class VideoFrameProvider {
 
     // MARK: - Playback Control
 
-    /// Starts playback mode synchronized to scene timeline.
+    /// Starts playback mode at the given video time.
     ///
-    /// Video plays at rate=1, frames are extracted via `frameTextureForPlayback()`.
-    /// Drift correction happens automatically when threshold exceeded.
+    /// Seeks to the target time, then plays at rate=1.
+    /// Frames are extracted via `frameTextureForPlayback()`.
     ///
-    /// - Parameter sceneFrameIndex: Current scene frame to sync to
-    public func startPlayback(atSceneFrame sceneFrameIndex: Int) {
+    /// - Parameter videoTimeSeconds: Target video time in seconds (pre-computed by caller via shared mapper)
+    public func startPlayback(atVideoTime videoTimeSeconds: Double) {
         guard isReady else { return }
 
-        let targetTime = videoTime(forSceneFrame: sceneFrameIndex)
+        let targetTime = videoTime(seconds: videoTimeSeconds)
         player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
         player.rate = 1.0
         isPlaybackActive = true
@@ -185,6 +192,7 @@ public final class VideoFrameProvider {
         if flush {
             lastTexture = nil
             lastExtractedVideoTime = .invalid
+            lastScrubbedVideoTime = .invalid
             textureFactory.flushCache()
 
             #if DEBUG
@@ -198,22 +206,20 @@ public final class VideoFrameProvider {
     /// In playback mode, AVPlayer runs independently. We just extract the current
     /// frame from videoOutput. Drift correction happens only when threshold exceeded.
     ///
-    /// PR1: No loop — holds last frame when past duration.
-    /// PR1.1: Uses hostTime-based itemTime for reliable frame extraction.
+    /// PR4: Time-based API. `expectedVideoTime` is a hint for drift/debug, not a per-tick seek target.
+    /// Uses hostTime-based itemTime for reliable frame extraction.
     ///
-    /// - Parameter sceneFrameIndex: Current scene frame (for drift detection)
+    /// - Parameter videoTimeSeconds: Expected video time (for drift detection, not per-tick seek)
     /// - Returns: Metal texture, or nil if not available
-    public func frameTextureForPlayback(sceneFrameIndex: Int) -> MTLTexture? {
+    public func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? {
         guard isReady, isPlaybackActive else { return lastTexture }
 
-        // PR1.1: Drift correction disabled for preview stability
-        // Disabled for preview stability; export pipeline will handle sync deterministically
+        // Drift correction disabled for preview stability
         if isDriftCorrectionEnabled {
-            checkAndCorrectDrift(sceneFrameIndex: sceneFrameIndex)
+            checkAndCorrectDrift(expectedVideoTime: videoTimeSeconds)
         }
 
-        // PR1.1 FIX: Use hostTime-based itemTime for reliable frame extraction
-        // (instead of player.currentTime() which often causes hasNewPixelBuffer to return false)
+        // Host-time-based frame extraction (no seek per tick)
         let hostTime = CACurrentMediaTime()
         let itemTime = videoOutput.itemTime(forHostTime: hostTime)
 
@@ -224,23 +230,21 @@ public final class VideoFrameProvider {
         return extractTexture(at: clampedTime)
     }
 
-    /// Checks for drift between scene timeline and video playback, corrects if needed.
-    private func checkAndCorrectDrift(sceneFrameIndex: Int) {
+    /// Checks for drift between expected and actual video playback, corrects if needed.
+    private func checkAndCorrectDrift(expectedVideoTime videoTimeSeconds: Double) {
         let now = CACurrentMediaTime()
 
         // Throttle corrective seeks
         guard now - lastCorrectiveSeekTime >= correctiveSeekThrottle else { return }
 
-        let expectedTime = videoTime(forSceneFrame: sceneFrameIndex)
+        let expectedTime = videoTime(seconds: videoTimeSeconds)
         let actualTime = player.currentTime()
 
         // Calculate drift in frames
-        let expectedSeconds = expectedTime.seconds
-        let actualSeconds = actualTime.seconds
-        let driftFrames = abs(expectedSeconds - actualSeconds) * sceneFPS
+        let driftSeconds = abs(expectedTime.seconds - actualTime.seconds)
+        let driftFrames = driftSeconds * sceneFPS
 
         if driftFrames > driftThresholdFrames {
-            // Corrective seek needed (should be rare — logged for debugging)
             #if DEBUG
             print("[VideoFrameProvider] Drift correction: \(String(format: "%.1f", driftFrames)) frames, seeking to \(expectedTime.seconds)s")
             #endif
@@ -256,13 +260,18 @@ public final class VideoFrameProvider {
     /// Used when user drags timeline slider. Seeks are throttled to ~30Hz max
     /// to avoid overwhelming the decoder.
     ///
-    /// - Parameter sceneFrameIndex: Target scene frame
+    /// PR4: Time-based API. Scrub cache uses epsilon comparison instead of frame index equality.
+    ///
+    /// - Parameter videoTimeSeconds: Target video time in seconds (pre-computed by caller via shared mapper)
     /// - Returns: Metal texture, or nil if not available
-    public func frameTextureForScrub(sceneFrameIndex: Int) -> MTLTexture? {
+    public func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
         guard isReady else { return lastTexture }
 
-        // Skip if same frame requested
-        if sceneFrameIndex == lastScrubbedFrameIndex {
+        let targetTime = videoTime(seconds: videoTimeSeconds)
+
+        // Skip if same time requested (epsilon comparison)
+        if lastScrubbedVideoTime.isValid,
+           abs(lastScrubbedVideoTime.seconds - targetTime.seconds) < Self.epsilon {
             return lastTexture
         }
 
@@ -278,14 +287,12 @@ public final class VideoFrameProvider {
             stopPlayback()
         }
 
-        let targetTime = videoTime(forSceneFrame: sceneFrameIndex)
-
         // Seek with small tolerance (faster than zero tolerance)
         let tolerance = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)
         player.seek(to: targetTime, toleranceBefore: tolerance, toleranceAfter: tolerance)
 
         lastScrubSeekTime = now
-        lastScrubbedFrameIndex = sceneFrameIndex
+        lastScrubbedVideoTime = targetTime
 
         // Try to extract frame (may not be immediately available after seek)
         return extractTexture(at: targetTime)
@@ -295,19 +302,21 @@ public final class VideoFrameProvider {
 
     /// Returns texture for a frozen frame (edit mode).
     ///
-    /// In edit mode, scene is frozen at `editFrameIndex`. Video shows
+    /// In edit mode, scene is frozen at a specific time. Video shows
     /// corresponding frame without playback.
     ///
-    /// - Parameter sceneFrameIndex: Edit frame index
+    /// PR4: Time-based API. Uses epsilon comparison for cache hit.
+    ///
+    /// - Parameter videoTimeSeconds: Target video time in seconds (pre-computed by caller via shared mapper)
     /// - Returns: Metal texture, or nil if not available
-    public func frameTextureForFrozen(sceneFrameIndex: Int) -> MTLTexture? {
+    public func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
         guard isReady else { return lastTexture }
 
-        let targetTime = videoTime(forSceneFrame: sceneFrameIndex)
+        let targetTime = videoTime(seconds: videoTimeSeconds)
 
-        // Check if we already have this frame cached
+        // Check if we already have this frame cached (epsilon comparison)
         if let cached = lastTexture,
-           lastExtractedVideoTime.seconds == targetTime.seconds {
+           abs(lastExtractedVideoTime.seconds - targetTime.seconds) < Self.epsilon {
             return cached
         }
 
@@ -422,7 +431,7 @@ public final class VideoFrameProvider {
         // Use AVAssetImageGenerator for reliable poster extraction
         let asset = playerItem.asset
         let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
+        generator.appliesPreferredTrackTransform = false  // Raw pixels — orientation via GPU
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
 
@@ -433,10 +442,8 @@ public final class VideoFrameProvider {
             try Task.checkCancellation()
             guard token == generation else { throw CancellationError() }
 
-            let uiImage = UIImage(cgImage: cgImage)
-
-            guard let texture = textureFactory.makeTexture(from: uiImage) else {
-                throw PosterError.generationFailed("Failed to create texture from image")
+            guard let texture = textureFactory.makeTexture(from: cgImage) else {
+                throw PosterError.generationFailed("Failed to create texture from CGImage")
             }
 
             // Cache the poster as last texture
@@ -468,13 +475,6 @@ public final class VideoFrameProvider {
         let maxSeconds = max(0, duration.seconds - Self.epsilon)
         let clampedSeconds = min(max(seconds, 0), maxSeconds)
         return CMTime(seconds: clampedSeconds, preferredTimescale: 600)
-    }
-
-    /// Legacy: Converts scene frame index to video time.
-    /// PR1: Now uses hold-last clamp instead of loop.
-    private func videoTime(forSceneFrame sceneFrameIndex: Int) -> CMTime {
-        let sceneTimeSeconds = Double(sceneFrameIndex) / sceneFPS
-        return videoTime(seconds: sceneTimeSeconds)
     }
 
     /// Extracts texture from video output at given time.
@@ -517,7 +517,29 @@ public final class VideoFrameProvider {
     }
 
     #if DEBUG
+    /// PerfDiag: Logs source metadata once per provider lifecycle
+    private func logMetadataOnce(
+        url: URL,
+        duration: CMTime,
+        trackMeta: (fps: Float, size: CGSize, transform: CGAffineTransform)?
+    ) {
+        guard !didLogMetadata else { return }
+        didLogMetadata = true
+
+        let fileName = url.lastPathComponent
+        let dur = String(format: "%.2f", duration.seconds)
+        let fps = trackMeta.map { String(format: "%.2f", $0.fps) } ?? "?"
+        let size = trackMeta.map { "\(Int($0.size.width))x\(Int($0.size.height))" } ?? "?"
+        let tx = trackMeta.map { t in
+            let a = t.transform
+            return "[\(a.a),\(a.b),\(a.c),\(a.d),\(a.tx),\(a.ty)]"
+        } ?? "?"
+
+        print("[VideoFrameProvider] READY: \(fileName) | dur=\(dur)s | sceneFPS=\(sceneFPS) | trackFPS=\(fps) | size=\(size) | transform=\(tx)")
+    }
+
     /// Logs extraction diagnostics every 2 seconds (PR1.1)
+    /// PerfDiag: Extended with itemTime and playback state
     private func logDiagnosticsIfNeeded() {
         let now = CACurrentMediaTime()
         guard now - lastDiagnosticLogTime >= diagnosticLogInterval else { return }
@@ -525,7 +547,9 @@ public final class VideoFrameProvider {
         let total = nilExtractCount + successExtractCount
         if total > 0 {
             let nilRate = Double(nilExtractCount) / Double(total) * 100
-            print("[VideoFrameProvider] extractTexture: \(successExtractCount) OK, \(nilExtractCount) nil (\(String(format: "%.1f", nilRate))% nil rate)")
+            let itemTime = videoOutput.itemTime(forHostTime: now)
+            let lastT = lastExtractedVideoTime.isValid ? String(format: "%.3f", lastExtractedVideoTime.seconds) : "nil"
+            print("[VideoFrameProvider] playback: \(successExtractCount) OK, \(nilExtractCount) nil (\(String(format: "%.1f", nilRate))%) | itemTime=\(String(format: "%.3f", itemTime.seconds))s | lastExtracted=\(lastT)s | active=\(isPlaybackActive)")
         }
 
         // Reset counters
@@ -542,11 +566,44 @@ public final class VideoFrameProvider {
         durationTask = Task {
             do {
                 let loadedDuration = try await asset.load(.duration)
+
+                // Load video track for presentation info (always, not just DEBUG)
+                let tracks = asset.tracks(withMediaType: .video)
+                let firstTrack = tracks.first
+
+                let videoPresInfo: VideoPresentationInfo? = firstTrack.map {
+                    VideoPresentationInfo(
+                        rawTrackSize: $0.naturalSize,
+                        preferredTransform: $0.preferredTransform
+                    )
+                }
+
+                #if DEBUG
+                let trackMeta: (fps: Float, size: CGSize, transform: CGAffineTransform)? = firstTrack.map {
+                    ($0.nominalFrameRate, $0.naturalSize, $0.preferredTransform)
+                }
+                #endif
+
                 await MainActor.run {
                     // PR-async-race: Ignore result if generation changed (provider released/reused)
                     guard self.generation == token, !Task.isCancelled else { return }
+
+                    guard let videoPresInfo else {
+                        self.state = .failed("No video track found — cannot compute VideoPresentationInfo")
+                        return
+                    }
+
                     self.duration = loadedDuration
+                    self.presentationInfo = videoPresInfo
                     self.state = .ready
+
+                    #if DEBUG
+                    self.logMetadataOnce(
+                        url: asset.url,
+                        duration: loadedDuration,
+                        trackMeta: trackMeta
+                    )
+                    #endif
                 }
             } catch {
                 await MainActor.run {
@@ -572,6 +629,7 @@ public final class VideoFrameProvider {
         playerItem.remove(videoOutput)
         player.replaceCurrentItem(with: nil)
         lastTexture = nil
+        presentationInfo = nil
         textureFactory.flushCache()
         state = .idle
     }

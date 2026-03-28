@@ -35,6 +35,34 @@ struct QuadUniforms {
     }
 }
 
+// MARK: - Video Quad Uniforms
+
+/// Uniform buffer structure for video quad rendering (orientation-aware).
+/// Layout must match Metal shader struct exactly.
+///
+/// Metal layout:
+///   float4x4 mvp:          64 bytes (offset 0)
+///   float opacity:          4 bytes (offset 64)
+///   float _pad0/1/2:       12 bytes (offset 68)
+///   float3 _padding:       16 bytes (offset 80, alignment to 96)
+///   float4x4 uvTransform:  64 bytes (offset 96)
+///   Total: 160 bytes
+struct VideoQuadUniforms {
+    var mvp: simd_float4x4              // 64 bytes
+    var opacity: Float                  // 4 bytes
+    var _pad0: Float = 0               // 4 bytes
+    var _pad1: Float = 0               // 4 bytes
+    var _pad2: Float = 0               // 4 bytes
+    var _padding: SIMD3<Float> = .zero // 16 bytes
+    var uvTransform: simd_float4x4     // 64 bytes
+
+    init(mvp: simd_float4x4, opacity: Float, uvTransform: simd_float4x4) {
+        self.mvp = mvp
+        self.opacity = opacity
+        self.uvTransform = uvTransform
+    }
+}
+
 // MARK: - Coverage Uniforms (GPU Mask)
 
 /// Uniform buffer structure for coverage rendering (path triangles → R8).
@@ -179,6 +207,11 @@ final class MetalRendererResources {
     /// Pipeline for dip-to-color transition effect (dipToBlack, dipToWhite)
     let dipTransitionPipelineState: MTLRenderPipelineState
 
+    // MARK: - Video Quad Resources
+
+    /// Pipeline for video quad rendering (with UV transform for orientation)
+    let videoQuadPipelineState: MTLRenderPipelineState
+
     init(device: MTLDevice, colorPixelFormat: MTLPixelFormat) throws {
         let library = try Self.makeShaderLibrary(device: device)
         pipelineState = try Self.makePipelineState(device: device, library: library, colorPixelFormat: colorPixelFormat)
@@ -222,6 +255,13 @@ final class MetalRendererResources {
 
         // Transition resources (v6 Schema)
         dipTransitionPipelineState = try Self.makeDipTransitionPipeline(
+            device: device,
+            library: library,
+            colorPixelFormat: colorPixelFormat
+        )
+
+        // Video quad resources
+        videoQuadPipelineState = try Self.makeVideoQuadPipeline(
             device: device,
             library: library,
             colorPixelFormat: colorPixelFormat
@@ -573,6 +613,37 @@ extension MetalRendererResources {
             return try device.makeRenderPipelineState(descriptor: descriptor)
         } catch {
             let msg = "Dip transition pipeline failed: \(error.localizedDescription)"
+            throw MetalRendererError.failedToCreatePipeline(reason: msg)
+        }
+    }
+}
+
+// MARK: - Video Quad Pipeline Creation
+
+extension MetalRendererResources {
+    /// Creates pipeline for video quad rendering with UV transform for orientation.
+    private static func makeVideoQuadPipeline(
+        device: MTLDevice,
+        library: MTLLibrary,
+        colorPixelFormat: MTLPixelFormat
+    ) throws -> MTLRenderPipelineState {
+        guard let vertexFunc = library.makeFunction(name: "quad_video_vertex") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "quad_video_vertex not found")
+        }
+        guard let fragmentFunc = library.makeFunction(name: "quad_video_fragment") else {
+            throw MetalRendererError.failedToCreatePipeline(reason: "quad_video_fragment not found")
+        }
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertexFunc
+        descriptor.fragmentFunction = fragmentFunc
+        descriptor.vertexDescriptor = makeVertexDescriptor()
+        configureBlending(descriptor.colorAttachments[0], pixelFormat: colorPixelFormat)
+
+        do {
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            let msg = "Video quad pipeline failed: \(error.localizedDescription)"
             throw MetalRendererError.failedToCreatePipeline(reason: msg)
         }
     }

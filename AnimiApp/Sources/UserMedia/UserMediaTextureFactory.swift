@@ -111,6 +111,43 @@ public final class UserMediaTextureFactory {
         }
     }
 
+    // MARK: - Raw CGImage Texture Creation
+
+    /// Creates a Metal texture from a CGImage (raw, no orientation correction).
+    ///
+    /// Used for video poster frames where orientation is handled by GPU via uvTransform.
+    /// No `normalizeImage` — caller is responsible for orientation semantics.
+    ///
+    /// - Parameter cgImage: Source image (raw pixels, no orientation applied)
+    /// - Returns: Metal texture with `.private` storage, or `nil` if creation failed
+    public func makeTexture(from cgImage: CGImage) -> MTLTexture? {
+        if PremultipliedTextureLoader.hasAlpha(cgImage) {
+            do {
+                return try PremultipliedTextureLoader.loadTexture(
+                    from: cgImage,
+                    device: device,
+                    commandQueue: commandQueue
+                )
+            } catch {
+                print("[UserMediaTextureFactory] Failed to create premult texture from CGImage: \(error)")
+                return nil
+            }
+        } else {
+            let options: [MTKTextureLoader.Option: Any] = [
+                .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+                .textureStorageMode: MTLStorageMode.private.rawValue,
+                .SRGB: false,
+                .generateMipmaps: false
+            ]
+            do {
+                return try textureLoader.newTexture(cgImage: cgImage, options: options)
+            } catch {
+                print("[UserMediaTextureFactory] Failed to create texture from CGImage: \(error)")
+                return nil
+            }
+        }
+    }
+
     // MARK: - Video Frame Texture Creation
 
     /// Creates a Metal texture from a CVPixelBuffer (video frame).

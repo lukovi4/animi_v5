@@ -30,7 +30,7 @@ import TVECore
 /// // On scene eviction:
 /// exportProvider.clearAll()
 /// ```
-public final class ExportTextureProvider: MutableTextureProvider {
+public final class ExportTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
     // MARK: - Properties
 
     private let device: MTLDevice
@@ -43,6 +43,7 @@ public final class ExportTextureProvider: MutableTextureProvider {
     private let lock = NSLock()
     private var cache: [String: MTLTexture] = [:]
     private var missingAssets: Set<String> = []
+    private var presentationInfos: [String: VideoPresentationInfo] = [:]
 
     // MARK: - Initialization
 
@@ -168,6 +169,7 @@ public final class ExportTextureProvider: MutableTextureProvider {
         for assetId in assetIds {
             cache.removeValue(forKey: assetId)
             missingAssets.remove(assetId)
+            presentationInfos.removeValue(forKey: assetId)
         }
     }
 
@@ -178,8 +180,28 @@ public final class ExportTextureProvider: MutableTextureProvider {
 
         cache.removeAll()
         missingAssets.removeAll()
+        presentationInfos.removeAll()
     }
 
+    // MARK: - MutableAssetPresentationInfoProvider
+
+    public func presentationInfo(for assetId: String) -> VideoPresentationInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        return presentationInfos[assetId]
+    }
+
+    public func setPresentationInfo(_ info: VideoPresentationInfo, for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        presentationInfos[assetId] = info
+    }
+
+    public func removePresentationInfo(for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        presentationInfos.removeValue(forKey: assetId)
+    }
 
     // MARK: - Private
 

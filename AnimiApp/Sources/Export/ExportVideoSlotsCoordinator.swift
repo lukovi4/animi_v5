@@ -18,6 +18,7 @@ import TVECore
 /// let coordinator = ExportVideoSlotsCoordinator(
 ///     device: device,
 ///     textureCache: cache,
+///     commandQueue: queue,
 ///     runtime: compiledScene.runtime,
 ///     sceneFPS: 30,
 ///     exportTextureProvider: textureProvider
@@ -55,6 +56,7 @@ public final class ExportVideoSlotsCoordinator {
 
     private let device: MTLDevice
     private let textureCache: CVMetalTextureCache
+    private let commandQueue: MTLCommandQueue
     private let runtime: SceneRuntime
     private let sceneFPS: Double
     private let exportTextureProvider: MutableTextureProvider
@@ -81,6 +83,7 @@ public final class ExportVideoSlotsCoordinator {
     /// - Parameters:
     ///   - device: Metal device
     ///   - textureCache: Shared CVMetalTextureCache (from VideoExporter)
+    ///   - commandQueue: Metal command queue (plumbed for PR 6 blend pass)
     ///   - runtime: Scene runtime (for block timing and binding info)
     ///   - sceneFPS: Scene FPS
     ///   - exportTextureProvider: Mutable texture provider for injection
@@ -88,6 +91,7 @@ public final class ExportVideoSlotsCoordinator {
     public init(
         device: MTLDevice,
         textureCache: CVMetalTextureCache,
+        commandQueue: MTLCommandQueue,
         runtime: SceneRuntime,
         sceneFPS: Double,
         exportTextureProvider: MutableTextureProvider,
@@ -96,6 +100,7 @@ public final class ExportVideoSlotsCoordinator {
     ) {
         self.device = device
         self.textureCache = textureCache
+        self.commandQueue = commandQueue
         self.runtime = runtime
         self.sceneFPS = sceneFPS
         self.exportTextureProvider = exportTextureProvider
@@ -134,17 +139,14 @@ public final class ExportVideoSlotsCoordinator {
                 continue
             }
 
-            // Create config
-            let config = ExportVideoFrameProvider.Config(
-                selection: selection,
-                blockTiming: block.timing,
-                sceneFPS: sceneFPS
-            )
+            // Create config (time mapping now owned by coordinator)
+            let config = ExportVideoFrameProvider.Config(selection: selection)
 
             // Create provider
             let provider = ExportVideoFrameProvider(
                 device: device,
                 textureCache: textureCache,
+                commandQueue: commandQueue,
                 config: config
             )
 
@@ -201,6 +203,14 @@ public final class ExportVideoSlotsCoordinator {
                     do {
                         try slot.provider.prepareIfNeeded()
                         slots[blockId]?.isPrepared = true
+
+                        // Inject presentation info once after prepare
+                        if let info = slot.provider.presentationInfo {
+                            for assetId in slot.bindingAssetIds {
+                                (exportTextureProvider as? MutableAssetPresentationInfoProvider)?
+                                    .setPresentationInfo(info, for: assetId)
+                            }
+                        }
                     } catch {
                         if providerError == nil {
                             providerError = error as? ExportVideoFrameProviderError
@@ -214,7 +224,16 @@ public final class ExportVideoSlotsCoordinator {
                     providerError = error
                 }
 
-                guard let texture = slot.provider.texture(forSceneFrameIndex: sceneFrameIndex) else {
+                // Coordinator owns time mapping via shared mapper
+                let mapped = VideoTimelineTimeMapper.targetVideoTime(
+                    sceneFrameIndex: sceneFrameIndex,
+                    blockStartFrame: slot.startFrame,
+                    sceneFPS: sceneFPS,
+                    selection: slot.provider.config.selection
+                )
+                guard let texture = slot.provider.texture(
+                    forTargetVideoTime: mapped.targetVideoTimeSeconds
+                ) else {
                     continue
                 }
 

@@ -65,11 +65,15 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         var state: VideoProviderState { isReady ? .ready : .loading }
         private(set) var isPlaybackActive: Bool = false
         var duration: CMTime = CMTime(seconds: 5.0, preferredTimescale: 600)
+        var presentationInfo: VideoPresentationInfo? = VideoPresentationInfo(
+            rawTrackSize: CGSize(width: 64, height: 64),
+            preferredTransform: .identity
+        )
 
         // Tracking
-        var startPlaybackCalls: [Int] = []
+        var startPlaybackCalls: [Double] = []
         var stopPlaybackCalls: [Bool] = []  // flush parameter
-        var frameTextureForPlaybackCalls: [Int] = []
+        var frameTextureForPlaybackCalls: [Double] = []
         var lastTexture: MTLTexture?
 
         private let device: MTLDevice
@@ -87,8 +91,8 @@ final class UserMediaServiceBudgetTests: XCTestCase {
             isPlaybackActive = false
         }
 
-        func startPlayback(atSceneFrame sceneFrameIndex: Int) {
-            startPlaybackCalls.append(sceneFrameIndex)
+        func startPlayback(atVideoTime videoTimeSeconds: Double) {
+            startPlaybackCalls.append(videoTimeSeconds)
             isPlaybackActive = true
         }
 
@@ -97,16 +101,16 @@ final class UserMediaServiceBudgetTests: XCTestCase {
             isPlaybackActive = false
         }
 
-        func frameTextureForPlayback(sceneFrameIndex: Int) -> MTLTexture? {
-            frameTextureForPlaybackCalls.append(sceneFrameIndex)
+        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? {
+            frameTextureForPlaybackCalls.append(videoTimeSeconds)
             return lastTexture
         }
 
-        func frameTextureForScrub(sceneFrameIndex: Int) -> MTLTexture? {
+        func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
             return lastTexture
         }
 
-        func frameTextureForFrozen(sceneFrameIndex: Int) -> MTLTexture? {
+        func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
             return lastTexture
         }
 
@@ -347,8 +351,8 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
 
         // Simulate both providers are active
-        providerA.startPlayback(atSceneFrame: 0)
-        providerB.startPlayback(atSceneFrame: 0)
+        providerA.startPlayback(atVideoTime: 0)
+        providerB.startPlayback(atVideoTime: 0)
         XCTAssertTrue(providerB.isPlaybackActive)
 
         // When: Start with only block_a granted

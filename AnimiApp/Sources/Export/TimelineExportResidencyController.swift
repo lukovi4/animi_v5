@@ -181,6 +181,7 @@ internal final class TimelineExportResidencyController {
             let coordinator = ExportVideoSlotsCoordinator(
                 device: device,
                 textureCache: textureCache,
+                commandQueue: commandQueue,
                 runtime: snapshot.runtime,
                 sceneFPS: Double(session.fps),
                 exportTextureProvider: textureProvider,

@@ -51,8 +51,9 @@ public protocol MutableTextureProvider: TextureProvider {
 /// Simple texture provider for testing.
 /// Stores textures in memory keyed by asset ID.
 /// Conforms to MutableTextureProvider for test scenarios requiring texture injection.
-public final class InMemoryTextureProvider: MutableTextureProvider {
+public final class InMemoryTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
     private var textures: [String: MTLTexture] = [:]
+    private var presentationInfos: [String: VideoPresentationInfo] = [:]
 
     public init() {}
 
@@ -85,6 +86,23 @@ public final class InMemoryTextureProvider: MutableTextureProvider {
         dispatchPrecondition(condition: .onQueue(.main))
         textures.removeValue(forKey: assetId)
     }
+
+    // MARK: - MutableAssetPresentationInfoProvider
+
+    public func presentationInfo(for assetId: String) -> VideoPresentationInfo? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return presentationInfos[assetId]
+    }
+
+    public func setPresentationInfo(_ info: VideoPresentationInfo, for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        presentationInfos[assetId] = info
+    }
+
+    public func removePresentationInfo(for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        presentationInfos.removeValue(forKey: assetId)
+    }
 }
 
 // MARK: - Thread-Safe In-Memory Texture Provider (PR-G)
@@ -98,9 +116,10 @@ public final class InMemoryTextureProvider: MutableTextureProvider {
 ///
 /// Use this for background texture providers passed to VideoExporter.
 /// Preview/playback providers on main thread can use regular `InMemoryTextureProvider`.
-public final class ThreadSafeInMemoryTextureProvider: MutableTextureProvider {
+public final class ThreadSafeInMemoryTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
     private let lock = NSLock()
     private var textures: [String: MTLTexture] = [:]
+    private var presentationInfos: [String: VideoPresentationInfo] = [:]
 
     public init() {}
 
@@ -132,5 +151,25 @@ public final class ThreadSafeInMemoryTextureProvider: MutableTextureProvider {
         lock.lock()
         defer { lock.unlock() }
         textures.removeValue(forKey: assetId)
+    }
+
+    // MARK: - MutableAssetPresentationInfoProvider
+
+    public func presentationInfo(for assetId: String) -> VideoPresentationInfo? {
+        lock.lock()
+        defer { lock.unlock() }
+        return presentationInfos[assetId]
+    }
+
+    public func setPresentationInfo(_ info: VideoPresentationInfo, for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        presentationInfos[assetId] = info
+    }
+
+    public func removePresentationInfo(for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        presentationInfos.removeValue(forKey: assetId)
     }
 }

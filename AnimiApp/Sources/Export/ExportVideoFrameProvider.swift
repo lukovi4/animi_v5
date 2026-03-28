@@ -45,6 +45,58 @@ extension ExportVideoFrameProviderError: LocalizedError {
     }
 }
 
+// MARK: - Video Resampling Policy
+
+/// Controls how export handles temporal resampling when target time falls between decoded samples.
+public enum VideoResamplingPolicy: Sendable, Equatable {
+    /// Hold-last cadence — returns nearest decoded frame with PTS ≤ target.
+    case nearest
+    /// Temporal linear blend between bracketing samples (default for upsampling).
+    case blend
+}
+
+// MARK: - Resampling Decision
+
+/// Pure decision result from resampling logic — separates "what to do" from GPU execution.
+enum ResamplingDecision: Equatable {
+    /// Return the previous (last) texture as-is
+    case usePrev
+    /// Return the next (pending) texture as-is
+    case useNext
+    /// Blend prev and next with the given alpha factor
+    case blend(alpha: Float)
+
+    /// Computes the resampling decision given timing parameters.
+    ///
+    /// - Parameters:
+    ///   - policy: The resampling policy (.nearest or .blend)
+    ///   - targetSeconds: Target time in seconds
+    ///   - lastPTSSeconds: PTS of the last (previous) decoded sample, or nil if invalid
+    ///   - nextPTSSeconds: PTS of the next (pending) decoded sample, or nil if unavailable
+    /// - Returns: The decision on which texture to use
+    static func decide(
+        policy: VideoResamplingPolicy,
+        targetSeconds: Double,
+        lastPTSSeconds: Double?,
+        nextPTSSeconds: Double?
+    ) -> ResamplingDecision {
+        guard policy == .blend else { return .usePrev }
+        guard let lastPTS = lastPTSSeconds else { return .usePrev }
+        guard let nextPTS = nextPTSSeconds else { return .usePrev }
+
+        let epsilon = 1.0 / 600.0
+
+        if abs(targetSeconds - lastPTS) <= epsilon { return .usePrev }
+        if abs(targetSeconds - nextPTS) <= epsilon { return .useNext }
+
+        let span = nextPTS - lastPTS
+        guard span > 0 else { return .usePrev }
+
+        let alpha = Float(min(max((targetSeconds - lastPTS) / span, 0), 1))
+        return .blend(alpha: alpha)
+    }
+}
+
 // MARK: - Export Video Frame Provider
 
 /// Deterministic video frame provider for export using AVAssetReader (PR-E3).
@@ -53,16 +105,18 @@ extension ExportVideoFrameProviderError: LocalizedError {
 /// - Uses AVAssetReader instead of AVPlayer (deterministic frame access)
 /// - Converts CVPixelBuffer → MTLTexture via shared CVMetalTextureCache (GPU-only)
 /// - Monotonic access: frames are read sequentially with hold-last behavior
+/// - Temporal blend for upsampling scenarios (PR 6)
 ///
 /// Usage:
 /// ```swift
 /// let provider = ExportVideoFrameProvider(
 ///     device: device,
 ///     textureCache: cache,
-///     config: .init(selection: selection, blockTiming: timing, sceneFPS: 30)
+///     commandQueue: queue,
+///     config: .init(selection: selection)
 /// )
 /// try provider.prepare()
-/// let texture = provider.texture(forSceneFrameIndex: 42)
+/// let texture = provider.texture(forTargetVideoTime: 1.5)
 /// provider.finish()
 /// ```
 public final class ExportVideoFrameProvider {
@@ -72,38 +126,18 @@ public final class ExportVideoFrameProvider {
     public struct Config: Sendable {
         /// Video selection with trim/offset parameters
         public let selection: VideoSelection
+        /// Resampling policy for inter-sample times
+        public let resamplingPolicy: VideoResamplingPolicy
 
-        /// Block timing (for startFrame calculation)
-        public let blockTiming: BlockTiming
-
-        /// Scene FPS (for time conversion)
-        public let sceneFPS: Double
-
-        /// Hold mode for frames beyond window
-        public enum HoldMode: Sendable {
-            case lastFrame
-        }
-
-        /// Hold mode (v1: lastFrame only)
-        public let holdMode: HoldMode
-
-        public init(
-            selection: VideoSelection,
-            blockTiming: BlockTiming,
-            sceneFPS: Double,
-            holdMode: HoldMode = .lastFrame
-        ) {
+        public init(selection: VideoSelection, resamplingPolicy: VideoResamplingPolicy = .blend) {
             self.selection = selection
-            self.blockTiming = blockTiming
-            self.sceneFPS = sceneFPS
-            self.holdMode = holdMode
+            self.resamplingPolicy = resamplingPolicy
         }
     }
 
     // MARK: - Constants
 
-    /// Epsilon for hold-last clamp (1 tick in timescale 600)
-    private static let epsilon: Double = 1.0 / 600.0
+    // Epsilon lives in VideoTimelineTimeMapper (canonical owner: VideoWindowValidator)
 
     /// Timescale for CMTime operations
     private static let timescale: CMTimeScale = 600
@@ -112,7 +146,8 @@ public final class ExportVideoFrameProvider {
 
     private let device: MTLDevice
     private let textureCache: CVMetalTextureCache
-    private let config: Config
+    private let commandQueue: MTLCommandQueue
+    let config: Config
 
     private var reader: AVAssetReader?
     private var output: AVAssetReaderTrackOutput?
@@ -135,6 +170,34 @@ public final class ExportVideoFrameProvider {
     /// Provider error (set on decode failure, propagated to coordinator)
     private(set) var providerError: ExportVideoFrameProviderError?
 
+    /// Video presentation metadata (orientation, size, UV transform).
+    /// Computed once during prepare from track metadata.
+    private(set) var presentationInfo: VideoPresentationInfo?
+
+    /// Lazy GPU blender for temporal interpolation (PR 6)
+    private var blender: VideoFrameBlender?
+
+    // MARK: - PerfDiag Counters (DEBUG)
+
+    #if DEBUG
+    /// Number of times a new sample was advanced (promoted pending → last)
+    private var advancedSampleCount: Int = 0
+    /// Number of times cached lastTexture was returned without advancing
+    private var reusedLastTextureCount: Int = 0
+    /// Current streak of consecutive reused frames
+    private var currentReusedStreak: Int = 0
+    /// Maximum streak of consecutive reused frames
+    private var maxReusedStreak: Int = 0
+    /// Total texture() calls
+    private var totalTextureCallCount: Int = 0
+    /// Number of GPU-blended frames
+    private var blendCount: Int = 0
+    /// Number of exact sample hits (no blend needed)
+    private var exactSampleCount: Int = 0
+    /// Whether metadata has been logged
+    private var didLogMetadata: Bool = false
+    #endif
+
     // MARK: - Initialization
 
     /// Creates a video frame provider for export.
@@ -142,14 +205,17 @@ public final class ExportVideoFrameProvider {
     /// - Parameters:
     ///   - device: Metal device for texture operations
     ///   - textureCache: Shared CVMetalTextureCache (from VideoExporter)
+    ///   - commandQueue: Metal command queue (for PR 6 blend pass)
     ///   - config: Provider configuration
     public init(
         device: MTLDevice,
         textureCache: CVMetalTextureCache,
+        commandQueue: MTLCommandQueue,
         config: Config
     ) {
         self.device = device
         self.textureCache = textureCache
+        self.commandQueue = commandQueue
         self.config = config
     }
 
@@ -158,7 +224,7 @@ public final class ExportVideoFrameProvider {
     /// Prepares the provider for reading (idempotent).
     ///
     /// Creates AVAssetReader and configures output.
-    /// Must be called before `texture(forSceneFrameIndex:)`.
+    /// Must be called before `texture(forTargetVideoTime:)`.
     /// Safe to call multiple times — no-op if already prepared.
     public func prepareIfNeeded() throws {
         guard !isPrepared else { return }
@@ -168,7 +234,7 @@ public final class ExportVideoFrameProvider {
     /// Prepares the provider for reading.
     ///
     /// Creates AVAssetReader and configures output.
-    /// Must be called before `texture(forSceneFrameIndex:)`.
+    /// Must be called before `texture(forTargetVideoTime:)`.
     public func prepare() throws {
         guard !isPrepared else { return }
         try prepareInternal()
@@ -183,9 +249,10 @@ public final class ExportVideoFrameProvider {
         lastTexture = nil
         lastPTS = .invalid
         pending = nil
+        blender?.releaseScratch()
         isPrepared = false
         isFinished = false
-        // Keep config and providerError intact
+        // Keep config, blender PSO, and providerError intact
     }
 
     /// Resumes a suspended provider — re-creates reader from saved config.
@@ -200,6 +267,7 @@ public final class ExportVideoFrameProvider {
     public func releaseDecodedState() {
         lastTexture = nil
         pending = nil
+        blender?.releaseScratch()
     }
 
     // MARK: - Internal Prepare
@@ -251,6 +319,24 @@ public final class ExportVideoFrameProvider {
         self.output = output
         self.isPrepared = true
 
+        // Compute presentation info from track metadata (once)
+        self.presentationInfo = VideoPresentationInfo(
+            rawTrackSize: track.naturalSize,
+            preferredTransform: track.preferredTransform
+        )
+
+        #if DEBUG
+        if !didLogMetadata {
+            didLogMetadata = true
+            let fileName = config.selection.url.lastPathComponent
+            let fps = String(format: "%.2f", track.nominalFrameRate)
+            let size = track.naturalSize
+            let tx = track.preferredTransform
+            let win = "[\(String(format: "%.3f", config.selection.winStart))–\(String(format: "%.3f", config.selection.winEnd))]"
+            print("[ExportVideoFrameProvider] READY: \(fileName) | trackFPS=\(fps) | size=\(Int(size.width))x\(Int(size.height)) | transform=[\(tx.a),\(tx.b),\(tx.c),\(tx.d),\(tx.tx),\(tx.ty)] | window=\(win)")
+        }
+        #endif
+
         // Decode first sample into pending buffer
         do {
             if let sample = try decodeNextSampleThrowing() {
@@ -262,31 +348,48 @@ public final class ExportVideoFrameProvider {
         }
     }
 
-    /// Returns texture for the given scene frame index.
+    /// Returns texture for the given target video time.
     ///
     /// P0 fix: Correct hold-last PTS logic using pending sample buffer.
     /// Returns the last frame with PTS <= targetTime (not >= targetTime).
     ///
-    /// - Parameter sceneFrameIndex: Scene frame index
+    /// - Parameter targetTimeSeconds: Target video time in seconds (from VideoTimelineTimeMapper)
     /// - Returns: MTLTexture or nil if no texture available (check providerError for failures)
-    public func texture(forSceneFrameIndex sceneFrameIndex: Int) -> MTLTexture? {
+    public func texture(forTargetVideoTime targetTimeSeconds: Double) -> MTLTexture? {
         // If we already have an error, return last texture (or nil)
         guard providerError == nil else { return lastTexture }
         guard isPrepared else { return nil }
 
-        // Compute target video time using same formula as UserMediaService.computeSyntheticSceneFrame
-        let targetTime = computeTargetVideoTime(sceneFrameIndex: sceneFrameIndex)
+        let targetTime = CMTime(seconds: targetTimeSeconds, preferredTimescale: Self.timescale)
+
+        #if DEBUG
+        totalTextureCallCount += 1
+        let prevPTS = lastPTS
+        #endif
 
         // If we already have a texture and target is at or before lastPTS, return cached
         if lastTexture != nil, lastPTS.isValid, targetTime <= lastPTS {
+            #if DEBUG
+            reusedLastTextureCount += 1
+            currentReusedStreak += 1
+            maxReusedStreak = max(maxReusedStreak, currentReusedStreak)
+            logSamplingIfNeeded(targetTime: targetTime, advanced: false, prevPTS: prevPTS, blendInfo: nil)
+            #endif
             return lastTexture
         }
 
         // P0 fix: Lookahead with pending sample
         // Promote pending to last while pending.pts <= targetTime
+        #if DEBUG
+        var advancedThisTick = false
+        #endif
         while let p = pending, p.pts <= targetTime {
             lastTexture = p.texture
             lastPTS = p.pts
+            #if DEBUG
+            advancedSampleCount += 1
+            advancedThisTick = true
+            #endif
 
             // Read next sample into pending
             do {
@@ -312,6 +415,10 @@ public final class ExportVideoFrameProvider {
         if lastTexture == nil, let p = pending {
             lastTexture = p.texture
             lastPTS = p.pts
+            #if DEBUG
+            advancedSampleCount += 1
+            advancedThisTick = true
+            #endif
             do {
                 pending = try decodeNextSampleThrowing()
             } catch {
@@ -321,17 +428,83 @@ public final class ExportVideoFrameProvider {
             }
         }
 
-        return lastTexture
+        #if DEBUG
+        if advancedThisTick {
+            currentReusedStreak = 0
+        } else {
+            reusedLastTextureCount += 1
+            currentReusedStreak += 1
+            maxReusedStreak = max(maxReusedStreak, currentReusedStreak)
+        }
+        #endif
+
+        // MARK: Resampling decision (PR 6)
+
+        let decision = ResamplingDecision.decide(
+            policy: config.resamplingPolicy,
+            targetSeconds: targetTime.seconds,
+            lastPTSSeconds: lastPTS.isValid ? lastPTS.seconds : nil,
+            nextPTSSeconds: pending?.pts.seconds
+        )
+
+        let result: MTLTexture?
+        switch decision {
+        case .usePrev:
+            result = lastTexture
+            #if DEBUG
+            if lastPTS.isValid, pending != nil {
+                exactSampleCount += 1
+            }
+            logSamplingIfNeeded(targetTime: targetTime, advanced: advancedThisTick, prevPTS: prevPTS, blendInfo: "EXACT_PREV")
+            #endif
+
+        case .useNext:
+            result = pending?.texture ?? lastTexture
+            #if DEBUG
+            exactSampleCount += 1
+            logSamplingIfNeeded(targetTime: targetTime, advanced: advancedThisTick, prevPTS: prevPTS, blendInfo: "EXACT_NEXT")
+            #endif
+
+        case .blend(let alpha):
+            if let last = lastTexture, let next = pending?.texture {
+                if blender == nil {
+                    blender = try? VideoFrameBlender(device: device)
+                }
+                let blended = blender?.blend(
+                    prev: last, next: next,
+                    alpha: alpha, commandQueue: commandQueue
+                )
+                result = blended ?? last  // GPU failure fallback
+                #if DEBUG
+                if blended != nil { blendCount += 1 }
+                logSamplingIfNeeded(targetTime: targetTime, advanced: advancedThisTick, prevPTS: prevPTS, blendInfo: "BLEND(\(String(format: "%.3f", alpha)))")
+                #endif
+            } else {
+                result = lastTexture
+                #if DEBUG
+                logSamplingIfNeeded(targetTime: targetTime, advanced: advancedThisTick, prevPTS: prevPTS, blendInfo: nil)
+                #endif
+            }
+        }
+
+        return result
     }
 
     /// Finishes reading and releases resources.
     public func finish() {
+        #if DEBUG
+        logExportSummary()
+        #endif
+
         reader?.cancelReading()
         reader = nil
         output = nil
         lastTexture = nil
         lastPTS = .invalid
         pending = nil
+        presentationInfo = nil
+        blender?.releaseScratch()
+        blender = nil
         isPrepared = false
         isFinished = false
         providerError = nil
@@ -342,26 +515,37 @@ public final class ExportVideoFrameProvider {
         finish()
     }
 
-    // MARK: - Private
+    // MARK: - PerfDiag (DEBUG)
 
-    /// Computes target video time from scene frame index.
-    ///
-    /// Formula (matches UserMediaService.computeSyntheticSceneFrame):
-    /// 1. tBlock = max(0, (sceneFrameIndex - blockStartFrame) / sceneFPS)
-    /// 2. tVideo = winStart + tBlock
-    /// 3. tVideoClamped = clamp(tVideo, winStart, winEnd - epsilon)
-    private func computeTargetVideoTime(sceneFrameIndex: Int) -> CMTime {
-        let blockStartFrame = config.blockTiming.startFrame
-        let framesIntoBlock = sceneFrameIndex - blockStartFrame
-        let tBlock = max(0.0, Double(framesIntoBlock) / config.sceneFPS)
+    #if DEBUG
+    /// Logs per-frame sampling info for first 60 frames, then every 10th frame
+    private func logSamplingIfNeeded(targetTime: CMTime, advanced: Bool, prevPTS: CMTime, blendInfo: String?) {
+        let n = totalTextureCallCount
+        guard n <= 60 || n % 10 == 0 else { return }
 
-        let tVideo = config.selection.winStart + tBlock
+        let tgt = String(format: "%.4f", targetTime.seconds)
+        let last = lastPTS.isValid ? String(format: "%.4f", lastPTS.seconds) : "nil"
+        let pend = pending.map { String(format: "%.4f", $0.pts.seconds) } ?? "nil"
+        let prev = prevPTS.isValid ? String(format: "%.4f", prevPTS.seconds) : "nil"
+        let adv = advanced ? "ADV" : "HOLD"
+        let blend = blendInfo.map { " | \($0)" } ?? ""
 
-        // Clamp to window (hold-last)
-        let tVideoClamped = min(max(tVideo, config.selection.winStart), config.selection.winEnd - Self.epsilon)
-
-        return CMTime(seconds: tVideoClamped, preferredTimescale: Self.timescale)
+        print("[ExportVideoFrameProvider] #\(n) target=\(tgt)s | lastPTS=\(last)s | pendingPTS=\(pend)s | prevPTS=\(prev)s | \(adv)\(blend)")
     }
+
+    /// Logs export summary counters on finish
+    private func logExportSummary() {
+        let total = totalTextureCallCount
+        guard total > 0 else { return }
+        let advRate = Double(advancedSampleCount) / Double(total) * 100
+        let reusedRate = Double(reusedLastTextureCount) / Double(total) * 100
+        let fileName = config.selection.url.lastPathComponent
+
+        print("[ExportVideoFrameProvider] SUMMARY: \(fileName) | total=\(total) | advanced=\(advancedSampleCount) (\(String(format: "%.1f", advRate))%) | reused=\(reusedLastTextureCount) (\(String(format: "%.1f", reusedRate))%) | blended=\(blendCount) | exact=\(exactSampleCount) | maxReusedStreak=\(maxReusedStreak)")
+    }
+    #endif
+
+    // MARK: - Private
 
     /// Decodes the next sample and returns (PTS, MTLTexture).
     ///

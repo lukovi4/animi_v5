@@ -57,6 +57,10 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         var isReady: Bool { true }
         var state: VideoProviderState { .ready }
         var isPlaybackActive: Bool { false }
+        var presentationInfo: VideoPresentationInfo? = VideoPresentationInfo(
+            rawTrackSize: CGSize(width: 64, height: 64),
+            preferredTransform: .identity
+        )
 
         func requestPoster(at time: Double) async throws -> MTLTexture {
             guard let device = MTLCreateSystemDefaultDevice() else {
@@ -70,11 +74,11 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         }
 
         func release() {}
-        func startPlayback(atSceneFrame sceneFrameIndex: Int) {}
+        func startPlayback(atVideoTime videoTimeSeconds: Double) {}
         func stopPlayback(flush: Bool) {}
-        func frameTextureForPlayback(sceneFrameIndex: Int) -> MTLTexture? { nil }
-        func frameTextureForScrub(sceneFrameIndex: Int) -> MTLTexture? { nil }
-        func frameTextureForFrozen(sceneFrameIndex: Int) -> MTLTexture? { nil }
+        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
+        func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
+        func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
     }
 
     // MARK: - Properties
