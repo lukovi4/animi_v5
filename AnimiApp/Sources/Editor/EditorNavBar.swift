@@ -5,9 +5,11 @@ import UIKit
 /// Navigation bar mode for editor.
 /// - `timeline`: Normal editor mode with Close, Undo, Redo, Export
 /// - `sceneEdit`: Scene Edit mode with Done, Undo, Redo (no Close/Export)
+/// - `videoTrim`: Video Trim mode with Cancel (left), Done (right), no Undo/Redo/Close/Export
 enum EditorNavBarMode {
     case timeline   // Close, Undo, Redo, Export
     case sceneEdit  // Done, Undo, Redo (no Close/Export)
+    case videoTrim  // Cancel (left), Done (right)
 }
 
 // MARK: - Editor Nav Bar (PR2)
@@ -25,6 +27,9 @@ final class EditorNavBar: UIView {
     var onExport: (() -> Void)?
     /// Called when Done is tapped (PR-C Scene Edit mode)
     var onDone: (() -> Void)?
+
+    /// Called when Cancel is tapped (video trim mode)
+    var onCancel: (() -> Void)?
 
     // MARK: - Subviews
 
@@ -97,6 +102,19 @@ final class EditorNavBar: UIView {
         return btn
     }()
 
+    /// Cancel button (video trim mode) — text style, left position
+    private lazy var cancelButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.title = "Cancel"
+        config.baseForegroundColor = .label
+
+        let btn = UIButton(configuration: config)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+        btn.isHidden = true
+        return btn
+    }()
+
     // MARK: - State
 
     private var currentMode: EditorNavBarMode = .timeline
@@ -118,6 +136,7 @@ final class EditorNavBar: UIView {
     private func setupViews() {
         backgroundColor = .systemBackground
         addSubview(closeButton)
+        addSubview(cancelButton)
         addSubview(centerStack)
         addSubview(exportButton)
         addSubview(doneButton)
@@ -144,6 +163,10 @@ final class EditorNavBar: UIView {
             // Done button - same position as Export (PR-C)
             doneButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             doneButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            // Cancel button - same position as Close (video trim mode)
+            cancelButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            cancelButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
@@ -171,11 +194,22 @@ final class EditorNavBar: UIView {
         switch mode {
         case .timeline:
             closeButton.isHidden = false
+            cancelButton.isHidden = true
+            centerStack.isHidden = false
             exportButton.isHidden = false
             doneButton.isHidden = true
 
         case .sceneEdit:
             closeButton.isHidden = true
+            cancelButton.isHidden = true
+            centerStack.isHidden = false
+            exportButton.isHidden = true
+            doneButton.isHidden = false
+
+        case .videoTrim:
+            closeButton.isHidden = true
+            cancelButton.isHidden = false
+            centerStack.isHidden = true
             exportButton.isHidden = true
             doneButton.isHidden = false
         }
@@ -201,5 +235,9 @@ final class EditorNavBar: UIView {
 
     @objc private func doneTapped() {
         onDone?()
+    }
+
+    @objc private func cancelTapped() {
+        onCancel?()
     }
 }

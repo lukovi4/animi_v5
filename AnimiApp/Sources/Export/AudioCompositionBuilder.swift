@@ -223,7 +223,7 @@ public final class AudioCompositionBuilder {
     /// Inserts original audio from a video slot into composition.
     ///
     /// Uses the canonical formula:
-    /// - sourceStart = selection.winStart
+    /// - sourceStart = selection.trimStart
     /// - insertAt = blockStartTime (compressed if transitionMath provided)
     /// - insertDuration = min(windowDuration, availableProject, blockVisibility)
     ///
@@ -281,7 +281,7 @@ public final class AudioCompositionBuilder {
 
         guard insertDuration > 0 else { return nil }
 
-        // Source time range (starts at winStart, which already includes offset)
+        // Source time range (starts at trimStart)
         let sourceStartTime = CMTime(seconds: selection.winStart, preferredTimescale: Self.timescale)
         let sourceDurationTime = CMTime(seconds: insertDuration, preferredTimescale: Self.timescale)
         let sourceTimeRange = CMTimeRange(start: sourceStartTime, duration: sourceDurationTime)

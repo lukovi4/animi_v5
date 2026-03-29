@@ -44,6 +44,9 @@ public enum EditorConfig {
     /// Bottom bar height in points (excludes safe area inset)
     public static let bottomBarHeight: CGFloat = 72
 
+    /// Bottom bar height for video trim mode in points
+    public static let trimBottomBarHeight: CGFloat = 128
+
     // MARK: - Debug (PR2.1)
 
     #if DEBUG

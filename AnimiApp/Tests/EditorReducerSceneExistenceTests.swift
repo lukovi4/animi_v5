@@ -152,7 +152,7 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
         ).state
 
         // Then update video selection
-        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0, offset: 1.0)
+        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0)
         let result = EditorReducer.reduce(
             state: state,
             action: .setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: newSelection)
@@ -161,7 +161,6 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
         let slot = result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_01"]
         XCTAssertEqual(slot?.videoWindow?.trimStart, 2.0)
         XCTAssertEqual(slot?.videoWindow?.trimEnd, 8.0)
-        XCTAssertEqual(slot?.videoWindow?.offset, 1.0)
         XCTAssertTrue(result.shouldPushSnapshot, "Changed selection should push undo snapshot")
     }
 

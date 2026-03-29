@@ -106,13 +106,14 @@ final class UserMediaServiceBudgetTests: XCTestCase {
             return lastTexture
         }
 
-        func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
-            return lastTexture
+        func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
+            return lastTexture ?? createFakeTexture()
         }
 
-        func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
-            return lastTexture
+        func requestInteractiveStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
+            return lastTexture ?? createFakeTexture()
         }
+        func releaseInteractiveStillResources() {}
 
         private func createFakeTexture() -> MTLTexture {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(

@@ -132,8 +132,14 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         func startPlayback(atVideoTime videoTimeSeconds: Double) {}
         func stopPlayback(flush: Bool) {}
         func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
-        func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
-        func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
+        func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
+            return try await createFakeTexture()
+        }
+
+        func requestInteractiveStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
+            return try await createFakeTexture()
+        }
+        func releaseInteractiveStillResources() {}
 
         private func createFakeTexture() async throws -> MTLTexture {
             guard let device = MTLCreateSystemDefaultDevice() else {
@@ -592,17 +598,16 @@ final class UserMediaServiceReadinessTests: XCTestCase {
 
     // MARK: - Test: Effective window exceeds duration via offset → Failed
 
-    /// Regression: persisted selection where offset pushes winEnd past actual duration must fail.
-    /// Example: duration=5, trimStart=0, trimEnd=4, offset=2 → winEnd=6 > 5.
-    func testSetVideo_offsetPushesWinEndPastDuration_fails() async throws {
+    /// Regression: persisted selection where trimEnd exceeds actual duration must fail.
+    /// Example: duration=5, trimStart=0, trimEnd=6 → winEnd=6 > 5.
+    func testSetVideo_trimEndExceedsDuration_fails() async throws {
         // Given: Provider that succeeds with duration 5s
         fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
 
-        // Persisted selection: trimEnd=4, offset=2 → effective winEnd = trimEnd+offset = 6 > 5
+        // Persisted selection: trimEnd=6 > duration=5
         let badSelection = PersistedVideoSelection(
             trimStart: 0,
-            trimEnd: 4.0,
-            offset: 2.0
+            trimEnd: 6.0
         )
 
         // When
@@ -625,16 +630,15 @@ final class UserMediaServiceReadinessTests: XCTestCase {
                      "No texture should be injected after validation failure")
     }
 
-    /// Regression: persisted selection with negative offset producing negative winStart must fail.
-    /// Example: trimStart=0, trimEnd=2, offset=-1 → winStart=-1 < 0.
-    func testSetVideo_negativeWinStart_fails() async throws {
+    /// Regression: persisted selection with negative trimStart must fail.
+    /// Example: trimStart=-1, trimEnd=2 → winStart=-1 < 0.
+    func testSetVideo_negativeTrimStart_fails() async throws {
         // Given: Provider with duration 5s
         fakeProvider.mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
 
         let badSelection = PersistedVideoSelection(
-            trimStart: 0,
-            trimEnd: 2.0,
-            offset: -1.0  // winStart = 0 + (-1) = -1
+            trimStart: -1.0,
+            trimEnd: 2.0
         )
 
         // When
@@ -652,16 +656,15 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         XCTAssertEqual(fakePlayer.userMediaPresentByBlock["block_01"], false)
     }
 
-    /// Valid selection with offset stays within duration → succeeds.
-    func testSetVideo_offsetWithinDuration_succeeds() async throws {
+    /// Valid selection with trim within duration → succeeds.
+    func testSetVideo_trimWithinDuration_succeeds() async throws {
         // Given: Provider with duration 10s
         fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
 
-        // trimEnd=6, offset=2 → winEnd=8 <= 10 ✓
+        // trimStart=3, trimEnd=8 → winEnd=8 <= 10 ✓
         let goodSelection = PersistedVideoSelection(
-            trimStart: 1.0,
-            trimEnd: 6.0,
-            offset: 2.0
+            trimStart: 3.0,
+            trimEnd: 8.0
         )
 
         // When
@@ -713,10 +716,10 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         }
     }
 
-    // MARK: - Phase 5: Video Selection Edit Context
+    // MARK: - Video Selection Edit Context
 
-    /// videoSelectionEditContext returns context for ready video block.
-    func testVideoSelectionEditContext_readyVideo_returnsContext() async throws {
+    /// videoTrimContext returns context for ready video block.
+    func testVideoTrimContext_readyVideo_returnsContext() async throws {
         fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
         let url = URL(fileURLWithPath: "/tmp/test.mov")
 
@@ -729,7 +732,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         // Wait for setup to complete
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        let context = sut.videoSelectionEditContext(blockId: "block_01")
+        let context = sut.videoTrimContext(blockId: "block_01")
         XCTAssertNotNil(context, "Should return context for ready video")
         if let ctx = context {
             XCTAssertEqual(ctx.actualDuration, 10.0, accuracy: 0.01)
@@ -737,14 +740,14 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         }
     }
 
-    /// videoSelectionEditContext returns nil for missing block.
-    func testVideoSelectionEditContext_missingBlock_returnsNil() {
-        let context = sut.videoSelectionEditContext(blockId: "nonexistent")
+    /// videoTrimContext returns nil for missing block.
+    func testVideoTrimContext_missingBlock_returnsNil() {
+        let context = sut.videoTrimContext(blockId: "nonexistent")
         XCTAssertNil(context, "Should return nil for missing block")
     }
 
-    /// videoSelectionEditContext returns nil when provider is not ready.
-    func testVideoSelectionEditContext_providerNotReady_returnsNil() async throws {
+    /// videoTrimContext returns nil when provider is not ready.
+    func testVideoTrimContext_providerNotReady_returnsNil() async throws {
         fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
         let url = URL(fileURLWithPath: "/tmp/test.mov")
 
@@ -759,11 +762,11 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         // Now simulate provider becoming not-ready (e.g. budget eviction)
         fakeProvider.overrideIsReady = false
 
-        let context = sut.videoSelectionEditContext(blockId: "block_01")
+        let context = sut.videoTrimContext(blockId: "block_01")
         XCTAssertNil(context, "Should return nil when provider is not ready")
     }
 
-    // MARK: - Phase 5: Validated Apply
+    // MARK: - Validated Apply
 
     /// applyPersistedVideoSelection with valid selection updates mediaState.
     func testApplyPersistedVideoSelection_valid_updatesMediaState() async throws {
@@ -778,17 +781,16 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         // Wait for setup to complete
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        let newSelection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 8.0, offset: 0.5)
+        let newSelection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 8.0)
         XCTAssertNoThrow(
             try sut.applyPersistedVideoSelection(blockId: "block_01", newSelection),
             "Valid selection should not throw"
         )
 
-        // Verify updated via videoSelectionEditContext
-        let context = sut.videoSelectionEditContext(blockId: "block_01")
+        // Verify updated via videoTrimContext
+        let context = sut.videoTrimContext(blockId: "block_01")
         XCTAssertEqual(context?.currentSelection.trimStart, 1.0)
         XCTAssertEqual(context?.currentSelection.trimEnd, 8.0)
-        XCTAssertEqual(context?.currentSelection.offset, 0.5)
     }
 
     /// applyPersistedVideoSelection with invalid selection throws and keeps previous.
@@ -805,14 +807,14 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
 
         // Invalid: trimEnd exceeds duration significantly
-        let badSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 100.0, offset: 50.0)
+        let badSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 100.0)
         XCTAssertThrowsError(
             try sut.applyPersistedVideoSelection(blockId: "block_01", badSelection),
             "Invalid selection should throw"
         )
 
         // Verify previous selection preserved
-        let context = sut.videoSelectionEditContext(blockId: "block_01")
+        let context = sut.videoTrimContext(blockId: "block_01")
         XCTAssertEqual(context?.currentSelection.trimEnd, 10.0, "Previous selection should be preserved on throw")
     }
 
@@ -841,7 +843,7 @@ final class UserMediaServiceReadinessTests: XCTestCase {
 
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        let badSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 100.0, offset: 50.0)
+        let badSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 100.0)
         _ = try? sut.applyPersistedVideoSelection(blockId: "block_01", badSelection)
 
         XCTAssertFalse(sut.hasFailedMedia, "Invalid apply should not mark media as failed")
@@ -974,20 +976,20 @@ final class UserMediaServiceReadinessTests: XCTestCase {
 
     // MARK: - PR7: Poster Time Parity
 
-    /// PR7: setVideo requests poster at winStart (trimStart + offset), not time 0.
-    func test_setVideo_posterRequestedAtWinStart() async throws {
+    /// PR7: setVideo requests poster at trimStart.
+    func test_setVideo_posterRequestedAtTrimStart() async throws {
         fakeProvider.mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
 
         _ = sut.setVideo(
             blockId: "block_01",
             url: URL(fileURLWithPath: "/tmp/test.mov"),
-            persistedSelection: PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0, offset: 0.5)
+            persistedSelection: PersistedVideoSelection(trimStart: 2.5, trimEnd: 8.0)
         )
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        // winStart = trimStart + offset = 2.0 + 0.5 = 2.5
+        // poster at trimStart = 2.5
         XCTAssertEqual(fakeProvider.lastPosterRequestTime!, 2.5, accuracy: 0.001,
-                       "Poster should be requested at winStart (trimStart + offset)")
+                       "Poster should be requested at trimStart")
     }
 
     /// PR7: setVideo with zero trim/offset requests poster at time 0 (default case).

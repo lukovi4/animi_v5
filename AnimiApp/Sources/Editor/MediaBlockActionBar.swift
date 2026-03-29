@@ -20,8 +20,8 @@ final class MediaBlockActionBar: UIView {
     /// Called when Disable/Enable button is tapped. Parameter: blockId.
     var onToggleEnabled: ((String) -> Void)?
 
-    /// Called when Edit Video button is tapped. Parameter: blockId.
-    var onEditVideo: ((String) -> Void)?
+    /// Called when Trim button is tapped. Parameter: blockId.
+    var onTrimVideo: ((String) -> Void)?
 
     /// Called when Remove button is tapped. Parameter: blockId.
     var onRemove: ((String) -> Void)?
@@ -102,17 +102,17 @@ final class MediaBlockActionBar: UIView {
         return button
     }()
 
-    private lazy var editVideoButton: UIButton = {
+    private lazy var trimButton: UIButton = {
         var config = UIButton.Configuration.plain()
         config.image = UIImage(systemName: "slider.horizontal.below.rectangle")
-        config.title = "Edit Video"
+        config.title = "Trim"
         config.imagePlacement = .top
         config.imagePadding = 4
         config.baseForegroundColor = .label
 
         let button = UIButton(configuration: config)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.addTarget(self, action: #selector(editVideoTapped), for: .touchUpInside)
+        button.addTarget(self, action: #selector(trimVideoTapped), for: .touchUpInside)
         return button
     }()
 
@@ -181,7 +181,7 @@ final class MediaBlockActionBar: UIView {
         stackView.addArrangedSubview(statusContainer)
         stackView.addArrangedSubview(addPhotoButton)
         stackView.addArrangedSubview(addVideoButton)
-        stackView.addArrangedSubview(editVideoButton)
+        stackView.addArrangedSubview(trimButton)
         stackView.addArrangedSubview(animationButton)
         stackView.addArrangedSubview(toggleEnabledButton)
         stackView.addArrangedSubview(removeButton)
@@ -224,7 +224,7 @@ final class MediaBlockActionBar: UIView {
         hasMedia: Bool,
         isEnabled: Bool,
         mediaKind: MediaKind? = nil,
-        canEditVideoSelection: Bool = false,
+        canTrimVideo: Bool = false,
         ingestStatus: IngestSlotStatus = .idle,
         showsIngestStatus: Bool = false
     ) {
@@ -241,11 +241,11 @@ final class MediaBlockActionBar: UIView {
         addVideoButton.isEnabled = canVideo
         addVideoButton.alpha = canVideo ? 1.0 : 0.5
 
-        // Edit Video button: shown only for video slots, enabled when edit context available
+        // Trim button: shown only for video slots, enabled when edit context available
         let isVideoSlot = mediaKind == .video
-        editVideoButton.isHidden = !isVideoSlot
-        editVideoButton.isEnabled = canEditVideoSelection
-        editVideoButton.alpha = canEditVideoSelection ? 1.0 : 0.5
+        trimButton.isHidden = !isVideoSlot
+        trimButton.isEnabled = canTrimVideo
+        trimButton.alpha = canTrimVideo ? 1.0 : 0.5
 
         // Animation button: shown if block has variants
         animationButton.isHidden = !hasVariants
@@ -303,8 +303,8 @@ final class MediaBlockActionBar: UIView {
             addPhotoButton.alpha = 0.5
             addVideoButton.isEnabled = false
             addVideoButton.alpha = 0.5
-            editVideoButton.isEnabled = false
-            editVideoButton.alpha = 0.5
+            trimButton.isEnabled = false
+            trimButton.alpha = 0.5
 
         case .failed:
             statusContainer.isHidden = false
@@ -330,9 +330,9 @@ final class MediaBlockActionBar: UIView {
         onAddVideo?(id)
     }
 
-    @objc private func editVideoTapped() {
+    @objc private func trimVideoTapped() {
         guard let id = blockId else { return }
-        onEditVideo?(id)
+        onTrimVideo?(id)
     }
 
     @objc private func animationTapped() {

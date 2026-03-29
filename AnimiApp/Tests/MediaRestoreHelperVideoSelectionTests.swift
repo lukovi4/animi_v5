@@ -77,8 +77,20 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         func startPlayback(atVideoTime videoTimeSeconds: Double) {}
         func stopPlayback(flush: Bool) {}
         func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
-        func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
-        func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
+        func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
+            guard let device = MTLCreateSystemDefaultDevice() else { throw NSError(domain: "Test", code: 1) }
+            let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 64, height: 64, mipmapped: false)
+            guard let texture = device.makeTexture(descriptor: desc) else { throw NSError(domain: "Test", code: 2) }
+            return texture
+        }
+
+        func requestInteractiveStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
+            guard let device = MTLCreateSystemDefaultDevice() else { throw NSError(domain: "Test", code: 1) }
+            let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 64, height: 64, mipmapped: false)
+            guard let texture = device.makeTexture(descriptor: desc) else { throw NSError(domain: "Test", code: 2) }
+            return texture
+        }
+        func releaseInteractiveStillResources() {}
     }
 
     // MARK: - Properties
@@ -163,7 +175,6 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         let persisted = PersistedVideoSelection(
             trimStart: 2.0,
             trimEnd: 8.0,
-            offset: 1.0,
             isMuted: true,
             volume: 0.5
         )
@@ -188,7 +199,6 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
 
         XCTAssertEqual(vs.trimStart, 2.0, accuracy: 0.001)
         XCTAssertEqual(vs.trimEnd, 8.0, accuracy: 0.001)
-        XCTAssertEqual(vs.offset, 1.0, accuracy: 0.001)
         XCTAssertTrue(vs.isMuted)
         XCTAssertEqual(vs.volume, 0.5, accuracy: 0.001)
     }

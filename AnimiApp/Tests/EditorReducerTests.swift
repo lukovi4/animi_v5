@@ -1363,7 +1363,7 @@ final class EditorReducerTests: XCTestCase {
             "block_2": .video(
                 mediaRef: MediaRef.file("Media/video.mp4", mediaKind: .video),
                 visibility: false,
-                videoWindow: PersistedVideoSelection(trimStart: 1.0, trimEnd: 5.0, offset: 0.5)
+                videoWindow: PersistedVideoSelection(trimStart: 1.0, trimEnd: 5.0)
             )
         ]
 
@@ -1376,10 +1376,10 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_1"]?.mediaRef, MediaRef.file("Media/test.jpg"))
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.visibility, false)
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.trimStart, 1.0)
-        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.offset, 0.5)
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.trimEnd, 5.0)
     }
 
-    // MARK: - Phase 5: Video Selection Store Routing
+    // MARK: - Video Selection Store Routing
 
     /// onVideoSelectionChanged fires on committed setVideoSelection.
     @MainActor func test_onVideoSelectionChanged_firesOnCommit() {
@@ -1455,7 +1455,7 @@ final class EditorReducerTests: XCTestCase {
         )
         store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
 
-        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0, offset: 1.0)
+        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0)
         store.dispatch(.setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: newSelection))
 
         // Verify new selection applied
@@ -1468,5 +1468,63 @@ final class EditorReducerTests: XCTestCase {
         let undoneSlot = store.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["block_01"]
         XCTAssertEqual(undoneSlot?.videoWindow?.trimStart, 0, "Undo should restore original trimStart")
         XCTAssertEqual(undoneSlot?.videoWindow?.trimEnd, 10.0, "Undo should restore original trimEnd")
+    }
+
+    /// Dispatching setVideoSelection with same values as current does not push undo snapshot (idempotent).
+    @MainActor func test_setVideoSelection_unchangedSelection_doesNotPushSnapshot() {
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let store = EditorStore(initialState: EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state)
+
+        let sceneId = store.state.sceneItems[0].id
+        let selection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 9.0)
+        let videoSlot = SceneMediaSlot.video(
+            mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            videoWindow: selection
+        )
+        store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
+
+        // canUndo is true after setMediaSlot; dispatch same selection
+        var callbackFired = false
+        store.onVideoSelectionChanged = { _, _, _ in callbackFired = true }
+
+        store.dispatch(.setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: selection))
+
+        XCTAssertFalse(callbackFired, "Idempotent setVideoSelection should not fire callback (shouldPushSnapshot == false)")
+    }
+
+    /// onVideoSelectionChanged callback receives the exact parameters that were dispatched.
+    @MainActor func test_setVideoSelection_callbackReceivesExactParameters() {
+        let draft = makeDraft(sceneDurations: [2_000_000])
+        let store = EditorStore(initialState: EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        ).state)
+
+        let sceneId = store.state.sceneItems[0].id
+        let videoSlot = SceneMediaSlot.video(
+            mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
+        )
+        store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
+
+        var receivedInstanceId: UUID?
+        var receivedBlockId: String?
+        var receivedSelection: PersistedVideoSelection?
+        store.onVideoSelectionChanged = { instanceId, blockId, selection in
+            receivedInstanceId = instanceId
+            receivedBlockId = blockId
+            receivedSelection = selection
+        }
+
+        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 7.0)
+        store.dispatch(.setVideoSelection(sceneInstanceId: sceneId, blockId: "block_01", selection: newSelection))
+
+        XCTAssertEqual(receivedInstanceId, sceneId, "Callback should receive dispatched sceneInstanceId")
+        XCTAssertEqual(receivedBlockId, "block_01", "Callback should receive dispatched blockId")
+        XCTAssertEqual(receivedSelection?.trimStart, 2.0, "Callback should receive dispatched trimStart")
+        XCTAssertEqual(receivedSelection?.trimEnd, 7.0, "Callback should receive dispatched trimEnd")
     }
 }

@@ -124,7 +124,7 @@ public final class ExportVideoFrameProvider {
 
     /// Configuration for video frame provider.
     public struct Config: Sendable {
-        /// Video selection with trim/offset parameters
+        /// Video selection with trim/audio parameters
         public let selection: VideoSelection
         /// Resampling policy for inter-sample times
         public let resamplingPolicy: VideoResamplingPolicy

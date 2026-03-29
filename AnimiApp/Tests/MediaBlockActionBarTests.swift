@@ -36,7 +36,7 @@ final class MediaBlockActionBarTests: XCTestCase {
 
     // MARK: - Processing State
 
-    /// .processing disables Add Photo, Add Video, Edit Video buttons.
+    /// .processing disables Add Photo, Add Video, Trim buttons.
     func test_processing_disablesMediaButtons() {
         let bar = makeBar()
         bar.configure(
@@ -46,20 +46,20 @@ final class MediaBlockActionBarTests: XCTestCase {
             hasMedia: true,
             isEnabled: true,
             mediaKind: .video,
-            canEditVideoSelection: true,
+            canTrimVideo: true,
             ingestStatus: .processing,
             showsIngestStatus: true
         )
 
         let addPhoto = button(titled: "Photo", in: bar)
         let addVideo = button(titled: "Video", in: bar)
-        let editVideo = button(titled: "Edit Video", in: bar)
+        let editVideo = button(titled: "Trim", in: bar)
         let animation = button(titled: "Animation", in: bar)
 
         XCTAssertNotNil(addPhoto, "Should find Photo button")
         XCTAssertEqual(addPhoto?.isEnabled, false, "Add Photo should be disabled during processing")
         XCTAssertEqual(addVideo?.isEnabled, false, "Add Video should be disabled during processing")
-        XCTAssertEqual(editVideo?.isEnabled, false, "Edit Video should be disabled during processing")
+        XCTAssertEqual(editVideo?.isEnabled, false, "Trim should be disabled during processing")
         XCTAssertEqual(animation?.isEnabled, true, "Animation should NOT be disabled during processing")
     }
 
@@ -160,7 +160,7 @@ final class MediaBlockActionBarTests: XCTestCase {
             hasMedia: true,
             isEnabled: true,
             mediaKind: .video,
-            canEditVideoSelection: true,
+            canTrimVideo: true,
             ingestStatus: .processing,
             showsIngestStatus: true
         )
@@ -168,7 +168,7 @@ final class MediaBlockActionBarTests: XCTestCase {
         // Verify disabled
         let addPhoto = button(titled: "Photo", in: bar)
         let addVideo = button(titled: "Video", in: bar)
-        let editVideo = button(titled: "Edit Video", in: bar)
+        let editVideo = button(titled: "Trim", in: bar)
         XCTAssertEqual(addPhoto?.isEnabled, false)
         XCTAssertEqual(addVideo?.isEnabled, false)
         XCTAssertEqual(editVideo?.isEnabled, false)
@@ -181,7 +181,7 @@ final class MediaBlockActionBarTests: XCTestCase {
             hasMedia: true,
             isEnabled: true,
             mediaKind: .video,
-            canEditVideoSelection: true,
+            canTrimVideo: true,
             ingestStatus: .failed(reason: "Network error"),
             showsIngestStatus: true
         )
@@ -189,7 +189,7 @@ final class MediaBlockActionBarTests: XCTestCase {
         // Verify re-enabled
         XCTAssertEqual(addPhoto?.isEnabled, true, "Add Photo must re-enable after processing -> failed")
         XCTAssertEqual(addVideo?.isEnabled, true, "Add Video must re-enable after processing -> failed")
-        XCTAssertEqual(editVideo?.isEnabled, true, "Edit Video must return to baseline (canEditVideoSelection=true) after processing -> failed")
+        XCTAssertEqual(editVideo?.isEnabled, true, "Trim must return to baseline (canTrimVideo=true) after processing -> failed")
 
         let status = statusContainer(of: bar)
         XCTAssertEqual(status?.isHidden, false, "Status container should be visible on failed")

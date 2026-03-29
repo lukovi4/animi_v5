@@ -454,7 +454,6 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         XCTAssertEqual(vs.url, videoURL)
         XCTAssertEqual(vs.trimEnd, durationSeconds, accuracy: 0.001, "trimEnd should match persisted videoWindow")
         XCTAssertEqual(vs.trimStart, 0, accuracy: 0.001, "trimStart should match persisted videoWindow")
-        XCTAssertEqual(vs.offset, 0, accuracy: 0.001, "offset should match persisted videoWindow")
     }
 
     // MARK: - Strict Video Contract Tests

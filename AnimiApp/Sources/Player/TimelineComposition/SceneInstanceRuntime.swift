@@ -10,9 +10,9 @@ import TVECore
 @MainActor
 protocol SceneMediaSyncing: AnyObject {
     // MARK: Frame Update APIs
-    func updateVideoFramesForScrub(sceneFrameIndex: Int)
+    func updateVideoStillFrames(sceneFrameIndex: Int)
+    func awaitPendingStillFrames() async
     func updateVideoFramesForPlayback(sceneFrameIndex: Int)
-    func updateVideoFramesForFrozen(sceneFrameIndex: Int)
     func startVideoPlayback(sceneFrameIndex: Int)
 
     // MARK: Readiness APIs (TT-02)
@@ -29,7 +29,7 @@ protocol SceneMediaSyncing: AnyObject {
     /// Used when runtime transitions from active to warm state.
     /// - Does NOT clear textures (hold-last semantics)
     /// - Clears activeVideoBlockIds
-    /// - Does NOT affect scrub/frozen/readiness behavior
+    /// - Does NOT affect still/readiness behavior
     func stopVideoPlaybackPreservingTextures()
 }
 
@@ -299,7 +299,7 @@ public final class SceneInstanceRuntime {
         // NO auto-prepare
     }
 
-    // MARK: - Phase 5: Video Selection Fast Path
+    // MARK: - Video Selection Fast Path
 
     /// Fast-path: applies video selection without full reload.
     /// Defensive: only updates existing video slots, no-ops for missing/photo slots.
@@ -328,7 +328,7 @@ public final class SceneInstanceRuntime {
 
     /// TT-02: Internal helper to sync frozen frame with clamping.
     private func syncFrozenFrame(_ localFrame: Int) {
-        mediaSyncing.updateVideoFramesForFrozen(sceneFrameIndex: clampedLocalFrame(localFrame))
+        mediaSyncing.updateVideoStillFrames(sceneFrameIndex: clampedLocalFrame(localFrame))
     }
 
     /// TT-02: Starts preparing runtime for presentation at specific local frame.
@@ -396,8 +396,16 @@ public final class SceneInstanceRuntime {
 
             // Check if ready
             if mediaSyncing.isSceneMediaReady {
-                // Final frozen sync before marking ready
+                // Final still sync before marking ready
                 syncFrozenFrame(targetFrame)
+                // PR2: Await still frame delivery so texture is on-screen before .ready
+                await mediaSyncing.awaitPendingStillFrames()
+
+                // Re-check state hasn't changed during await
+                guard case .preparing(let current) = readinessState, current == targetFrame else {
+                    return
+                }
+
                 readinessState = .ready(targetLocalFrame: targetFrame)
                 runtimeDiagnosticsSink?.receive(.instancePrepareCompleted(instanceId: sceneInstanceId, targetFrame: targetFrame))
                 #if DEBUG
@@ -460,7 +468,7 @@ public final class SceneInstanceRuntime {
 
     /// Syncs video frames to specific local frame (for scrubbing).
     public func syncVideoFrame(_ localFrame: Int) {
-        mediaSyncing.updateVideoFramesForScrub(sceneFrameIndex: clampedLocalFrame(localFrame))
+        mediaSyncing.updateVideoStillFrames(sceneFrameIndex: clampedLocalFrame(localFrame))
     }
 
     /// Syncs video frames for playback tick (gated to video frame rate).

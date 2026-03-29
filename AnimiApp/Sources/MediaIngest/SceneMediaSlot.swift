@@ -8,7 +8,7 @@ import Foundation
 /// Each slot fully describes the persisted state of one media block:
 /// - What media is assigned (mediaRef)
 /// - Whether the binding layer should be rendered (visibility)
-/// - Video trim/offset/audio parameters (videoWindow, nil for photos)
+/// - Video trim/audio parameters (videoWindow, nil for photos)
 public struct SceneMediaSlot: Codable, Equatable, Sendable {
 
     /// Reference to the persisted media file.
@@ -18,7 +18,7 @@ public struct SceneMediaSlot: Codable, Equatable, Sendable {
     /// `true` = render binding layer, `false` = hide (media still assigned).
     public var visibility: Bool
 
-    /// Video trim/offset/audio parameters. Nil for photos.
+    /// Video trim/audio parameters. Nil for photos.
     public var videoWindow: PersistedVideoSelection?
 
     // MARK: - Initialization

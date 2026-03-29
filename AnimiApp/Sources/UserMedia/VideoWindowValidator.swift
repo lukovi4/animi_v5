@@ -43,7 +43,7 @@ enum VideoWindowValidator {
     /// 5. `winEnd > winStart`
     ///
     /// - Parameters:
-    ///   - selection: Persisted video selection (URL-less trim/offset params)
+    ///   - selection: Persisted video selection (URL-less trim/audio params)
     ///   - url: Resolved video file URL
     ///   - actualDuration: Probed video file duration in seconds
     ///   - blockId: Block ID for error context

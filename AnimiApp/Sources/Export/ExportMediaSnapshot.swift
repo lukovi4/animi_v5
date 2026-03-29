@@ -56,7 +56,7 @@ public struct ExportMediaSnapshot: Sendable {
         /// Block ID that owns this video
         public let blockId: String
 
-        /// Video selection with trim/offset parameters
+        /// Video selection with trim/audio parameters
         public let selection: VideoSelection
 
         /// Binding asset IDs that this video injects into

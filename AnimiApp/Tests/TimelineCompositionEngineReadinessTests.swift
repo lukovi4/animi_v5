@@ -710,14 +710,14 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
         XCTAssertTrue(runtimeA.isReady, "Runtime A should be ready after prepareForPlayback in transition")
         XCTAssertTrue(runtimeB.isReady, "Runtime B should be ready after prepareForPlayback in transition")
 
-        // Verify exact frames were requested via frozen API
+        // Verify exact frames were requested via still API
         XCTAssertTrue(
-            spyA.frozenFrames.contains(expectedFrameA),
-            "SpyA should have frozen exact frame \(expectedFrameA), got \(spyA.frozenFrames)"
+            spyA.stillFrames.contains(expectedFrameA),
+            "SpyA should have still exact frame \(expectedFrameA), got \(spyA.stillFrames)"
         )
         XCTAssertTrue(
-            spyB.frozenFrames.contains(expectedFrameB),
-            "SpyB should have frozen exact frame \(expectedFrameB), got \(spyB.frozenFrames)"
+            spyB.stillFrames.contains(expectedFrameB),
+            "SpyB should have still exact frame \(expectedFrameB), got \(spyB.stillFrames)"
         )
     }
 

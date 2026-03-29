@@ -19,8 +19,8 @@ enum VideoTimelineTimeMapper {
     ///
     /// Formula:
     /// 1. `tBlock = max(0, (sceneFrameIndex - blockStartFrame) / sceneFPS)`
-    /// 2. `tVideo = winStart + tBlock`
-    /// 3. `tVideoClamped = clamp(tVideo, winStart, winEnd - epsilon)`
+    /// 2. `tVideo = trimStart + tBlock`
+    /// 3. `tVideoClamped = clamp(tVideo, trimStart, trimEnd - epsilon)`
     static func targetVideoTime(
         sceneFrameIndex: Int,
         blockStartFrame: Int,

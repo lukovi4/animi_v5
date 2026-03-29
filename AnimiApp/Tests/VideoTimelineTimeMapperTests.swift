@@ -12,10 +12,9 @@ final class VideoTimelineTimeMapperTests: XCTestCase {
 
     private func makeSelection(
         trimStart: Double = 0,
-        trimEnd: Double = 10,
-        offset: Double = 0
+        trimEnd: Double = 10
     ) -> VideoSelection {
-        VideoSelection(url: dummyURL, trimStart: trimStart, trimEnd: trimEnd, offset: offset)
+        VideoSelection(url: dummyURL, trimStart: trimStart, trimEnd: trimEnd)
     }
 
     // MARK: - Tests
@@ -60,10 +59,9 @@ final class VideoTimelineTimeMapperTests: XCTestCase {
         XCTAssertEqual(result.targetVideoTimeSeconds, 3.0, accuracy: 1e-12)
     }
 
-    /// 4. Offset — offset != 0 → winStart = trimStart + offset is correctly reflected
-    func testOffsetShiftsWindow() {
-        let sel = makeSelection(trimStart: 2, trimEnd: 6, offset: 1)
-        // winStart = 2 + 1 = 3, winEnd = 6 + 1 = 7
+    /// 4. Trim window start — trimStart directly defines winStart
+    func testTrimWindowStart() {
+        let sel = makeSelection(trimStart: 3, trimEnd: 7)
         let result = VideoTimelineTimeMapper.targetVideoTime(
             sceneFrameIndex: 0,
             blockStartFrame: 0,
@@ -105,7 +103,7 @@ final class VideoTimelineTimeMapperTests: XCTestCase {
     /// Export path:  mapper → targetVideoTimeSeconds → CMTime(seconds:t, preferredTimescale:600)
     /// This test verifies both conversions are consistent for a non-trivial input.
     func testPreviewExportParityConversions() {
-        let sel = makeSelection(trimStart: 1.5, trimEnd: 4.5, offset: 0.5)
+        let sel = makeSelection(trimStart: 2.0, trimEnd: 5.0)
         let mapped = VideoTimelineTimeMapper.targetVideoTime(
             sceneFrameIndex: 20,
             blockStartFrame: 5,

@@ -13,16 +13,16 @@ import os.signpost
 /// Use launch arguments or UserDefaults to toggle without rebuild.
 ///
 /// Launch arguments:
-/// - `-DebugSkipScrubVideoUpdates YES` - skip updateVideoFramesForScrub
+/// - `-DebugSkipStillVideoUpdates YES` - skip updateVideoStillFrames
 /// - `-DebugSkipEditorControllerTimeUpdate YES` - skip ScenePlayer.setCurrentTimeUs
 /// - `-DebugSkipMetalRender YES` - skip metalView.setNeedsDisplay during scrub
 /// - `-DebugThrottleRender30Hz YES` - throttle render to 30Hz during scrub
 enum ScrubDebugToggles {
 
-    /// H1: Skip `updateVideoFramesForScrub` during timeline drag.
+    /// H1: Skip `updateVideoStillFrames` during timeline drag.
     /// If enabling this makes scroll smooth → root cause confirmed.
-    static var skipScrubVideoUpdates: Bool {
-        UserDefaults.standard.bool(forKey: "DebugSkipScrubVideoUpdates")
+    static var skipStillVideoUpdates: Bool {
+        UserDefaults.standard.bool(forKey: "DebugSkipStillVideoUpdates")
     }
 
     /// H2: Skip `ScenePlayer.setCurrentTimeUs` during drag.
@@ -62,7 +62,7 @@ enum ScrubSignpost {
     /// Signpost names as StaticString (required by os_signpost)
     private static let scrollViewDidScrollName: StaticString = "scrollViewDidScroll"
     private static let handlePlayheadChangedName: StaticString = "handlePlayheadChanged"
-    private static let updateVideoFramesForScrubName: StaticString = "updateVideoFramesForScrub"
+    private static let updateVideoStillFramesName: StaticString = "updateVideoStillFrames"
     private static let setCurrentTimeUsName: StaticString = "setCurrentTimeUs"
     private static let timeRulerDrawName: StaticString = "TimeRulerView.draw"
 
@@ -104,18 +104,18 @@ enum ScrubSignpost {
         os_signpost(.end, log: log, name: handlePlayheadChangedName, signpostID: id, "syncPath: %d", syncPath ? 1 : 0)
     }
 
-    // MARK: - UserMediaService.updateVideoFramesForScrub
+    // MARK: - UserMediaService.updateVideoStillFrames
 
-    /// Begin interval for updateVideoFramesForScrub
-    static func beginUpdateVideoFramesForScrub() -> OSSignpostID {
+    /// Begin interval for updateVideoStillFrames
+    static func beginUpdateVideoStillFrames() -> OSSignpostID {
         let id = OSSignpostID(log: log)
-        os_signpost(.begin, log: log, name: updateVideoFramesForScrubName, signpostID: id)
+        os_signpost(.begin, log: log, name: updateVideoStillFramesName, signpostID: id)
         return id
     }
 
-    /// End interval for updateVideoFramesForScrub
-    static func endUpdateVideoFramesForScrub(_ id: OSSignpostID, blockCount: Int) {
-        os_signpost(.end, log: log, name: updateVideoFramesForScrubName, signpostID: id, "blocks: %d", blockCount)
+    /// End interval for updateVideoStillFrames
+    static func endUpdateVideoStillFrames(_ id: OSSignpostID, blockCount: Int) {
+        os_signpost(.end, log: log, name: updateVideoStillFramesName, signpostID: id, "blocks: %d", blockCount)
     }
 
     // MARK: - ScenePlayer.setCurrentTimeUs

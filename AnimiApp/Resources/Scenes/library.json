@@ -22,6 +22,12 @@
       "order": 2,
       "title": "Polaroid Style 2",
       "baseDurationUs": 5000000
+    },
+    {
+      "id": "full_image",
+      "order": 3,
+      "title": "Full Image",
+      "baseDurationUs": 5000000
     }
   ]
 }

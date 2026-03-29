@@ -84,7 +84,6 @@ final class VideoPreparePipelineTests: XCTestCase {
 
         XCTAssertEqual(result.trimStart, 0)
         XCTAssertGreaterThan(result.trimEnd, 0.5, "Duration should be roughly 1s")
-        XCTAssertEqual(result.offset, 0)
         XCTAssertFalse(result.isMuted)
         XCTAssertEqual(result.volume, 1.0)
     }

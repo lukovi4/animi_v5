@@ -179,7 +179,7 @@ final class PlayerViewController: UIViewController {
     private var renderErrorLogged = false
     private var deviceHeaderLogged = false
     /// PR-33: Track last frame to avoid redundant video updates
-    private var lastVideoUpdateFrame: Int = -1
+    private var lastStillSyncFrame: Int = -1
     /// Release v1: Track async playhead task to cancel stale requests
     private var playheadAsyncTask: Task<Void, Never>?
     /// PR-G: Track async playback start task for cancellation
@@ -282,14 +282,17 @@ final class PlayerViewController: UIViewController {
 
             // Sync video frames at frame 0
             if !self.isPlaying {
-                self.userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
-                self.lastVideoUpdateFrame = localFrame
+                self.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
+                self.lastStillSyncFrame = localFrame
             }
         }
     }
 
-    /// Phase 5: Active video selection editor session key. Nil when no editor is open.
-    private var videoEditorSessionKey: (instanceId: UUID, blockId: String)?
+    /// Active inline video trim session. Nil when not trimming.
+    private var videoTrimSession: VideoTrimSession?
+
+    /// Thumbnail provider for the active trim session filmstrip.
+    private var trimThumbnailProvider: VideoTrimThumbnailProvider?
 
     // MARK: - PR2: Visual Editor Timeline
     private var currentProjectDraft: ProjectDraft?
@@ -686,8 +689,30 @@ final class PlayerViewController: UIViewController {
             self?.presentMediaPicker(for: blockId, kind: .video)
         }
 
-        editorLayoutContainer.onEditVideo = { [weak self] blockId in
-            self?.presentVideoSelectionEditor(for: blockId)
+        editorLayoutContainer.onTrimVideo = { [weak self] blockId in
+            self?.enterVideoTrim(for: blockId)
+        }
+
+        editorLayoutContainer.onTrimCancel = { [weak self] in
+            self?.cancelVideoTrim()
+        }
+
+        editorLayoutContainer.onTrimDone = { [weak self] in
+            self?.commitVideoTrim()
+        }
+
+        // VideoTrimBar handle/cursor callbacks
+        editorLayoutContainer.videoTrimBar.onTrimStartChanged = { [weak self] fraction in
+            self?.handleTrimStartDrag(fraction)
+        }
+        editorLayoutContainer.videoTrimBar.onTrimEndChanged = { [weak self] fraction in
+            self?.handleTrimEndDrag(fraction)
+        }
+        editorLayoutContainer.videoTrimBar.onCursorChanged = { [weak self] fraction in
+            self?.handleTrimCursorDrag(fraction)
+        }
+        editorLayoutContainer.videoTrimBar.onDragEnded = { [weak self] in
+            self?.handleTrimDragEnded()
         }
 
         editorLayoutContainer.onAnimation = { [weak self] blockId in
@@ -1173,7 +1198,7 @@ final class PlayerViewController: UIViewController {
             self?.handleSceneStateChanged(instanceId: instanceId, sceneState: sceneState)
         }
 
-        // Phase 5: Video selection committed callback
+        // Video selection committed callback
         store.onVideoSelectionChanged = { [weak self] instanceId, blockId, selection in
             self?.handleVideoSelectionChanged(instanceId: instanceId, blockId: blockId, selection: selection)
         }
@@ -1430,7 +1455,7 @@ final class PlayerViewController: UIViewController {
         currentResolver = loadedScene.resolver
 
         // Reset video update gate on scene change (prevents skipped updates when localFrame matches)
-        lastVideoUpdateFrame = -1
+        lastStillSyncFrame = -1
 
         // P0 fix: Recreate UserMediaService for new scene
         // Old service holds stale scenePlayer/textureProvider references
@@ -1445,7 +1470,11 @@ final class PlayerViewController: UIViewController {
             userMediaService?.onNeedsDisplay = { [weak self] in
                 self?.metalView.setNeedsDisplay()
                 // PR-F: Sync video frame when provider becomes ready after undo/redo
-                self?.syncPausedVideoFrame(force: true)
+                self?.syncPausedVideoStill(force: true)
+            }
+            // PR2: Render-only callback for async still frame delivery (no re-sync)
+            userMediaService?.onStillFrameDelivered = { [weak self] in
+                self?.metalView.setNeedsDisplay()
             }
             // Video selection persistence is now handled by MediaIngestCoordinator
             // (slot includes videoWindow). No runtime → persistence callback needed.
@@ -1508,7 +1537,7 @@ final class PlayerViewController: UIViewController {
         userMediaService?.clearAll()
 
         // 3. Reset video update gate
-        lastVideoUpdateFrame = -1
+        lastStillSyncFrame = -1
     }
 
     /// Applies persisted SceneState to runtime for a scene instance.
@@ -1730,16 +1759,16 @@ final class PlayerViewController: UIViewController {
             requestMetalRender()
 
             // P1: Update video frames during timeline scrub (when not playing)
-            // DEBUG: DebugSkipScrubVideoUpdates toggle for A/B testing H1
-            if !isPlaying, localFrame != lastVideoUpdateFrame {
+            // DEBUG: DebugSkipStillVideoUpdates toggle for A/B testing H1
+            if !isPlaying, localFrame != lastStillSyncFrame {
                 #if DEBUG
-                if !ScrubDebugToggles.skipScrubVideoUpdates {
-                    userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                if !ScrubDebugToggles.skipStillVideoUpdates {
+                    userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
                 }
                 #else
-                userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
                 #endif
-                lastVideoUpdateFrame = localFrame
+                lastStillSyncFrame = localFrame
             }
         } else {
             // Scene switch needed - use async path
@@ -1756,16 +1785,16 @@ final class PlayerViewController: UIViewController {
                 self.requestMetalRender()
 
                 // P1: Update video frames after scene switch (when not playing)
-                // DEBUG: DebugSkipScrubVideoUpdates toggle for A/B testing H1
-                if !self.isPlaying, localFrame != self.lastVideoUpdateFrame {
+                // DEBUG: DebugSkipStillVideoUpdates toggle for A/B testing H1
+                if !self.isPlaying, localFrame != self.lastStillSyncFrame {
                     #if DEBUG
-                    if !ScrubDebugToggles.skipScrubVideoUpdates {
-                        self.userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                    if !ScrubDebugToggles.skipStillVideoUpdates {
+                        self.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
                     }
                     #else
-                    self.userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+                    self.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
                     #endif
-                    self.lastVideoUpdateFrame = localFrame
+                    self.lastStillSyncFrame = localFrame
                 }
             }
         }
@@ -1941,15 +1970,15 @@ final class PlayerViewController: UIViewController {
         // Check if block is enabled (slot visibility)
         let isEnabled = slot?.visibility ?? true
 
-        // Phase 5: Determine media kind and edit-video capability
+        // Determine media kind and trim capability
         var mediaKind = slot?.mediaRef.mediaKind
-        var canEditVideoSelection = userMediaService?.videoSelectionEditContext(blockId: blockId) != nil
+        var canTrimVideo = userMediaService?.videoTrimContext(blockId: blockId) != nil
 
         // Phase 6: Restore-failed blocks treated as empty in scene-edit UI
         if userMediaService?.didBlockFailRestore(blockId: blockId) == true {
             hasMedia = false
             mediaKind = nil
-            canEditVideoSelection = false
+            canTrimVideo = false
         }
 
         // Phase 6: Get ingest status for this block
@@ -1963,7 +1992,7 @@ final class PlayerViewController: UIViewController {
             hasMedia: hasMedia,
             isEnabled: isEnabled,
             mediaKind: mediaKind,
-            canEditVideoSelection: canEditVideoSelection,
+            canTrimVideo: canTrimVideo,
             ingestStatus: ingestStatus,
             showsIngestStatus: showsMediaIngestStatusInActionBar
         )
@@ -2032,13 +2061,13 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    // MARK: - Phase 5: Video Selection Editing
+    // MARK: - Inline Video Trim (PR 3+4)
 
-    /// Presents the video selection editor for the given block.
-    private func presentVideoSelectionEditor(for blockId: String) {
+    /// Enters inline video trim mode for the given block.
+    private func enterVideoTrim(for blockId: String) {
         guard let instanceId = sceneEditTargetInstanceId,
               let ums = userMediaService,
-              let context = ums.videoSelectionEditContext(blockId: blockId) else { return }
+              let context = ums.videoTrimContext(blockId: blockId) else { return }
 
         // Verify slot is actually video
         guard let slot = editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
@@ -2049,51 +2078,199 @@ final class PlayerViewController: UIViewController {
             stopPlayback()
         }
 
-        // Store session key
-        videoEditorSessionKey = (instanceId, blockId)
+        // Compute current video time at paused playhead
+        let localFrame = playbackCoordinator?.currentLocalFrame ?? currentFrameIndex
+        let currentVideoTime = ums.currentVideoTime(blockId: blockId, sceneFrameIndex: localFrame)
 
-        // Create and present editor
-        let editorVC = VideoSelectionEditorViewController(
+        // Create trim session (opens at current playhead if inside clip, else trimStart)
+        let session = VideoTrimSession(
+            instanceId: instanceId,
             blockId: blockId,
             actualDuration: context.actualDuration,
-            initialSelection: context.currentSelection
+            selection: context.currentSelection,
+            currentVideoTime: currentVideoTime
         )
-        editorVC.delegate = self
+        videoTrimSession = session
 
-        let nav = UINavigationController(rootViewController: editorVC)
-        if let sheet = nav.sheetPresentationController {
-            sheet.detents = [.medium()]
-            sheet.prefersGrabberVisible = true
+        // Switch layout to trim mode
+        editorLayoutContainer.setVideoTrimMode(true)
+
+        // Configure trim bar positions
+        editorLayoutContainer.videoTrimBar.setPositions(
+            start: session.trimStartFraction,
+            end: session.trimEndFraction,
+            cursor: session.cursorFraction
+        )
+
+        // Generate filmstrip thumbnails
+        let thumbnailProvider = VideoTrimThumbnailProvider(
+            url: context.videoURL,
+            duration: context.actualDuration
+        )
+        self.trimThumbnailProvider = thumbnailProvider
+
+        let barWidth = editorLayoutContainer.videoTrimBar.bounds.width
+        let thumbHeight = VideoTrimBarView.filmstripHeight
+        let thumbWidth = thumbHeight * 16.0 / 9.0 // Approximate 16:9 aspect
+        let count = max(1, Int(ceil(barWidth / thumbWidth)))
+
+        thumbnailProvider.generateThumbnails(
+            count: count,
+            size: CGSize(width: thumbWidth, height: thumbHeight)
+        ) { [weak self] results in
+            self?.editorLayoutContainer.videoTrimBar.setThumbnails(results.map(\.image))
         }
-        present(nav, animated: true)
+
+        // Preview initial frame at trimStart
+        ums.previewExactVideoTrimFrame(
+            blockId: blockId,
+            draftSelection: session.draftSelection,
+            previewTime: session.currentPreviewTime
+        )
     }
 
-    /// Returns true if the video editor session is still valid for the given blockId.
-    private func isVideoEditorSessionValid(for blockId: String) -> Bool {
-        Self.isVideoEditorSessionValid(
-            for: blockId,
-            sessionKey: videoEditorSessionKey,
-            sceneEditTargetInstanceId: sceneEditTargetInstanceId,
-            sceneInstanceStates: editorStore?.state.draft.sceneInstanceStates ?? [:]
+    /// Handles left handle drag during trim.
+    private func handleTrimStartDrag(_ fraction: Double) {
+        guard var session = videoTrimSession else { return }
+        let newTrimStart = fraction * session.actualDuration
+        session.draftSelection.trimStart = newTrimStart
+        session.currentPreviewTime = newTrimStart
+        videoTrimSession = session
+
+        // Interactive preview during drag (tolerant, coalescing)
+        userMediaService?.updateInteractiveTrimPreview(
+            blockId: session.blockId,
+            draftSelection: session.draftSelection,
+            previewTime: newTrimStart
         )
     }
 
-    /// Pure-function session validation, testable without PlayerViewController.
-    static func isVideoEditorSessionValid(
-        for blockId: String,
-        sessionKey: (instanceId: UUID, blockId: String)?,
-        sceneEditTargetInstanceId: UUID?,
-        sceneInstanceStates: [UUID: SceneState]
-    ) -> Bool {
-        guard let session = sessionKey,
-              session.blockId == blockId,
-              session.instanceId == sceneEditTargetInstanceId,
-              let slot = sceneInstanceStates[session.instanceId]?
-                  .mediaSlotsByBlockId?[blockId],
-              slot.mediaRef.mediaKind == .video else {
-            return false
+    /// Handles right handle drag during trim.
+    private func handleTrimEndDrag(_ fraction: Double) {
+        guard var session = videoTrimSession else { return }
+        let newTrimEnd = fraction * session.actualDuration
+        session.draftSelection.trimEnd = newTrimEnd
+        session.currentPreviewTime = newTrimEnd
+        videoTrimSession = session
+
+        // Interactive preview during drag (tolerant, coalescing)
+        userMediaService?.updateInteractiveTrimPreview(
+            blockId: session.blockId,
+            draftSelection: session.draftSelection,
+            previewTime: newTrimEnd
+        )
+    }
+
+    /// Handles cursor drag during trim (scrub within trim range).
+    private func handleTrimCursorDrag(_ fraction: Double) {
+        guard var session = videoTrimSession else { return }
+        let previewTime = fraction * session.actualDuration
+        session.currentPreviewTime = previewTime
+        videoTrimSession = session
+
+        // Interactive preview during drag (tolerant, coalescing)
+        userMediaService?.updateInteractiveTrimPreview(
+            blockId: session.blockId,
+            draftSelection: session.draftSelection,
+            previewTime: previewTime
+        )
+    }
+
+    /// Handles end of any trim drag gesture: switch from interactive to exact.
+    private func handleTrimDragEnded() {
+        guard let session = videoTrimSession else { return }
+        userMediaService?.endInteractiveTrimPreview(blockId: session.blockId)
+        userMediaService?.previewExactVideoTrimFrame(
+            blockId: session.blockId,
+            draftSelection: session.draftSelection,
+            previewTime: session.currentPreviewTime
+        )
+    }
+
+    /// Commits the trim session: validates, applies, dispatches, exits.
+    private func commitVideoTrim() {
+        guard let session = videoTrimSession else { return }
+
+        // End interactive preview before commit
+        userMediaService?.endInteractiveTrimPreview(blockId: session.blockId)
+
+        if session.hasChanges {
+            guard let ums = userMediaService else {
+                exitVideoTrim()
+                return
+            }
+
+            // 1. Validate + apply to runtime
+            do {
+                try ums.applyPersistedVideoSelection(blockId: session.blockId, session.draftSelection)
+            } catch {
+                let alert = UIAlertController(
+                    title: "Invalid Selection",
+                    message: error.localizedDescription,
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                present(alert, animated: true)
+                return
+            }
+
+            // 2. Render exact still at new trimStart for poster/cover
+            ums.previewExactVideoTrimFrame(
+                blockId: session.blockId,
+                draftSelection: session.draftSelection,
+                previewTime: session.draftSelection.trimStart
+            )
+
+            // 3. Dispatch to store
+            editorStore?.dispatch(.setVideoSelection(
+                sceneInstanceId: session.instanceId,
+                blockId: session.blockId,
+                selection: session.draftSelection
+            ))
         }
-        return true
+
+        exitVideoTrim()
+    }
+
+    /// Cancels the trim session: reverts runtime preview, exits.
+    private func cancelVideoTrim() {
+        guard let session = videoTrimSession else { return }
+
+        // End interactive preview
+        userMediaService?.endInteractiveTrimPreview(blockId: session.blockId)
+
+        // Revert draft selection if handles were moved
+        if session.hasChanges, let ums = userMediaService {
+            try? ums.applyPersistedVideoSelection(blockId: session.blockId, session.originalSelection)
+        }
+
+        // Always restore the committed scene-frame still.
+        // Even cursor-only scrubs change the displayed texture without touching draftSelection,
+        // so we must re-sync to the paused playhead regardless of hasChanges.
+        videoTrimSession = nil  // clear before sync so the trim guard in syncPausedVideoStill does not block
+        syncPausedVideoStill(force: true)
+
+        exitVideoTrim()
+    }
+
+    /// Exits trim mode and cleans up session state.
+    private func exitVideoTrim() {
+        // Safety-net: ensure interactive preview is cleaned up
+        if let session = videoTrimSession {
+            userMediaService?.endInteractiveTrimPreview(blockId: session.blockId)
+        }
+        trimThumbnailProvider?.cancel()
+        trimThumbnailProvider = nil
+        videoTrimSession = nil
+
+        editorLayoutContainer.setVideoTrimMode(false)
+
+        // Restore scene edit bottom bar state
+        let selectedBlockId = editorStore?.state.selectedBlockId
+        editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: selectedBlockId)
+        if selectedBlockId != nil {
+            updateMediaBlockActionBarForSelectedBlock()
+        }
     }
 
     /// Handles committed video selection change from store callback.
@@ -2120,7 +2297,7 @@ final class PlayerViewController: UIViewController {
         userMediaService?.clearAll()
 
         // 3. Reset video update gate (PR-F: match canonical path)
-        lastVideoUpdateFrame = -1
+        lastStillSyncFrame = -1
 
         // 4. Re-apply persisted state from store
         applySceneInstanceState(instanceId: instanceId)
@@ -2130,7 +2307,7 @@ final class PlayerViewController: UIViewController {
         metalView.setNeedsDisplay()
 
         // 6. Force video frame sync for already-ready providers (PR-F)
-        syncPausedVideoFrame(force: true)
+        syncPausedVideoStill(force: true)
 
         #if DEBUG
         log("[PR-F] Runtime state reloaded for instance: \(instanceId)")
@@ -2139,19 +2316,23 @@ final class PlayerViewController: UIViewController {
 
     /// Syncs video frames to current playhead when paused.
     /// PR-F: Used after runtime reload and when video providers become ready.
-    /// - Parameter force: If true, bypasses lastVideoUpdateFrame gate
-    private func syncPausedVideoFrame(force: Bool) {
+    /// Suppressed during active trim session to prevent onNeedsDisplay events from
+    /// overwriting the trim preview with scene-frame stills.
+    /// - Parameter force: If true, bypasses lastStillSyncFrame gate
+    private func syncPausedVideoStill(force: Bool) {
         guard !isPlaying else { return }
+        // During active trim, preview is driven by previewExactVideoTrimFrame — don't stomp it
+        guard videoTrimSession == nil else { return }
 
         let localFrame = playbackCoordinator?.currentLocalFrame ?? currentFrameIndex
 
         if force {
-            userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+            userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
         } else {
-            // Respect lastVideoUpdateFrame gate
-            guard localFrame != lastVideoUpdateFrame else { return }
-            lastVideoUpdateFrame = localFrame
-            userMediaService?.updateVideoFramesForScrub(sceneFrameIndex: localFrame)
+            // Respect lastStillSyncFrame gate
+            guard localFrame != lastStillSyncFrame else { return }
+            lastStillSyncFrame = localFrame
+            userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
         }
     }
 
@@ -3577,7 +3758,11 @@ final class PlayerViewController: UIViewController {
             userMediaService?.onNeedsDisplay = { [weak self] in
                 self?.metalView.setNeedsDisplay()
                 // PR-F: Sync video frame when provider becomes ready after undo/redo
-                self?.syncPausedVideoFrame(force: true)
+                self?.syncPausedVideoStill(force: true)
+            }
+            // PR2: Render-only callback for async still frame delivery (no re-sync)
+            userMediaService?.onStillFrameDelivered = { [weak self] in
+                self?.metalView.setNeedsDisplay()
             }
             log("UserMediaService initialized")
         }
@@ -3652,7 +3837,11 @@ final class PlayerViewController: UIViewController {
             userMediaService?.onNeedsDisplay = { [weak self] in
                 self?.metalView.setNeedsDisplay()
                 // PR-F: Sync video frame when provider becomes ready after undo/redo
-                self?.syncPausedVideoFrame(force: true)
+                self?.syncPausedVideoStill(force: true)
+            }
+            // PR2: Render-only callback for async still frame delivery (no re-sync)
+            userMediaService?.onStillFrameDelivered = { [weak self] in
+                self?.metalView.setNeedsDisplay()
             }
             log("UserMediaService initialized")
         }
@@ -3843,9 +4032,9 @@ final class PlayerViewController: UIViewController {
             let localFrame = playbackCoordinator?.currentLocalFrame ?? globalFrameIndex
             if let service = userMediaService,
                !service.blockIdsWithVideo.isEmpty,
-               localFrame != lastVideoUpdateFrame {
+               localFrame != lastStillSyncFrame {
                 service.updateVideoFramesForPlayback(sceneFrameIndex: localFrame)
-                lastVideoUpdateFrame = localFrame
+                lastStillSyncFrame = localFrame
             }
         }
 
@@ -4410,106 +4599,3 @@ private extension Collection {
     }
 }
 
-// MARK: - Phase 5: VideoSelectionEditorDelegate
-
-extension PlayerViewController: VideoSelectionEditorDelegate {
-
-    func videoSelectionEditorDidChange(blockId: String, selection: PersistedVideoSelection) {
-        guard isVideoEditorSessionValid(for: blockId) else { return }
-        guard let ums = userMediaService else { return }
-        // Live preview: apply to runtime, sync frame
-        do {
-            try ums.applyPersistedVideoSelection(blockId: blockId, selection)
-            syncPausedVideoFrame(force: true)
-        } catch {
-            #if DEBUG
-            print("[Phase5] Live preview apply failed: \(error)")
-            #endif
-        }
-    }
-
-    func videoSelectionEditorDidConfirm(blockId: String, selection: PersistedVideoSelection) {
-        // 1. Stale session check
-        guard isVideoEditorSessionValid(for: blockId) else {
-            dismiss(animated: true)
-            videoEditorSessionKey = nil
-            return
-        }
-
-        // 2. Runtime service must be available to commit
-        guard let ums = userMediaService else {
-            // Cannot validate — abort commit, cleanup session, dismiss
-            videoEditorSessionKey = nil
-            dismiss(animated: true)
-            return
-        }
-
-        // 3. Validate+apply to active runtime
-        do {
-            try ums.applyPersistedVideoSelection(blockId: blockId, selection)
-        } catch {
-            // Show error alert, do NOT dismiss, do NOT dispatch
-            let alert = UIAlertController(
-                title: "Invalid Selection",
-                message: error.localizedDescription,
-                preferredStyle: .alert
-            )
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
-            presentedViewController?.present(alert, animated: true)
-            return
-        }
-
-        // 4. Sync frame
-        syncPausedVideoFrame(force: true)
-
-        // 5. Capture session info
-        let instanceId = videoEditorSessionKey?.instanceId
-
-        // 6. Clear session
-        videoEditorSessionKey = nil
-
-        // 7. Dismiss editor
-        dismiss(animated: true)
-
-        // 8. Dispatch to store
-        if let instanceId = instanceId {
-            editorStore?.dispatch(.setVideoSelection(
-                sceneInstanceId: instanceId,
-                blockId: blockId,
-                selection: selection
-            ))
-        }
-    }
-
-    func videoSelectionEditorDidFinishUnchanged(blockId: String) {
-        // Full staleness guard — same contract as didConfirm/didCancel.
-        // Only clear session if fully valid (instanceId + blockId + target + video slot).
-        if isVideoEditorSessionValid(for: blockId) {
-            videoEditorSessionKey = nil
-        }
-        dismiss(animated: true)
-    }
-
-    func videoSelectionEditorDidCancel(blockId: String) {
-        // 1. Dismiss editor
-        dismiss(animated: true)
-
-        // 2. Stale session check
-        guard isVideoEditorSessionValid(for: blockId) else {
-            videoEditorSessionKey = nil
-            return
-        }
-
-        // 3. Clear session
-        videoEditorSessionKey = nil
-
-        // 4. Revert to persisted videoWindow
-        if let ums = userMediaService,
-           let instanceId = sceneEditTargetInstanceId,
-           let persisted = editorStore?.state.draft.sceneInstanceStates[instanceId]?
-               .mediaSlotsByBlockId?[blockId]?.videoWindow {
-            try? ums.applyPersistedVideoSelection(blockId: blockId, persisted)
-            syncPausedVideoFrame(force: true)
-        }
-    }
-}

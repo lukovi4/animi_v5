@@ -10,7 +10,6 @@ final class PersistedVideoSelectionTests: XCTestCase {
         let original = PersistedVideoSelection(
             trimStart: 1.5,
             trimEnd: 10.0,
-            offset: 0.25,
             isMuted: true,
             volume: 0.7
         )
@@ -20,7 +19,6 @@ final class PersistedVideoSelectionTests: XCTestCase {
 
         XCTAssertEqual(decoded.trimStart, 1.5)
         XCTAssertEqual(decoded.trimEnd, 10.0)
-        XCTAssertEqual(decoded.offset, 0.25)
         XCTAssertEqual(decoded.isMuted, true)
         XCTAssertEqual(decoded.volume, 0.7, accuracy: 0.001)
     }
@@ -33,7 +31,6 @@ final class PersistedVideoSelectionTests: XCTestCase {
 
         XCTAssertEqual(decoded.trimStart, 0)
         XCTAssertEqual(decoded.trimEnd, 5.0)
-        XCTAssertEqual(decoded.offset, 0)
         XCTAssertEqual(decoded.isMuted, false)
         XCTAssertEqual(decoded.volume, 1.0, accuracy: 0.001)
     }
@@ -45,7 +42,6 @@ final class PersistedVideoSelectionTests: XCTestCase {
             url: URL(fileURLWithPath: "/tmp/video.mp4"),
             trimStart: 2.0,
             trimEnd: 8.0,
-            offset: 1.0,
             isMuted: true,
             volume: 0.5
         )
@@ -54,7 +50,6 @@ final class PersistedVideoSelectionTests: XCTestCase {
 
         XCTAssertEqual(pvs.trimStart, 2.0)
         XCTAssertEqual(pvs.trimEnd, 8.0)
-        XCTAssertEqual(pvs.offset, 1.0)
         XCTAssertEqual(pvs.isMuted, true)
         XCTAssertEqual(pvs.volume, 0.5, accuracy: 0.001)
     }
@@ -65,7 +60,6 @@ final class PersistedVideoSelectionTests: XCTestCase {
         let pvs = PersistedVideoSelection(
             trimStart: 1.0,
             trimEnd: 9.0,
-            offset: 0.5,
             isMuted: false,
             volume: 0.8
         )
@@ -76,7 +70,6 @@ final class PersistedVideoSelectionTests: XCTestCase {
         XCTAssertEqual(vs.url, url)
         XCTAssertEqual(vs.trimStart, 1.0)
         XCTAssertEqual(vs.trimEnd, 9.0)
-        XCTAssertEqual(vs.offset, 0.5)
         XCTAssertEqual(vs.isMuted, false)
         XCTAssertEqual(vs.volume, 0.8, accuracy: 0.001)
         XCTAssertTrue(vs.isValid)

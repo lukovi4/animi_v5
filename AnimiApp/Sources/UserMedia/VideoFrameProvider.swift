@@ -55,9 +55,19 @@ public final class VideoFrameProvider {
     /// Scene FPS for time mapping
     private var sceneFPS: Double = 30.0
 
-    /// Last extracted texture (for caching/reuse)
-    private var lastTexture: MTLTexture?
-    private var lastExtractedVideoTime: CMTime = .invalid
+    /// Last extracted texture (for caching/reuse) — playback path only
+    private var lastPlaybackTexture: MTLTexture?
+    private var lastPlaybackExtractedVideoTime: CMTime = .invalid
+
+    /// Still cache (AVAssetImageGenerator path) — separate from playback
+    private var lastStillTexture: MTLTexture?
+    private var lastStillVideoTime: CMTime = .invalid
+
+    /// Interactive still cache (tolerant generator, reused across drag ticks)
+    private var interactiveStillGenerator: AVAssetImageGenerator?
+    private var lastInteractiveStillTexture: MTLTexture?
+    private var lastInteractiveStillVideoTime: CMTime = .invalid
+    private static let interactivePreviewToleranceSeconds: Double = 1.0 / 30.0
 
     // MARK: - Playback State
 
@@ -92,16 +102,7 @@ public final class VideoFrameProvider {
     private var didLogMetadata: Bool = false
     #endif
 
-    // MARK: - Scrub State
-
-    /// Last scrub seek time (for throttling)
-    private var lastScrubSeekTime: CFTimeInterval = 0
-
-    /// Scrub throttle interval (~30Hz = 33ms)
-    private let scrubThrottle: CFTimeInterval = 0.033
-
-    /// Last scrubbed video time (to avoid redundant seeks)
-    private var lastScrubbedVideoTime: CMTime = .invalid
+    // (Scrub state removed — PR2: exact still pipeline)
 
     // MARK: - Async Race Protection (PR-async-race)
 
@@ -190,9 +191,8 @@ public final class VideoFrameProvider {
 
         // PR1.2.1: Only flush on explicit request (Pause), not on gating
         if flush {
-            lastTexture = nil
-            lastExtractedVideoTime = .invalid
-            lastScrubbedVideoTime = .invalid
+            lastPlaybackTexture = nil
+            lastPlaybackExtractedVideoTime = .invalid
             textureFactory.flushCache()
 
             #if DEBUG
@@ -212,7 +212,7 @@ public final class VideoFrameProvider {
     /// - Parameter videoTimeSeconds: Expected video time (for drift detection, not per-tick seek)
     /// - Returns: Metal texture, or nil if not available
     public func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? {
-        guard isReady, isPlaybackActive else { return lastTexture }
+        guard isReady, isPlaybackActive else { return lastPlaybackTexture }
 
         // Drift correction disabled for preview stability
         if isDriftCorrectionEnabled {
@@ -253,113 +253,92 @@ public final class VideoFrameProvider {
         }
     }
 
-    // MARK: - Scrub Mode
+    // MARK: - Still Frame Extraction (PR2: Exact Still Pipeline)
 
-    /// Returns texture for scrub position (throttled seek).
-    ///
-    /// Used when user drags timeline slider. Seeks are throttled to ~30Hz max
-    /// to avoid overwhelming the decoder.
-    ///
-    /// PR4: Time-based API. Scrub cache uses epsilon comparison instead of frame index equality.
-    ///
-    /// - Parameter videoTimeSeconds: Target video time in seconds (pre-computed by caller via shared mapper)
-    /// - Returns: Metal texture, or nil if not available
-    public func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
-        guard isReady else { return lastTexture }
+    /// Extracts exact frame via AVAssetImageGenerator. Token-protected, latest-wins safe.
+    /// Writes to still cache (separate from playback cache).
+    public func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
+        let token = generation
+        try Task.checkCancellation()
+        guard isReady else { throw PosterError.notReady }
 
         let targetTime = videoTime(seconds: videoTimeSeconds)
 
-        // Skip if same time requested (epsilon comparison)
-        if lastScrubbedVideoTime.isValid,
-           abs(lastScrubbedVideoTime.seconds - targetTime.seconds) < Self.epsilon {
-            return lastTexture
-        }
-
-        let now = CACurrentMediaTime()
-
-        // Throttle scrub seeks
-        guard now - lastScrubSeekTime >= scrubThrottle else {
-            return lastTexture
-        }
-
-        // Stop playback if active
-        if isPlaybackActive {
-            stopPlayback()
-        }
-
-        // Seek with small tolerance (faster than zero tolerance)
-        let tolerance = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)
-        player.seek(to: targetTime, toleranceBefore: tolerance, toleranceAfter: tolerance)
-
-        lastScrubSeekTime = now
-        lastScrubbedVideoTime = targetTime
-
-        // Try to extract frame (may not be immediately available after seek)
-        return extractTexture(at: targetTime)
-    }
-
-    // MARK: - Frozen Frame (Edit Mode)
-
-    /// Returns texture for a frozen frame (edit mode).
-    ///
-    /// In edit mode, scene is frozen at a specific time. Video shows
-    /// corresponding frame without playback.
-    ///
-    /// PR4: Time-based API. Uses epsilon comparison for cache hit.
-    ///
-    /// - Parameter videoTimeSeconds: Target video time in seconds (pre-computed by caller via shared mapper)
-    /// - Returns: Metal texture, or nil if not available
-    public func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
-        guard isReady else { return lastTexture }
-
-        let targetTime = videoTime(seconds: videoTimeSeconds)
-
-        // Check if we already have this frame cached (epsilon comparison)
-        if let cached = lastTexture,
-           abs(lastExtractedVideoTime.seconds - targetTime.seconds) < Self.epsilon {
+        // Still cache hit — synchronous fast path (no await)
+        if lastStillVideoTime.isValid,
+           abs(lastStillVideoTime.seconds - targetTime.seconds) < Self.epsilon,
+           let cached = lastStillTexture {
             return cached
         }
 
-        // Stop playback if active
-        if isPlaybackActive {
-            stopPlayback()
+        let generator = AVAssetImageGenerator(asset: playerItem.asset)
+        generator.appliesPreferredTrackTransform = false
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+
+        let (cgImage, _) = try await generator.image(at: targetTime)
+        guard token == generation else { throw CancellationError() }
+        try Task.checkCancellation()
+
+        guard let texture = textureFactory.makeTexture(from: cgImage) else {
+            throw PosterError.generationFailed("Texture conversion failed")
         }
 
-        // Seek to target frame
-        player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
-
-        return extractTexture(at: targetTime)
+        lastStillTexture = texture
+        lastStillVideoTime = targetTime
+        return texture
     }
 
-    // MARK: - Video Time API (PR1)
+    // MARK: - Interactive Still Frame (Tolerant, Reusable Generator)
 
-    /// Returns texture for a specific video time in seconds.
-    ///
-    /// PR1: Used by UserMediaService with pre-computed tVideo (including trim/offset).
-    /// Applies hold-last clamp internally.
-    ///
-    /// - Parameter videoTimeSeconds: Target time in video (already includes winStart + tBlock)
-    /// - Returns: Metal texture, or nil if not available
-    public func frameTexture(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
-        guard isReady else { return lastTexture }
+    /// Lazily creates or returns the cached interactive still generator with frame-level tolerance.
+    private func ensureInteractiveStillGenerator() -> AVAssetImageGenerator {
+        if let existing = interactiveStillGenerator { return existing }
+        let gen = AVAssetImageGenerator(asset: playerItem.asset)
+        gen.appliesPreferredTrackTransform = false
+        let tolerance = CMTime(seconds: Self.interactivePreviewToleranceSeconds, preferredTimescale: 600)
+        gen.requestedTimeToleranceBefore = tolerance
+        gen.requestedTimeToleranceAfter = tolerance
+        interactiveStillGenerator = gen
+        return gen
+    }
+
+    /// Extracts a frame using the tolerant, reusable interactive generator.
+    /// Suitable for rapid drag gestures where exact-frame precision is not required.
+    public func requestInteractiveStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
+        let token = generation
+        try Task.checkCancellation()
+        guard isReady else { throw PosterError.notReady }
 
         let targetTime = videoTime(seconds: videoTimeSeconds)
 
-        // Check if we already have this frame cached
-        if let cached = lastTexture,
-           abs(lastExtractedVideoTime.seconds - targetTime.seconds) < Self.epsilon {
+        // Cache hit check (epsilon comparison)
+        if lastInteractiveStillVideoTime.isValid,
+           abs(lastInteractiveStillVideoTime.seconds - targetTime.seconds) < Self.epsilon,
+           let cached = lastInteractiveStillTexture {
             return cached
         }
 
-        // Stop playback if active (we're in scrub/frozen mode)
-        if isPlaybackActive {
-            stopPlayback()
+        let generator = ensureInteractiveStillGenerator()
+        let (cgImage, _) = try await generator.image(at: targetTime)
+        guard token == generation else { throw CancellationError() }
+        try Task.checkCancellation()
+
+        guard let texture = textureFactory.makeTexture(from: cgImage) else {
+            throw PosterError.generationFailed("Texture conversion failed")
         }
 
-        // Seek to target frame
-        player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        lastInteractiveStillTexture = texture
+        lastInteractiveStillVideoTime = targetTime
+        return texture
+    }
 
-        return extractTexture(at: targetTime)
+    /// Releases interactive still generator and cache.
+    public func releaseInteractiveStillResources() {
+        interactiveStillGenerator?.cancelAllCGImageGeneration()
+        interactiveStillGenerator = nil
+        lastInteractiveStillTexture = nil
+        lastInteractiveStillVideoTime = .invalid
     }
 
     // MARK: - Poster Generation (PR1)
@@ -384,78 +363,32 @@ public final class VideoFrameProvider {
 
     /// Generates a poster (still frame) at the specified video time.
     ///
-    /// PR1: Uses AVAssetImageGenerator for reliable frame extraction.
+    /// PR2: Thin wrapper over requestStillTexture with loading-poll loop.
     /// Called once after setVideo to get the first frame before enabling binding layer.
     /// PR-async-race: Token-protected to throw CancellationError if provider released mid-operation.
     ///
-    /// - Parameter seconds: Time in video to extract poster from (typically winStart)
+    /// - Parameter seconds: Time in video to extract poster from (typically trimStart)
     /// - Returns: Metal texture of the poster frame
     /// - Throws: PosterError if generation fails, CancellationError if provider released
     public func requestPoster(at seconds: Double) async throws -> MTLTexture {
-        // PR-async-race: Capture token at start
         let token = generation
         try Task.checkCancellation()
 
-        // Wait for ready state if still loading
+        // Poll for ready state (poster requested during initial setup)
         if state == .loading {
-            // Poll for ready state (max 5 seconds)
             for _ in 0..<50 {
                 try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-                // PR-async-race: Check token after each await
                 try Task.checkCancellation()
                 guard token == generation else { throw CancellationError() }
                 if state == .ready { break }
-                if case .failed(let error) = state {
-                    throw PosterError.generationFailed(error)
-                }
+                if case .failed(let msg) = state { throw PosterError.generationFailed(msg) }
             }
         }
 
-        // PR-async-race: Verify still valid before proceeding
-        try Task.checkCancellation()
+        guard state == .ready else { throw PosterError.notReady }
         guard token == generation else { throw CancellationError() }
 
-        guard isReady else {
-            throw PosterError.notReady
-        }
-
-        // Validate duration
-        guard duration.seconds > Self.epsilon else {
-            throw PosterError.invalidDuration
-        }
-
-        // Clamp requested time
-        let clampedSeconds = min(max(seconds, 0), duration.seconds - Self.epsilon)
-        let targetTime = CMTime(seconds: clampedSeconds, preferredTimescale: 600)
-
-        // Use AVAssetImageGenerator for reliable poster extraction
-        let asset = playerItem.asset
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = false  // Raw pixels — orientation via GPU
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
-
-        do {
-            let (cgImage, _) = try await generator.image(at: targetTime)
-
-            // PR-async-race: Check token after image generation await
-            try Task.checkCancellation()
-            guard token == generation else { throw CancellationError() }
-
-            guard let texture = textureFactory.makeTexture(from: cgImage) else {
-                throw PosterError.generationFailed("Failed to create texture from CGImage")
-            }
-
-            // Cache the poster as last texture
-            lastTexture = texture
-            lastExtractedVideoTime = targetTime
-
-            return texture
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            throw PosterError.generationFailed(error.localizedDescription)
-        }
+        return try await requestStillTexture(atVideoTime: seconds)
     }
 
     // MARK: - Constants
@@ -469,7 +402,7 @@ public final class VideoFrameProvider {
     ///
     /// PR1: No loop — clamps to [0, duration - epsilon] for hold-last behavior.
     ///
-    /// - Parameter seconds: Video time in seconds (already computed with trim/offset by caller)
+    /// - Parameter seconds: Video time in seconds (already computed with trim window by caller)
     /// - Returns: Clamped CMTime
     private func videoTime(seconds: Double) -> CMTime {
         let maxSeconds = max(0, duration.seconds - Self.epsilon)
@@ -477,7 +410,7 @@ public final class VideoFrameProvider {
         return CMTime(seconds: clampedSeconds, preferredTimescale: 600)
     }
 
-    /// Extracts texture from video output at given time.
+    /// Extracts texture from video output at given time (playback path only).
     private func extractTexture(at time: CMTime) -> MTLTexture? {
         // Try to get pixel buffer
         let itemTime = time
@@ -486,8 +419,8 @@ public final class VideoFrameProvider {
         if videoOutput.hasNewPixelBuffer(forItemTime: itemTime) {
             if let pixelBuffer = videoOutput.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
                 let texture = textureFactory.makeTexture(from: pixelBuffer)
-                lastTexture = texture
-                lastExtractedVideoTime = time
+                lastPlaybackTexture = texture
+                lastPlaybackExtractedVideoTime = time
                 #if DEBUG
                 successExtractCount += 1
                 logDiagnosticsIfNeeded()
@@ -498,8 +431,8 @@ public final class VideoFrameProvider {
             // Try copyPixelBuffer anyway (may work for nearby times)
             if let pixelBuffer = videoOutput.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
                 let texture = textureFactory.makeTexture(from: pixelBuffer)
-                lastTexture = texture
-                lastExtractedVideoTime = time
+                lastPlaybackTexture = texture
+                lastPlaybackExtractedVideoTime = time
                 #if DEBUG
                 successExtractCount += 1
                 logDiagnosticsIfNeeded()
@@ -513,7 +446,7 @@ public final class VideoFrameProvider {
         nilExtractCount += 1
         logDiagnosticsIfNeeded()
         #endif
-        return lastTexture
+        return lastPlaybackTexture
     }
 
     #if DEBUG
@@ -548,7 +481,7 @@ public final class VideoFrameProvider {
         if total > 0 {
             let nilRate = Double(nilExtractCount) / Double(total) * 100
             let itemTime = videoOutput.itemTime(forHostTime: now)
-            let lastT = lastExtractedVideoTime.isValid ? String(format: "%.3f", lastExtractedVideoTime.seconds) : "nil"
+            let lastT = lastPlaybackExtractedVideoTime.isValid ? String(format: "%.3f", lastPlaybackExtractedVideoTime.seconds) : "nil"
             print("[VideoFrameProvider] playback: \(successExtractCount) OK, \(nilExtractCount) nil (\(String(format: "%.1f", nilRate))%) | itemTime=\(String(format: "%.3f", itemTime.seconds))s | lastExtracted=\(lastT)s | active=\(isPlaybackActive)")
         }
 
@@ -626,9 +559,13 @@ public final class VideoFrameProvider {
         durationTask = nil
 
         stopPlayback()
+        releaseInteractiveStillResources()
         playerItem.remove(videoOutput)
         player.replaceCurrentItem(with: nil)
-        lastTexture = nil
+        lastPlaybackTexture = nil
+        lastPlaybackExtractedVideoTime = .invalid
+        lastStillTexture = nil
+        lastStillVideoTime = .invalid
         presentationInfo = nil
         textureFactory.flushCache()
         state = .idle

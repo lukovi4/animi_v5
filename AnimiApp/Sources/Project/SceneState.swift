@@ -3,26 +3,23 @@ import TVECore
 
 // MARK: - Persisted Video Selection
 
-/// Persisted video trim/offset/audio parameters.
+/// Persisted video trim/audio parameters.
 /// URL-less — the video file reference lives in `MediaRef` (mediaAssignments).
 /// Assembled into runtime `VideoSelection` at restore/export time via `toVideoSelection(url:)`.
 public struct PersistedVideoSelection: Codable, Equatable, Sendable {
     public var trimStart: Double
     public var trimEnd: Double
-    public var offset: Double
     public var isMuted: Bool
     public var volume: Float
 
     public init(
         trimStart: Double = 0,
         trimEnd: Double,
-        offset: Double = 0,
         isMuted: Bool = false,
         volume: Float = 1.0
     ) {
         self.trimStart = trimStart
         self.trimEnd = trimEnd
-        self.offset = offset
         self.isMuted = isMuted
         self.volume = volume
     }
@@ -31,7 +28,6 @@ public struct PersistedVideoSelection: Codable, Equatable, Sendable {
     public init(from selection: VideoSelection) {
         self.trimStart = selection.trimStart
         self.trimEnd = selection.trimEnd
-        self.offset = selection.offset
         self.isMuted = selection.isMuted
         self.volume = selection.volume
     }
@@ -42,10 +38,33 @@ public struct PersistedVideoSelection: Codable, Equatable, Sendable {
             url: url,
             trimStart: trimStart,
             trimEnd: trimEnd,
-            offset: offset,
             isMuted: isMuted,
             volume: volume
         )
+    }
+
+    // MARK: - Codable (legacy offset migration)
+
+    private enum CodingKeys: String, CodingKey {
+        case trimStart, trimEnd, offset, isMuted, volume
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyOffset = try c.decodeIfPresent(Double.self, forKey: .offset) ?? 0
+        self.trimStart = (try c.decodeIfPresent(Double.self, forKey: .trimStart) ?? 0) + legacyOffset
+        self.trimEnd = try c.decode(Double.self, forKey: .trimEnd) + legacyOffset
+        self.isMuted = try c.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        self.volume = try c.decodeIfPresent(Float.self, forKey: .volume) ?? 1.0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(trimStart, forKey: .trimStart)
+        try c.encode(trimEnd, forKey: .trimEnd)
+        // offset intentionally omitted — migrated into trimStart/trimEnd
+        try c.encode(isMuted, forKey: .isMuted)
+        try c.encode(volume, forKey: .volume)
     }
 }
 

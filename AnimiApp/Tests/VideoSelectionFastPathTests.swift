@@ -3,7 +3,7 @@ import Metal
 @testable import AnimiApp
 @testable import TVECore
 
-/// Phase 5: Tests for runtime/engine video selection fast-path (applyPersistedVideoSelection).
+/// Tests for runtime/engine video selection fast-path (applyPersistedVideoSelection).
 ///
 /// Verifies:
 /// - SceneInstanceRuntime: fast apply updates appliedState, no resetState, readiness preserved
@@ -285,14 +285,13 @@ final class VideoSelectionFastPathTests: XCTestCase {
         engine.setTimeline(timeline, sceneStates: [instanceId: sceneState])
 
         // Fast apply new selection
-        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0, offset: 1.0)
+        let newSelection = PersistedVideoSelection(trimStart: 2.0, trimEnd: 8.0)
         engine.applyPersistedVideoSelection(newSelection, blockId: "block_01", for: instanceId)
 
         // Verify cache updated
         let cachedWindow = engine.sceneStates[instanceId]?.mediaSlotsByBlockId?["block_01"]?.videoWindow
         XCTAssertEqual(cachedWindow?.trimStart, 2.0)
         XCTAssertEqual(cachedWindow?.trimEnd, 8.0)
-        XCTAssertEqual(cachedWindow?.offset, 1.0)
     }
 
     /// Engine defensive: missing instanceId in cache → no crash.

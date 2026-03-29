@@ -65,13 +65,12 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
     // MARK: - Media Syncing Spy
 
     /// Spy to capture sceneFrameIndex values passed to media syncing methods.
-    /// TT-02: Added frozenFrames, isSceneMediaReady, hasFailedMedia for readiness testing.
+    /// TT-02: Added stillFrames, isSceneMediaReady, hasFailedMedia for readiness testing.
     /// TT-03: Added budget-aware tracking fields.
     @MainActor
     final class MediaSyncingSpy: SceneMediaSyncing {
-        var scrubFrames: [Int] = []
+        var stillFrames: [Int] = []
         var playbackFrames: [Int] = []
-        var frozenFrames: [Int] = []
         var startPlaybackFrames: [Int] = []
 
         // TT-02: Controllable readiness flags for tests
@@ -86,16 +85,32 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         // TT-03 Completion: Soft-stop tracking
         var softStopPreservingTexturesCalls: Int = 0
 
-        func updateVideoFramesForScrub(sceneFrameIndex: Int) {
-            scrubFrames.append(sceneFrameIndex)
+        func updateVideoStillFrames(sceneFrameIndex: Int) {
+            stillFrames.append(sceneFrameIndex)
+        }
+
+        // PR2: Controllable still-await for testing readiness-holds-until-still-delivered
+        var stillAwaitContinuation: CheckedContinuation<Void, Never>?
+        var shouldBlockStillAwait: Bool = false
+        var awaitPendingStillFramesCalls: Int = 0
+
+        func awaitPendingStillFrames() async {
+            awaitPendingStillFramesCalls += 1
+            if shouldBlockStillAwait {
+                await withCheckedContinuation { continuation in
+                    stillAwaitContinuation = continuation
+                }
+            }
+        }
+
+        /// Resume blocked awaitPendingStillFrames (call from test)
+        func releaseStillAwait() {
+            stillAwaitContinuation?.resume()
+            stillAwaitContinuation = nil
         }
 
         func updateVideoFramesForPlayback(sceneFrameIndex: Int) {
             playbackFrames.append(sceneFrameIndex)
-        }
-
-        func updateVideoFramesForFrozen(sceneFrameIndex: Int) {
-            frozenFrames.append(sceneFrameIndex)
         }
 
         func startVideoPlayback(sceneFrameIndex: Int) {
@@ -257,7 +272,7 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         runtime.syncVideoFrame(350)
 
         // Then: Spy should receive clamped frame 299
-        XCTAssertEqual(spy.scrubFrames, [299], "syncVideoFrame should pass clamped frame to media service")
+        XCTAssertEqual(spy.stillFrames, [299], "syncVideoFrame should pass clamped frame to media service")
     }
 
     /// Behavior: syncPlaybackTick(350) passes clamped frame 299 to media service.
@@ -342,7 +357,7 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         runtime.startPlayback(at: 500)  // Should clamp to 299
 
         // Then: All should be clamped to 299
-        XCTAssertEqual(spy.scrubFrames, [299, 299, 299])
+        XCTAssertEqual(spy.stillFrames, [299, 299, 299])
         XCTAssertEqual(spy.playbackFrames, [299])
         XCTAssertEqual(spy.startPlaybackFrames, [299])
     }

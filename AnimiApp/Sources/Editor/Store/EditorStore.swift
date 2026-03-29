@@ -61,7 +61,7 @@ public final class EditorStore {
     /// Use for incremental engine sync instead of full setTimeline().
     public var onSceneStateChanged: ((UUID, SceneState) -> Void)?
 
-    /// Phase 5: Called when video selection is committed for a block.
+    /// Called when video selection is committed for a block.
     /// Parameters: (sceneInstanceId, blockId, selection)
     public var onVideoSelectionChanged: ((UUID, String, PersistedVideoSelection) -> Void)?
 
@@ -207,7 +207,7 @@ public final class EditorStore {
             onSelectedBlockChanged?(state.selectedBlockId)
         }
 
-        // Phase 5: Extract video selection change info before routing
+        // Extract video selection change info before routing
         let videoSelectionChange = extractVideoSelectionChange(action: action)
 
         // PR-F: Route to appropriate callback based on change type
@@ -219,7 +219,7 @@ public final class EditorStore {
                 notifyTimelineChanged()
             }
         } else if let (instanceId, blockId, selection) = videoSelectionChange, result.shouldPushSnapshot {
-            // Phase 5: Video selection committed - dedicated fast path
+            // Video selection committed - dedicated fast path
             onVideoSelectionChanged?(instanceId, blockId, selection)
         } else if let (instanceId, _) = sceneStateChangeInfo, result.shouldPushSnapshot {
             // Scene state changed (not structure) - incremental sync
@@ -381,7 +381,7 @@ public final class EditorStore {
         }
     }
 
-    /// Phase 5: Extracts video selection change info from action.
+    /// Extracts video selection change info from action.
     /// Returns nil for non-video-selection actions.
     private func extractVideoSelectionChange(action: EditorAction) -> (UUID, String, PersistedVideoSelection)? {
         if case .setVideoSelection(let instanceId, let blockId, let selection) = action {

@@ -7,10 +7,9 @@ final class ExportVideoFrameProviderBlendTests: XCTestCase {
 
     private func makeSelection(
         trimStart: Double = 0,
-        trimEnd: Double = 10,
-        offset: Double = 0
+        trimEnd: Double = 10
     ) -> VideoSelection {
-        VideoSelection(url: dummyURL, trimStart: trimStart, trimEnd: trimEnd, offset: offset)
+        VideoSelection(url: dummyURL, trimStart: trimStart, trimEnd: trimEnd)
     }
 
     // MARK: - Config Default Policy

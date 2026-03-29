@@ -40,6 +40,15 @@
       "titleKey": "template_polaroid_2",
       "sceneTypeIds": ["polaroid_2"],
       "openBehavior": "previewFirst"
+    },
+    {
+      "id": "full_image",
+      "categoryId": "featured",
+      "order": 1,
+      "title": "Full Image",
+      "titleKey": "template_full_image",
+      "sceneTypeIds": ["full_image"],
+      "openBehavior": "directToEditor"
     }
   ]
 }

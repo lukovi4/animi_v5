@@ -120,8 +120,8 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         runtime.startPreparingForPresentation(at: 75)
 
         // Should call frozen with exact frame 75, not 0
-        XCTAssertTrue(spy.frozenFrames.contains(75), "Should use frozen API with exact frame")
-        XCTAssertFalse(spy.scrubFrames.contains(0), "Should not use scrub frame 0")
+        XCTAssertTrue(spy.stillFrames.contains(75), "Should use still API with exact frame")
+        XCTAssertFalse(spy.stillFrames.contains(0), "Should not use still frame 0")
     }
 
     /// TT-02: Target frame is clamped to valid range
@@ -149,7 +149,7 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         // State should show clamped frame
         XCTAssertEqual(runtime.readinessState, .preparing(targetLocalFrame: 99))
         // Frozen frame should be clamped
-        XCTAssertTrue(spy.frozenFrames.contains(99))
+        XCTAssertTrue(spy.stillFrames.contains(99))
     }
 
     /// TT-02: When isSceneMediaReady becomes true, state transitions to .ready
@@ -260,7 +260,7 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         _ = await runtime.waitUntilReadyForPresentation(at: 50)
         XCTAssertEqual(runtime.readinessState, .ready(targetLocalFrame: 50))
 
-        let frozenCountBefore = spy.frozenFrames.count
+        let frozenCountBefore = spy.stillFrames.count
 
         // Try to start preparing again
         runtime.startPreparingForPresentation(at: 100)
@@ -268,7 +268,7 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         // Should still be ready with original target, not downgraded to preparing
         XCTAssertEqual(runtime.readinessState, .ready(targetLocalFrame: 50))
         // Should not have called frozen again
-        XCTAssertEqual(spy.frozenFrames.count, frozenCountBefore)
+        XCTAssertEqual(spy.stillFrames.count, frozenCountBefore)
     }
 
     /// TT-02: startPreparingForPresentation from .failed is no-op
@@ -300,7 +300,7 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
             return
         }
 
-        let frozenCountBefore = spy.frozenFrames.count
+        let frozenCountBefore = spy.stillFrames.count
 
         // Try to start preparing again
         runtime.startPreparingForPresentation(at: 100)
@@ -313,7 +313,7 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         }
 
         // Should not have called frozen again
-        XCTAssertEqual(spy.frozenFrames.count, frozenCountBefore)
+        XCTAssertEqual(spy.stillFrames.count, frozenCountBefore)
     }
 
     /// TT-02: startPreparingForPresentation from .preparing is no-op
@@ -339,7 +339,7 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         runtime.startPreparingForPresentation(at: 50)
         XCTAssertEqual(runtime.readinessState, .preparing(targetLocalFrame: 50))
 
-        let frozenCountBefore = spy.frozenFrames.count
+        let frozenCountBefore = spy.stillFrames.count
 
         // Try to start preparing for different frame
         runtime.startPreparingForPresentation(at: 100)
@@ -347,7 +347,7 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         // Should still be preparing with original target
         XCTAssertEqual(runtime.readinessState, .preparing(targetLocalFrame: 50))
         // Should not have called frozen again for initial sync
-        XCTAssertEqual(spy.frozenFrames.count, frozenCountBefore)
+        XCTAssertEqual(spy.stillFrames.count, frozenCountBefore)
     }
 
     /// TT-02: isReady returns true only for .ready state
@@ -506,7 +506,7 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
             return
         }
 
-        let frozenCountBefore = spy.frozenFrames.count
+        let frozenCountBefore = spy.stillFrames.count
 
         // Try to start preparing again
         runtime.startPreparingForPresentation(at: 100)
@@ -518,6 +518,53 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         }
 
         // Should not have called frozen again
-        XCTAssertEqual(spy.frozenFrames.count, frozenCountBefore)
+        XCTAssertEqual(spy.stillFrames.count, frozenCountBefore)
+    }
+
+    // MARK: - PR2: Readiness Holds Until Still Frames Delivered
+
+    /// PR2: Runtime stays in .preparing until awaitPendingStillFrames completes.
+    /// Proves that fire-and-forget still tasks block readiness transition.
+    @MainActor
+    func testReadyTransitionAwaitsStillFrameDelivery() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+        spy.shouldBlockStillAwait = true  // Block until we release
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // Start preparation (non-blocking)
+        runtime.startPreparingForPresentation(at: 50)
+
+        // Give the prep loop a chance to reach the await point
+        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+
+        // Runtime should still be preparing (blocked on still await)
+        XCTAssertEqual(runtime.readinessState, .preparing(targetLocalFrame: 50),
+                       "Runtime must stay .preparing while still frames are pending")
+        XCTAssertEqual(spy.awaitPendingStillFramesCalls, 1,
+                       "Should have called awaitPendingStillFrames exactly once")
+
+        // Release the still await
+        spy.releaseStillAwait()
+
+        // Give the prep loop a chance to complete
+        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+
+        // Now runtime should be ready
+        XCTAssertEqual(runtime.readinessState, .ready(targetLocalFrame: 50),
+                       "Runtime should transition to .ready after still frames delivered")
     }
 }

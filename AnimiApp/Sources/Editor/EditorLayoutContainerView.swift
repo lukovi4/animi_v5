@@ -60,6 +60,13 @@ final class EditorLayoutContainerView: UIView {
     /// Called when Done is tapped in Scene Edit mode (PR-C)
     var onDone: (() -> Void)?
 
+    // Video Trim mode callbacks
+    /// Called when Cancel is tapped in video trim mode
+    var onTrimCancel: (() -> Void)?
+
+    /// Called when Done is tapped in video trim mode
+    var onTrimDone: (() -> Void)?
+
     // PR-E: SceneEditBar callbacks
     /// Called when Background button is tapped
     var onBackground: (() -> Void)?
@@ -80,8 +87,8 @@ final class EditorLayoutContainerView: UIView {
     /// Called when Disable/Enable button is tapped
     var onToggleEnabled: ((String) -> Void)?
 
-    /// Called when Edit Video button is tapped
-    var onEditVideo: ((String) -> Void)?
+    /// Called when Trim button is tapped
+    var onTrimVideo: ((String) -> Void)?
 
     /// Called when Remove button is tapped
     var onRemove: ((String) -> Void)?
@@ -125,6 +132,9 @@ final class EditorLayoutContainerView: UIView {
     private(set) lazy var sceneEditBar = SceneEditBar()
     private(set) lazy var mediaBlockActionBar = MediaBlockActionBar()
 
+    // Video Trim bar
+    private(set) lazy var videoTrimBar = VideoTrimBarView()
+
     // MARK: - State
 
     private var currentSelection: TimelineSelection = .none
@@ -134,6 +144,9 @@ final class EditorLayoutContainerView: UIView {
 
     /// PR-C: Scene Edit mode state
     private var isSceneEditMode: Bool = false
+
+    /// Video Trim mode state
+    private var isVideoTrimMode: Bool = false
 
     // MARK: - Scene Edit Mode Constraints (PR-C)
 
@@ -148,6 +161,9 @@ final class EditorLayoutContainerView: UIView {
 
     /// Preview bottom to bottom bar top (scene edit mode)
     private var previewBottomToBottomBar: NSLayoutConstraint!
+
+    /// Dynamic bottom bar height constraint
+    private var bottomBarHeightConstraint: NSLayoutConstraint!
 
     // MARK: - Initialization
 
@@ -186,12 +202,14 @@ final class EditorLayoutContainerView: UIView {
         bottomBarContainer.addSubview(contextBar)
         bottomBarContainer.addSubview(sceneEditBar)
         bottomBarContainer.addSubview(mediaBlockActionBar)
+        bottomBarContainer.addSubview(videoTrimBar)
 
         // Initial state: GlobalActionBar visible (no scene selected at start)
         globalActionBar.isHidden = false
         contextBar.isHidden = true
         sceneEditBar.isHidden = true
         mediaBlockActionBar.isHidden = true
+        videoTrimBar.isHidden = true
     }
 
     private func setupConstraints() {
@@ -204,6 +222,7 @@ final class EditorLayoutContainerView: UIView {
         contextBar.translatesAutoresizingMaskIntoConstraints = false
         sceneEditBar.translatesAutoresizingMaskIntoConstraints = false
         mediaBlockActionBar.translatesAutoresizingMaskIntoConstraints = false
+        videoTrimBar.translatesAutoresizingMaskIntoConstraints = false
 
         // PR-C: Create alternative preview bottom constraints
         previewBottomToTimeline = previewContainer.bottomAnchor.constraint(equalTo: timelineContainer.topAnchor)
@@ -232,7 +251,6 @@ final class EditorLayoutContainerView: UIView {
             bottomBarContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
             bottomBarContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
             bottomBarContainer.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor),
-            bottomBarContainer.heightAnchor.constraint(equalToConstant: EditorConfig.bottomBarHeight),
 
             // GlobalActionBar - fills bottomBarContainer
             globalActionBar.topAnchor.constraint(equalTo: bottomBarContainer.topAnchor),
@@ -257,6 +275,12 @@ final class EditorLayoutContainerView: UIView {
             mediaBlockActionBar.leadingAnchor.constraint(equalTo: bottomBarContainer.leadingAnchor),
             mediaBlockActionBar.trailingAnchor.constraint(equalTo: bottomBarContainer.trailingAnchor),
             mediaBlockActionBar.bottomAnchor.constraint(equalTo: bottomBarContainer.bottomAnchor),
+
+            // VideoTrimBar - fills bottomBarContainer (hidden by default)
+            videoTrimBar.topAnchor.constraint(equalTo: bottomBarContainer.topAnchor),
+            videoTrimBar.leadingAnchor.constraint(equalTo: bottomBarContainer.leadingAnchor),
+            videoTrimBar.trailingAnchor.constraint(equalTo: bottomBarContainer.trailingAnchor),
+            videoTrimBar.bottomAnchor.constraint(equalTo: bottomBarContainer.bottomAnchor),
         ]
 
         // PR-C: Timeline visible constraints (normal editor mode)
@@ -295,9 +319,13 @@ final class EditorLayoutContainerView: UIView {
             previewBottomToBottomBar,
         ]
 
+        // Dynamic bottom bar height (default: standard bar height)
+        bottomBarHeightConstraint = bottomBarContainer.heightAnchor.constraint(equalToConstant: EditorConfig.bottomBarHeight)
+
         // Activate shared + timeline visible by default
         NSLayoutConstraint.activate(sharedConstraints)
         NSLayoutConstraint.activate(timelineVisibleConstraints)
+        bottomBarHeightConstraint.isActive = true
     }
 
     private func wireCallbacks() {
@@ -339,9 +367,19 @@ final class EditorLayoutContainerView: UIView {
             self?.onEditScene?(sceneId)
         }
 
-        // PR-C: Done from Scene Edit
+        // PR-C: Done from Scene Edit / Video Trim
         navBar.onDone = { [weak self] in
-            self?.onDone?()
+            guard let self else { return }
+            if self.isVideoTrimMode {
+                self.onTrimDone?()
+            } else {
+                self.onDone?()
+            }
+        }
+
+        // Video Trim: Cancel
+        navBar.onCancel = { [weak self] in
+            self?.onTrimCancel?()
         }
 
         // PR-E: SceneEditBar callbacks
@@ -359,8 +397,8 @@ final class EditorLayoutContainerView: UIView {
         mediaBlockActionBar.onAddVideo = { [weak self] blockId in
             self?.onAddVideo?(blockId)
         }
-        mediaBlockActionBar.onEditVideo = { [weak self] blockId in
-            self?.onEditVideo?(blockId)
+        mediaBlockActionBar.onTrimVideo = { [weak self] blockId in
+            self?.onTrimVideo?(blockId)
         }
         mediaBlockActionBar.onAnimation = { [weak self] blockId in
             self?.onAnimation?(blockId)
@@ -485,9 +523,14 @@ final class EditorLayoutContainerView: UIView {
             timelineContainer.isHidden = false
             menuStrip.isHidden = false
 
+            // Reset trim mode if active
+            isVideoTrimMode = false
+            bottomBarHeightConstraint.constant = EditorConfig.bottomBarHeight
+
             // P2 fix: Hide scene edit bars and restore timeline bar state
             sceneEditBar.isHidden = true
             mediaBlockActionBar.isHidden = true
+            videoTrimBar.isHidden = true
             updateBottomBar()  // Restores globalActionBar/contextBar based on selection
         }
 
@@ -518,6 +561,47 @@ final class EditorLayoutContainerView: UIView {
         contextBar.isHidden = true
     }
 
+    /// Enters or exits video trim mode within scene edit.
+    /// In trim mode: shows VideoTrimBarView at trimBottomBarHeight, navbar switches to .videoTrim.
+    /// On exit: restores previous scene edit state.
+    /// - Parameter enabled: Whether to enter trim mode
+    func setVideoTrimMode(_ enabled: Bool) {
+        guard enabled != isVideoTrimMode else { return }
+        isVideoTrimMode = enabled
+
+        if enabled {
+            // Switch bottom bar to trim bar
+            sceneEditBar.isHidden = true
+            mediaBlockActionBar.isHidden = true
+            videoTrimBar.isHidden = false
+            globalActionBar.isHidden = true
+            contextBar.isHidden = true
+
+            // Switch navbar to trim mode
+            navBar.setMode(.videoTrim)
+
+            // Expand bottom bar height
+            bottomBarHeightConstraint.constant = EditorConfig.trimBottomBarHeight
+
+            // Hide menu strip during trim
+            menuStrip.isHidden = true
+        } else {
+            // Exit trim mode — restore scene edit bar state
+            videoTrimBar.isHidden = true
+
+            // Restore navbar to scene edit
+            navBar.setMode(.sceneEdit)
+
+            // Restore bottom bar height
+            bottomBarHeightConstraint.constant = EditorConfig.bottomBarHeight
+
+            // Restore menu strip (still hidden in scene edit per existing contract)
+            // menuStrip stays hidden — it's controlled by setSceneEditMode
+        }
+
+        UIView.animate(withDuration: 0.25) { self.layoutIfNeeded() }
+    }
+
     /// Configures the MediaBlockActionBar with block-specific data (PR-E).
     /// Called by PlayerViewController when block selection changes.
     /// - Parameters:
@@ -533,7 +617,7 @@ final class EditorLayoutContainerView: UIView {
         hasMedia: Bool,
         isEnabled: Bool,
         mediaKind: MediaKind? = nil,
-        canEditVideoSelection: Bool = false,
+        canTrimVideo: Bool = false,
         ingestStatus: IngestSlotStatus = .idle,
         showsIngestStatus: Bool = false
     ) {
@@ -544,7 +628,7 @@ final class EditorLayoutContainerView: UIView {
             hasMedia: hasMedia,
             isEnabled: isEnabled,
             mediaKind: mediaKind,
-            canEditVideoSelection: canEditVideoSelection,
+            canTrimVideo: canTrimVideo,
             ingestStatus: ingestStatus,
             showsIngestStatus: showsIngestStatus
         )

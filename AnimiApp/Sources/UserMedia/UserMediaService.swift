@@ -25,8 +25,11 @@ protocol VideoSetupProviding: AnyObject {
     func startPlayback(atVideoTime videoTimeSeconds: Double)
     func stopPlayback(flush: Bool)
     func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture?
-    func frameTextureForScrub(atVideoTime videoTimeSeconds: Double) -> MTLTexture?
-    func frameTextureForFrozen(atVideoTime videoTimeSeconds: Double) -> MTLTexture?
+    func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture
+
+    // Interactive trim preview (tolerant, reusable generator)
+    func requestInteractiveStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture
+    func releaseInteractiveStillResources()
 }
 
 /// Conform VideoFrameProvider to protocol.
@@ -85,11 +88,10 @@ private actor AsyncSemaphore {
 
 // MARK: - Video Selection (PR1)
 
-/// Represents a user's video selection with trim/offset parameters.
+/// Represents a user's video selection with trim parameters.
 ///
-/// PR1: Data model for video windowing. The effective playback window is:
-/// - `winStart = trimStart + offset`
-/// - `winEnd = trimEnd + offset`
+/// trimStart and trimEnd define the playback window directly.
+/// winStart/winEnd are kept as aliases for downstream compatibility.
 ///
 /// Audio parameters are stored but not applied in PR1 (preview is always muted).
 public struct VideoSelection: Equatable, Sendable {
@@ -102,9 +104,6 @@ public struct VideoSelection: Equatable, Sendable {
     /// Trim end time in seconds (relative to video start)
     public var trimEnd: Double
 
-    /// Offset in seconds (shifts the trim window within the video)
-    public var offset: Double
-
     /// Whether audio is muted (stored for PR3 export, not applied in PR1)
     public var isMuted: Bool
 
@@ -114,10 +113,10 @@ public struct VideoSelection: Equatable, Sendable {
     // MARK: - Computed Properties
 
     /// Effective window start in video time
-    public var winStart: Double { trimStart + offset }
+    public var winStart: Double { trimStart }
 
     /// Effective window end in video time
-    public var winEnd: Double { trimEnd + offset }
+    public var winEnd: Double { trimEnd }
 
     /// Whether the selection is valid (window has positive duration)
     public var isValid: Bool { winEnd > winStart }
@@ -133,7 +132,6 @@ public struct VideoSelection: Equatable, Sendable {
         self.url = url
         self.trimStart = 0
         self.trimEnd = duration
-        self.offset = 0
         self.isMuted = false
         self.volume = 1.0
     }
@@ -143,29 +141,28 @@ public struct VideoSelection: Equatable, Sendable {
         url: URL,
         trimStart: Double,
         trimEnd: Double,
-        offset: Double = 0,
         isMuted: Bool = false,
         volume: Float = 1.0
     ) {
         self.url = url
         self.trimStart = trimStart
         self.trimEnd = trimEnd
-        self.offset = offset
         self.isMuted = isMuted
         self.volume = volume
     }
 }
 
-// MARK: - Video Selection Edit Context (Phase 5)
+// MARK: - Video Trim Context
 
-/// Preflight context for video selection editing.
-/// Contains the current persisted selection and actual file duration for UI bounds.
-public struct VideoSelectionEditContext: Sendable {
+/// Preflight context for video trim.
+/// Contains the current persisted selection, actual file duration, and video URL for UI.
+public struct VideoTrimContext: Sendable {
     public let currentSelection: PersistedVideoSelection
     public let actualDuration: Double
+    public let videoURL: URL
 }
 
-// MARK: - Video Selection Apply Error (Phase 5)
+// MARK: - Video Selection Apply Error
 
 /// Errors from validated video selection apply.
 enum VideoSelectionApplyError: Error, LocalizedError {
@@ -300,6 +297,10 @@ public final class UserMediaService {
     /// Called after poster injection or clear/replace.
     public var onNeedsDisplay: (() -> Void)?
 
+    /// PR2: Lightweight render-only callback for still frame delivery.
+    /// Unlike `onNeedsDisplay`, does NOT re-trigger still frame sync (avoids infinite loop).
+    public var onStillFrameDelivered: (() -> Void)?
+
     // MARK: - Async Race Protection (PR-async-race)
 
     /// Generation token per blockId for async race protection.
@@ -309,6 +310,25 @@ public final class UserMediaService {
     /// Active media setup tasks per blockId (for cancellation on replace/cleanup).
     /// Used by both photo (async texture load) and video (async poster extraction) paths.
     private var mediaSetupTasksByBlock: [String: Task<Void, Never>] = [:]
+
+    // MARK: - Still Frame State (PR2: Exact Still Pipeline)
+
+    /// Per-block generation counter for latest-wins still frame extraction.
+    private var stillGenerationByBlock: [String: UInt64] = [:]
+
+    /// Per-block in-flight still frame tasks (cancelled on new request or cleanup).
+    private var stillTasksByBlock: [String: Task<Void, Never>] = [:]
+
+    // MARK: - Interactive Trim Preview State
+
+    /// Per-block loop tasks for interactive trim preview.
+    private var trimPreviewTasksByBlock: [String: Task<Void, Never>] = [:]
+
+    /// Per-block pending preview times (latest wins within the loop).
+    private var trimPreviewPendingTimeByBlock: [String: Double] = [:]
+
+    /// Per-block generation counter for interactive trim preview invalidation.
+    private var trimPreviewGenerationByBlock: [String: UInt64] = [:]
 
     // MARK: - Block Readiness State (P0 Readiness Contract)
 
@@ -553,7 +573,7 @@ public final class UserMediaService {
     ///   - blockId: Identifier of the media block
     ///   - url: URL of the video file (must be persisted — all videos are persisted before binding)
     ///   - presentOnReady: Value for `userMediaPresent` after poster extraction (default: `true`)
-    ///   - persistedSelection: The persisted trim/offset/audio parameters to apply.
+    ///   - persistedSelection: The persisted trim/audio parameters to apply.
     ///     Validated against actual duration inside the async poster task.
     /// - Returns: `true` if accepted (async setup started), `false` if no scene player available
     @discardableResult
@@ -598,8 +618,8 @@ public final class UserMediaService {
 
             do {
                 // PR1 FIX: requestPoster waits for ready internally, no need for separate polling
-                // PR7: Request poster at winStart so the initial frame matches the selection
-                let posterTime = persistedSelection.trimStart + persistedSelection.offset
+                // PR7: Request poster at trimStart so the initial frame matches the selection
+                let posterTime = persistedSelection.trimStart
                 let poster = try await provider.requestPoster(at: posterTime)
 
                 // PR-async-race: Check token after await — abort if generation changed
@@ -909,7 +929,7 @@ public final class UserMediaService {
     /// - Calls `stopPlayback(flush: false)` on active providers
     /// - Does NOT clear textures (hold-last)
     /// - Clears `activeVideoBlockIds`
-    /// - Does NOT affect scrub/frozen/readiness behavior
+    /// - Does NOT affect still/readiness behavior
     func stopVideoPlaybackPreservingTextures() {
         for (_, provider) in videoProviders {
             guard provider.isReady, provider.isPlaybackActive else { continue }
@@ -919,44 +939,34 @@ public final class UserMediaService {
         activeVideoBlockIds.removeAll()
     }
 
-    // MARK: - Frame Update API (Scrub/Frozen)
+    // MARK: - Frame Update API (Still — PR2: Exact Still Pipeline)
 
-    /// Updates video textures for scrub mode (throttled seek).
+    /// Updates video textures for still mode (scrub, frozen, edit).
     ///
-    /// Computes target video time via shared mapper and passes it to provider's time-based scrub API.
-    /// Seeks are throttled to ~30Hz max to avoid overwhelming the decoder.
+    /// PR2: Replaces updateVideoFramesForScrub and updateVideoFramesForFrozen.
+    /// Uses AVAssetImageGenerator for exact frame extraction with per-block latest-wins.
     ///
     /// - Parameter sceneFrameIndex: Target scene frame
-    public func updateVideoFramesForScrub(sceneFrameIndex: Int) {
+    public func updateVideoStillFrames(sceneFrameIndex: Int) {
         guard let player = activePlayer else { return }
 
         #if DEBUG
-        let signpostId = ScrubSignpost.beginUpdateVideoFramesForScrub()
+        let signpostId = ScrubSignpost.beginUpdateVideoStillFrames()
         var processedBlockCount = 0
         #endif
 
         for (blockId, kind) in mediaState {
             guard case .video(let selection) = kind,
-                  let provider = videoProviders[blockId] else { continue }
+                  let provider = videoProviders[blockId],
+                  provider.isReady else { continue }
 
-            // Skip if provider not ready
-            guard provider.isReady else { continue }
-
-            // Compute target video time, use scrub method (throttled)
             let videoTime = computeTargetVideoTime(
                 sceneFrameIndex: sceneFrameIndex,
                 blockId: blockId,
                 selection: selection
             )
-
-            // Get frame texture using scrub mode (throttled seek)
-            guard let texture = provider.frameTextureForScrub(atVideoTime: videoTime) else { continue }
-
-            // Update texture in all variant binding asset IDs
-            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
-            for (_, assetId) in assetIds {
-                textureProvider.setTexture(texture, for: assetId)
-            }
+            requestStillForBlock(blockId: blockId, videoTime: videoTime,
+                                 provider: provider, player: player)
 
             #if DEBUG
             processedBlockCount += 1
@@ -964,41 +974,49 @@ public final class UserMediaService {
         }
 
         #if DEBUG
-        ScrubSignpost.endUpdateVideoFramesForScrub(signpostId, blockCount: processedBlockCount)
+        ScrubSignpost.endUpdateVideoStillFrames(signpostId, blockCount: processedBlockCount)
         #endif
     }
 
-    /// Updates video textures for frozen/edit mode.
-    ///
-    /// Computes target video time via shared mapper and passes it to provider's time-based frozen API.
-    /// In edit mode, scene is frozen at editFrameIndex.
-    ///
-    /// - Parameter sceneFrameIndex: Edit frame index
-    public func updateVideoFramesForFrozen(sceneFrameIndex: Int) {
-        guard let player = activePlayer else { return }
+    /// Per-block latest-wins still frame extraction.
+    private func requestStillForBlock(blockId: String, videoTime: Double,
+                                       provider: VideoSetupProviding, player: ScenePlayerForMedia) {
+        let gen = (stillGenerationByBlock[blockId] ?? 0) + 1
+        stillGenerationByBlock[blockId] = gen
+        stillTasksByBlock[blockId]?.cancel()
 
-        for (blockId, kind) in mediaState {
-            guard case .video(let selection) = kind,
-                  let provider = videoProviders[blockId] else { continue }
-
-            // Skip if provider not ready
-            guard provider.isReady else { continue }
-
-            // Compute target video time, use frozen method (cached)
-            let videoTime = computeTargetVideoTime(
-                sceneFrameIndex: sceneFrameIndex,
-                blockId: blockId,
-                selection: selection
-            )
-
-            // Get frozen frame texture (with caching)
-            guard let texture = provider.frameTextureForFrozen(atVideoTime: videoTime) else { continue }
-
-            // Update texture in all variant binding asset IDs
-            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
-            for (_, assetId) in assetIds {
-                textureProvider.setTexture(texture, for: assetId)
+        stillTasksByBlock[blockId] = Task { @MainActor [weak self] in
+            do {
+                let texture = try await provider.requestStillTexture(atVideoTime: videoTime)
+                guard let self, self.stillGenerationByBlock[blockId] == gen,
+                      !Task.isCancelled else { return }
+                let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+                for (_, assetId) in assetIds {
+                    self.textureProvider.setTexture(texture, for: assetId)
+                }
+                // PR2: Use render-only callback to avoid re-entrant still loop.
+                // onNeedsDisplay triggers syncPausedVideoStill which calls updateVideoStillFrames again.
+                self.onStillFrameDelivered?()
+            } catch is CancellationError {
+                // Expected: latest-wins cancellation
+            } catch {
+                #if DEBUG
+                print("[UMS] still failed blockId=\(blockId): \(error)")
+                #endif
             }
+            if let self, self.stillGenerationByBlock[blockId] == gen {
+                self.stillTasksByBlock.removeValue(forKey: blockId)
+            }
+        }
+    }
+
+    /// PR2: Awaits all in-flight still tasks to complete.
+    /// Used by readiness loop to ensure still frame is actually delivered before marking `.ready`.
+    public func awaitPendingStillFrames() async {
+        // Snapshot current tasks (they self-remove on completion)
+        let tasks = Array(stillTasksByBlock.values)
+        for task in tasks {
+            await task.value
         }
     }
 
@@ -1065,6 +1083,7 @@ public final class UserMediaService {
             .union(videoProviders.keys)
             .union(mediaSetupTasksByBlock.keys)
             .union(blockReadinessState.keys)
+            .union(trimPreviewTasksByBlock.keys)
         for blockId in allBlockIds {
             clear(blockId: blockId)
         }
@@ -1131,6 +1150,17 @@ public final class UserMediaService {
         mediaSetupGenerationByBlock[blockId, default: 0] += 1
         mediaSetupTasksByBlock[blockId]?.cancel()
         mediaSetupTasksByBlock.removeValue(forKey: blockId)
+
+        // PR2: Cancel pending still frame extraction
+        stillGenerationByBlock[blockId, default: 0] += 1
+        stillTasksByBlock[blockId]?.cancel()
+        stillTasksByBlock.removeValue(forKey: blockId)
+
+        // Cancel interactive trim preview
+        trimPreviewGenerationByBlock[blockId, default: 0] += 1
+        trimPreviewTasksByBlock[blockId]?.cancel()
+        trimPreviewTasksByBlock.removeValue(forKey: blockId)
+        trimPreviewPendingTimeByBlock.removeValue(forKey: blockId)
 
         // Release video provider
         if let provider = videoProviders.removeValue(forKey: blockId) {
@@ -1292,7 +1322,23 @@ public final class UserMediaService {
     /// Preserves `mediaState` (contains VideoSelection metadata needed for `exportVideoSelectionsSnapshot()`).
     /// After calling this, preview video playback is no longer functional, but snapshot APIs still work.
     public func releasePreviewResources() {
+        // PR2: Cancel all pending still frame tasks
+        for (_, task) in stillTasksByBlock {
+            task.cancel()
+        }
+        stillTasksByBlock.removeAll()
+        stillGenerationByBlock.removeAll()
+
+        // Cancel all interactive trim preview tasks
+        for (_, task) in trimPreviewTasksByBlock {
+            task.cancel()
+        }
+        trimPreviewTasksByBlock.removeAll()
+        trimPreviewPendingTimeByBlock.removeAll()
+        trimPreviewGenerationByBlock.removeAll()
+
         for (_, provider) in videoProviders {
+            provider.releaseInteractiveStillResources()
             provider.release()
         }
         videoProviders.removeAll()
@@ -1318,20 +1364,42 @@ public final class UserMediaService {
         return result
     }
 
-    /// Returns edit context for an already-bound video block, or nil if not editable.
-    /// Used by UI to determine if "Edit Video" should be enabled and to provide bounds for sliders.
-    public func videoSelectionEditContext(blockId: String) -> VideoSelectionEditContext? {
+    /// Returns trim context for an already-bound video block, or nil if not trimmable.
+    /// Used by UI to determine if "Trim" should be enabled and to provide bounds for the trim bar.
+    public func videoTrimContext(blockId: String) -> VideoTrimContext? {
         guard case .video(let selection) = mediaState[blockId] else { return nil }
         guard let provider = videoProviders[blockId], provider.isReady else { return nil }
         let duration = provider.duration.seconds
         guard duration.isFinite, duration > VideoWindowValidator.epsilon else { return nil }
-        return VideoSelectionEditContext(
+        return VideoTrimContext(
             currentSelection: PersistedVideoSelection(from: selection),
-            actualDuration: duration
+            actualDuration: duration,
+            videoURL: selection.url
         )
     }
 
-    /// Applies persisted trim/offset/audio params to an already-bound runtime video selection.
+    /// Returns the current video time in seconds for a block at the given scene frame,
+    /// or `nil` if the block is not visible at that frame.
+    /// Used by trim UI to determine if the current playhead falls inside the clip window.
+    public func currentVideoTime(blockId: String, sceneFrameIndex: Int) -> Double? {
+        guard case .video(let selection) = mediaState[blockId] else { return nil }
+
+        // Only return a meaningful time if the block is actually visible at this frame.
+        // Without this check the mapper clamps out-of-range frames into [trimStart, trimEnd - ε],
+        // making trim incorrectly open near trimEnd when the playhead is past the block.
+        if let timing = activePlayer?.blockTiming(for: blockId),
+           !timing.isVisible(at: sceneFrameIndex) {
+            return nil
+        }
+
+        return computeTargetVideoTime(
+            sceneFrameIndex: sceneFrameIndex,
+            blockId: blockId,
+            selection: selection
+        )
+    }
+
+    /// Applies persisted trim/audio params to an already-bound runtime video selection.
     /// Validates via VideoWindowValidator before mutation. Throws on invalid selection.
     /// On throw: mediaState NOT mutated, blockReadinessState NOT changed, videoProviders NOT touched.
     public func applyPersistedVideoSelection(blockId: String, _ persisted: PersistedVideoSelection) throws {
@@ -1353,5 +1421,124 @@ public final class UserMediaService {
             throw VideoSelectionApplyError.validationFailed(underlying: error)
         }
         mediaState[blockId] = .video(validated)
+    }
+
+    // MARK: - Interactive Trim Preview (Coalescing)
+
+    /// Updates the interactive trim preview for a block during drag gestures.
+    /// Coalesces rapid calls: only the latest pending time is serviced.
+    public func updateInteractiveTrimPreview(blockId: String, draftSelection: PersistedVideoSelection, previewTime: Double) {
+        guard case .video(let currentSelection) = mediaState[blockId],
+              let provider = videoProviders[blockId], provider.isReady,
+              let player = activePlayer else { return }
+
+        // Validate draft without mutating mediaState
+        let validated: VideoSelection
+        do {
+            validated = try VideoWindowValidator.validate(
+                selection: draftSelection,
+                url: currentSelection.url,
+                actualDuration: provider.duration.seconds,
+                blockId: blockId
+            )
+        } catch {
+            return
+        }
+
+        // Clamp preview time to validated range
+        let clampedTime = max(validated.trimStart, min(previewTime, validated.trimEnd - VideoWindowValidator.epsilon))
+
+        // Store latest pending time
+        trimPreviewPendingTimeByBlock[blockId] = clampedTime
+
+        // If loop already running, it will pick up the new pending time
+        if trimPreviewTasksByBlock[blockId] != nil { return }
+
+        // Start a new loop
+        let gen = (trimPreviewGenerationByBlock[blockId] ?? 0) + 1
+        trimPreviewGenerationByBlock[blockId] = gen
+
+        trimPreviewTasksByBlock[blockId] = Task { @MainActor [weak self] in
+            await self?.runInteractiveTrimPreviewLoop(blockId: blockId, provider: provider, player: player, generation: gen)
+        }
+    }
+
+    /// Loop that drains pending interactive preview times until none remain.
+    private func runInteractiveTrimPreviewLoop(blockId: String, provider: VideoSetupProviding, player: ScenePlayerForMedia, generation: UInt64) async {
+        while let pendingTime = trimPreviewPendingTimeByBlock[blockId],
+              trimPreviewGenerationByBlock[blockId] == generation,
+              !Task.isCancelled {
+            // Take the pending time
+            trimPreviewPendingTimeByBlock.removeValue(forKey: blockId)
+
+            do {
+                let texture = try await provider.requestInteractiveStillTexture(atVideoTime: pendingTime)
+                guard trimPreviewGenerationByBlock[blockId] == generation, !Task.isCancelled else { break }
+                let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+                for (_, assetId) in assetIds {
+                    textureProvider.setTexture(texture, for: assetId)
+                }
+                onStillFrameDelivered?()
+            } catch is CancellationError {
+                break
+            } catch {
+                #if DEBUG
+                print("[UMS] interactive trim preview failed blockId=\(blockId): \(error)")
+                #endif
+            }
+            // Loop back to check if new pending arrived during in-flight
+        }
+        // Cleanup on exit
+        if trimPreviewGenerationByBlock[blockId] == generation {
+            trimPreviewTasksByBlock.removeValue(forKey: blockId)
+        }
+    }
+
+    /// Ends interactive trim preview: invalidates loop, releases generator resources.
+    public func endInteractiveTrimPreview(blockId: String) {
+        trimPreviewGenerationByBlock[blockId, default: 0] += 1
+        trimPreviewTasksByBlock[blockId]?.cancel()
+        trimPreviewTasksByBlock.removeValue(forKey: blockId)
+        trimPreviewPendingTimeByBlock.removeValue(forKey: blockId)
+        videoProviders[blockId]?.releaseInteractiveStillResources()
+    }
+
+    // MARK: - Exact Trim Preview
+
+    /// Previews a video trim frame without mutating mediaState.
+    ///
+    /// Validates draft selection, requests exact still frame, and injects texture
+    /// into binding asset IDs for immediate preview. Uses latest-wins semantics.
+    ///
+    /// - Parameters:
+    ///   - blockId: The video block to preview
+    ///   - draftSelection: Draft trim selection (not committed to mediaState)
+    ///   - previewTime: Video time in seconds to preview
+    public func previewExactVideoTrimFrame(blockId: String, draftSelection: PersistedVideoSelection, previewTime: Double) {
+        guard case .video(let currentSelection) = mediaState[blockId],
+              let provider = videoProviders[blockId], provider.isReady,
+              let player = activePlayer else { return }
+
+        // Validate draft without mutating mediaState
+        let validated: VideoSelection
+        do {
+            validated = try VideoWindowValidator.validate(
+                selection: draftSelection,
+                url: currentSelection.url,
+                actualDuration: provider.duration.seconds,
+                blockId: blockId
+            )
+        } catch {
+            #if DEBUG
+            print("[UMS] trim preview validation failed blockId=\(blockId): \(error)")
+            #endif
+            return
+        }
+
+        // Clamp preview time to validated range
+        let clampedTime = max(validated.trimStart, min(previewTime, validated.trimEnd - VideoWindowValidator.epsilon))
+
+        // Request still at preview time using latest-wins
+        requestStillForBlock(blockId: blockId, videoTime: clampedTime, provider: provider, player: player)
     }
 }
