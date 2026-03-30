@@ -99,6 +99,10 @@ public final class SceneInstanceRuntime {
     /// Diagnostics sink for runtime events (test-only, nil in production).
     internal var runtimeDiagnosticsSink: RuntimeDiagnosticsSink?
 
+    /// PR4: Called when runtime state changes after async media load (placement re-resolved).
+    /// Engine wires this to trigger timeline frame refresh.
+    public var onNeedsRedraw: (() -> Void)?
+
     // MARK: - State
 
     /// TT-02: Readiness state for scene rendering.
@@ -125,7 +129,8 @@ public final class SceneInstanceRuntime {
     }
 
     /// Currently applied scene state.
-    public private(set) var appliedState: SceneState?
+    /// Last applied scene state. `internal(set)` for engine fast-path sync.
+    public internal(set) var appliedState: SceneState?
 
     // MARK: - Init
 
@@ -168,6 +173,9 @@ public final class SceneInstanceRuntime {
             textureProvider: overlayTextureProvider
         )
         userMediaService.setSceneFPS(Double(resources.fps))
+
+        // PR4: Re-resolve placement after async media load with actual dimensions
+        setupMediaReadyHook()
     }
 
     // MARK: - Test Init (Internal)
@@ -215,6 +223,30 @@ public final class SceneInstanceRuntime {
             textureProvider: overlayTextureProvider
         )
         userMediaService.setSceneFPS(Double(resources.fps))
+
+        // PR4: Re-resolve placement after async media load with actual dimensions
+        setupMediaReadyHook()
+    }
+
+    // MARK: - PR4: Media Ready Hook
+
+    /// Wires `onMediaReady` to re-resolve placement with actual media dimensions.
+    private func setupMediaReadyHook() {
+        userMediaService.onMediaReady = { [weak self] blockId in
+            self?.handleMediaReady(blockId: blockId)
+        }
+    }
+
+    /// Re-resolves placement for a block after its media finishes loading.
+    private func handleMediaReady(blockId: String) {
+        guard let placement = appliedState?.mediaSlotsByBlockId?[blockId]?.asset.placement else { return }
+
+        let deps = SceneRuntimeStateApplier.Dependencies(
+            scenePlayer: scenePlayer,
+            userMediaService: userMediaService
+        )
+        SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
+        onNeedsRedraw?()
     }
 
     // MARK: - Frame Clamping (Hold Last Frame)
@@ -257,37 +289,18 @@ public final class SceneInstanceRuntime {
     public func applyState(_ state: SceneState) async {
         appliedState = state
 
-        // Apply variant overrides
-        for (blockId, variantId) in state.variantOverrides {
-            scenePlayer.setSelectedVariant(blockId: blockId, variantId: variantId)
-        }
-
-        // Apply user transforms
-        for (blockId, transform) in state.userTransforms {
-            scenePlayer.setUserTransform(blockId: blockId, transform: transform)
-        }
-
-        // Apply layer toggles
-        for (blockId, toggles) in state.layerToggles {
-            for (toggleId, enabled) in toggles {
-                scenePlayer.setLayerToggle(blockId: blockId, toggleId: toggleId, enabled: enabled)
-            }
-        }
-
-        // Restore media assignments via MediaRestoreCoordinator (handles both photo and video)
-        let restoredCount = MediaRestoreCoordinator.restore(
-            slots: state.mediaSlotsByBlockId,
-            to: userMediaService
+        // PR4: Delegate to SceneRuntimeStateApplier (canonical apply order).
+        // Note: hydration is handled by engine before state reaches runtime.
+        let deps = SceneRuntimeStateApplier.Dependencies(
+            scenePlayer: scenePlayer,
+            userMediaService: userMediaService
         )
+        let restoredCount = SceneRuntimeStateApplier.apply(state, deps: deps)
         runtimeDiagnosticsSink?.receive(.mediaRestore(instanceId: sceneInstanceId, restoredCount: restoredCount))
 
         #if DEBUG
         print("[SceneInstanceRuntime] Applied state for \(sceneInstanceId): restored \(restoredCount) media items")
         #endif
-
-        // Note: visibility is now applied atomically via MediaRestoreCoordinator.restore()
-        // which passes presentOnReady to both setPhoto() and setVideo() calls.
-        // No unconditional replay needed - this preserves poster-gating semantics.
     }
 
     /// Reloads state from scratch (reset + apply).

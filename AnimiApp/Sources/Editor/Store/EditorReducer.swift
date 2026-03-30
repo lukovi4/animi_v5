@@ -119,15 +119,6 @@ public enum EditorReducer {
 
         // MARK: - Scene Instance State (PR9)
 
-        case .setBlockTransform(let sceneInstanceId, let blockId, let transform, let phase):
-            return setBlockTransform(
-                state: newState,
-                sceneInstanceId: sceneInstanceId,
-                blockId: blockId,
-                transform: transform,
-                phase: phase
-            )
-
         case .setBlockVariant(let sceneInstanceId, let blockId, let variantId):
             return setBlockVariant(
                 state: newState,
@@ -199,6 +190,32 @@ public enum EditorReducer {
                 sceneInstanceId: sceneInstanceId,
                 blockId: blockId,
                 present: present
+            )
+
+        // MARK: - Media Placement (PR2)
+
+        case .setMediaPlacement(let sceneInstanceId, let blockId, let placement, let phase):
+            return setMediaPlacement(
+                state: newState,
+                sceneInstanceId: sceneInstanceId,
+                blockId: blockId,
+                placement: placement,
+                phase: phase
+            )
+
+        case .setMediaFitMode(let sceneInstanceId, let blockId, let fitMode):
+            return setMediaFitMode(
+                state: newState,
+                sceneInstanceId: sceneInstanceId,
+                blockId: blockId,
+                fitMode: fitMode
+            )
+
+        case .resetMediaPlacement(let sceneInstanceId, let blockId):
+            return resetMediaPlacement(
+                state: newState,
+                sceneInstanceId: sceneInstanceId,
+                blockId: blockId
             )
 
         // MARK: - Undo/Redo (handled by Store, not reducer)
@@ -768,42 +785,6 @@ private extension EditorReducer {
 
 private extension EditorReducer {
 
-    /// Sets a block transform for a scene instance.
-    /// Only `.ended` phase pushes snapshot; `.began`/`.changed` are live preview.
-    static func setBlockTransform(
-        state: EditorState,
-        sceneInstanceId: UUID,
-        blockId: String,
-        transform: Matrix2D,
-        phase: InteractionPhase
-    ) -> ReducerResult {
-        var newState = state
-
-        // Get or create SceneState for this instance
-        var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
-
-        // Update transform
-        sceneState.userTransforms[blockId] = transform
-
-        // Store back
-        newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
-
-        // Handle phases
-        switch phase {
-        case .began, .changed:
-            // Live preview only, no snapshot
-            return ReducerResult(state: newState, shouldPushSnapshot: false)
-
-        case .ended:
-            // Commit: push snapshot
-            return ReducerResult(state: newState, shouldPushSnapshot: true)
-
-        case .cancelled:
-            // Revert to original state (no changes)
-            return ReducerResult(state: state, shouldPushSnapshot: false)
-        }
-    }
-
     /// Sets a block variant selection for a scene instance.
     static func setBlockVariant(
         state: EditorState,
@@ -874,7 +855,14 @@ private extension EditorReducer {
         }
 
         // Update or remove slot
-        if let slot {
+        if var slot {
+            // Replace: preserve existing visibility (contract: replace keeps visibility)
+            if let existingSlot = sceneState.mediaSlotsByBlockId?[blockId] {
+                slot.visibility = existingSlot.visibility
+            }
+            // Note: slot.asset.placement may be nil here (from ingest).
+            // Hydration in PlayerViewController/TimelineCompositionEngine will set the
+            // correct default placement from template mediaInput.defaultFit on next apply.
             sceneState.mediaSlotsByBlockId?[blockId] = slot
         } else {
             sceneState.mediaSlotsByBlockId?.removeValue(forKey: blockId)
@@ -1016,6 +1004,91 @@ private extension EditorReducer {
         }
 
         // Store back
+        newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+}
+
+// MARK: - Media Placement (PR2)
+
+private extension EditorReducer {
+
+    /// Sets media placement for a block.
+    /// Only `.ended` pushes snapshot; `.began`/`.changed` are live preview.
+    static func setMediaPlacement(
+        state: EditorState,
+        sceneInstanceId: UUID,
+        blockId: String,
+        placement: MediaPlacementState,
+        phase: InteractionPhase
+    ) -> ReducerResult {
+        var newState = state
+
+        var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
+        var slots = sceneState.mediaSlotsByBlockId ?? [:]
+
+        guard var slot = slots[blockId] else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        slot.asset.placement = placement
+        slots[blockId] = slot
+        sceneState.mediaSlotsByBlockId = slots
+        newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+
+        switch phase {
+        case .began, .changed:
+            return ReducerResult(state: newState, shouldPushSnapshot: false)
+        case .ended:
+            return ReducerResult(state: newState, shouldPushSnapshot: true)
+        case .cancelled:
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+    }
+
+    /// Sets fit mode, resetting offset/scale/rotation to defaults.
+    static func setMediaFitMode(
+        state: EditorState,
+        sceneInstanceId: UUID,
+        blockId: String,
+        fitMode: FitMode
+    ) -> ReducerResult {
+        var newState = state
+
+        var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
+        var slots = sceneState.mediaSlotsByBlockId ?? [:]
+
+        guard var slot = slots[blockId] else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        slot.asset.placement = .default(fitMode: fitMode)
+        slots[blockId] = slot
+        sceneState.mediaSlotsByBlockId = slots
+        newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Resets offset/scale/rotation to defaults, preserving current fitMode.
+    static func resetMediaPlacement(
+        state: EditorState,
+        sceneInstanceId: UUID,
+        blockId: String
+    ) -> ReducerResult {
+        var newState = state
+
+        var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
+        var slots = sceneState.mediaSlotsByBlockId ?? [:]
+
+        guard var slot = slots[blockId], let currentPlacement = slot.asset.placement else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        slot.asset.placement = .default(fitMode: currentPlacement.fitMode)
+        slots[blockId] = slot
+        sceneState.mediaSlotsByBlockId = slots
         newState.draft.sceneInstanceStates[sceneInstanceId] = sceneState
 
         return ReducerResult(state: newState, shouldPushSnapshot: true)

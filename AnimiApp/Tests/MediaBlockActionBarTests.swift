@@ -146,6 +146,83 @@ final class MediaBlockActionBarTests: XCTestCase {
         XCTAssertEqual(status?.isHidden, true, "Status container should be hidden for idle status")
     }
 
+    // MARK: - Reset Transform Button
+
+    /// Reset button hidden when placement is default.
+    func test_resetTransform_hiddenWhenPlacementIsDefault() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["photo"],
+            hasVariants: false,
+            hasMedia: true,
+            isEnabled: true,
+            isPlacementDefault: true
+        )
+
+        let reset = button(titled: "Reset", in: bar)
+        XCTAssertNotNil(reset, "Should find Reset button")
+        XCTAssertEqual(reset?.isHidden, true, "Reset should be hidden when placement is default")
+    }
+
+    /// Reset button shown when placement is not default and has media.
+    func test_resetTransform_shownWhenPlacementNotDefault() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["photo"],
+            hasVariants: false,
+            hasMedia: true,
+            isEnabled: true,
+            isPlacementDefault: false
+        )
+
+        let reset = button(titled: "Reset", in: bar)
+        XCTAssertNotNil(reset, "Should find Reset button")
+        XCTAssertEqual(reset?.isHidden, false, "Reset should be visible when placement is not default")
+        XCTAssertEqual(reset?.isEnabled, true, "Reset should be enabled")
+    }
+
+    /// Reset button hidden when no media, even if placement is not default.
+    func test_resetTransform_hiddenWhenNoMedia() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["photo"],
+            hasVariants: false,
+            hasMedia: false,
+            isEnabled: true,
+            isPlacementDefault: false
+        )
+
+        let reset = button(titled: "Reset", in: bar)
+        XCTAssertNotNil(reset, "Should find Reset button")
+        XCTAssertEqual(reset?.isHidden, true, "Reset should be hidden when no media")
+    }
+
+    /// Reset button callback fires with correct blockId.
+    func test_resetTransform_callbackFiresWithBlockId() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["photo"],
+            hasVariants: false,
+            hasMedia: true,
+            isEnabled: true,
+            isPlacementDefault: false
+        )
+
+        var receivedBlockId: String?
+        bar.onResetTransform = { blockId in
+            receivedBlockId = blockId
+        }
+
+        let reset = button(titled: "Reset", in: bar)
+        XCTAssertNotNil(reset, "Should find Reset button")
+        reset?.sendActions(for: .touchUpInside)
+        XCTAssertEqual(receivedBlockId, "b1", "Callback should receive correct blockId")
+    }
+
     // MARK: - Transition Tests (sticky-disabled regression coverage)
 
     /// processing -> failed: media buttons re-enabled.

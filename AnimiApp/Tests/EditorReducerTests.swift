@@ -635,64 +635,6 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertTrue(result.shouldPushSnapshot)
     }
 
-    /// Test: setBlockTransform stores transform and only pushes on .ended.
-    @MainActor func testSetBlockTransform_gesturePhases() {
-        // Given
-        let draft = makeDraft(sceneDurations: [2_000_000])
-        let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: []))
-
-        let sceneId = store.sceneItems[0].id
-        let transform = Matrix2D(a: 1.5, b: 0.1, c: -0.1, d: 1.5, tx: 10, ty: 20)
-
-        // When: began
-        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: transform, phase: .began))
-        XCTAssertFalse(store.canUndo)
-
-        // When: changed
-        let changedTransform = Matrix2D(a: 2.0, b: 0.2, c: -0.2, d: 2.0, tx: 15, ty: 25)
-        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: changedTransform, phase: .changed))
-        XCTAssertFalse(store.canUndo)
-
-        // Verify transform stored during changed phase
-        XCTAssertEqual(store.state.draft.sceneInstanceStates[sceneId]?.userTransforms["block1"], changedTransform)
-
-        // When: ended
-        let endTransform = Matrix2D(a: 2.5, b: 0.3, c: -0.3, d: 2.5, tx: 20, ty: 30)
-        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: endTransform, phase: .ended))
-
-        // Then: can undo after ended
-        XCTAssertTrue(store.canUndo)
-        XCTAssertEqual(store.state.draft.sceneInstanceStates[sceneId]?.userTransforms["block1"], endTransform)
-    }
-
-    /// Test: setBlockTransform cancelled restores baseline.
-    @MainActor func testSetBlockTransform_cancelledRestoresBaseline() {
-        // Given: scene with existing transform
-        var draft = makeDraft(sceneDurations: [2_000_000])
-        let sceneId = draft.canonicalTimeline.sceneItems[0].id
-        let originalTransform = Matrix2D(a: 1.0, b: 0, c: 0, d: 1.0, tx: 5, ty: 5)
-        var sceneState = SceneState.empty
-        sceneState.userTransforms["block1"] = originalTransform
-        draft.sceneInstanceStates[sceneId] = sceneState
-
-        let store = EditorStore()
-        store.dispatch(.loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: []))
-
-        // When: start gesture
-        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: Matrix2D(a: 2.0, b: 0.1, c: -0.1, d: 2.0, tx: 10, ty: 10), phase: .began))
-
-        // When: multiple changes
-        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: Matrix2D(a: 3.0, b: 0.2, c: -0.2, d: 3.0, tx: 20, ty: 20), phase: .changed))
-
-        // When: cancel
-        store.dispatch(.setBlockTransform(sceneInstanceId: sceneId, blockId: "block1", transform: Matrix2D(a: 4.0, b: 0.3, c: -0.3, d: 4.0, tx: 30, ty: 30), phase: .cancelled))
-
-        // Then: restored to original
-        XCTAssertEqual(store.state.draft.sceneInstanceStates[sceneId]?.userTransforms["block1"], originalTransform)
-        XCTAssertFalse(store.canUndo)
-    }
-
     /// Test: duplicated scene has independent SceneState.
     func testDuplicateScene_independentSceneState() {
         // Given: scene with state

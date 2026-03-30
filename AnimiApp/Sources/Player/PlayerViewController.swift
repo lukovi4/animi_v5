@@ -510,9 +510,32 @@ final class PlayerViewController: UIViewController {
             }
         }
 
+        // Step 2.5: Hydrate legacy scene states before anything reads the draft.
+        // This ensures EditorStore, engine, and export all see canonical placement data.
+        let hydrationResult = await ProjectDraftHydrator.hydrate(
+            draft: draft,
+            sceneURLProvider: sceneLibrarySnapshot!
+        )
+        let hydratedDraft: ProjectDraft
+        if !hydrationResult.changedInstanceIds.isEmpty {
+            hydratedDraft = hydrationResult.draft
+            currentProjectDraft = hydratedDraft
+            activeDraftSlot?.draft = hydratedDraft
+            if let slot = activeDraftSlot {
+                do {
+                    try ProjectStore.shared.saveActiveDraft(slot)
+                    log("[Release v1] Hydrated \(hydrationResult.changedInstanceIds.count) scene state(s), saved to active draft")
+                } catch {
+                    log("[Release v1] WARN: Hydrated draft but failed to save: \(error)")
+                }
+            }
+        } else {
+            hydratedDraft = draft
+        }
+
         // Step 3: Determine first scene from draft or template defaults
         let firstSceneTypeId: String
-        if let draftFirstSceneTypeId = draft.canonicalTimeline.firstSceneTypeId {
+        if let draftFirstSceneTypeId = hydratedDraft.canonicalTimeline.firstSceneTypeId {
             firstSceneTypeId = draftFirstSceneTypeId
             log("[Release v1] Using first scene from draft: \(firstSceneTypeId)")
         } else if let defaultFirstSceneTypeId = defaultSceneSequence.first?.sceneTypeId {
@@ -753,6 +776,12 @@ final class PlayerViewController: UIViewController {
             ))
             self.metalView.setNeedsDisplay()
             // Refresh MediaBlockActionBar
+            self.updateMediaBlockActionBarForSelectedBlock()
+        }
+
+        editorLayoutContainer.onResetTransform = { [weak self] blockId in
+            guard let self, let instanceId = self.sceneEditTargetInstanceId else { return }
+            self.editorStore?.dispatch(.resetMediaPlacement(sceneInstanceId: instanceId, blockId: blockId))
             self.updateMediaBlockActionBarForSelectedBlock()
         }
     }
@@ -1203,6 +1232,17 @@ final class PlayerViewController: UIViewController {
             self?.handleVideoSelectionChanged(instanceId: instanceId, blockId: blockId, selection: selection)
         }
 
+        // PR2/PR4: Fast-path callbacks for media placement, visibility, and slot changes
+        store.onMediaPlacementChanged = { [weak self] instanceId, blockId, placement in
+            self?.handleMediaPlacementChanged(instanceId: instanceId, blockId: blockId, placement: placement)
+        }
+        store.onMediaVisibilityChanged = { [weak self] instanceId, blockId, visible in
+            self?.handleMediaVisibilityChanged(instanceId: instanceId, blockId: blockId, visible: visible)
+        }
+        store.onMediaSlotChanged = { [weak self] instanceId, blockId, slot in
+            self?.handleMediaSlotChanged(instanceId: instanceId, blockId: blockId, slot: slot)
+        }
+
         // PR-G: Notice callback for user-facing feedback (e.g., transition reset alerts)
         store.onNotice = { [weak self] notice in
             self?.handleEditorNotice(notice)
@@ -1219,11 +1259,52 @@ final class PlayerViewController: UIViewController {
             self?.editorStore?.dispatch(.selectBlock(blockId: blockId))
         }
 
-        sceneEditCtrl.onTransformChanged = { [weak self] blockId, transform, phase in
-            guard let self = self else { return }
-            // Apply to runtime
-            self.scenePlayer?.setUserTransform(blockId: blockId, transform: transform)
+        sceneEditCtrl.getBaselinePlacement = { [weak self] blockId in
+            guard let self = self,
+                  let instanceId = self.sceneEditTargetInstanceId,
+                  let slot = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else {
+                return .defaultCover
+            }
+            return slot.asset.placement ?? .defaultCover
+        }
+
+        sceneEditCtrl.onPlacementChanged = { [weak self] blockId, placement, phase in
+            guard let self = self,
+                  let instanceId = self.sceneEditTargetInstanceId,
+                  let player = self.scenePlayer,
+                  let ums = self.userMediaService else { return }
+
+            let deps = SceneRuntimeStateApplier.Dependencies(
+                scenePlayer: player,
+                userMediaService: ums
+            )
+
+            // Live preview via resolver
+            SceneRuntimeStateApplier.applyPlacementChange(
+                blockId: blockId,
+                placement: placement,
+                deps: deps
+            )
             self.metalView.setNeedsDisplay()
+
+            // Persist to store
+            self.editorStore?.dispatch(.setMediaPlacement(
+                sceneInstanceId: instanceId,
+                blockId: blockId,
+                placement: placement,
+                phase: phase
+            ))
+
+            // Cancel: restore baseline visually
+            if phase == .cancelled {
+                let restored = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.asset.placement ?? .defaultCover
+                SceneRuntimeStateApplier.applyPlacementChange(
+                    blockId: blockId,
+                    placement: restored,
+                    deps: deps
+                )
+                self.metalView.setNeedsDisplay()
+            }
         }
 
         // Phase 6: Wire ingest status overlay
@@ -1360,6 +1441,20 @@ final class PlayerViewController: UIViewController {
             // PR-F: Set template canvas from library
             engine.setTemplateCanvas(library.canvas)
 
+            // PR4: Wire engine redraw callback for async media readiness
+            engine.onNeedsRedraw = { [weak self] in
+                self?.refreshCurrentTimelineFrame()
+            }
+
+            // PR-C: Post-load canonicalization write-back for updateSceneState().
+            // This is NOT initial-load convergence — draft is hydrated at project-load time.
+            // This callback handles inactive-scene slot updates where placement == nil
+            // may still arrive from ingest for scenes not yet visited.
+            engine.onSceneStateHydrated = { [weak self] instanceId, hydratedState in
+                self?.editorStore?.writeHydratedSceneState(hydratedState, for: instanceId)
+                self?.draftIsDirty = true
+            }
+
             timelineCompositionEngine = engine
         }
 
@@ -1476,6 +1571,10 @@ final class PlayerViewController: UIViewController {
             userMediaService?.onStillFrameDelivered = { [weak self] in
                 self?.metalView.setNeedsDisplay()
             }
+            // PR4: Re-resolve placement after async media load (correct media dimensions)
+            userMediaService?.onMediaReady = { [weak self] blockId in
+                self?.handleMediaReadyForPlacement(blockId: blockId)
+            }
             // Video selection persistence is now handled by MediaIngestCoordinator
             // (slot includes videoWindow). No runtime → persistence callback needed.
         }
@@ -1541,47 +1640,30 @@ final class PlayerViewController: UIViewController {
     }
 
     /// Applies persisted SceneState to runtime for a scene instance.
+    /// Draft is already hydrated at project-load time by ProjectDraftHydrator.
     private func applySceneInstanceState(instanceId: UUID) {
         guard let state = editorStore?.state.draft.sceneInstanceStates[instanceId],
-              let player = scenePlayer else {
+              let player = scenePlayer,
+              let service = userMediaService else {
             return
         }
 
-        // PR-D: Correct order for state restoration:
-        // 1. Media assignments (visibility is atomic via presentOnReady for both photo and video)
-        // 2. Variant overrides, transforms, toggles
-
-        // STEP 1: Apply media assignments via MediaRestoreCoordinator (unified slots).
-        // Visibility is handled atomically inside setPhoto/setVideo via presentOnReady —
-        // no separate replay needed. This preserves poster-gating for video and
-        // texture-gating for photo (Phase 2 async photo load contract).
-        if let service = userMediaService {
-            MediaRestoreCoordinator.restore(
-                slots: state.mediaSlotsByBlockId,
-                to: service
-            )
+        // PR-C: Draft is hydrated at load time. If we see un-hydrated state here,
+        // it's a violation of the ingress contract.
+        #if DEBUG
+        if SceneStateMigrationHelper.needsHydration(state) {
+            assertionFailure("[PlayerVC] applySceneInstanceState: state needs hydration for \(instanceId) — ingress contract violated")
         }
+        #endif
 
-        // STEP 2: Apply variant overrides
-        player.applyVariantSelection(state.variantOverrides)
-
-        // STEP 3: Apply user transforms
-        for (blockId, transform) in state.userTransforms {
-            player.setUserTransform(blockId: blockId, transform: transform)
-        }
-
-        // STEP 4: Apply layer toggles
-        for (blockId, toggles) in state.layerToggles {
-            for (toggleId, enabled) in toggles {
-                player.setLayerToggle(blockId: blockId, toggleId: toggleId, enabled: enabled)
-            }
-        }
+        let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
+        let restoredCount = SceneRuntimeStateApplier.apply(state, deps: deps)
 
         #if DEBUG
         print("[PlayerVC] Applied state for instance \(instanceId): " +
               "slots=\(state.mediaSlotsByBlockId?.count ?? 0), " +
               "variants=\(state.variantOverrides.count), " +
-              "transforms=\(state.userTransforms.count), " +
+              "restored=\(restoredCount), " +
               "toggles=\(state.layerToggles.count)")
         #endif
     }
@@ -1862,6 +1944,96 @@ final class PlayerViewController: UIViewController {
         #endif
     }
 
+    // MARK: - PR4: Fast-Path Handlers
+
+    /// Fast-path: placement committed — apply to active scene without full reload.
+    private func handleMediaPlacementChanged(instanceId: UUID, blockId: String, placement: MediaPlacementState) {
+        // Scene-edit path: apply directly to local player
+        if let player = scenePlayer, let service = userMediaService,
+           activeSceneInstanceId == instanceId || sceneEditTargetInstanceId == instanceId {
+            let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
+            SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
+            metalView.setNeedsDisplay()
+        }
+
+        // Timeline path: engine fast-path (no full reload)
+        timelineCompositionEngine?.applyPlacementChange(blockId: blockId, placement: placement, for: instanceId)
+        refreshCurrentTimelineFrame()
+
+        currentProjectDraft = editorStore?.currentDraft
+        draftIsDirty = true
+    }
+
+    /// Fast-path: visibility toggled — apply to active scene without full reload.
+    private func handleMediaVisibilityChanged(instanceId: UUID, blockId: String, visible: Bool) {
+        // Scene-edit path: apply directly to local player
+        if let player = scenePlayer,
+           activeSceneInstanceId == instanceId || sceneEditTargetInstanceId == instanceId {
+            SceneRuntimeStateApplier.applyVisibilityChange(blockId: blockId, visible: visible, player: player)
+            metalView.setNeedsDisplay()
+        }
+
+        // Timeline path: engine fast-path (no full reload)
+        timelineCompositionEngine?.applyVisibilityChange(blockId: blockId, visible: visible, for: instanceId)
+        refreshCurrentTimelineFrame()
+
+        currentProjectDraft = editorStore?.currentDraft
+        draftIsDirty = true
+        refreshSceneEditBars()
+    }
+
+    /// Fast-path: slot changed (insert/replace/remove) — apply to active scene.
+    /// Slot changes use full engine update (media needs restore).
+    private func handleMediaSlotChanged(instanceId: UUID, blockId: String, slot: SceneMediaSlot?) {
+        let isActiveScene = activeSceneInstanceId == instanceId || sceneEditTargetInstanceId == instanceId
+
+        // Hydrate nil placement only for the active scene (where scenePlayer has correct template).
+        // For other scenes, engine hydrates via updateSceneState with correct per-sceneType resources.
+        var hydratedSlot = slot
+        if isActiveScene, var s = hydratedSlot, s.asset.placement == nil, let player = scenePlayer {
+            let fitMode = player.mediaInput(blockId: blockId)?.defaultFit ?? .cover
+            s.asset.placement = .default(fitMode: fitMode)
+            hydratedSlot = s
+            editorStore?.writeHydratedSlotPlacement(fitMode, for: instanceId, blockId: blockId)
+        }
+
+        // Scene-edit path: apply directly (only for active scene)
+        if isActiveScene, let player = scenePlayer, let service = userMediaService {
+            let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
+            SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: hydratedSlot, deps: deps)
+            metalView.setNeedsDisplay()
+        }
+
+        // Timeline path: full state update (engine hydrates if needed for any scene)
+        if let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId] {
+            Task { @MainActor in
+                await timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId)
+                self.refreshCurrentTimelineFrame()
+            }
+        }
+
+        currentProjectDraft = editorStore?.currentDraft
+        draftIsDirty = true
+        refreshSceneEditBars()
+    }
+
+    /// PR4: Re-resolve placement after media finishes async loading.
+    /// Called by UserMediaService.onMediaReady — now we have actual media dimensions.
+    private func handleMediaReadyForPlacement(blockId: String) {
+        guard let player = scenePlayer, let service = userMediaService else { return }
+
+        // Find active instance and its placement
+        let instanceId = sceneEditTargetInstanceId ?? activeSceneInstanceId
+        guard let instanceId,
+              let slot = editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
+              let placement = slot.asset.placement else { return }
+
+        // Re-resolve with actual media size now available
+        let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
+        SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
+        metalView.setNeedsDisplay()
+    }
+
     /// Called during live-trim preview (lightweight, frequent).
     /// Only updates UI, skips playback coordinator and persistence.
     /// Phase 2.1: Must update mapper for live trim scrub to work correctly.
@@ -1985,6 +2157,9 @@ final class PlayerViewController: UIViewController {
         let ingestKey = IngestSlotKey(sceneInstanceId: instanceId, blockId: blockId)
         let ingestStatus = mediaIngestCoordinator.status(for: ingestKey)
 
+        // Check if placement is at default (for reset button visibility)
+        let isPlacementDefault = slot?.asset.placement?.isNearDefault ?? true
+
         editorLayoutContainer.configureMediaBlockActionBar(
             blockId: blockId,
             allowedMedia: allowedMedia,
@@ -1994,7 +2169,8 @@ final class PlayerViewController: UIViewController {
             mediaKind: mediaKind,
             canTrimVideo: canTrimVideo,
             ingestStatus: ingestStatus,
-            showsIngestStatus: showsMediaIngestStatusInActionBar
+            showsIngestStatus: showsMediaIngestStatusInActionBar,
+            isPlacementDefault: isPlacementDefault
         )
     }
 
@@ -3187,57 +3363,18 @@ final class PlayerViewController: UIViewController {
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        // PR-E: Only works in Scene Edit mode (dev-UI path removed)
         guard case .sceneEdit = editorStore?.state.uiMode else { return }
         sceneEditController?.handlePan(recognizer)
-        persistTransformIfNeededSceneEdit(recognizer)
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
-        // PR-E: Only works in Scene Edit mode (dev-UI path removed)
         guard case .sceneEdit = editorStore?.state.uiMode else { return }
         sceneEditController?.handlePinch(recognizer)
-        persistTransformIfNeededSceneEdit(recognizer)
     }
 
     @objc private func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
-        // PR-E: Only works in Scene Edit mode (dev-UI path removed)
         guard case .sceneEdit = editorStore?.state.uiMode else { return }
         sceneEditController?.handleRotation(recognizer)
-        persistTransformIfNeededSceneEdit(recognizer)
-    }
-
-    /// PR-D: Persists transform from Scene Edit mode gestures.
-    private func persistTransformIfNeededSceneEdit(_ recognizer: UIGestureRecognizer) {
-        assertSceneEditTargetMatchesRuntimeIfPossible()
-        guard let instanceId = sceneEditTargetInstanceId,
-              let blockId = editorStore?.state.selectedBlockId,
-              let player = scenePlayer else { return }
-
-        let phase: InteractionPhase
-        switch recognizer.state {
-        case .began: phase = .began
-        case .changed: phase = .changed
-        case .ended: phase = .ended
-        case .cancelled, .failed: phase = .cancelled
-        default: return
-        }
-
-        let transform = player.userTransform(blockId: blockId)
-
-        editorStore?.dispatch(.setBlockTransform(
-            sceneInstanceId: instanceId,
-            blockId: blockId,
-            transform: transform,
-            phase: phase
-        ))
-
-        // On cancel, restore baseline transform
-        if phase == .cancelled {
-            let restored = editorStore?.state.draft.sceneInstanceStates[instanceId]?.userTransforms[blockId] ?? .identity
-            player.setUserTransform(blockId: blockId, transform: restored)
-            metalView.setNeedsDisplay()
-        }
     }
 
     // MARK: - User Media Actions (PR-32)
@@ -3277,7 +3414,7 @@ final class PlayerViewController: UIViewController {
         if activeSceneInstanceId == result.sceneInstanceId {
             switch result.slot.mediaRef.mediaKind {
             case .photo:
-                userMediaService?.setPhoto(blockId: result.blockId, fileURL: result.persistedURL, presentOnReady: result.slot.visibility)
+                userMediaService?.setPhoto(blockId: result.blockId, fileURL: result.persistedURL, presentOnReady: result.slot.visibility, mediaRefId: result.slot.mediaRef.id)
             case .video:
                 userMediaService?.setVideo(
                     blockId: result.blockId,
@@ -3764,10 +3901,14 @@ final class PlayerViewController: UIViewController {
             userMediaService?.onStillFrameDelivered = { [weak self] in
                 self?.metalView.setNeedsDisplay()
             }
+            // PR4: Re-resolve placement after async media load
+            userMediaService?.onMediaReady = { [weak self] blockId in
+                self?.handleMediaReadyForPlacement(blockId: blockId)
+            }
             log("UserMediaService initialized")
         }
 
-        // Setup background state
+        // PR3: Setup background state
         setupBackgroundState(compiled: compiled)
 
         // Log results
@@ -3842,6 +3983,10 @@ final class PlayerViewController: UIViewController {
             // PR2: Render-only callback for async still frame delivery (no re-sync)
             userMediaService?.onStillFrameDelivered = { [weak self] in
                 self?.metalView.setNeedsDisplay()
+            }
+            // PR4: Re-resolve placement after async media load
+            userMediaService?.onMediaReady = { [weak self] blockId in
+                self?.handleMediaReadyForPlacement(blockId: blockId)
             }
             log("UserMediaService initialized")
         }

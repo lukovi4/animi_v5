@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import Metal
 import TVECore
+import os.log
 
 // MARK: - Timeline Composition Engine
 
@@ -12,6 +13,11 @@ import TVECore
 /// Scene Edit mode continues to use single-scene path.
 @MainActor
 public final class TimelineCompositionEngine {
+
+    private static let logger = Logger(
+        subsystem: "com.animi.app",
+        category: "TimelineCompositionEngine"
+    )
 
     // MARK: - Dependencies
 
@@ -61,6 +67,13 @@ public final class TimelineCompositionEngine {
 
     /// Diagnostics sink for render events (test-only, nil in production).
     internal private(set) var renderDiagnosticsSink: RenderDiagnosticsSink?
+
+    /// PR4: Called when a timeline runtime needs a redraw (e.g., after async media placement re-resolve).
+    /// PlayerViewController wires this to `refreshCurrentTimelineFrame()`.
+    public var onNeedsRedraw: (() -> Void)?
+
+    /// Called when engine hydrates a cold scene state. Caller should persist to store.
+    public var onSceneStateHydrated: ((UUID, SceneState) -> Void)?
 
     // MARK: - Init
 
@@ -119,6 +132,7 @@ public final class TimelineCompositionEngine {
 
     /// Sets the timeline and scene states.
     /// Call this when timeline changes (scene add/remove/reorder).
+    /// PR-C: Scene states are expected to be already hydrated at project-load time.
     public func setTimeline(
         _ timeline: CanonicalTimeline,
         sceneStates: [UUID: SceneState]
@@ -127,6 +141,15 @@ public final class TimelineCompositionEngine {
         let newSceneIds = Set(timeline.sceneItems.map(\.id))
 
         self.timeline = timeline
+
+        // PR-C: States arrive pre-hydrated from ProjectDraftHydrator.
+        // Warn in all builds if any state still needs hydration — ingress contract violation.
+        for item in timeline.sceneItems {
+            if let state = sceneStates[item.id],
+               SceneStateMigrationHelper.needsHydration(state) {
+                Self.logger.warning("setTimeline: state needs hydration for \(item.id) — ingress contract violated")
+            }
+        }
         self.sceneStates = sceneStates
 
         // Rebuild transition math
@@ -150,12 +173,39 @@ public final class TimelineCompositionEngine {
 
     /// Updates scene state for a specific instance.
     /// If runtime is already loaded, state is also re-applied to the runtime.
+    ///
+    /// PR-C: This is the sole engine-side hydration path after project-load hydration.
+    /// Handles inactive-scene slot updates where `placement == nil` may arrive from ingest.
+    /// Falls back to `preloadMetadata` on cache miss so cold scenes are also hydrated.
     public func updateSceneState(_ state: SceneState, for instanceId: UUID) async {
-        sceneStates[instanceId] = state
+        var hydratedState = state
+        if SceneStateMigrationHelper.needsHydration(state),
+           let sceneTypeId = sceneTypeIdForInstance(instanceId) {
+            // Try warm cache first; fall back to metadata-only preload for cold scenes.
+            let resources: SceneTypeResourcesCache.Resources?
+            if let cached = resourcesCache.resources(for: sceneTypeId) {
+                resources = cached
+            } else {
+                do {
+                    resources = try await resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
+                } catch {
+                    Self.logger.warning("updateSceneState: metadata preload failed for '\(sceneTypeId)': \(error) — state left unhydrated for \(instanceId)")
+                    resources = nil
+                }
+            }
+            if let resources {
+                let provider = CompiledSceneMediaInputProvider(
+                    mediaBlocks: resources.compiled.runtime.scene.mediaBlocks
+                )
+                hydratedState = SceneStateMigrationHelper.hydrate(state, mediaInputProvider: provider)
+                onSceneStateHydrated?(instanceId, hydratedState)
+            }
+        }
+        sceneStates[instanceId] = hydratedState
 
         // If runtime already loaded, re-apply state
         if let runtime = instanceRuntimes[instanceId] {
-            await runtime.reloadState(state)
+            await runtime.reloadState(hydratedState)
             #if DEBUG
             print("[TimelineCompositionEngine] Re-applied state to loaded runtime: \(instanceId)")
             #endif
@@ -190,6 +240,66 @@ public final class TimelineCompositionEngine {
                 print("[Phase5] Engine runtime fast-apply failed (best-effort): \(error)")
                 #endif
             }
+        }
+    }
+
+    // MARK: - PR4: Fast-Path Updates
+
+    /// Fast-path: applies placement change without full runtime reload.
+    /// Updates cache and applies resolved transform to loaded runtime.
+    public func applyPlacementChange(
+        blockId: String,
+        placement: MediaPlacementState,
+        for instanceId: UUID
+    ) {
+        // Cache update
+        if var sceneState = sceneStates[instanceId],
+           var slots = sceneState.mediaSlotsByBlockId,
+           var slot = slots[blockId] {
+            slot.asset.placement = placement
+            slots[blockId] = slot
+            sceneState.mediaSlotsByBlockId = slots
+            sceneStates[instanceId] = sceneState
+        }
+        // Best-effort runtime fast-apply + sync appliedState
+        if let runtime = instanceRuntimes[instanceId] {
+            // Sync appliedState so handleMediaReady reads fresh placement
+            if var runtimeState = runtime.appliedState,
+               var slots = runtimeState.mediaSlotsByBlockId,
+               var slot = slots[blockId] {
+                slot.asset.placement = placement
+                slots[blockId] = slot
+                runtimeState.mediaSlotsByBlockId = slots
+                runtime.appliedState = runtimeState
+            }
+            let deps = SceneRuntimeStateApplier.Dependencies(
+                scenePlayer: runtime.scenePlayer,
+                userMediaService: runtime.userMediaService
+            )
+            SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
+        }
+    }
+
+    /// Fast-path: applies visibility change without full runtime reload.
+    public func applyVisibilityChange(
+        blockId: String,
+        visible: Bool,
+        for instanceId: UUID
+    ) {
+        // Cache update
+        if var sceneState = sceneStates[instanceId],
+           var slots = sceneState.mediaSlotsByBlockId,
+           var slot = slots[blockId] {
+            slot.visibility = visible
+            slots[blockId] = slot
+            sceneState.mediaSlotsByBlockId = slots
+            sceneStates[instanceId] = sceneState
+        }
+        // Best-effort runtime fast-apply
+        if let runtime = instanceRuntimes[instanceId] {
+            SceneRuntimeStateApplier.applyVisibilityChange(
+                blockId: blockId, visible: visible, player: runtime.scenePlayer
+            )
         }
     }
 
@@ -531,11 +641,19 @@ public final class TimelineCompositionEngine {
         // Propagate diagnostics sink to runtime
         runtime.runtimeDiagnosticsSink = runtimeDiagnosticsSink
 
+        // PR4: Forward runtime redraw requests to engine callback
+        runtime.onNeedsRedraw = { [weak self] in
+            self?.onNeedsRedraw?()
+        }
+
         // Video selection persistence is handled by MediaIngestCoordinator (slot includes videoWindow).
         // No runtime → persistence callback needed in the new architecture.
 
-        // Apply state if available
+        // Apply state if available (already hydrated at project-load time)
         if let state = sceneStates[instanceId] {
+            if SceneStateMigrationHelper.needsHydration(state) {
+                Self.logger.warning("getOrCreateRuntime: state needs hydration for \(instanceId) — ingress contract violated")
+            }
             await runtime.applyState(state)
         }
 
@@ -1086,28 +1204,40 @@ public final class TimelineCompositionEngine {
                 resources = try await resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
             }
 
-            // 3. Persisted-only: state and media slots
+            // 3. Persisted-only: state and media slots (already hydrated at project-load time)
             let state = sceneStates[instanceId] ?? .empty
+            if SceneStateMigrationHelper.needsHydration(state) {
+                Self.logger.warning("export: state needs hydration for \(instanceId) — ingress contract violated")
+            }
             let mediaSlots = state.mediaSlotsByBlockId ?? [:]
 
-            // 4. Render state from sceneStates (no runtime needed)
-            let userMediaPresent: [String: Bool] = mediaSlots.reduce(into: [:]) { result, entry in
-                result[entry.key] = entry.value.visibility
-            }
-            let renderState = SceneRenderStateSnapshot(
-                userTransforms: state.userTransforms,
-                variantOverrides: state.variantOverrides,
-                userMediaPresent: userMediaPresent,
-                layerToggleState: state.layerToggles
-            )
-
-            // 5. Build snapshot from cache resources (async — probes video duration)
+            // 4. Build media snapshot first (async — probes video duration, resolves URLs)
             let compiled = resources.compiled
             let mediaSnapshot = try await ExportMediaSnapshot.build(
                 compiledScene: compiled,
                 mediaSlots: mediaSlots,
                 projectStore: ProjectStore.shared,
                 runtime: compiled.runtime
+            )
+
+            // 5. Render state from sceneStates (no runtime needed)
+            let userMediaPresent: [String: Bool] = mediaSlots.reduce(into: [:]) { result, entry in
+                result[entry.key] = entry.value.visibility
+            }
+
+            // PR4: Resolve placement → Matrix2D for export parity with preview.
+            // Media dimensions from snapshot give correct baseFit for cover/contain/fill.
+            let resolvedTransforms = await Self.resolveTransformsForExport(
+                state: state,
+                compiled: compiled,
+                mediaSnapshot: mediaSnapshot
+            )
+
+            let renderState = SceneRenderStateSnapshot(
+                userTransforms: resolvedTransforms,
+                variantOverrides: state.variantOverrides,
+                userMediaPresent: userMediaPresent,
+                layerToggleState: state.layerToggles
             )
 
             // Derive videoSelections from validated mediaSnapshot.videoRefs
@@ -1146,6 +1276,106 @@ public final class TimelineCompositionEngine {
             scenesByInstanceId: scenesByInstanceId,
             audioSceneData: audioSceneData
         )
+    }
+
+    // MARK: - PR4: Resolve Placement for Export
+
+    /// Resolves placement-based transforms for export, falling back to legacy userTransforms.
+    /// Uses actual media dimensions from ExportMediaSnapshot for correct cover/contain/fill.
+    private static func resolveTransformsForExport(
+        state: SceneState,
+        compiled: CompiledScene,
+        mediaSnapshot: ExportMediaSnapshot
+    ) async -> [String: Matrix2D] {
+        var transforms = state.userTransforms
+        let mediaBlocks = compiled.runtime.scene.mediaBlocks
+
+        // Build media size lookup from snapshot
+        var mediaSizes: [String: (Double, Double)] = [:]
+        for ref in mediaSnapshot.imageRefs {
+            if let size = probeImageSize(url: ref.url) {
+                mediaSizes[ref.blockId] = size
+            }
+        }
+        for ref in mediaSnapshot.videoRefs {
+            if let size = await probeVideoSize(url: ref.selection.url) {
+                mediaSizes[ref.blockId] = size
+            }
+        }
+
+        if let slots = state.mediaSlotsByBlockId {
+            for (blockId, slot) in slots {
+                guard let placement = slot.asset.placement else { continue }
+                guard let block = mediaBlocks.first(where: { $0.id == blockId }) else { continue }
+
+                let slotRect = block.input.rect
+                let mediaW: Double
+                let mediaH: Double
+                if let size = mediaSizes[blockId] {
+                    mediaW = size.0
+                    mediaH = size.1
+                } else {
+                    mediaW = slotRect.width
+                    mediaH = slotRect.height
+                }
+
+                let geometry = MediaPlacementResolver.SlotGeometry(
+                    slotRect: slotRect,
+                    mediaWidth: mediaW,
+                    mediaHeight: mediaH
+                )
+                transforms[blockId] = MediaPlacementResolver.resolve(
+                    placement: placement,
+                    geometry: geometry
+                )
+            }
+        }
+
+        return transforms
+    }
+
+    /// Probes image dimensions from file URL (synchronous, lightweight via ImageIO).
+    private static func probeImageSize(url: URL) -> (Double, Double)? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
+        guard let width = properties[kCGImagePropertyPixelWidth] as? Double,
+              let height = properties[kCGImagePropertyPixelHeight] as? Double else { return nil }
+
+        // Apply EXIF orientation
+        let orientation = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
+        if orientation >= 5 && orientation <= 8 {
+            return (height, width) // rotated 90/270
+        }
+        return (width, height)
+    }
+
+    /// Probes video oriented size from file URL via AVURLAsset.
+    /// Looks up sceneTypeId for a timeline item from its payload.
+    private static func sceneTypeId(for item: TimelineItem, in timeline: CanonicalTimeline) -> String? {
+        guard let payload = timeline.payloads[item.payloadId],
+              case .scene(let scenePayload) = payload else { return nil }
+        return scenePayload.sceneTypeId
+    }
+
+    /// Looks up sceneTypeId for an instance ID from the current timeline.
+    private func sceneTypeIdForInstance(_ instanceId: UUID) -> String? {
+        guard let timeline,
+              let item = timeline.sceneItems.first(where: { $0.id == instanceId }) else { return nil }
+        return Self.sceneTypeId(for: item, in: timeline)
+    }
+
+    private static func probeVideoSize(url: URL) async -> (Double, Double)? {
+        let asset = AVURLAsset(url: url)
+        do {
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard let track = tracks.first else { return nil }
+            let size = try await track.load(.naturalSize)
+            let transform = try await track.load(.preferredTransform)
+            let oriented = CGRect(origin: .zero, size: size).applying(transform).standardized.size
+            return (Double(oriented.width), Double(oriented.height))
+        } catch {
+            return nil
+        }
     }
 
 }

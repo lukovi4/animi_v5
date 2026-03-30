@@ -23,6 +23,9 @@ final class MediaBlockActionBar: UIView {
     /// Called when Trim button is tapped. Parameter: blockId.
     var onTrimVideo: ((String) -> Void)?
 
+    /// Called when Reset Transform button is tapped. Parameter: blockId.
+    var onResetTransform: ((String) -> Void)?
+
     /// Called when Remove button is tapped. Parameter: blockId.
     var onRemove: ((String) -> Void)?
 
@@ -144,6 +147,20 @@ final class MediaBlockActionBar: UIView {
         return button
     }()
 
+    private lazy var resetTransformButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "arrow.counterclockwise")
+        config.title = "Reset"
+        config.imagePlacement = .top
+        config.imagePadding = 4
+        config.baseForegroundColor = .label
+
+        let button = UIButton(configuration: config)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(resetTransformTapped), for: .touchUpInside)
+        return button
+    }()
+
     private lazy var removeButton: UIButton = {
         var config = UIButton.Configuration.plain()
         config.image = UIImage(systemName: "trash")
@@ -184,6 +201,7 @@ final class MediaBlockActionBar: UIView {
         stackView.addArrangedSubview(trimButton)
         stackView.addArrangedSubview(animationButton)
         stackView.addArrangedSubview(toggleEnabledButton)
+        stackView.addArrangedSubview(resetTransformButton)
         stackView.addArrangedSubview(removeButton)
     }
 
@@ -226,7 +244,8 @@ final class MediaBlockActionBar: UIView {
         mediaKind: MediaKind? = nil,
         canTrimVideo: Bool = false,
         ingestStatus: IngestSlotStatus = .idle,
-        showsIngestStatus: Bool = false
+        showsIngestStatus: Bool = false,
+        isPlacementDefault: Bool = true
     ) {
         self.blockId = blockId
         // Photo button: shown if allowedMedia contains "photo" or is nil (backward compat)
@@ -254,6 +273,11 @@ final class MediaBlockActionBar: UIView {
         removeButton.isHidden = !hasMedia
         removeButton.isEnabled = hasMedia
         removeButton.alpha = hasMedia ? 1.0 : 0.5
+
+        // Reset transform button: shown only when media has non-default placement
+        let showReset = hasMedia && !isPlacementDefault
+        resetTransformButton.isHidden = !showReset
+        resetTransformButton.isEnabled = showReset
 
         // Toggle button: update title/icon based on current state
         isBlockEnabled = isEnabled
@@ -343,6 +367,11 @@ final class MediaBlockActionBar: UIView {
     @objc private func toggleEnabledTapped() {
         guard let id = blockId else { return }
         onToggleEnabled?(id)
+    }
+
+    @objc private func resetTransformTapped() {
+        guard let id = blockId else { return }
+        onResetTransform?(id)
     }
 
     @objc private func removeTapped() {

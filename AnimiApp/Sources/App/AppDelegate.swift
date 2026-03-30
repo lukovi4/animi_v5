@@ -7,6 +7,11 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        // PR5: GC expired derived-artifact caches on launch
+        DispatchQueue.global(qos: .utility).async {
+            PhotoProxyCache.shared.collectExpired()
+            VideoPosterCache.shared.collectExpired()
+        }
         return true
     }
 

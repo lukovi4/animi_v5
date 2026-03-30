@@ -301,6 +301,10 @@ public final class UserMediaService {
     /// Unlike `onNeedsDisplay`, does NOT re-trigger still frame sync (avoids infinite loop).
     public var onStillFrameDelivered: (() -> Void)?
 
+    /// PR4: Called when media finishes loading for a block (photo texture injected or video poster ready).
+    /// Use to re-resolve placement transforms with actual media dimensions.
+    public var onMediaReady: ((String) -> Void)?
+
     // MARK: - Async Race Protection (PR-async-race)
 
     /// Generation token per blockId for async race protection.
@@ -440,8 +444,9 @@ public final class UserMediaService {
     ///   - presentOnReady: Value for `userMediaPresent` after texture injection (default: `true`)
     /// - Returns: `true` if accepted (async texture load started), `false` if no scene player available.
     ///   File-level errors (missing/corrupt file) are reported asynchronously via `blockReadinessState`.
+    /// PR5: mediaRefId enables proxy cache keying. Pass nil for legacy/test paths.
     @discardableResult
-    public func setPhoto(blockId: String, fileURL: URL, presentOnReady: Bool = true) -> Bool {
+    public func setPhoto(blockId: String, fileURL: URL, presentOnReady: Bool = true, mediaRefId: String? = nil) -> Bool {
         guard let player = activePlayer else {
             blockReadinessState[blockId] = .failed(reason: "no scene player")
             return false
@@ -469,9 +474,10 @@ public final class UserMediaService {
             guard let self else { return }
 
             do {
-                // Load texture off MainActor via nonisolated helper
+                // PR5: Load proxy texture (or master if no proxy available)
                 let texture = try await Self.loadPhotoTexture(
                     fileURL: fileURL,
+                    mediaRefId: mediaRefId,
                     device: device,
                     commandQueue: commandQueue
                 )
@@ -504,6 +510,7 @@ public final class UserMediaService {
                 }
 
                 self.onNeedsDisplay?()
+                self.onMediaReady?(blockId)
 
                 #if DEBUG
                 print("[UserMediaService] setPhoto success: blockId=\(blockId), needsDisplay fired")
@@ -543,17 +550,28 @@ public final class UserMediaService {
         return true
     }
 
-    /// Loads a photo texture off the MainActor using DownsampledImageLoader.
+    /// PR5: Loads a photo texture from proxy (or generates proxy from master).
+    /// Export uses master directly; runtime preview uses downsampled proxy for performance.
     private static nonisolated func loadPhotoTexture(
         fileURL: URL,
+        mediaRefId: String?,
         device: MTLDevice,
         commandQueue: MTLCommandQueue
     ) async throws -> MTLTexture {
-        try DownsampledImageLoader.loadTexture(
-            from: fileURL,
+        // Use proxy if we have a mediaRefId for cache keying
+        let sourceURL: URL
+        if let mediaRefId,
+           let proxyURL = PhotoProxyCache.shared.proxyURL(masterURL: fileURL, mediaRefId: mediaRefId) {
+            sourceURL = proxyURL
+        } else {
+            sourceURL = fileURL
+        }
+
+        return try DownsampledImageLoader.loadTexture(
+            from: sourceURL,
             device: device,
             commandQueue: commandQueue,
-            maxDimensionPx: 2048
+            maxDimensionPx: PhotoProxyCache.maxDimension
         )
     }
 
@@ -693,6 +711,7 @@ public final class UserMediaService {
 
                 // PR1.1: Trigger redraw after async poster injection
                 self.onNeedsDisplay?()
+                self.onMediaReady?(blockId)
 
                 #if DEBUG
                 print("[UserMediaService] setVideo success: blockId=\(blockId), duration=\(duration)s, needsDisplay fired")
@@ -1245,6 +1264,38 @@ public final class UserMediaService {
     /// - Returns: `true` if photo or video is set, `false` otherwise
     public func hasMedia(blockId: String) -> Bool {
         mediaKind(for: blockId) != .none
+    }
+
+    /// PR4: Returns the presentation-correct media size for a loaded block.
+    /// For video: `orientedSize` from `VideoPresentationInfo`.
+    /// For photo: texture size from the first binding asset.
+    /// Returns `nil` if media is not yet loaded or block has no media.
+    public func mediaPresentationSize(blockId: String) -> (width: Double, height: Double)? {
+        guard let kind = mediaState[blockId] else { return nil }
+        switch kind {
+        case .video:
+            // Video: get orientedSize from provider's presentationInfo
+            if let provider = videoProviders[blockId],
+               let info = provider.presentationInfo {
+                return (Double(info.orientedSize.width), Double(info.orientedSize.height))
+            }
+            return nil
+
+        case .photo:
+            // Photo: get texture size from first binding asset
+            let player: (any ScenePlayerForMedia)? = scenePlayer ?? scenePlayerForTest
+            guard let player else { return nil }
+            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+            for (_, assetId) in assetIds {
+                if let texture = textureProvider.texture(for: assetId) {
+                    return (Double(texture.width), Double(texture.height))
+                }
+            }
+            return nil
+
+        case .none:
+            return nil
+        }
     }
 
     /// Returns whether any video provider is ready for playback.

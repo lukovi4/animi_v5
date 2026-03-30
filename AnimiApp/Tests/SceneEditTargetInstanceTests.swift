@@ -87,14 +87,6 @@ final class SceneEditTargetInstanceTests: XCTestCase {
             blockId: "b1",
             variantId: "v2"
         ))
-        let transform = Matrix2D(a: 2.0, b: 0, c: 0, d: 2.0, tx: 10, ty: 20)
-        store.dispatch(.setBlockTransform(
-            sceneInstanceId: writeTarget!,
-            blockId: "b1",
-            transform: transform,
-            phase: .ended
-        ))
-
         // Verify: duplicate changed, original untouched
         XCTAssertEqual(
             store.state.draft.sceneInstanceStates[duplicateId]?.variantOverrides["b1"],
@@ -102,13 +94,6 @@ final class SceneEditTargetInstanceTests: XCTestCase {
         )
         XCTAssertNil(
             store.state.draft.sceneInstanceStates[originalId]?.variantOverrides["b1"]
-        )
-        XCTAssertEqual(
-            store.state.draft.sceneInstanceStates[duplicateId]?.userTransforms["b1"],
-            transform
-        )
-        XCTAssertNil(
-            store.state.draft.sceneInstanceStates[originalId]?.userTransforms["b1"]
         )
     }
 

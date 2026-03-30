@@ -211,19 +211,17 @@ public final class MediaIngestCoordinator {
 
     // MARK: - Off-Main Photo Prepare + Persist
 
-    /// Runs PhotoPreparePipeline + MediaAssetStore.saveMedia off the MainActor.
-    /// Returns (mediaRef, absoluteURL) for the caller to use on MainActor.
+    /// PR5: Saves the original photo file as-is (no downsample/transcode).
+    /// The original serves as master for export; runtime uses a proxy via PhotoProxyCache.
     private static nonisolated func prepareAndPersistPhoto(
         tempPickerURL: URL,
         assetStore: MediaAssetStore,
         sceneInstanceId: UUID,
         blockId: String
     ) async throws -> (MediaRef, URL) {
-        let preparedURL = try PhotoPreparePipeline.prepare(fileURL: tempPickerURL)
-        defer { try? FileManager.default.removeItem(at: preparedURL) }
-
+        // Save original file directly — runtime uses PhotoProxyCache for display proxies
         let (mediaRef, absoluteURL) = try assetStore.saveMedia(
-            from: preparedURL,
+            from: tempPickerURL,
             mediaKind: .photo,
             sceneInstanceId: sceneInstanceId,
             blockId: blockId

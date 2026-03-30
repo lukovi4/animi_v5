@@ -34,13 +34,10 @@ public final class MediaAssetStore {
         try projectStore.ensureDirectoriesExist()
 
         let uuid = UUID().uuidString
-        let ext: String
-        switch mediaKind {
-        case .photo:
-            ext = "jpg"
-        case .video:
-            ext = fileURL.pathExtension.lowercased()
-        }
+        // PR5: Preserve original extension for both photo and video.
+        // Photos were previously forced to .jpg; now we keep the original (HEIC, PNG, etc.)
+        // to preserve master quality for export.
+        let ext = fileURL.pathExtension.lowercased()
 
         let filename = "\(sceneInstanceId.uuidString)_\(blockId)_\(uuid).\(ext)"
         let relativePath = "Media/UserMedia/\(filename)"

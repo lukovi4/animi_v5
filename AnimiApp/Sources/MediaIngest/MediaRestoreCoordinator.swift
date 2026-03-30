@@ -55,7 +55,8 @@ public enum MediaRestoreCoordinator {
 
             switch slot.mediaRef.mediaKind {
             case .photo:
-                let accepted = service.setPhoto(blockId: blockId, fileURL: url, presentOnReady: presentOnReady)
+                // PR5: Pass mediaRef.id for proxy cache keying
+                let accepted = service.setPhoto(blockId: blockId, fileURL: url, presentOnReady: presentOnReady, mediaRefId: slot.mediaRef.id)
                 if accepted { restored += 1 }
 
                 #if DEBUG

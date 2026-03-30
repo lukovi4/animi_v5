@@ -48,17 +48,23 @@ final class SceneEditInteractionController {
     /// Called when a block is tapped (selected/deselected).
     var onSelectBlock: ((String?) -> Void)?
 
-    /// Called when user transform changes during gesture.
-    /// Parameters: blockId, new transform, phase.
-    var onTransformChanged: ((String, Matrix2D, InteractionPhase) -> Void)?
+    /// Called when placement changes during gesture.
+    /// Parameters: blockId, new placement, phase.
+    var onPlacementChanged: ((String, MediaPlacementState, InteractionPhase) -> Void)?
+
+    /// Reads baseline placement from store for the given block ID.
+    var getBaselinePlacement: ((String) -> MediaPlacementState)?
 
     // MARK: - Gesture State
 
-    /// Base transform at gesture start.
-    private var gestureBaseTransform: Matrix2D = .identity
+    /// Active gesture session (shared across simultaneous gestures).
+    private var gestureSession: PlacementGestureSession?
 
-    /// Last applied transform during gesture.
-    private var lastAppliedTransform: Matrix2D = .identity
+    /// Tracks which gesture types are in-flight to prevent premature session teardown.
+    private var activeGestureTypes: Set<TransformType> = []
+
+    /// Whether any recognizer cancelled during the current session.
+    private var sessionHadCancellation: Bool = false
 
     // MARK: - Hit Test & Selection
 
@@ -113,8 +119,7 @@ final class SceneEditInteractionController {
     /// Handles pan gesture for block translation.
     func handlePan(_ recognizer: UIPanGestureRecognizer) {
         guard case .sceneEdit = getUIMode?(),
-              let blockId = getSelectedBlockId?(),
-              let player = getScenePlayer?() else { return }
+              let blockId = getSelectedBlockId?() else { return }
 
         // Check if pan transforms are allowed for this block
         guard isTransformAllowed(blockId: blockId, type: .pan) else { return }
@@ -123,21 +128,20 @@ final class SceneEditInteractionController {
 
         switch recognizer.state {
         case .began:
-            gestureBaseTransform = player.userTransform(blockId: blockId)
-            lastAppliedTransform = gestureBaseTransform
+            beginGesture(type: .pan, blockId: blockId)
 
         case .changed:
+            guard var session = gestureSession else { return }
             let canvasDelta = mapper.viewDeltaToCanvas(translation)
-            let delta = Matrix2D.translation(x: Double(canvasDelta.x), y: Double(canvasDelta.y))
-            let combined = gestureBaseTransform.concatenating(delta)
-            lastAppliedTransform = combined
-            onTransformChanged?(blockId, combined, .changed)
+            session.translationDelta = (x: Double(canvasDelta.x), y: Double(canvasDelta.y))
+            gestureSession = session
+            onPlacementChanged?(blockId, session.currentPlacement(), .changed)
 
         case .ended:
-            onTransformChanged?(blockId, lastAppliedTransform, .ended)
+            endGesture(type: .pan, blockId: blockId, phase: .ended)
 
-        case .cancelled:
-            onTransformChanged?(blockId, gestureBaseTransform, .cancelled)
+        case .cancelled, .failed:
+            endGesture(type: .pan, blockId: blockId, phase: .cancelled)
 
         default:
             break
@@ -149,30 +153,27 @@ final class SceneEditInteractionController {
     /// Handles pinch gesture for block scaling.
     func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
         guard case .sceneEdit = getUIMode?(),
-              let blockId = getSelectedBlockId?(),
-              let player = getScenePlayer?() else { return }
+              let blockId = getSelectedBlockId?() else { return }
 
         // Check if zoom transforms are allowed for this block
         guard isTransformAllowed(blockId: blockId, type: .pinch) else { return }
 
         switch recognizer.state {
         case .began:
-            gestureBaseTransform = player.userTransform(blockId: blockId)
-            lastAppliedTransform = gestureBaseTransform
+            beginGesture(type: .pinch, blockId: blockId)
 
         case .changed:
-            let scale = Double(recognizer.scale)
-            let scaleMatrix = Matrix2D.scale(x: scale, y: scale)
-            let combined = gestureBaseTransform.concatenating(scaleMatrix)
-            lastAppliedTransform = combined
-            onTransformChanged?(blockId, combined, .changed)
+            guard var session = gestureSession else { return }
+            session.scaleDelta = Double(recognizer.scale)
+            gestureSession = session
+            onPlacementChanged?(blockId, session.currentPlacement(), .changed)
 
         case .ended:
-            onTransformChanged?(blockId, lastAppliedTransform, .ended)
+            endGesture(type: .pinch, blockId: blockId, phase: .ended)
             recognizer.scale = 1.0
 
-        case .cancelled:
-            onTransformChanged?(blockId, gestureBaseTransform, .cancelled)
+        case .cancelled, .failed:
+            endGesture(type: .pinch, blockId: blockId, phase: .cancelled)
             recognizer.scale = 1.0
 
         default:
@@ -185,30 +186,27 @@ final class SceneEditInteractionController {
     /// Handles rotation gesture for block rotation.
     func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
         guard case .sceneEdit = getUIMode?(),
-              let blockId = getSelectedBlockId?(),
-              let player = getScenePlayer?() else { return }
+              let blockId = getSelectedBlockId?() else { return }
 
         // Check if rotation transforms are allowed for this block
         guard isTransformAllowed(blockId: blockId, type: .rotate) else { return }
 
         switch recognizer.state {
         case .began:
-            gestureBaseTransform = player.userTransform(blockId: blockId)
-            lastAppliedTransform = gestureBaseTransform
+            beginGesture(type: .rotate, blockId: blockId)
 
         case .changed:
-            let angle = Double(recognizer.rotation)
-            let rotationMatrix = Matrix2D.rotation(angle)
-            let combined = gestureBaseTransform.concatenating(rotationMatrix)
-            lastAppliedTransform = combined
-            onTransformChanged?(blockId, combined, .changed)
+            guard var session = gestureSession else { return }
+            session.rotationDelta = Double(recognizer.rotation)
+            gestureSession = session
+            onPlacementChanged?(blockId, session.currentPlacement(), .changed)
 
         case .ended:
-            onTransformChanged?(blockId, lastAppliedTransform, .ended)
+            endGesture(type: .rotate, blockId: blockId, phase: .ended)
             recognizer.rotation = 0
 
-        case .cancelled:
-            onTransformChanged?(blockId, gestureBaseTransform, .cancelled)
+        case .cancelled, .failed:
+            endGesture(type: .rotate, blockId: blockId, phase: .cancelled)
             recognizer.rotation = 0
 
         default:
@@ -216,14 +214,48 @@ final class SceneEditInteractionController {
         }
     }
 
+    // MARK: - Gesture Session Management
+
+    private func beginGesture(type: TransformType, blockId: String) {
+        let isFirstGesture = activeGestureTypes.isEmpty
+        activeGestureTypes.insert(type)
+        if gestureSession == nil {
+            let baseline = getBaselinePlacement?(blockId) ?? .defaultCover
+            gestureSession = PlacementGestureSession(blockId: blockId, baseline: baseline)
+        }
+        // Emit .began exactly once — when the first recognizer starts the session
+        if isFirstGesture, let session = gestureSession {
+            onPlacementChanged?(blockId, session.baseline, .began)
+        }
+    }
+
+    private func endGesture(type: TransformType, blockId: String, phase: InteractionPhase) {
+        activeGestureTypes.remove(type)
+        guard let session = gestureSession else { return }
+
+        if phase == .cancelled {
+            sessionHadCancellation = true
+        }
+
+        // Only emit terminal phase when the last active gesture ends.
+        // While other gestures are still in-flight, just emit .changed to keep preview alive.
+        guard activeGestureTypes.isEmpty else {
+            onPlacementChanged?(blockId, session.currentPlacement(), .changed)
+            return
+        }
+
+        // If any recognizer cancelled during this session, treat the whole session as cancelled.
+        let terminalPhase: InteractionPhase = sessionHadCancellation ? .cancelled : phase
+        let placement = terminalPhase == .cancelled ? session.baseline : session.currentPlacement()
+
+        onPlacementChanged?(blockId, placement, terminalPhase)
+        gestureSession = nil
+        sessionHadCancellation = false
+    }
+
     // MARK: - Transform Permission Check
 
     /// Checks if a transform type is allowed for the given block.
-    /// - Parameters:
-    ///   - blockId: Block to check.
-    ///   - type: Transform type (pan, pinch, rotate).
-    /// - Returns: `true` if transform is allowed, `false` otherwise.
-    ///
     /// - Note: `nil` from `userTransformsAllowed` means all transforms are allowed (backward compatible).
     private func isTransformAllowed(blockId: String, type: TransformType) -> Bool {
         guard let player = getScenePlayer?(),

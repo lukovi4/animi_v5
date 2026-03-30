@@ -84,7 +84,7 @@ final class VideoPreparePipelineTests: XCTestCase {
 
         XCTAssertEqual(result.trimStart, 0)
         XCTAssertGreaterThan(result.trimEnd, 0.5, "Duration should be roughly 1s")
-        XCTAssertFalse(result.isMuted)
+        XCTAssertTrue(result.isMuted, "New video imports default to muted")
         XCTAssertEqual(result.volume, 1.0)
     }
 

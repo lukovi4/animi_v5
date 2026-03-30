@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 // MARK: - Editor Store (Release v1)
 
@@ -65,6 +66,18 @@ public final class EditorStore {
     /// Parameters: (sceneInstanceId, blockId, selection)
     public var onVideoSelectionChanged: ((UUID, String, PersistedVideoSelection) -> Void)?
 
+    /// PR2: Called when a media slot changes (insert/replace/remove).
+    /// Parameters: (sceneInstanceId, blockId, slot or nil)
+    public var onMediaSlotChanged: ((UUID, String, SceneMediaSlot?) -> Void)?
+
+    /// PR2: Called when media placement changes (pan/zoom/rotate committed).
+    /// Parameters: (sceneInstanceId, blockId, placement)
+    public var onMediaPlacementChanged: ((UUID, String, MediaPlacementState) -> Void)?
+
+    /// PR2: Called when media visibility changes (hide/show).
+    /// Parameters: (sceneInstanceId, blockId, visible)
+    public var onMediaVisibilityChanged: ((UUID, String, Bool) -> Void)?
+
     /// Called when reducer emits notices (e.g., boundary transitions reset).
     /// Use for user-facing feedback like alerts.
     public var onNotice: ((EditorNotice) -> Void)?
@@ -94,12 +107,12 @@ public final class EditorStore {
             break
         }
 
-        // Handle gesture baseline for trim and transform gestures (PR9)
+        // Handle gesture baseline for trim and transform gestures (PR9, PR2)
         let gesturePhase: InteractionPhase?
         switch action {
         case .trimScene(_, let phase, _, _):
             gesturePhase = phase
-        case .setBlockTransform(_, _, _, let phase):
+        case .setMediaPlacement(_, _, _, let phase):
             gesturePhase = phase
         default:
             gesturePhase = nil
@@ -141,7 +154,7 @@ public final class EditorStore {
         switch action {
         case .trimScene(_, .ended, _, _):
             isGestureEnded = true
-        case .setBlockTransform(_, _, _, .ended):
+        case .setMediaPlacement(_, _, _, .ended):
             isGestureEnded = true
         default:
             isGestureEnded = false
@@ -210,6 +223,11 @@ public final class EditorStore {
         // Extract video selection change info before routing
         let videoSelectionChange = extractVideoSelectionChange(action: action)
 
+        // PR2: Extract specific media change info for dedicated callbacks
+        let mediaSlotChange = extractMediaSlotChange(action: action)
+        let mediaPlacementChange = extractMediaPlacementChange(action: action)
+        let mediaVisibilityChange = extractMediaVisibilityChange(action: action)
+
         // PR-F: Route to appropriate callback based on change type
         if structureChanged {
             // Timeline structure changed - full sync
@@ -221,6 +239,25 @@ public final class EditorStore {
         } else if let (instanceId, blockId, selection) = videoSelectionChange, result.shouldPushSnapshot {
             // Video selection committed - dedicated fast path
             onVideoSelectionChanged?(instanceId, blockId, selection)
+        } else if let (instanceId, blockId, slot) = mediaSlotChange, result.shouldPushSnapshot {
+            // PR2: Media slot changed (insert/replace/remove) - dedicated callback
+            onMediaSlotChanged?(instanceId, blockId, slot)
+            // Also fire generic scene state changed for full sync consumers
+            if let sceneState = state.draft.sceneInstanceStates[instanceId] {
+                onSceneStateChanged?(instanceId, sceneState)
+            }
+        } else if let (instanceId, blockId, placement) = mediaPlacementChange, result.shouldPushSnapshot {
+            // PR2: Media placement committed - dedicated callback
+            onMediaPlacementChanged?(instanceId, blockId, placement)
+            if let sceneState = state.draft.sceneInstanceStates[instanceId] {
+                onSceneStateChanged?(instanceId, sceneState)
+            }
+        } else if let (instanceId, blockId, visible) = mediaVisibilityChange, result.shouldPushSnapshot {
+            // PR2: Media visibility changed - dedicated callback
+            onMediaVisibilityChanged?(instanceId, blockId, visible)
+            if let sceneState = state.draft.sceneInstanceStates[instanceId] {
+                onSceneStateChanged?(instanceId, sceneState)
+            }
         } else if let (instanceId, _) = sceneStateChangeInfo, result.shouldPushSnapshot {
             // Scene state changed (not structure) - incremental sync
             if let sceneState = state.draft.sceneInstanceStates[instanceId] {
@@ -304,6 +341,20 @@ public final class EditorStore {
         return notices
     }
 
+    // MARK: - Silent State Mutations (No Undo)
+
+    /// Writes a hydrated scene state back without creating an undo snapshot.
+    /// Used by SceneStateMigrationHelper integration — one-time migration on first apply.
+    public func writeHydratedSceneState(_ sceneState: SceneState, for instanceId: UUID) {
+        state.draft.sceneInstanceStates[instanceId] = sceneState
+    }
+
+    /// Writes default placement for a slot that was inserted without one.
+    /// No undo snapshot — this is a canonicalization fix, not a user action.
+    public func writeHydratedSlotPlacement(_ fitMode: FitMode, for instanceId: UUID, blockId: String) {
+        state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.asset.placement = .default(fitMode: fitMode)
+    }
+
     // MARK: - Convenience Accessors
 
     /// Returns the current draft (for persistence).
@@ -364,8 +415,6 @@ public final class EditorStore {
     /// Returns nil for structural timeline changes or non-scene-state actions.
     private func extractSceneStateChange(action: EditorAction) -> (UUID, String)? {
         switch action {
-        case .setBlockTransform(let instanceId, let blockId, _, .ended):
-            return (instanceId, blockId)
         case .setBlockVariant(let instanceId, let blockId, _):
             return (instanceId, blockId)
         case .setBlockToggle(let instanceId, let blockId, _, _):
@@ -373,6 +422,12 @@ public final class EditorStore {
         case .setMediaSlot(let instanceId, let blockId, _):
             return (instanceId, blockId)
         case .setBlockMediaPresent(let instanceId, let blockId, _):
+            return (instanceId, blockId)
+        case .setMediaPlacement(let instanceId, let blockId, _, .ended):
+            return (instanceId, blockId)
+        case .setMediaFitMode(let instanceId, let blockId, _):
+            return (instanceId, blockId)
+        case .resetMediaPlacement(let instanceId, let blockId):
             return (instanceId, blockId)
         case .resetSceneState(let instanceId):
             return (instanceId, "")
@@ -390,6 +445,41 @@ public final class EditorStore {
         return nil
     }
 
+    /// PR2: Extracts media slot change info (insert/replace/remove).
+    private func extractMediaSlotChange(action: EditorAction) -> (UUID, String, SceneMediaSlot?)? {
+        if case .setMediaSlot(let instanceId, let blockId, let slot) = action {
+            return (instanceId, blockId, slot)
+        }
+        return nil
+    }
+
+    /// PR2: Extracts media placement change info (committed placement).
+    private func extractMediaPlacementChange(action: EditorAction) -> (UUID, String, MediaPlacementState)? {
+        switch action {
+        case .setMediaPlacement(let instanceId, let blockId, let placement, .ended):
+            return (instanceId, blockId, placement)
+        case .setMediaFitMode(let instanceId, let blockId, let fitMode):
+            return (instanceId, blockId, .default(fitMode: fitMode))
+        case .resetMediaPlacement(let instanceId, let blockId):
+            // Look up current fitMode from state to build the reset placement
+            if let slot = state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
+               let placement = slot.asset.placement {
+                return (instanceId, blockId, placement)
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    /// PR2: Extracts media visibility change info (hide/show).
+    private func extractMediaVisibilityChange(action: EditorAction) -> (UUID, String, Bool)? {
+        if case .setBlockMediaPresent(let instanceId, let blockId, let present) = action {
+            return (instanceId, blockId, present)
+        }
+        return nil
+    }
+
     #if DEBUG
     private func logAction(_ action: EditorAction, shouldPush: Bool) {
         let actionName: String
@@ -402,7 +492,6 @@ public final class EditorStore {
         case .addScene: actionName = "addScene"
         case .duplicateScene: actionName = "duplicateScene"
         case .deleteScene: actionName = "deleteScene"
-        case .setBlockTransform(_, _, _, let phase): actionName = "setBlockTransform(\(phase))"
         case .setBlockVariant: actionName = "setBlockVariant"
         case .setBlockToggle: actionName = "setBlockToggle"
         case .setMediaSlot: actionName = "setMediaSlot"
@@ -413,6 +502,9 @@ public final class EditorStore {
         case .selectBlock: actionName = "selectBlock"
         case .resetSceneState: actionName = "resetSceneState"
         case .setBlockMediaPresent: actionName = "setBlockMediaPresent"
+        case .setMediaPlacement(_, _, _, let phase): actionName = "setMediaPlacement(\(phase))"
+        case .setMediaFitMode: actionName = "setMediaFitMode"
+        case .resetMediaPlacement: actionName = "resetMediaPlacement"
         case .undo: actionName = "undo"
         case .redo: actionName = "redo"
         default: actionName = "other"

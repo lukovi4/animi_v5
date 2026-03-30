@@ -84,15 +84,6 @@ public enum EditorAction: Sendable {
 
     // MARK: - Scene Instance State (PR9)
 
-    /// Sets a block transform for a scene instance.
-    /// - Only `.ended` phase pushes undo snapshot (baseline stored on `.began`).
-    /// - Parameters:
-    ///   - sceneInstanceId: ID of the scene instance
-    ///   - blockId: ID of the media block
-    ///   - transform: Combined pan/zoom/rotate as Matrix2D
-    ///   - phase: Gesture phase (.began/.changed/.ended/.cancelled)
-    case setBlockTransform(sceneInstanceId: UUID, blockId: String, transform: Matrix2D, phase: InteractionPhase)
-
     /// Sets a block variant selection for a scene instance.
     /// Pushes undo snapshot.
     /// - Parameters:
@@ -163,6 +154,26 @@ public enum EditorAction: Sendable {
     ///   - blockId: ID of the media block
     ///   - present: Whether the binding layer should be rendered
     case setBlockMediaPresent(sceneInstanceId: UUID, blockId: String, present: Bool)
+
+    // MARK: - Media Placement (PR2)
+
+    /// Sets media placement for a block (pan/zoom/rotate on new placement contract).
+    /// Only `.ended` pushes undo snapshot; `.began`/`.changed` are live preview.
+    /// - Parameters:
+    ///   - sceneInstanceId: ID of the scene instance
+    ///   - blockId: ID of the media block
+    ///   - placement: New placement state
+    ///   - phase: Gesture phase (.began/.changed/.ended/.cancelled)
+    case setMediaPlacement(sceneInstanceId: UUID, blockId: String, placement: MediaPlacementState, phase: InteractionPhase)
+
+    /// Sets fit mode for a block's media placement.
+    /// Resets offset/scale/rotation to defaults (preserves only the new fitMode).
+    /// Pushes undo snapshot.
+    case setMediaFitMode(sceneInstanceId: UUID, blockId: String, fitMode: FitMode)
+
+    /// Resets media placement offset/scale/rotation to defaults, preserving current fitMode.
+    /// Pushes undo snapshot.
+    case resetMediaPlacement(sceneInstanceId: UUID, blockId: String)
 
     // MARK: - Undo/Redo
 

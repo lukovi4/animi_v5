@@ -9,7 +9,7 @@ import Foundation
 /// Takes a source image file, downsizes to maxDimension (no upscale), saves as JPEG to a temp file.
 /// No UIImage, no UIKit — fully file-based end-to-end.
 ///
-/// Shared by PhotoPreparePipeline (scene photos) and BackgroundTextureService (background images).
+/// Used by BackgroundTextureService for background image preparation.
 public enum ImageFilePreparePipeline {
 
     /// Prepares a JPEG from a file URL using ImageIO.
@@ -71,5 +71,24 @@ public enum ImageFilePreparePipeline {
         }
 
         return tempURL
+    }
+}
+
+// MARK: - Errors
+
+public enum PhotoPrepareError: Error, LocalizedError {
+    case failedToCreateImageSource
+    case failedToCreateThumbnail
+    case jpegWriteFailed
+
+    public var errorDescription: String? {
+        switch self {
+        case .failedToCreateImageSource:
+            return "Failed to create image source from file"
+        case .failedToCreateThumbnail:
+            return "Failed to create downsampled thumbnail"
+        case .jpegWriteFailed:
+            return "Failed to write JPEG to temp file"
+        }
     }
 }

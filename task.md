@@ -1,281 +1,175 @@
-**PR Scope**
-Это **один локальный архитектурный refactor**, не новый большой rewrite.  
-Название PR: **Interactive Trim Preview Responsiveness**.
+**PR D: Residual Regression Tests For Hydration / Placement / Gesture Lifecycle**
 
-Цель:
-- сделать live preview в trim mode действительно realtime во время drag
-- сохранить текущий exact-still contract для `Done` / `Cancel` / poster / paused sync
-- не вводить throttle-костыли и не трогать playback/export/store архитектуру
+**Цель**  
+PR D больше не про архитектурный рефакторинг. После PR A + PR B + PR C система уже собрана.  
+Каноничный scope PR D по текущему реальному коду: **закрыть оставшиеся regression gaps тестами**, без нового product/refactor scope.
 
-**Канонические решения**
-1. **Разделить два режима явно**
-- `exact still`
-- `interactive trim preview`
+**Текущее реальное состояние**
+- Load-boundary hydration уже живет в [ProjectDraftHydrator.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectDraftHydrator.swift).
+- Единственный engine-side hydration path для inactive scenes уже в [TimelineCompositionEngine.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift#L172).
+- `isNearDefault` уже добавлен в [MediaPlacementState.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/MediaPlacementState.swift#L55).
+- `SceneRuntimeStateApplier` order-тесты уже усилены в [SceneRuntimeStateApplierTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/SceneRuntimeStateApplierTests.swift).
+- Значит PR D должен быть **маленьким test-lockdown PR**, а не новым системным переписыванием.
 
-2. **Не использовать текущий exact path для drag**
-- текущий `requestStillTexture(...)` остаётся exact-only
-- drag не должен идти через zero-tolerance extraction
+**Что реально осталось незакрытым**
+1. Нет явного теста `variant switch preserves placement` при action [setBlockVariant](\
+/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorReducer.swift#L788).
+2. Нет теста на `duplicate scene` для **legacy un-hydrated SceneState** при [duplicateScene](\
+/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorReducer.swift#L472) с последующей hydration через [ProjectDraftHydrator.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectDraftHydrator.swift).
+3. Нет controller-level теста на simultaneous gesture lifecycle в [SceneEditInteractionController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift), особенно на ветку `sessionHadCancellation`.
+4. Нет явного regression test-а на cold-cache hydration path в [TimelineCompositionEngine.updateSceneState(...)](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift#L172).
 
-3. **Не добавлять fixed throttle**
-- никакого “не чаще 30Hz”
-- вместо этого: **one in-flight + latest-pending coalescing**
+## Scope
 
-4. **Во время drag использовать tolerant extraction**
-- non-zero tolerance
-- reusable `AVAssetImageGenerator`
-- exact frame только на `drag end`, `Done`, `Cancel`, initial open
+### 1. Variant Switch Preserves Placement
+**Файл:** [MediaPlacementReducerTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/MediaPlacementReducerTests.swift)
 
-5. **Не смешивать cache**
-- playback cache отдельно
-- exact still cache отдельно
-- interactive trim preview cache отдельно
+Добавить тест:
+- `test_setBlockVariant_preservesMediaPlacement`
 
-**Файлы и изменения**
+Сценарий:
+- собрать `EditorState` с media slot и non-default `MediaPlacementState`
+- dispatch `.setBlockVariant(sceneInstanceId:blockId:variantId:)`
+- проверить:
+  - `variantOverrides[blockId]` обновился
+  - `slot.asset.placement` не изменился ни по `fitMode`, ни по `offset`, ни по `scale`, ни по `rotation`
+  - `shouldPushSnapshot == true`
 
-1. [VideoFrameProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/VideoFrameProvider.swift)
+Почему именно тут:
+- этот файл уже является каноничным набором reducer/regression тестов для media placement contract
+- логика variant update сейчас действительно трогает только `sceneState.variantOverrides` в [EditorReducer.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/Store/EditorReducer.swift#L800)
 
-Добавить новый interactive path.
+### 2. Duplicate Legacy Un-Hydrated State Then Hydrate
+**Файл:** [ProjectDraftHydratorTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/ProjectDraftHydratorTests.swift)
 
-Новые свойства:
-- `private var interactiveStillGenerator: AVAssetImageGenerator?`
-- `private var lastInteractiveStillTexture: MTLTexture?`
-- `private var lastInteractiveStillVideoTime: CMTime = .invalid`
-- `private static let interactivePreviewToleranceSeconds: Double = 1.0 / 30.0`
+Добавить тест:
+- `test_duplicateLegacyUnhydratedScene_hydratesOriginalAndDuplicate`
 
-Новые методы:
-- `public func requestInteractiveStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture`
-- `public func releaseInteractiveStillResources()`
+Сценарий:
+- создать draft с одной сценой, у которой:
+  - media slot есть
+  - `slot.asset.placement == nil`
+  - legacy `userTransforms[blockId]` присутствует
+- прогнать duplicate через reducer `.duplicateScene(sceneItemId:)`
+- до hydration проверить:
+  - у original и duplicate состояние все еще legacy
+  - duplicate получил verbatim copy `SceneState`
+- затем прогнать hydrated draft через [ProjectDraftHydrator.hydrate(...)](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectDraftHydrator.swift#L31)
+- после hydration проверить:
+  - и original, и duplicate имеют non-nil `placement`
+  - `userTransforms` очищены у обоих
+  - fitMode взят из template `defaultFit`
+  - `changedInstanceIds` содержит оба instance id
 
-Новые private helpers:
-- `private func interactiveStillGenerator() -> AVAssetImageGenerator`
-- `private func clearInteractiveStillCache()`
+Почему именно тут:
+- этот файл уже содержит реальные helpers для mini compiled scene packages
+- test должен проверять связку `duplicateScene -> hydrator`, а не только reducer в отрыве
 
-Поведение `requestInteractiveStillTexture(...)`:
-- использовать существующий `videoTime(seconds:)` для clamp
-- re-use одного `AVAssetImageGenerator` на provider/session
-- `appliesPreferredTrackTransform = false`
-- `requestedTimeToleranceBefore/After = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)`
-- писать только в `lastInteractiveStillTexture` / `lastInteractiveStillVideoTime`
-- **не** трогать `lastStillTexture`
-- **не** трогать playback cache
+### 3. SceneEditInteractionController Lifecycle Regression
+**Новый файл:** [SceneEditInteractionControllerTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/SceneEditInteractionControllerTests.swift)
 
-Поведение `releaseInteractiveStillResources()`:
-- `interactiveStillGenerator?.cancelAllCGImageGeneration()`
-- `interactiveStillGenerator = nil`
-- очистить interactive cache
+Тестировать нужно именно controller, а не только [PlacementGestureSession.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/SceneEdit/PlacementGestureSession.swift).
 
-Изменение `release()`:
-- обязательно вызвать `releaseInteractiveStillResources()`
+Базовый harness:
+- `getUIMode = { .sceneEdit(sceneInstanceId: someId) }`
+- `getSelectedBlockId = { "block1" }`
+- `getBaselinePlacement = { _ in baselinePlacement }`
+- `getScenePlayer = { nil }`
+  - это допустимо, потому что [isTransformAllowed(...)](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift#L256) в этом случае возвращает `true`
+- `onPlacementChanged` пишет события в массив
 
-Что не менять:
-- `requestStillTexture(...)` остаётся exact zero-tolerance path
-- `requestPoster(...)` остаётся thin wrapper над exact still
+Обязательные тесты:
+- `test_simultaneousPanAndPinch_firstEnded_emitsChanged_notTerminal`
+  - pan `.began`
+  - pinch `.began`
+  - pan `.changed`
+  - pinch `.changed`
+  - pan `.ended`
+  - проверить, что terminal phase еще не было, а пришел только `.changed`
+  - pinch `.ended`
+  - только теперь приходит финальный `.ended`
 
-2. [UserMediaService.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift)
+- `test_simultaneousPanAndPinch_oneCancelled_finalTerminalCancelled`
+  - pan `.began`
+  - pinch `.began`
+  - изменения по обоим
+  - pan `.cancelled`
+  - убедиться, что немедленного terminal apply нет, пока pinch еще активен
+  - pinch `.ended`
+  - финальное событие должно быть `.cancelled`
+  - финальный placement должен равняться `baseline`, а не mid-gesture state
 
-Расширить `VideoSetupProviding`:
-- `func requestInteractiveStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture`
-- `func releaseInteractiveStillResources()`
+- `test_simultaneousSession_emitsBeganOnlyOnce`
+  - несколько recognizer-ов в одной session
+  - `.began` должен прийти ровно один раз
 
-Добавить новое trim-preview state:
-- `private var trimPreviewTasksByBlock: [String: Task<Void, Never>] = [:]`
-- `private var trimPreviewPendingTimeByBlock: [String: Double] = [:]`
-- `private var trimPreviewGenerationByBlock: [String: UInt64] = [:]`
+Почему нужен новый файл:
+- сейчас нет controller-level test file для [SceneEditInteractionController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift)
+- это отдельный lifecycle contract, не покрываемый session-only math tests
 
-Новый public API:
-- `public func updateInteractiveTrimPreview(blockId: String, draftSelection: PersistedVideoSelection, previewTime: Double)`
-- `public func endInteractiveTrimPreview(blockId: String)`
+### 4. TimelineCompositionEngine Cold Hydration Regression
+**Новый файл:** [TimelineCompositionEngineHydrationTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/TimelineCompositionEngineHydrationTests.swift)
 
-Новый private helper:
-- `private func runInteractiveTrimPreviewLoop(blockId: String, provider: VideoSetupProviding, player: ScenePlayerForMedia, generation: UInt64)`
+Тестировать нужно именно текущий cold-path в [TimelineCompositionEngine.updateSceneState(...)](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift#L172), где engine:
+- сначала ищет warm cache
+- потом делает `preloadMetadata(sceneTypeId:)`
+- потом гидратирует через `CompiledSceneMediaInputProvider`
+- вызывает `onSceneStateHydrated`
 
-Алгоритм `updateInteractiveTrimPreview(...)`:
-- валидировать `draftSelection` тем же путём, что и текущий exact trim preview
-- clamp `previewTime` в validated range
-- записать `trimPreviewPendingTimeByBlock[blockId] = clampedTime`
-- если loop task уже существует, **не** создавать новый task
-- если task не существует, создать один loop task
+Обязательные тесты:
+- `test_updateSceneState_coldCache_preloadsMetadata_andHydrates`
+  - cache пустой
+  - `sceneURLProvider` настроен на реальный temp scene package
+  - `sceneStates` содержит nil-placement state
+  - после `await engine.updateSceneState(...)`:
+    - `engine.sceneStates[instanceId]` уже hydrated
+    - `placement` non-nil
+    - `onSceneStateHydrated` fired
+    - state больше не требует hydration
 
-Алгоритм `runInteractiveTrimPreviewLoop(...)`:
-- пока для блока есть pending time:
-- забрать **только последнее** pending value
-- вызвать `provider.requestInteractiveStillTexture(...)`
-- после возврата проверить generation / cancellation
-- инжектить texture в binding assets
-- вызвать `onStillFrameDelivered?()`
-- если за время in-flight пришёл новый pending time, сразу перейти к нему
-- если новых pending time нет, завершить task и удалить его из словаря
+- `test_updateSceneState_metadataPreloadFailure_leavesStateUnchanged`
+  - cache пустой
+  - `sceneURLProvider` указывает на missing/invalid package
+  - после `await engine.updateSceneState(...)`:
+    - `sceneStates[instanceId]` остается исходным legacy state
+    - `onSceneStateHydrated` не fired
+    - тест проверяет failure tolerance, не лог capture
 
-Алгоритм `endInteractiveTrimPreview(blockId:)`:
-- увеличить `trimPreviewGenerationByBlock[blockId]`
-- отменить и удалить `trimPreviewTasksByBlock[blockId]`
-- удалить `trimPreviewPendingTimeByBlock[blockId]`
-- вызвать `videoProviders[blockId]?.releaseInteractiveStillResources()`
+Harness:
+- использовать существующий internal init `TimelineCompositionEngine(...)` с injected `resourcesCache` и `runtimeFactory`
+- runtimeFactory может возвращать минимальный `SceneInstanceRuntime`, runtime создавать не нужно загруженным
+- для scene package helpers можно либо:
+  - локально продублировать минимальные helpers из [ProjectDraftHydratorTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/ProjectDraftHydratorTests.swift)
+  - либо вынести их в маленький test-only helper file, **только если это реально сокращает дублирование**, без большого fixture refactor
 
-Обязательный cleanup:
-- `cleanupVideoResources(for:)` должен чистить interactive trim preview state
-- `clear(blockId:)` и `clearAll()` не должны оставлять trim preview task/generator
-- `releasePreviewResources()` тоже должен это чистить
+## Что НЕ входит в PR D
+- не менять production behavior preview/export/runtime
+- не трогать [ProjectDraftHydrator.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Project/ProjectDraftHydrator.swift)
+- не трогать [TimelineCompositionEngine.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift) кроме минимального testability seam, если вдруг без него нельзя
+- не трогать gesture math в [PlacementGestureSession.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/SceneEdit/PlacementGestureSession.swift)
+- не открывать новый архитектурный PR
+- не менять audio scope
 
-Что оставить как есть:
-- текущий exact still path для `updateVideoStillFrames(...)`
-- текущий `requestStillForBlock(...)`
-- текущий `awaitPendingStillFrames()`
-- `onStillFrameDelivered` остаётся render-only callback; `onNeedsDisplay` не трогать
+## Изменяемые файлы
+- [MediaPlacementReducerTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/MediaPlacementReducerTests.swift)
+- [ProjectDraftHydratorTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/ProjectDraftHydratorTests.swift)
+- [SceneEditInteractionControllerTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/SceneEditInteractionControllerTests.swift) — новый
+- [TimelineCompositionEngineHydrationTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/TimelineCompositionEngineHydrationTests.swift) — новый
+- [project.pbxproj](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp.xcodeproj/project.pbxproj) — только для добавления новых test files
 
-3. [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift)
+## Критерии приемки
+- Все существующие тесты остаются зелеными
+- Новые тесты закрывают 4 реальных незакрытых regression gap-а
+- PR D не вносит новый product scope
+- PR D не меняет persisted contract
+- PR D не возвращает legacy behavior
+- После PR D оставшийся backlog уже не архитектурный, а только точечный functional hardening при реальных багах
 
-Новый callback wiring:
-- подключить `editorLayoutContainer.videoTrimBar.onDragEnded`
+## Порядок выполнения
+1. добавить `variant switch preserves placement`
+2. добавить `duplicate legacy -> duplicate -> hydrate both`
+3. добавить `SceneEditInteractionController` lifecycle tests
+4. добавить `TimelineCompositionEngine.updateSceneState` cold hydration tests
+5. прогнать полный suite
 
-Новый method:
-- `private func handleTrimDragEnded()`
-
-Изменить:
-- `handleTrimStartDrag(_:)`
-- `handleTrimEndDrag(_:)`
-- `handleTrimCursorDrag(_:)`
-
-Новый contract:
-- во время `.changed` они вызывают **только** `userMediaService?.updateInteractiveTrimPreview(...)`
-- при этом продолжают обновлять `videoTrimSession.currentPreviewTime`
-
-`enterVideoTrim(...)`:
-- initial preview оставить exact:
-- `previewVideoTrimFrame(...)` или, если хочешь naming clarity, переименовать его в `previewExactVideoTrimFrame(...)`
-- interactive path на входе не нужен
-
-`handleTrimDragEnded()`:
-- после отпускания пальца делать exact preview на `session.currentPreviewTime`
-- это финализирует текущий кадр после tolerant drag preview
-
-`commitVideoTrim()`:
-- сначала `userMediaService?.endInteractiveTrimPreview(blockId: session.blockId)`
-- затем exact preview на `session.draftSelection.trimStart`
-- затем store dispatch
-
-`cancelVideoTrim()`:
-- сначала `userMediaService?.endInteractiveTrimPreview(blockId: session.blockId)`
-- затем `videoTrimSession = nil`
-- затем `syncPausedVideoStill(force: true)`
-
-`exitVideoTrim()`:
-- как safety-net тоже завершать interactive trim preview для текущего session/block, если session ещё есть
-- затем текущий cleanup UI state
-
-Что не менять:
-- `syncPausedVideoStill(...)`
-- suppress guard `videoTrimSession == nil`
-- store contract
-
-4. [VideoTrimBarView.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/SceneEdit/VideoTrimBarView.swift)
-
-Изменения минимальные.
-
-Обязательное:
-- оставить callbacks на `.changed` как есть
-- `onDragEnded` должен вызываться на:
-- `.ended`
-- `.cancelled`
-- `.failed`
-
-Сейчас `.failed` не покрыт; это надо добавить.
-
-Что не менять:
-- layout
-- hit testing
-- handle/cursor geometry
-
-5. [VideoTrimThumbnailProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Editor/SceneEdit/VideoTrimThumbnailProvider.swift)
-
-Код менять не нужно.  
-Но это **референс-паттерн**: reuse session-scoped `AVAssetImageGenerator` уже есть здесь, и interactive trim preview должен быть устроен в том же стиле.
-
-**Naming**
-Для release-quality лучше сделать явное именование:
-
-- оставить `previewVideoTrimFrame(...)` как exact path и добавить `updateInteractiveTrimPreview(...)`
-или
-- переименовать текущий exact method в `previewExactVideoTrimFrame(...)`
-
-Мой канонический выбор:
-- exact method: `previewExactVideoTrimFrame(...)`
-- drag method: `updateInteractiveTrimPreview(...)`
-
-Это чище и убирает двусмысленность.
-
-**Тесты**
-
-1. [UserMediaServiceTrimPreviewTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/UserMediaServiceTrimPreviewTests.swift)
-
-Добавить:
-- `test_updateInteractiveTrimPreview_coalescesRapidDragToLatestPending`
-- `test_updateInteractiveTrimPreview_doesNotMutateMediaState`
-- `test_endInteractiveTrimPreview_cancelsLoopAndReleasesProviderResources`
-- `test_dragEnded_exactPreviewUsesExactPathAfterInteractivePreview`
-
-Тестовый fake provider должен уметь:
-- отдельно считать `requestStillTexture(...)`
-- отдельно считать `requestInteractiveStillTexture(...)`
-- отдельно фиксировать `releaseInteractiveStillResources()`
-- уметь блокировать interactive path continuation, чтобы доказать coalescing
-
-Что нужно доказать тестами:
-- три быстрых drag update не дают три независимых exact requests
-- пока первый interactive request in-flight, новые события не спавнят бесконечные task’и
-- после завершения первого запроса выполняется только **последнее** pending время
-- inject texture реально происходит
-- `endInteractiveTrimPreview` очищает state и вызывает release provider resources
-
-2. Все fake `VideoSetupProviding`
-
-Обновить во всех test targets:
-- [UserMediaServiceReadinessTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/UserMediaServiceReadinessTests.swift)
-- [UserMediaServiceTrimPreviewTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/UserMediaServiceTrimPreviewTests.swift)
-- [UserMediaServiceStillFrameTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/UserMediaServiceStillFrameTests.swift)
-- [MediaRestoreHelperVideoSelectionTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/MediaRestoreHelperVideoSelectionTests.swift)
-- [UserMediaServiceBudgetTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/UserMediaServiceBudgetTests.swift)
-
-Новые protocol stubs:
-- `requestInteractiveStillTexture(...)`
-- `releaseInteractiveStillResources()`
-
-**PR Scope**
-Один PR, без дробления.
-
-Название:
-- **PR 6: Interactive Trim Preview Responsiveness**
-
-Входит:
-- `VideoFrameProvider` interactive tolerant path
-- `UserMediaService` coalescing trim-preview orchestration
-- `PlayerViewController` drag-changed vs drag-ended split
-- `VideoTrimBarView` `.failed` handling
-- targeted tests
-- protocol fake updates
-
-Не входит:
-- playback path
-- timeline scrub outside trim mode
-- export
-- store/reducer changes
-- persistence/model changes
-- global throttle
-- redesign UI
-
-**Acceptance Criteria**
-PR считается завершённым, только если выполняется всё ниже:
-
-- при непрерывном drag левой ручки верхний preview обновляется **во время движения**
-- при непрерывном drag правой ручки верхний preview обновляется **во время движения**
-- при drag cursor preview тоже обновляется непрерывно
-- отпускание пальца даёт более точный final frame
-- `Done` по-прежнему показывает exact frame на новом `trimStart`
-- `Cancel` по-прежнему восстанавливает paused scene-frame still
-- во время trim `onNeedsDisplay` не затирает trim preview
-- после выхода из trim не остаётся висящих preview task/generator state
-- нет возврата к cancel/recreate storm на каждый drag tick
-
-**Короткий итог**
-Это **не костыль и не полный rewrite**.  
-Это **канонический локальный refactor одного слоя**: отделить `interactive trim preview` от `exact still`, при этом сохранить всю остальную архитектуру без ломки.
+**Итог:** каноничный PR D по текущему реальному коду — это **чистый regression-lock PR на тесты**, без нового рефакторинга системы.
