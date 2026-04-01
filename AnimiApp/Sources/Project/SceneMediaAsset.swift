@@ -7,8 +7,7 @@ public struct SceneMediaAsset: Codable, Equatable, Sendable {
     /// Reference to the persisted media file.
     public var mediaRef: MediaRef
 
-    /// User placement state. `nil` means not yet hydrated (legacy data).
-    /// Hydration happens at runtime via `SceneStateMigrationHelper`.
+    /// User placement state. `nil` means no placement configured yet.
     public var placement: MediaPlacementState?
 
     /// Video trim/audio parameters. Nil for photos.

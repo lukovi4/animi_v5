@@ -35,7 +35,6 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
     func test_applyOrder_restoreBeforeVariantsBeforePlacementBeforeToggles() {
         var state = SceneState.empty
         state.variantOverrides = ["block1": "variant_a"]
-        state.userTransforms = ["block1": Matrix2D.translation(x: 10, y: 20)]
         state.layerToggles = ["block1": ["toggle1": true]]
         state.mediaSlotsByBlockId = [
             "block1": .photo(
@@ -107,10 +106,8 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
     // MARK: - Placement vs Legacy Transform
 
     @MainActor
-    func test_placementOverridesLegacyUserTransform() {
-        let legacyMatrix = Matrix2D.translation(x: 999, y: 999)
+    func test_placementResolvesToTransform() {
         var state = SceneState.empty
-        state.userTransforms = ["block1": legacyMatrix]
         state.mediaSlotsByBlockId = [
             "block1": .photo(
                 mediaRef: .file("Media/photo.jpg", mediaKind: .photo),
@@ -119,40 +116,35 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
         ]
 
         let spy = ScenePlayerSpy()
-        // spy has no mediaInput → resolver returns .identity (not the legacy 999,999 translation)
+        // spy has no mediaInput → resolver returns .identity
         SceneRuntimeStateApplier.apply(state, player: spy, userMediaService: nil)
 
         let transformCalls = spy.calls.compactMap { call -> Matrix2D? in
             if case .setUserTransform(blockId: "block1", transform: let t) = call { return t }
             return nil
         }
-        XCTAssertEqual(transformCalls.count, 1, "Placement should override legacy — exactly one setUserTransform")
-        XCTAssertEqual(transformCalls[0], .identity, "Should use resolver path (.identity since no mediaInput), not legacy translation")
-        XCTAssertNotEqual(transformCalls[0], legacyMatrix, "Must NOT use the legacy userTransform")
+        XCTAssertEqual(transformCalls.count, 1, "Placement should produce exactly one setUserTransform")
+        XCTAssertEqual(transformCalls[0], .identity, "Should use resolver path (.identity since no mediaInput)")
     }
 
     @MainActor
-    func test_legacyFallback_usesUserTransform() {
+    func test_slotWithoutPlacement_noTransformApplied() {
         var state = SceneState.empty
-        let legacyTransform = Matrix2D.translation(x: 42, y: 7)
-        state.userTransforms = ["blockLegacy": legacyTransform]
         state.mediaSlotsByBlockId = [
-            "blockLegacy": .photo(
+            "blockNoPlacement": .photo(
                 mediaRef: .file("Media/photo.jpg", mediaKind: .photo)
-                // placement is nil — legacy path
+                // placement is nil — no transform should be applied
             )
         ]
 
         let spy = ScenePlayerSpy()
         SceneRuntimeStateApplier.apply(state, player: spy, userMediaService: nil)
 
-        // Legacy block should get setUserTransform with the exact legacy matrix
         let transformCalls = spy.calls.compactMap { call -> Matrix2D? in
-            if case .setUserTransform(blockId: "blockLegacy", transform: let t) = call { return t }
+            if case .setUserTransform(blockId: "blockNoPlacement", transform: let t) = call { return t }
             return nil
         }
-        XCTAssertEqual(transformCalls.count, 1, "Legacy block should receive setUserTransform from userTransforms")
-        XCTAssertEqual(transformCalls[0], legacyTransform, "Legacy path must pass through the exact userTransform matrix")
+        XCTAssertEqual(transformCalls.count, 0, "Slot without placement should not produce setUserTransform")
     }
 
     // MARK: - Fast-Path: Placement Change

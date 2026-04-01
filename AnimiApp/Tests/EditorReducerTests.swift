@@ -642,7 +642,6 @@ final class EditorReducerTests: XCTestCase {
         let sceneId = draft.canonicalTimeline.sceneItems[0].id
         var sceneState = SceneState.empty
         sceneState.variantOverrides["block1"] = "variant_a"
-        sceneState.userTransforms["block1"] = Matrix2D(a: 1.5, b: 0.1, c: -0.1, d: 1.5, tx: 10, ty: 10)
         draft.sceneInstanceStates[sceneId] = sceneState
 
         let state = EditorReducer.reduce(
@@ -660,7 +659,6 @@ final class EditorReducerTests: XCTestCase {
         let newSceneId = result.state.sceneItems[1].id
         let newState = result.state.draft.sceneInstanceStates[newSceneId]
         XCTAssertEqual(newState?.variantOverrides["block1"], "variant_a")
-        XCTAssertEqual(newState?.userTransforms["block1"], sceneState.userTransforms["block1"])
 
         // Then: modify new scene doesn't affect original
         let result2 = EditorReducer.reduce(
@@ -688,7 +686,6 @@ final class EditorReducerTests: XCTestCase {
         // Set unique state for each scene
         var stateA1 = SceneState.empty
         stateA1.variantOverrides["block1"] = "variant_a1"
-        stateA1.userTransforms["block1"] = Matrix2D(a: 1.1, b: 0, c: 0, d: 1.1, tx: 10, ty: 10)
         draft.sceneInstanceStates[sceneA1] = stateA1
 
         var stateB = SceneState.empty
@@ -730,7 +727,6 @@ final class EditorReducerTests: XCTestCase {
 
         // Then: sceneInstanceStates intact
         XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneA1]?.variantOverrides["block1"], "variant_a1")
-        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneA1]?.userTransforms["block1"]?.tx, 10)
 
         XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneB]?.variantOverrides["block1"], "variant_b")
         XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneB]?.layerToggles["block1"]?["toggle1"], true)
@@ -965,7 +961,6 @@ final class EditorReducerTests: XCTestCase {
         // Add sceneInstanceStates
         var state1 = SceneState.empty
         state1.variantOverrides["block1"] = "variant_a"
-        state1.userTransforms["block1"] = Matrix2D(a: 1.5, b: 0.1, c: -0.1, d: 1.5, tx: 10, ty: 20)
         state1.layerToggles["block1"] = ["toggle1": true, "toggle2": false]
         state1.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("Media/test.jpg"))]
         draft.sceneInstanceStates[scene1Id] = state1
@@ -1015,7 +1010,6 @@ final class EditorReducerTests: XCTestCase {
         // Then: sceneInstanceStates equal
         XCTAssertEqual(decoded.sceneInstanceStates.count, 2)
         XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.variantOverrides["block1"], "variant_a")
-        XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.userTransforms["block1"]?.tx, 10)
         XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.layerToggles["block1"]?["toggle1"], true)
         XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.mediaSlotsByBlockId?["block1"]?.mediaRef, MediaRef.file("Media/test.jpg"))
         XCTAssertEqual(decoded.sceneInstanceStates[scene2Id]?.variantOverrides["block2"], "variant_b")

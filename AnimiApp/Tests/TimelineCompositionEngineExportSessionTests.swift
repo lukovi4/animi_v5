@@ -207,7 +207,6 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let states: [UUID: SceneState] = [
             firstId: SceneState(
                 variantOverrides: ["block1": "variantA"],
-                userTransforms: ["block1": .identity],
                 layerToggles: ["block1": ["toggle1": false]]
             )
             // secondId intentionally missing -> .empty

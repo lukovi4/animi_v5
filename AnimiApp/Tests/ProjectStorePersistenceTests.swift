@@ -106,10 +106,6 @@ final class ProjectStorePersistenceTests: XCTestCase {
         for (i, item) in sceneItems.enumerated() {
             var s = SceneState.empty
             s.variantOverrides = ["block_\(i)": "variant_\(i)"]
-            s.userTransforms = ["block_\(i)": Matrix2D(
-                a: 1.2, b: 0.1, c: -0.1, d: 1.2,
-                tx: Double(i) * 10, ty: Double(i) * 20
-            )]
             s.layerToggles = ["block_\(i)": ["visible": true, "shadow": false]]
             s.mediaSlotsByBlockId = ["block_\(i)": .photo(mediaRef: MediaRef.file("Media/UserMedia/img_\(i).jpg"), visibility: i % 2 == 0)]
             states[item.id] = s

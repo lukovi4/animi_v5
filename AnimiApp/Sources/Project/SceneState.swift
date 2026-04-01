@@ -81,13 +81,6 @@ public struct SceneState: Codable, Equatable, Sendable {
     /// Blocks without entry use compilation default.
     public var variantOverrides: [String: String]
 
-    // MARK: - User Transforms
-
-    /// Per-block user transforms (pan/zoom/rotate from editor).
-    /// Key: blockId, Value: Matrix2D transform.
-    /// Blocks without entry default to `.identity`.
-    public var userTransforms: [String: Matrix2D]
-
     // MARK: - Layer Toggles
 
     /// Per-block layer toggle states.
@@ -106,12 +99,10 @@ public struct SceneState: Codable, Equatable, Sendable {
 
     public init(
         variantOverrides: [String: String] = [:],
-        userTransforms: [String: Matrix2D] = [:],
         layerToggles: [String: [String: Bool]] = [:],
         mediaSlotsByBlockId: [String: SceneMediaSlot]? = nil
     ) {
         self.variantOverrides = variantOverrides
-        self.userTransforms = userTransforms
         self.layerToggles = layerToggles
         self.mediaSlotsByBlockId = mediaSlotsByBlockId
     }

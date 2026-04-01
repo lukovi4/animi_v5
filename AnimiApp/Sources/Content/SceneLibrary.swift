@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let logger = Logger(subsystem: "com.animi.app", category: "SceneLibrary")
 
 // MARK: - Scene Library
 
@@ -50,7 +53,7 @@ public final class SceneLibrary {
             loadTask = nil
 
             #if DEBUG
-            print("[SceneLibrary] Loaded \(loaded.scenesById.count) scenes, fps=\(loaded.fps)")
+            logger.debug("[SceneLibrary] Loaded \(loaded.scenesById.count) scenes, fps=\(loaded.fps)")
             #endif
 
             return loaded

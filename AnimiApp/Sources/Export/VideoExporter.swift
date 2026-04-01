@@ -785,7 +785,7 @@ public final class VideoExporter: @unchecked Sendable {
                 let commands = SceneRenderPlan.renderCommands(
                     for: runtime,
                     sceneFrameIndex: frameIndex,
-                    userTransforms: snapshot.userTransforms,
+                    resolvedTransforms: snapshot.resolvedTransforms,
                     variantOverrides: snapshot.variantOverrides,
                     userMediaPresent: snapshot.userMediaPresent,
                     layerToggleState: snapshot.layerToggleState

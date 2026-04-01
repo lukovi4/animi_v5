@@ -106,7 +106,7 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
 
             let res = makeMinimalResources(durationFrames: framesPerScene, sceneTypeId: sceneTypeId)
             let renderState = SceneRenderStateSnapshot(
-                userTransforms: [:],
+                resolvedTransforms: [:],
                 variantOverrides: [:],
                 userMediaPresent: [:],
                 layerToggleState: [:]

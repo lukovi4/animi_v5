@@ -14,7 +14,7 @@ public enum SceneRenderPlan {
     /// - Parameters:
     ///   - runtime: Compiled scene runtime
     ///   - sceneFrameIndex: Current frame index in scene timeline
-    ///   - userTransforms: Per-block user transforms keyed by blockId.
+    ///   - resolvedTransforms: Per-block resolved transforms keyed by blockId.
     ///     Blocks not present in the dictionary receive `.identity`.
     ///   - variantOverrides: Per-block variant overrides keyed by blockId (PR-20).
     ///     Blocks not present use `block.selectedVariantId` (compilation default).
@@ -30,7 +30,7 @@ public enum SceneRenderPlan {
     public static func renderCommands(
         for runtime: SceneRuntime,
         sceneFrameIndex: Int,
-        userTransforms: [String: Matrix2D] = [:],
+        resolvedTransforms: [String: Matrix2D] = [:],
         variantOverrides: [String: String] = [:],
         userMediaPresent: [String: Bool] = [:],
         layerToggleState: [String: [String: Bool]] = [:],
@@ -62,8 +62,8 @@ public enum SceneRenderPlan {
                 continue
             }
 
-            // Resolve user transform for this block (default: identity)
-            let userTransform = userTransforms[block.blockId] ?? .identity
+            // Resolve transform for this block (default: identity)
+            let userTransform = resolvedTransforms[block.blockId] ?? .identity
 
             // PR-28: Resolve user media presence (default: false = binding hidden)
             let hasUserMedia = userMediaPresent[block.blockId] ?? false

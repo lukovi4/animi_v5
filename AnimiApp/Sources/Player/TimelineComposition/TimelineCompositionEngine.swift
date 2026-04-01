@@ -72,8 +72,6 @@ public final class TimelineCompositionEngine {
     /// PlayerViewController wires this to `refreshCurrentTimelineFrame()`.
     public var onNeedsRedraw: (() -> Void)?
 
-    /// Called when engine hydrates a cold scene state. Caller should persist to store.
-    public var onSceneStateHydrated: ((UUID, SceneState) -> Void)?
 
     // MARK: - Init
 
@@ -142,14 +140,6 @@ public final class TimelineCompositionEngine {
 
         self.timeline = timeline
 
-        // PR-C: States arrive pre-hydrated from ProjectDraftHydrator.
-        // Warn in all builds if any state still needs hydration — ingress contract violation.
-        for item in timeline.sceneItems {
-            if let state = sceneStates[item.id],
-               SceneStateMigrationHelper.needsHydration(state) {
-                Self.logger.warning("setTimeline: state needs hydration for \(item.id) — ingress contract violated")
-            }
-        }
         self.sceneStates = sceneStates
 
         // Rebuild transition math
@@ -173,39 +163,12 @@ public final class TimelineCompositionEngine {
 
     /// Updates scene state for a specific instance.
     /// If runtime is already loaded, state is also re-applied to the runtime.
-    ///
-    /// PR-C: This is the sole engine-side hydration path after project-load hydration.
-    /// Handles inactive-scene slot updates where `placement == nil` may arrive from ingest.
-    /// Falls back to `preloadMetadata` on cache miss so cold scenes are also hydrated.
     public func updateSceneState(_ state: SceneState, for instanceId: UUID) async {
-        var hydratedState = state
-        if SceneStateMigrationHelper.needsHydration(state),
-           let sceneTypeId = sceneTypeIdForInstance(instanceId) {
-            // Try warm cache first; fall back to metadata-only preload for cold scenes.
-            let resources: SceneTypeResourcesCache.Resources?
-            if let cached = resourcesCache.resources(for: sceneTypeId) {
-                resources = cached
-            } else {
-                do {
-                    resources = try await resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
-                } catch {
-                    Self.logger.warning("updateSceneState: metadata preload failed for '\(sceneTypeId)': \(error) — state left unhydrated for \(instanceId)")
-                    resources = nil
-                }
-            }
-            if let resources {
-                let provider = CompiledSceneMediaInputProvider(
-                    mediaBlocks: resources.compiled.runtime.scene.mediaBlocks
-                )
-                hydratedState = SceneStateMigrationHelper.hydrate(state, mediaInputProvider: provider)
-                onSceneStateHydrated?(instanceId, hydratedState)
-            }
-        }
-        sceneStates[instanceId] = hydratedState
+        sceneStates[instanceId] = state
 
         // If runtime already loaded, re-apply state
         if let runtime = instanceRuntimes[instanceId] {
-            await runtime.reloadState(hydratedState)
+            await runtime.reloadState(state)
             #if DEBUG
             print("[TimelineCompositionEngine] Re-applied state to loaded runtime: \(instanceId)")
             #endif
@@ -649,11 +612,8 @@ public final class TimelineCompositionEngine {
         // Video selection persistence is handled by MediaIngestCoordinator (slot includes videoWindow).
         // No runtime → persistence callback needed in the new architecture.
 
-        // Apply state if available (already hydrated at project-load time)
+        // Apply state if available
         if let state = sceneStates[instanceId] {
-            if SceneStateMigrationHelper.needsHydration(state) {
-                Self.logger.warning("getOrCreateRuntime: state needs hydration for \(instanceId) — ingress contract violated")
-            }
             await runtime.applyState(state)
         }
 
@@ -1206,9 +1166,6 @@ public final class TimelineCompositionEngine {
 
             // 3. Persisted-only: state and media slots (already hydrated at project-load time)
             let state = sceneStates[instanceId] ?? .empty
-            if SceneStateMigrationHelper.needsHydration(state) {
-                Self.logger.warning("export: state needs hydration for \(instanceId) — ingress contract violated")
-            }
             let mediaSlots = state.mediaSlotsByBlockId ?? [:]
 
             // 4. Build media snapshot first (async — probes video duration, resolves URLs)
@@ -1234,7 +1191,7 @@ public final class TimelineCompositionEngine {
             )
 
             let renderState = SceneRenderStateSnapshot(
-                userTransforms: resolvedTransforms,
+                resolvedTransforms: resolvedTransforms,
                 variantOverrides: state.variantOverrides,
                 userMediaPresent: userMediaPresent,
                 layerToggleState: state.layerToggles
@@ -1280,14 +1237,14 @@ public final class TimelineCompositionEngine {
 
     // MARK: - PR4: Resolve Placement for Export
 
-    /// Resolves placement-based transforms for export, falling back to legacy userTransforms.
+    /// Resolves placement-based transforms for export.
     /// Uses actual media dimensions from ExportMediaSnapshot for correct cover/contain/fill.
     private static func resolveTransformsForExport(
         state: SceneState,
         compiled: CompiledScene,
         mediaSnapshot: ExportMediaSnapshot
     ) async -> [String: Matrix2D] {
-        var transforms = state.userTransforms
+        var transforms: [String: Matrix2D] = [:]
 
         // Build media size lookup from snapshot
         var mediaSizes: [String: (Double, Double)] = [:]

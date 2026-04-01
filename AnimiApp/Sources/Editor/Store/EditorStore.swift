@@ -343,12 +343,6 @@ public final class EditorStore {
 
     // MARK: - Silent State Mutations (No Undo)
 
-    /// Writes a hydrated scene state back without creating an undo snapshot.
-    /// Used by SceneStateMigrationHelper integration — one-time migration on first apply.
-    public func writeHydratedSceneState(_ sceneState: SceneState, for instanceId: UUID) {
-        state.draft.sceneInstanceStates[instanceId] = sceneState
-    }
-
     /// Writes default placement for a slot that was inserted without one.
     /// No undo snapshot — this is a canonicalization fix, not a user action.
     public func writeHydratedSlotPlacement(_ fitMode: FitMode, for instanceId: UUID, blockId: String) {

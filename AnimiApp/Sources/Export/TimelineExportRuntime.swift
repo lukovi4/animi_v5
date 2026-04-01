@@ -242,7 +242,7 @@ internal final class TimelineExportRuntime {
         let commands = SceneRenderPlan.renderCommands(
             for: snapshot.runtime,
             sceneFrameIndex: localFrame,
-            userTransforms: snapshot.renderState.userTransforms,
+            resolvedTransforms: snapshot.renderState.resolvedTransforms,
             variantOverrides: snapshot.renderState.variantOverrides,
             userMediaPresent: snapshot.renderState.userMediaPresent,
             layerToggleState: snapshot.renderState.layerToggleState
@@ -267,7 +267,7 @@ internal final class TimelineExportRuntime {
         let commands = SceneRenderPlan.renderCommands(
             for: snapshot.runtime,
             sceneFrameIndex: localFrame,
-            userTransforms: snapshot.renderState.userTransforms,
+            resolvedTransforms: snapshot.renderState.resolvedTransforms,
             variantOverrides: snapshot.renderState.variantOverrides,
             userMediaPresent: snapshot.renderState.userMediaPresent,
             layerToggleState: snapshot.renderState.layerToggleState

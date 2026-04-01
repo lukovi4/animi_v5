@@ -664,7 +664,7 @@ final class UserTransformPipelineTests: XCTestCase {
 
             // Call with explicit empty dict (matches default parameter)
             let cmdsExplicit = SceneRenderPlan.renderCommands(
-                for: compiled.runtime, sceneFrameIndex: 0, userTransforms: [:]
+                for: compiled.runtime, sceneFrameIndex: 0, resolvedTransforms: [:]
             )
             // Call using convenience (no dict)
             let cmdsConvenience = compiled.runtime.renderCommands(sceneFrameIndex: 0)
@@ -691,7 +691,7 @@ final class UserTransformPipelineTests: XCTestCase {
             let cmdsWithTransform = SceneRenderPlan.renderCommands(
                 for: compiled.runtime,
                 sceneFrameIndex: 0,
-                userTransforms: ["block-1": .translation(x: 10, y: 20)],
+                resolvedTransforms: ["block-1": .translation(x: 10, y: 20)],
                 userMediaPresent: ["block-1": true]
             )
 

@@ -669,7 +669,7 @@ public final class ScenePlayer {
         return SceneRenderPlan.renderCommands(
             for: compiledScene.runtime,
             sceneFrameIndex: sceneFrameIndex,
-            userTransforms: userTransforms,
+            resolvedTransforms: userTransforms,
             variantOverrides: variantOverrides,
             userMediaPresent: userMediaPresent,
             layerToggleState: layerToggleState
@@ -723,7 +723,7 @@ public final class ScenePlayer {
         return SceneRenderPlan.renderCommands(
             for: compiledScene.runtime,
             sceneFrameIndex: frameIndex,
-            userTransforms: userTransforms,
+            resolvedTransforms: userTransforms,
             variantOverrides: overrides,
             userMediaPresent: userMediaPresent,
             layerToggleState: layerToggleState,
@@ -743,10 +743,10 @@ public final class ScenePlayer {
     /// so passing the dictionary directly would share storage. If ScenePlayer mutates
     /// the original during export, concurrent read/write on shared storage causes undefined behavior.
     ///
-    /// - Returns: Snapshot containing deep copies of userTransforms, variantOverrides, userMediaPresent, layerToggleState
+    /// - Returns: Snapshot containing deep copies of resolvedTransforms, variantOverrides, userMediaPresent, layerToggleState
     public func exportStateSnapshot() -> SceneRenderStateSnapshot {
         // Deep copy each dictionary to ensure isolated storage (no COW sharing)
-        let userTransformsCopy = Dictionary(uniqueKeysWithValues: userTransforms.map { ($0.key, $0.value) })
+        let transformsCopy = Dictionary(uniqueKeysWithValues: userTransforms.map { ($0.key, $0.value) })
         let variantOverridesCopy = Dictionary(uniqueKeysWithValues: variantOverrides.map { ($0.key, $0.value) })
         let userMediaPresentCopy = Dictionary(uniqueKeysWithValues: userMediaPresent.map { ($0.key, $0.value) })
         // Two-level deep copy for nested dictionary
@@ -755,7 +755,7 @@ public final class ScenePlayer {
         })
 
         return SceneRenderStateSnapshot(
-            userTransforms: userTransformsCopy,
+            resolvedTransforms: transformsCopy,
             variantOverrides: variantOverridesCopy,
             userMediaPresent: userMediaPresentCopy,
             layerToggleState: layerToggleStateCopy

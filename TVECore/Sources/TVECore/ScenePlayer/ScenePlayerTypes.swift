@@ -342,16 +342,16 @@ public struct VariantRuntime: Sendable, Codable {
 /// let commands = SceneRenderPlan.renderCommands(
 ///     for: compiledScene.runtime,
 ///     sceneFrameIndex: frameIndex,
-///     userTransforms: snapshot.userTransforms,
+///     resolvedTransforms: snapshot.resolvedTransforms,
 ///     variantOverrides: snapshot.variantOverrides,
 ///     userMediaPresent: snapshot.userMediaPresent,
 ///     layerToggleState: snapshot.layerToggleState
 /// )
 /// ```
 public struct SceneRenderStateSnapshot: Sendable {
-    /// Per-block user transforms (pan/zoom/rotate from editor UI).
-    /// Key: blockId. Value: Matrix2D.
-    public let userTransforms: [String: Matrix2D]
+    /// Per-block resolved transforms for render path.
+    /// Key: blockId. Value: Matrix2D (resolved from placement).
+    public let resolvedTransforms: [String: Matrix2D]
 
     /// Per-block variant overrides.
     /// Key: blockId. Value: variantId chosen by user.
@@ -366,12 +366,12 @@ public struct SceneRenderStateSnapshot: Sendable {
     public let layerToggleState: [String: [String: Bool]]
 
     public init(
-        userTransforms: [String: Matrix2D],
+        resolvedTransforms: [String: Matrix2D],
         variantOverrides: [String: String],
         userMediaPresent: [String: Bool],
         layerToggleState: [String: [String: Bool]]
     ) {
-        self.userTransforms = userTransforms
+        self.resolvedTransforms = resolvedTransforms
         self.variantOverrides = variantOverrides
         self.userMediaPresent = userMediaPresent
         self.layerToggleState = layerToggleState

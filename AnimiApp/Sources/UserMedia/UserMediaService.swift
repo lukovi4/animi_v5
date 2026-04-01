@@ -2,6 +2,9 @@ import Metal
 import AVFoundation
 import TVECore
 import ImageIO
+import os.log
+
+private let logger = Logger(subsystem: "com.animi.app", category: "UserMediaService")
 
 // MARK: - Video Setup Provider Protocol (P0 Testing Seam)
 
@@ -518,7 +521,7 @@ public final class UserMediaService {
                 self.onNeedsDisplay?()
 
                 #if DEBUG
-                print("[UserMediaService] setPhoto success: blockId=\(blockId), needsDisplay fired")
+                logger.debug("[UserMediaService] setPhoto success: blockId=\(blockId), needsDisplay fired")
                 #endif
 
             } catch is CancellationError {
@@ -548,7 +551,7 @@ public final class UserMediaService {
                 self.onNeedsDisplay?()
 
                 #if DEBUG
-                print("[UserMediaService] setPhoto failed: blockId=\(blockId), error=\(error)")
+                logger.debug("[UserMediaService] setPhoto failed: blockId=\(blockId), error=\(error)")
                 #endif
             }
         }
@@ -606,7 +609,7 @@ public final class UserMediaService {
         guard let player = activePlayer else {
             // P0: Mark as failed - no player available (symmetric with setPhoto)
             blockReadinessState[blockId] = .failed(reason: "no scene player")
-            print("[UserMediaService] setVideo failed: no scene player")
+            logger.error("[UserMediaService] setVideo failed: no scene player")
             return false
         }
 
@@ -650,7 +653,7 @@ public final class UserMediaService {
                 // PR-async-race: Check token after await — abort if generation changed
                 guard self.mediaSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
                     #if DEBUG
-                    print("[UserMediaService] setVideo: stale task ignored for blockId=\(blockId)")
+                    logger.debug("[UserMediaService] setVideo: stale task ignored for blockId=\(blockId)")
                     #endif
                     // P0: Token-safe remove task (only if we're still current generation)
                     if self.mediaSetupGenerationByBlock[blockId] == token {
@@ -681,7 +684,7 @@ public final class UserMediaService {
                 // Final check before side effects
                 guard self.mediaSetupGenerationByBlock[blockId] == token, !Task.isCancelled else {
                     #if DEBUG
-                    print("[UserMediaService] setVideo: stale task ignored (pre-commit) for blockId=\(blockId)")
+                    logger.debug("[UserMediaService] setVideo: stale task ignored (pre-commit) for blockId=\(blockId)")
                     #endif
                     if self.mediaSetupGenerationByBlock[blockId] == token {
                         self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
@@ -725,7 +728,7 @@ public final class UserMediaService {
                 self.onNeedsDisplay?()
 
                 #if DEBUG
-                print("[UserMediaService] setVideo success: blockId=\(blockId), duration=\(duration)s, needsDisplay fired")
+                logger.debug("[UserMediaService] setVideo success: blockId=\(blockId), duration=\(duration)s, needsDisplay fired")
                 #endif
 
                 // P1: Release semaphore on success
@@ -734,7 +737,7 @@ public final class UserMediaService {
             } catch is CancellationError {
                 // PR-async-race: Expected on cancel/replace — silent ignore
                 #if DEBUG
-                print("[UserMediaService] setVideo: cancelled for blockId=\(blockId)")
+                logger.debug("[UserMediaService] setVideo: cancelled for blockId=\(blockId)")
                 #endif
                 // P0: Token-safe remove task (only if we're still current generation)
                 if self.mediaSetupGenerationByBlock[blockId] == token {
@@ -1031,7 +1034,7 @@ public final class UserMediaService {
                 // Expected: latest-wins cancellation
             } catch {
                 #if DEBUG
-                print("[UMS] still failed blockId=\(blockId): \(error)")
+                logger.debug("[UMS] still failed blockId=\(blockId): \(error)")
                 #endif
             }
             if let self, self.stillGenerationByBlock[blockId] == gen {
@@ -1167,7 +1170,7 @@ public final class UserMediaService {
         restoreFailedBlockIds.insert(blockId)
 
         #if DEBUG
-        print("[UserMediaService] markRestoreFailed: blockId=\(blockId), reason=\(reason)")
+        logger.debug("[UserMediaService] markRestoreFailed: blockId=\(blockId), reason=\(reason)")
         #endif
 
         // 6. Trigger redraw
@@ -1219,7 +1222,7 @@ public final class UserMediaService {
         // Token check - abort if generation changed (new setup in progress)
         guard mediaSetupGenerationByBlock[blockId] == token else {
             #if DEBUG
-            print("[UserMediaService] markVideoSetupFailed: stale token for blockId=\(blockId)")
+            logger.debug("[UserMediaService] markVideoSetupFailed: stale token for blockId=\(blockId)")
             #endif
             return
         }
@@ -1256,7 +1259,7 @@ public final class UserMediaService {
         onNeedsDisplay?()
 
         #if DEBUG
-        print("[UserMediaService] markVideoSetupFailed: blockId=\(blockId), reason=\(reason)")
+        logger.debug("[UserMediaService] markVideoSetupFailed: blockId=\(blockId), reason=\(reason)")
         #endif
     }
 
@@ -1551,7 +1554,7 @@ public final class UserMediaService {
                 break
             } catch {
                 #if DEBUG
-                print("[UMS] interactive trim preview failed blockId=\(blockId): \(error)")
+                logger.debug("[UMS] interactive trim preview failed blockId=\(blockId): \(error)")
                 #endif
             }
             // Loop back to check if new pending arrived during in-flight
@@ -1598,7 +1601,7 @@ public final class UserMediaService {
             )
         } catch {
             #if DEBUG
-            print("[UMS] trim preview validation failed blockId=\(blockId): \(error)")
+            logger.debug("[UMS] trim preview validation failed blockId=\(blockId): \(error)")
             #endif
             return
         }

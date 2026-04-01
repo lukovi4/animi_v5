@@ -142,19 +142,14 @@ public final class SceneTypeResourcesCache {
 
         // Start new load task
         let task = Task<Resources, Error> {
-            // 1. Heavy IO on background thread
-            let (compiledPackage, resolver) = try await Task.detached(priority: .userInitiated) {
-                let compiledLoader = CompiledScenePackageLoader(engineVersion: TVECore.version)
-                let compiledPackage = try compiledLoader.load(from: sceneURL)
+            // 1. Heavy IO via shared pipeline
+            let loaded = try await SceneTypeLoadPipeline.load(
+                sceneTypeId: sceneTypeId,
+                from: sceneURL
+            )
 
-                let localIndex = try LocalAssetsIndex(imagesRootURL: sceneURL.appendingPathComponent("images"))
-                let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
-                let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
-
-                return (compiledPackage, resolver)
-            }.value
-
-            let compiled = compiledPackage.compiled
+            let compiled = loaded.compiled
+            let resolver = loaded.resolver
 
             // 2. Create immutable base texture provider (TT-07: no mutable semantics in shared cache)
             let provider = await MainActor.run {
@@ -226,17 +221,14 @@ public final class SceneTypeResourcesCache {
 
         let capturedDevice = device
 
-        // Heavy IO only — no texture warm-up
-        let (compiledPackage, resolver) = try await Task.detached(priority: .userInitiated) {
-            let loader = CompiledScenePackageLoader(engineVersion: TVECore.version)
-            let pkg = try loader.load(from: sceneURL)
-            let localIndex = try LocalAssetsIndex(imagesRootURL: sceneURL.appendingPathComponent("images"))
-            let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
-            let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
-            return (pkg, resolver)
-        }.value
+        // Heavy IO via shared pipeline — no texture warm-up
+        let loaded = try await SceneTypeLoadPipeline.load(
+            sceneTypeId: sceneTypeId,
+            from: sceneURL
+        )
 
-        let compiled = compiledPackage.compiled
+        let compiled = loaded.compiled
+        let resolver = loaded.resolver
 
         // Create provider structure only — NO preloadAll()
         let provider = SceneTextureProviderFactory.createBaseProvider(

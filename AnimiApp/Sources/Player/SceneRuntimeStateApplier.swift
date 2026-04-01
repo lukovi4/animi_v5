@@ -17,9 +17,17 @@ protocol ScenePlayerApplying: AnyObject {
 
 extension ScenePlayer: ScenePlayerApplying {}
 
+// MARK: - MediaInputProvider
+
+/// Provides default fit mode for a block. Used for placement resolution.
+public protocol MediaInputProvider {
+    /// Returns the `defaultFit` for the given block, or `nil` if unknown.
+    func defaultFit(forBlockId blockId: String) -> FitMode?
+}
+
 // MARK: - MediaInputProvider Adapters
 
-/// Adapts `ScenePlayer` to `MediaInputProvider` for `SceneStateMigrationHelper`.
+/// Adapts `ScenePlayer` to `MediaInputProvider` for placement resolution.
 @MainActor
 public struct ScenePlayerMediaInputProvider: MediaInputProvider {
     private let scenePlayer: ScenePlayer
@@ -33,19 +41,6 @@ public struct ScenePlayerMediaInputProvider: MediaInputProvider {
     }
 }
 
-/// Adapts compiled `Scene.mediaBlocks` to `MediaInputProvider`.
-/// Used by engine for hydration when ScenePlayer is not available.
-public struct CompiledSceneMediaInputProvider: MediaInputProvider {
-    private let mediaBlocks: [MediaBlock]
-
-    public init(mediaBlocks: [MediaBlock]) {
-        self.mediaBlocks = mediaBlocks
-    }
-
-    public func defaultFit(forBlockId blockId: String) -> FitMode? {
-        mediaBlocks.first { $0.id == blockId }?.input.defaultFit
-    }
-}
 
 /// Stateless helper that applies `SceneState` to runtime components.
 ///
@@ -60,7 +55,6 @@ public struct CompiledSceneMediaInputProvider: MediaInputProvider {
 ///
 /// ## Resolver Integration
 /// For media blocks with `placement != nil`, `MediaPlacementResolver` generates the `Matrix2D`.
-/// For blocks without placement (legacy, not yet hydrated), falls back to `userTransforms`.
 public enum SceneRuntimeStateApplier {
 
     /// Dependencies needed for a full state apply.
@@ -277,10 +271,6 @@ public enum SceneRuntimeStateApplier {
             }
         }
 
-        // Legacy fallback: blocks still in userTransforms (not yet migrated)
-        for (blockId, transform) in state.userTransforms where !placementApplied.contains(blockId) {
-            player.setUserTransform(blockId: blockId, transform: transform)
-        }
     }
 
     /// Resolves a placement to Matrix2D using MediaPlacementResolver.

@@ -3,13 +3,9 @@ import MetalKit
 import PhotosUI
 import UniformTypeIdentifiers
 import TVECore
+import os.log
 
-// MARK: - PR1.3: Render Diagnostics Flag
-
-/// Set to `true` to enable [DIAG]/[DIAG-PATH] logging in draw loop.
-/// **WARNING**: Enabling this causes DRAW CPU spikes (200-450ms) and "gesture gate timeout".
-/// Keep disabled for normal use.
-private let kEnableRenderDiagnostics = false
+private let logger = Logger(subsystem: "com.animi.app", category: "PlayerViewController")
 
 // MARK: - PR-D: Template Loading State
 
@@ -34,23 +30,7 @@ enum TemplateLoadingState: Equatable {
     }
 }
 
-// MARK: - Scene Variant Preset (PR-20)
-
-/// A named mapping of blockId -> variantId for scene-level style switching.
-struct SceneVariantPreset {
-    let id: String
-    let title: String
-    let mapping: [String: String]  // blockId -> variantId
-}
-
 // MARK: - PR-D: Async Loading Helper Structs
-
-/// Result from background phase of template loading.
-/// Note: @unchecked Sendable because CompiledScenePackage is a value type with immutable data.
-private struct BackgroundLoadResult: @unchecked Sendable {
-    let compiledPackage: CompiledScenePackage
-    let resolver: CompositeAssetResolver
-}
 
 /// Result from ScenePlayer setup phase (main actor only, not Sendable).
 private struct SceneSetupResult {
@@ -247,7 +227,7 @@ final class PlayerViewController: UIViewController {
         guard let target = sceneEditTargetInstanceId,
               let runtime = activeSceneInstanceId,
               target != runtime else { return }
-        print("[BUG-GUARD] sceneEditTargetInstanceId (\(target)) != activeSceneInstanceId (\(runtime))")
+        logger.debug("[BUG-GUARD] sceneEditTargetInstanceId (\(target)) != activeSceneInstanceId (\(runtime))")
         assertionFailure("[BUG-GUARD] Scene edit target diverged from runtime active scene")
         #endif
     }
@@ -520,28 +500,7 @@ final class PlayerViewController: UIViewController {
             }
         }
 
-        // Step 2.5: Hydrate legacy scene states before anything reads the draft.
-        // This ensures EditorStore, engine, and export all see canonical placement data.
-        let hydrationResult = await ProjectDraftHydrator.hydrate(
-            draft: draft,
-            sceneURLProvider: sceneLibrarySnapshot!
-        )
-        let hydratedDraft: ProjectDraft
-        if !hydrationResult.changedInstanceIds.isEmpty {
-            hydratedDraft = hydrationResult.draft
-            currentProjectDraft = hydratedDraft
-            activeDraftSlot?.draft = hydratedDraft
-            if let slot = activeDraftSlot {
-                do {
-                    try ProjectStore.shared.saveActiveDraft(slot)
-                    log("[Release v1] Hydrated \(hydrationResult.changedInstanceIds.count) scene state(s), saved to active draft")
-                } catch {
-                    log("[Release v1] WARN: Hydrated draft but failed to save: \(error)")
-                }
-            }
-        } else {
-            hydratedDraft = draft
-        }
+        let hydratedDraft = draft
 
         // Step 3: Determine first scene from draft or template defaults
         let firstSceneTypeId: String
@@ -1456,15 +1415,6 @@ final class PlayerViewController: UIViewController {
                 self?.refreshCurrentTimelineFrame()
             }
 
-            // PR-C: Post-load canonicalization write-back for updateSceneState().
-            // This is NOT initial-load convergence — draft is hydrated at project-load time.
-            // This callback handles inactive-scene slot updates where placement == nil
-            // may still arrive from ingest for scenes not yet visited.
-            engine.onSceneStateHydrated = { [weak self] instanceId, hydratedState in
-                self?.editorStore?.writeHydratedSceneState(hydratedState, for: instanceId)
-                self?.draftIsDirty = true
-            }
-
             timelineCompositionEngine = engine
         }
 
@@ -1501,21 +1451,16 @@ final class PlayerViewController: UIViewController {
             throw NSError(domain: "PlayerViewController", code: -1, userInfo: [NSLocalizedDescriptionKey: "Scene not found: \(sceneTypeId)"])
         }
 
-        // Heavy IO on background thread (prevents main thread freezes)
-        let (compiledPackage, resolver) = try await Task.detached(priority: .userInitiated) {
-            let compiledLoader = CompiledScenePackageLoader(engineVersion: TVECore.version)
-            let compiledPackage = try compiledLoader.load(from: sceneURL)
-
-            let localIndex = try LocalAssetsIndex(imagesRootURL: sceneURL.appendingPathComponent("images"))
-            let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
-            let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
-
-            return (compiledPackage, resolver)
-        }.value
+        // Heavy IO on background thread via shared pipeline
+        let loaded = try await SceneTypeLoadPipeline.load(
+            sceneTypeId: sceneTypeId,
+            from: sceneURL
+        )
 
         // Metal resources on main thread
         let player = await MainActor.run { ScenePlayer() }
-        let compiled = await MainActor.run { player.loadCompiledScene(compiledPackage.compiled) }
+        let compiled = await MainActor.run { player.loadCompiledScene(loaded.compiled) }
+        let resolver = loaded.resolver
 
         guard let device = await MainActor.run(body: { metalView.device }) else {
             throw NSError(domain: "PlayerViewController", code: -2, userInfo: [NSLocalizedDescriptionKey: "No Metal device"])
@@ -1650,7 +1595,6 @@ final class PlayerViewController: UIViewController {
     }
 
     /// Applies persisted SceneState to runtime for a scene instance.
-    /// Draft is already hydrated at project-load time by ProjectDraftHydrator.
     private func applySceneInstanceState(instanceId: UUID) {
         guard let state = editorStore?.state.draft.sceneInstanceStates[instanceId],
               let player = scenePlayer,
@@ -1658,23 +1602,11 @@ final class PlayerViewController: UIViewController {
             return
         }
 
-        // PR-C: Draft is hydrated at load time. If we see un-hydrated state here,
-        // it's a violation of the ingress contract.
-        #if DEBUG
-        if SceneStateMigrationHelper.needsHydration(state) {
-            assertionFailure("[PlayerVC] applySceneInstanceState: state needs hydration for \(instanceId) — ingress contract violated")
-        }
-        #endif
-
         let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
         let restoredCount = SceneRuntimeStateApplier.apply(state, deps: deps)
 
         #if DEBUG
-        print("[PlayerVC] Applied state for instance \(instanceId): " +
-              "slots=\(state.mediaSlotsByBlockId?.count ?? 0), " +
-              "variants=\(state.variantOverrides.count), " +
-              "restored=\(restoredCount), " +
-              "toggles=\(state.layerToggles.count)")
+        logger.debug("[PlayerVC] Applied state for instance \(instanceId): slots=\(state.mediaSlotsByBlockId?.count ?? 0), variants=\(state.variantOverrides.count), restored=\(restoredCount), toggles=\(state.layerToggles.count)")
         #endif
     }
 
@@ -1811,19 +1743,19 @@ final class PlayerViewController: UIViewController {
                 // TT-02: Keep cachedTimelineFrame unchanged, keep activeSceneInstanceId
                 // Do NOT fabricate fallback frame, do NOT force redraw
                 #if DEBUG
-                print("[PlayerVC] Hold: keeping last frame")
+                logger.debug("[PlayerVC] Hold: keeping last frame")
                 #endif
 
             case .staleGeneration:
                 // TT-02: Nothing changes
                 #if DEBUG
-                print("[PlayerVC] Stale generation: ignoring")
+                logger.debug("[PlayerVC] Stale generation: ignoring")
                 #endif
 
             case .failed(let failure):
                 // TT-02: Nothing changes, only debug log
                 #if DEBUG
-                print("[PlayerVC] Resolution failed: \(failure)")
+                logger.debug("[PlayerVC] Resolution failed: \(String(describing: failure))")
                 #endif
             }
         }
@@ -1950,7 +1882,7 @@ final class PlayerViewController: UIViewController {
         draftIsDirty = true
 
         #if DEBUG
-        print("[PR-F] Scene state changed: instanceId=\(instanceId)")
+        logger.debug("[PR-F] Scene state changed: instanceId=\(instanceId)")
         #endif
     }
 
@@ -3617,25 +3549,13 @@ final class PlayerViewController: UIViewController {
 
             // === PHASE 1: Background ===
             do {
-                let result: BackgroundLoadResult = try await Task(priority: .userInitiated) {
-                    try Task.checkCancellation()
+                try Task.checkCancellation()
 
-                    // Load .tve file from SceneLibrary folder
-                    let compiledLoader = CompiledScenePackageLoader(engineVersion: TVECore.version)
-                    let compiledPackage = try compiledLoader.load(from: sceneURL)
-
-                    try Task.checkCancellation()
-
-                    // Create asset indices
-                    let localIndex = try LocalAssetsIndex(imagesRootURL: sceneURL.appendingPathComponent("images"))
-                    let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
-                    let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
-
-                    return BackgroundLoadResult(
-                        compiledPackage: compiledPackage,
-                        resolver: resolver
-                    )
-                }.value
+                // Heavy IO via shared pipeline
+                let loaded = try await SceneTypeLoadPipeline.load(
+                    sceneTypeId: sceneTypeId,
+                    from: sceneURL
+                )
 
                 guard !Task.isCancelled, self.currentRequestId == requestId else {
                     await MainActor.run { self.log("Scene load cancelled") }
@@ -3644,13 +3564,13 @@ final class PlayerViewController: UIViewController {
 
                 // === PHASE 2: Main Actor — ScenePlayer setup ===
                 await MainActor.run {
-                    self.log("Scene package loaded: \(result.compiledPackage.sceneId ?? sceneTypeId)")
+                    self.log("Scene package loaded: \(sceneTypeId)")
                     self.preparingOverlay.setStatus("Preparing scene...")
                 }
 
                 let sceneSetupResult: SceneSetupResult = await MainActor.run {
                     let player = ScenePlayer()
-                    let compiled = player.loadCompiledScene(result.compiledPackage.compiled)
+                    let compiled = player.loadCompiledScene(loaded.compiled)
                     return SceneSetupResult(player: player, compiled: compiled)
                 }
 
@@ -3665,7 +3585,7 @@ final class PlayerViewController: UIViewController {
                     let p = SceneTextureProviderFactory.create(
                         device: device,
                         mergedAssetIndex: sceneSetupResult.compiled.mergedAssetIndex,
-                        resolver: result.resolver,
+                        resolver: loaded.resolver,
                         bindingAssetIds: sceneSetupResult.compiled.bindingAssetIds,
                         logger: { [weak self] msg in
                             Task { @MainActor in self?.log(msg) }
@@ -3690,7 +3610,7 @@ final class PlayerViewController: UIViewController {
                         player: sceneSetupResult.player,
                         compiled: sceneSetupResult.compiled,
                         provider: provider,
-                        resolver: result.resolver,
+                        resolver: loaded.resolver,
                         requestId: requestId
                     )
                 }
@@ -3968,8 +3888,7 @@ final class PlayerViewController: UIViewController {
     // MARK: - Logging
 
     private func log(_ message: String) {
-        let ts = DateFormatter.logFormatter.string(from: Date())
-        print("[\(ts)] \(message)")
+        logger.info("\(message)")
     }
 
     // MARK: - Scrub Render Throttle (A/B Testing)
