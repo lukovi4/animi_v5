@@ -1288,7 +1288,6 @@ public final class TimelineCompositionEngine {
         mediaSnapshot: ExportMediaSnapshot
     ) async -> [String: Matrix2D] {
         var transforms = state.userTransforms
-        let mediaBlocks = compiled.runtime.scene.mediaBlocks
 
         // Build media size lookup from snapshot
         var mediaSizes: [String: (Double, Double)] = [:]
@@ -1304,11 +1303,12 @@ public final class TimelineCompositionEngine {
         }
 
         if let slots = state.mediaSlotsByBlockId {
+            let blocks = compiled.runtime.blocks
             for (blockId, slot) in slots {
                 guard let placement = slot.asset.placement else { continue }
-                guard let block = mediaBlocks.first(where: { $0.id == blockId }) else { continue }
+                guard let block = blocks.first(where: { $0.blockId == blockId }) else { continue }
 
-                let slotRect = block.input.rect
+                let slotRect = block.mediaInputGeometry.placementRectLocal
                 let mediaW: Double
                 let mediaH: Double
                 if let size = mediaSizes[blockId] {

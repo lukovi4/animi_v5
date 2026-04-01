@@ -10,7 +10,6 @@
       "containerClip": "none",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
-        "rect": { "x": 0, "y": 0, "width": 1080, "height": 1920 },
         "bindingKey": "media",
         "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],
@@ -38,13 +37,7 @@
           "loop": false
         }
       ],
-      "layerToggles": [
-        {
-          "id": "frame",
-          "title": "Polaroid Frame",
-          "defaultOn": true
-        }
-      ]
+      "layerToggles": [{ "id": "frame", "title": "Polaroid Frame", "defaultOn": true }]
     }
   ]
 }

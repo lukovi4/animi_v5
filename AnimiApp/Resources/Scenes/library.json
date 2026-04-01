@@ -10,24 +10,6 @@
       "order": 0,
       "title": "4 Blocks Demo",
       "baseDurationUs": 10000000
-    },
-    {
-      "id": "polaroid_shared_demo",
-      "order": 1,
-      "title": "Polaroid Classic",
-      "baseDurationUs": 10000000
-    },
-    {
-      "id": "polaroid_2",
-      "order": 2,
-      "title": "Polaroid Style 2",
-      "baseDurationUs": 5000000
-    },
-    {
-      "id": "full_image",
-      "order": 3,
-      "title": "Full Image",
-      "baseDurationUs": 5000000
     }
   ]
 }

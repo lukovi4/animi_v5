@@ -97,7 +97,6 @@ extension AnimValidator {
     func validateAnimation(_ ctx: AnimContext, issues: inout [ValidationIssue]) {
         validateRootSanity(animRef: ctx.animRef, lottie: ctx.lottie, issues: &issues)
         validateFPSInvariant(animRef: ctx.animRef, lottie: ctx.lottie, scene: ctx.scene, issues: &issues)
-        validateSizeMismatch(animRef: ctx.animRef, lottie: ctx.lottie, blocks: ctx.blocks, issues: &issues)
         validateAssetPresence(
             animRef: ctx.animRef,
             lottie: ctx.lottie,
@@ -187,35 +186,6 @@ extension AnimValidator {
         }
     }
 
-    func validateSizeMismatch(
-        animRef: String,
-        lottie: LottieJSON,
-        blocks: [MediaBlock],
-        issues: inout [ValidationIssue]
-    ) {
-        // Deduplicate warnings by unique input rect sizes
-        var seenSizes = Set<String>()
-
-        for block in blocks {
-            let inputWidth = block.input.rect.width
-            let inputHeight = block.input.rect.height
-            let sizeKey = "\(Int(inputWidth))x\(Int(inputHeight))"
-
-            if lottie.width != inputWidth || lottie.height != inputHeight {
-                // Only emit one warning per unique size mismatch
-                if !seenSizes.contains(sizeKey) {
-                    seenSizes.insert(sizeKey)
-                    issues.append(ValidationIssue(
-                        code: AnimValidationCode.warningAnimSizeMismatch,
-                        severity: .warning,
-                        path: "anim(\(animRef)).w",
-                        message: "anim \(Int(lottie.width))x\(Int(lottie.height)) != " +
-                                 "inputRect \(sizeKey) (contain policy will apply)"
-                    ))
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Asset Validation

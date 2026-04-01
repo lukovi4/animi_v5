@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreVideo
+import ImageIO
 import Metal
 import TVECore
 
@@ -169,8 +170,16 @@ internal final class TimelineExportResidencyController {
                 commandQueue: commandQueue,
                 maxDimensionPx: budget.targetImageMaxDimensionPx
             ) {
+                // PR-F: Probe original file size for display size metadata.
+                // Export placement is resolved from file probe dimensions, so renderer
+                // quad geometry must match. Using texture.width/height would mismatch
+                // when the image is downsampled below source resolution.
+                let probeSize = Self.probeImageSize(url: imageRef.url)
+                    ?? CGSize(width: texture.width, height: texture.height)
+
                 for assetId in imageRef.bindingAssetIds {
                     textureProvider.setTexture(texture, for: assetId)
+                    textureProvider.setDisplaySize(probeSize, for: assetId)
                 }
             }
         }
@@ -226,5 +235,21 @@ internal final class TimelineExportResidencyController {
             scene.videoCoordinator?.finish()
         }
         lastAccessFrame.removeValue(forKey: instanceId)
+    }
+
+    // MARK: - PR-F: File Size Probe
+
+    /// Probes original image dimensions from file URL via ImageIO.
+    /// Returns EXIF-orientation-corrected size to match export placement resolution.
+    private static func probeImageSize(url: URL) -> CGSize? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Double,
+              let h = props[kCGImagePropertyPixelHeight] as? Double else { return nil }
+        let orientation = props[kCGImagePropertyOrientation] as? UInt32 ?? 1
+        if orientation >= 5 && orientation <= 8 {
+            return CGSize(width: h, height: w)
+        }
+        return CGSize(width: w, height: h)
     }
 }

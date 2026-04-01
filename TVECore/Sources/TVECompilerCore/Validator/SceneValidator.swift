@@ -246,8 +246,6 @@ extension SceneValidator {
     func validateMediaInput(input: MediaInput, basePath: String, issues: inout [ValidationIssue]) {
         let inputPath = "\(basePath).input"
 
-        validateRect(rect: input.rect, path: "\(inputPath).rect", context: "input rect", issues: &issues)
-
         if input.bindingKey.isEmpty {
             issues.append(ValidationIssue(
                 code: SceneValidationCode.inputBindingKeyEmpty,

@@ -494,6 +494,9 @@ public final class UserMediaService {
                 let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
                 for (_, assetId) in assetIds {
                     self.textureProvider.setTexture(texture, for: assetId)
+                    // PR-F: Inject display size metadata for correct renderer quad geometry
+                    (self.textureProvider as? MutableAssetDisplaySizeProvider)?
+                        .setDisplaySize(CGSize(width: texture.width, height: texture.height), for: assetId)
                     // PR7: Remove stale video presentation metadata (video→photo replace)
                     (self.textureProvider as? MutableAssetPresentationInfoProvider)?
                         .removePresentationInfo(for: assetId)
@@ -509,8 +512,10 @@ public final class UserMediaService {
                     self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                 }
 
-                self.onNeedsDisplay?()
+                // PR-F: onMediaReady first (triggers placement reapply with correct geometry),
+                // then onNeedsDisplay (schedules redraw with updated transform).
                 self.onMediaReady?(blockId)
+                self.onNeedsDisplay?()
 
                 #if DEBUG
                 print("[UserMediaService] setPhoto success: blockId=\(blockId), needsDisplay fired")
@@ -530,6 +535,8 @@ public final class UserMediaService {
                     // PR7: Remove stale video presentation metadata on photo load failure
                     (self.textureProvider as? MutableAssetPresentationInfoProvider)?
                         .removePresentationInfo(for: assetId)
+                    (self.textureProvider as? MutableAssetDisplaySizeProvider)?
+                        .removeDisplaySize(for: assetId)
                 }
 
                 // Clear stale media state
@@ -690,6 +697,9 @@ public final class UserMediaService {
                 let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
                 for (_, assetId) in assetIds {
                     self.textureProvider.setTexture(poster, for: assetId)
+                    // PR-F: Remove stale photo display size metadata (photo→video replace)
+                    (self.textureProvider as? MutableAssetDisplaySizeProvider)?
+                        .removeDisplaySize(for: assetId)
                     // Inject video presentation metadata for orientation-aware rendering
                     if let presInfo = provider.presentationInfo {
                         (self.textureProvider as? MutableAssetPresentationInfoProvider)?
@@ -709,9 +719,10 @@ public final class UserMediaService {
                     self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                 }
 
-                // PR1.1: Trigger redraw after async poster injection
-                self.onNeedsDisplay?()
+                // PR-F: onMediaReady first (triggers placement reapply with correct geometry),
+                // then onNeedsDisplay (schedules redraw with updated transform).
                 self.onMediaReady?(blockId)
+                self.onNeedsDisplay?()
 
                 #if DEBUG
                 print("[UserMediaService] setVideo success: blockId=\(blockId), duration=\(duration)s, needsDisplay fired")
@@ -1075,12 +1086,16 @@ public final class UserMediaService {
         // Clean up runtime video resources (provider + pending setup), not persisted media files
         cleanupVideoResources(for: blockId)
 
-        // Remove textures and presentation metadata from all variant binding asset IDs
+        // Remove textures, presentation metadata and display size from all variant binding asset IDs
         let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
         for (_, assetId) in assetIds {
             textureProvider.removeTexture(for: assetId)
             (textureProvider as? MutableAssetPresentationInfoProvider)?
                 .removePresentationInfo(for: assetId)
+            // PR-F: removeTexture already clears displaySize in providers,
+            // but explicit call for defense-in-depth
+            (textureProvider as? MutableAssetDisplaySizeProvider)?
+                .removeDisplaySize(for: assetId)
         }
 
         // Update state
@@ -1218,12 +1233,14 @@ public final class UserMediaService {
             provider.release()
         }
 
-        // Remove injected textures and presentation metadata for all variant assetIds
+        // Remove injected textures, presentation metadata and display sizes for all variant assetIds
         let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
         for (_, assetId) in assetIds {
             textureProvider.removeTexture(for: assetId)
             (textureProvider as? MutableAssetPresentationInfoProvider)?
                 .removePresentationInfo(for: assetId)
+            (textureProvider as? MutableAssetDisplaySizeProvider)?
+                .removeDisplaySize(for: assetId)
         }
 
         // Clear media state

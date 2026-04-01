@@ -89,7 +89,13 @@ public final class VideoPosterCache {
         generator.maximumSize = CGSize(width: 1024, height: 1024)
 
         do {
-            let (cgImage, _) = try await generator.image(at: .zero)
+            // Early check: avoid entering generator if already cancelled
+            try Task.checkCancellation()
+            let (cgImage, _) = try await withTaskCancellationHandler {
+                try await generator.image(at: .zero)
+            } onCancel: {
+                generator.cancelAllCGImageGeneration()
+            }
             return UIImage(cgImage: cgImage)
         } catch {
             return nil

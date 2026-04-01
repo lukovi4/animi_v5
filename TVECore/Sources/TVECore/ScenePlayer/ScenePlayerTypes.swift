@@ -67,6 +67,22 @@ public struct SceneRuntime: Sendable, Codable {
 
 }
 
+// MARK: - Media Input Geometry Runtime (PR-H)
+
+/// Canonical media aperture geometry computed from the compiled animation IR.
+///
+/// Single source of truth for media placement — replaces the legacy `inputRect`
+/// which came from scene.json's `MediaInput.rect` (wrong for aperture-based templates).
+public struct MediaInputGeometryRuntime: Sendable, Codable, Equatable {
+    /// Bounding rect of the media aperture in block-local coordinates,
+    /// from compiled media aperture geometry.
+    public let placementRectLocal: RectD
+
+    public init(placementRectLocal: RectD) {
+        self.placementRectLocal = placementRectLocal
+    }
+}
+
 // MARK: - Block Runtime
 
 /// Runtime representation of a compiled media block
@@ -83,8 +99,8 @@ public struct BlockRuntime: Sendable, Codable {
     /// Block rectangle in canvas coordinates
     public let rectCanvas: RectD
 
-    /// Input rectangle in block-local coordinates
-    public let inputRect: RectD
+    /// Canonical media aperture geometry from compiled AnimIR (PR-H).
+    public let mediaInputGeometry: MediaInputGeometryRuntime
 
     /// Block timing (visibility window)
     public let timing: BlockTiming
@@ -129,7 +145,7 @@ public struct BlockRuntime: Sendable, Codable {
         zIndex: Int,
         orderIndex: Int,
         rectCanvas: RectD,
-        inputRect: RectD,
+        mediaInputGeometry: MediaInputGeometryRuntime,
         timing: BlockTiming,
         containerClip: ContainerClip,
         hitTestMode: HitTestMode? = nil,
@@ -141,7 +157,7 @@ public struct BlockRuntime: Sendable, Codable {
         self.zIndex = zIndex
         self.orderIndex = orderIndex
         self.rectCanvas = rectCanvas
-        self.inputRect = inputRect
+        self.mediaInputGeometry = mediaInputGeometry
         self.timing = timing
         self.containerClip = containerClip
         self.hitTestMode = hitTestMode

@@ -53,8 +53,9 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
                 print("\n  Block: \(block.blockId) (zIndex=\(block.zIndex))")
                 print("    rectCanvas: (x=\(block.rectCanvas.x), y=\(block.rectCanvas.y), " +
                       "w=\(block.rectCanvas.width), h=\(block.rectCanvas.height))")
-                print("    inputRect: (x=\(block.inputRect.x), y=\(block.inputRect.y), " +
-                      "w=\(block.inputRect.width), h=\(block.inputRect.height))")
+                let placementRect = block.mediaInputGeometry.placementRectLocal
+                print("    placementRectLocal: (x=\(placementRect.x), y=\(placementRect.y), " +
+                      "w=\(placementRect.width), h=\(placementRect.height))")
                 print("    containerClip: \(block.containerClip)")
                 print("    timing: start=\(block.timing.startFrame), end=\(block.timing.endFrame)")
 
@@ -65,9 +66,9 @@ final class ScenePlayerDiagnosticTests: XCTestCase {
                     print("    AnimIR.meta.fps: \(variant.animIR.meta.fps)")
                     print("    AnimIR.meta.op: \(variant.animIR.meta.outPoint)")
 
-                    // Check: rectCanvas != inputRect = RED FLAG
-                    if block.rectCanvas != block.inputRect {
-                        print("    ⚠️ RED FLAG: rectCanvas != inputRect")
+                    // Check: rectCanvas != placementRectLocal (expected for aperture-based templates)
+                    if block.rectCanvas != block.mediaInputGeometry.placementRectLocal {
+                        print("    ℹ️ rectCanvas != placementRectLocal (aperture-based template)")
                     }
 
                     // Check: animSize vs canvasSize

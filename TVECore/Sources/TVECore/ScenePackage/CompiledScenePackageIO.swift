@@ -33,10 +33,10 @@ public enum CompiledPackageConstants {
     public static let headerSizeV1WithSchema: UInt16 = 18
 
     /// Current IR schema version (increment only on breaking payload changes)
-    public static let currentIRSchemaVersion: UInt16 = 1
+    public static let currentIRSchemaVersion: UInt16 = 2
 
     /// Supported IR schema version range
-    public static let supportedIRSchemaRange: ClosedRange<UInt16> = 1...1
+    public static let supportedIRSchemaRange: ClosedRange<UInt16> = 2...2
 }
 
 // MARK: - Engine Version Hash

@@ -1,4 +1,5 @@
 import Metal
+import Foundation
 
 // MARK: - Texture Provider Protocol
 
@@ -51,9 +52,10 @@ public protocol MutableTextureProvider: TextureProvider {
 /// Simple texture provider for testing.
 /// Stores textures in memory keyed by asset ID.
 /// Conforms to MutableTextureProvider for test scenarios requiring texture injection.
-public final class InMemoryTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
+public final class InMemoryTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider, MutableAssetDisplaySizeProvider {
     private var textures: [String: MTLTexture] = [:]
     private var presentationInfos: [String: VideoPresentationInfo] = [:]
+    private var displaySizes: [String: CGSize] = [:]
 
     public init() {}
 
@@ -85,6 +87,24 @@ public final class InMemoryTextureProvider: MutableTextureProvider, MutableAsset
     public func removeTexture(for assetId: String) {
         dispatchPrecondition(condition: .onQueue(.main))
         textures.removeValue(forKey: assetId)
+        displaySizes.removeValue(forKey: assetId)
+    }
+
+    // MARK: - MutableAssetDisplaySizeProvider
+
+    public func displaySize(for assetId: String) -> CGSize? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return displaySizes[assetId]
+    }
+
+    public func setDisplaySize(_ size: CGSize, for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        displaySizes[assetId] = size
+    }
+
+    public func removeDisplaySize(for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        displaySizes.removeValue(forKey: assetId)
     }
 
     // MARK: - MutableAssetPresentationInfoProvider
@@ -116,10 +136,11 @@ public final class InMemoryTextureProvider: MutableTextureProvider, MutableAsset
 ///
 /// Use this for background texture providers passed to VideoExporter.
 /// Preview/playback providers on main thread can use regular `InMemoryTextureProvider`.
-public final class ThreadSafeInMemoryTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
+public final class ThreadSafeInMemoryTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider, MutableAssetDisplaySizeProvider {
     private let lock = NSLock()
     private var textures: [String: MTLTexture] = [:]
     private var presentationInfos: [String: VideoPresentationInfo] = [:]
+    private var displaySizes: [String: CGSize] = [:]
 
     public init() {}
 
@@ -151,6 +172,27 @@ public final class ThreadSafeInMemoryTextureProvider: MutableTextureProvider, Mu
         lock.lock()
         defer { lock.unlock() }
         textures.removeValue(forKey: assetId)
+        displaySizes.removeValue(forKey: assetId)
+    }
+
+    // MARK: - MutableAssetDisplaySizeProvider
+
+    public func displaySize(for assetId: String) -> CGSize? {
+        lock.lock()
+        defer { lock.unlock() }
+        return displaySizes[assetId]
+    }
+
+    public func setDisplaySize(_ size: CGSize, for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        displaySizes[assetId] = size
+    }
+
+    public func removeDisplaySize(for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        displaySizes.removeValue(forKey: assetId)
     }
 
     // MARK: - MutableAssetPresentationInfoProvider

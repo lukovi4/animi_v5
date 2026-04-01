@@ -82,6 +82,18 @@ struct TemplateCatalogSnapshot {
     func template(by id: TemplateID) -> TemplateDescriptor? {
         templates.first { $0.id == id }
     }
+
+    /// Returns a new snapshot with templates whose sceneTypeIds are all present in the library.
+    /// Categories that become empty after pruning are also removed.
+    func pruned(against library: SceneLibrarySnapshot) -> TemplateCatalogSnapshot {
+        let validTemplates = templates.filter { template in
+            !template.sceneTypeIds.isEmpty &&
+            template.sceneTypeIds.allSatisfy { library.scene(byId: $0) != nil }
+        }
+        let validCategoryIds = Set(validTemplates.map(\.categoryId))
+        let validCategories = categories.filter { validCategoryIds.contains($0.id) }
+        return TemplateCatalogSnapshot(categories: validCategories, templates: validTemplates)
+    }
 }
 
 // MARK: - Load State

@@ -1,12 +1,7 @@
 {
   "schemaVersion": "0.1",
   "sceneId": "scene_test_2x2_4blocks",
-  "canvas": {
-    "width": 1080,
-    "height": 1920,
-    "fps": 30,
-    "durationFrames": 300
-  },
+  "canvas": { "width": 1080, "height": 1920, "fps": 30, "durationFrames": 300 },
   "mediaBlocks": [
     {
       "blockId": "block_01",
@@ -15,7 +10,6 @@
       "containerClip": "slotRect",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
-        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
         "hitTest": "rect",
         "allowedMedia": ["photo", "video", "color"],
@@ -51,7 +45,6 @@
       "containerClip": "slotRect",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
-        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
         "hitTest": "rect",
         "allowedMedia": ["photo", "video", "color"],
@@ -87,7 +80,6 @@
       "containerClip": "slotRect",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
-        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
         "hitTest": "rect",
         "allowedMedia": ["photo", "video", "color"],
@@ -123,7 +115,6 @@
       "containerClip": "slotRect",
       "timing": { "startFrame": 0, "endFrame": 300 },
       "input": {
-        "rect": { "x": 0.0, "y": 0.0, "width": 540.0, "height": 960.0 },
         "bindingKey": "media",
         "hitTest": "rect",
         "allowedMedia": ["photo", "video", "color"],

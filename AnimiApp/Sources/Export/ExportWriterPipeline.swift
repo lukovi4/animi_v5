@@ -130,8 +130,8 @@ final class ExportWriterPipeline {
             input: videoInput,
             adaptor: adaptor,
             queue: videoQueue,
-            onError: { [unowned self] error in
-                self.setError(error)
+            onError: { [weak self] error in
+                self?.setError(error)
             }
         )
     }

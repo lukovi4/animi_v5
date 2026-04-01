@@ -42,9 +42,7 @@ final class SceneValidatorTests: XCTestCase {
     }
 
     private func makeValidMediaInput() -> MediaInput {
-        MediaInput(
-            rect: Rect(x: 0, y: 0, width: 540, height: 960),
-            bindingKey: "media",
+        MediaInput(bindingKey: "media",
             hitTest: .rect,
             allowedMedia: ["photo", "video", "color"],
             emptyPolicy: .hideWholeBlock,
@@ -228,44 +226,6 @@ final class SceneValidatorTests: XCTestCase {
 
     // MARK: - 6.5 Rect
 
-    func testValidate_inputRectWidthZero_returnsError() {
-        let input = MediaInput(
-            rect: Rect(x: 0, y: 0, width: 0, height: 960),
-            bindingKey: "media",
-            hitTest: nil,
-            allowedMedia: ["photo"],
-            emptyPolicy: nil,
-            fitModesAllowed: nil,
-            defaultFit: nil,
-            userTransformsAllowed: nil,
-            audio: nil,
-            maskRef: nil
-        )
-        let block = MediaBlock(
-            id: "block_01",
-            zIndex: 0,
-            rect: Rect(x: 0, y: 0, width: 540, height: 960),
-            containerClip: .slotRect,
-            timing: nil,
-            input: input,
-            variants: [makeValidVariant()]
-        )
-        let scene = Scene(
-            schemaVersion: "0.1",
-            sceneId: "test",
-            canvas: Canvas(width: 1080, height: 1920, fps: 30, durationFrames: 300),
-            background: nil,
-            mediaBlocks: [block]
-        )
-
-        let report = validator.validate(scene: scene)
-
-        XCTAssertTrue(report.hasErrors)
-        let error = report.errors.first { $0.code == SceneValidationCode.rectInvalid }
-        XCTAssertNotNil(error)
-        XCTAssertEqual(error?.path, "$.mediaBlocks[0].input.rect.width")
-    }
-
     func testValidate_blockRectHeightNegative_returnsError() {
         let block = MediaBlock(
             id: "block_01",
@@ -411,9 +371,7 @@ final class SceneValidatorTests: XCTestCase {
     // MARK: - 6.7 BindingKey
 
     func testValidate_bindingKeyEmpty_returnsError() {
-        let input = MediaInput(
-            rect: Rect(x: 0, y: 0, width: 540, height: 960),
-            bindingKey: "",
+        let input = MediaInput(bindingKey: "",
             hitTest: nil,
             allowedMedia: ["photo"],
             emptyPolicy: nil,
@@ -479,9 +437,7 @@ final class SceneValidatorTests: XCTestCase {
     // MARK: - 6.9 AllowedMedia
 
     func testValidate_allowedMediaEmpty_returnsError() {
-        let input = MediaInput(
-            rect: Rect(x: 0, y: 0, width: 540, height: 960),
-            bindingKey: "media",
+        let input = MediaInput(bindingKey: "media",
             hitTest: nil,
             allowedMedia: [],
             emptyPolicy: nil,
@@ -517,9 +473,7 @@ final class SceneValidatorTests: XCTestCase {
     }
 
     func testValidate_allowedMediaInvalidValue_returnsError() {
-        let input = MediaInput(
-            rect: Rect(x: 0, y: 0, width: 540, height: 960),
-            bindingKey: "media",
+        let input = MediaInput(bindingKey: "media",
             hitTest: nil,
             allowedMedia: ["photo", "banana"],
             emptyPolicy: nil,
@@ -555,9 +509,7 @@ final class SceneValidatorTests: XCTestCase {
     }
 
     func testValidate_allowedMediaDuplicate_returnsError() {
-        let input = MediaInput(
-            rect: Rect(x: 0, y: 0, width: 540, height: 960),
-            bindingKey: "media",
+        let input = MediaInput(bindingKey: "media",
             hitTest: nil,
             allowedMedia: ["photo", "photo"],
             emptyPolicy: nil,
@@ -721,9 +673,7 @@ final class SceneValidatorTests: XCTestCase {
     // MARK: - MaskRef Warning
 
     func testValidate_maskRefWithoutCatalog_returnsWarning() {
-        let input = MediaInput(
-            rect: Rect(x: 0, y: 0, width: 540, height: 960),
-            bindingKey: "media",
+        let input = MediaInput(bindingKey: "media",
             hitTest: nil,
             allowedMedia: ["photo"],
             emptyPolicy: nil,
@@ -762,9 +712,7 @@ final class SceneValidatorTests: XCTestCase {
         let mockCatalog = MockMaskCatalog(masks: ["other_mask"])
         let validatorWithCatalog = SceneValidator(maskCatalog: mockCatalog)
 
-        let input = MediaInput(
-            rect: Rect(x: 0, y: 0, width: 540, height: 960),
-            bindingKey: "media",
+        let input = MediaInput(bindingKey: "media",
             hitTest: nil,
             allowedMedia: ["photo"],
             emptyPolicy: nil,

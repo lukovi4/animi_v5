@@ -93,9 +93,7 @@ final class ScenePlayerEditModeTests: XCTestCase {
                     rect: Rect(x: 0, y: 0, width: 540, height: 480),
                     containerClip: .slotRect,
                     timing: Timing(startFrame: 0, endFrame: 300),
-                    input: MediaInput(
-                        rect: Rect(x: 0, y: 0, width: 540, height: 480),
-                        bindingKey: "media",
+                    input: MediaInput(bindingKey: "media",
                         allowedMedia: ["photo"]
                     ),
                     variants: [
@@ -109,9 +107,7 @@ final class ScenePlayerEditModeTests: XCTestCase {
                     containerClip: .slotRect,
                     // DELAYED: starts at frame 30, so NOT visible at editFrameIndex (0)
                     timing: Timing(startFrame: 30, endFrame: 300),
-                    input: MediaInput(
-                        rect: Rect(x: 0, y: 0, width: 540, height: 480),
-                        bindingKey: "media",
+                    input: MediaInput(bindingKey: "media",
                         allowedMedia: ["photo"]
                     ),
                     variants: [

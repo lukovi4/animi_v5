@@ -1105,6 +1105,23 @@ extension AnimIR {
     ///
     /// - Parameter frame: Frame to compute transform at (default: 0)
     /// - Returns: In-comp composed matrix, or nil if no mediaInput
+    /// Returns the axis-aligned bounding box of the mediaInput aperture in **composition space**.
+    ///
+    /// Used by the compiler to compute the canonical `MediaInputGeometryRuntime.placementRectLocal`
+    /// — the single source of truth for media placement geometry.
+    ///
+    /// - Parameter frame: Frame to compute bounds at (default: 0)
+    /// - Returns: Bounding rect in comp space, or nil if no mediaInput
+    public mutating func mediaInputBoundsInCompSpace(frame: Int = 0) -> RectD? {
+        guard let inputGeo = inputGeometry else { return nil }
+        guard let basePath = inputGeo.animPath.staticPath else { return nil }
+        let matrix = mediaInputInCompWorldMatrix(frame: frame) ?? .identity
+        let transformed = basePath.applying(matrix)
+        let aabb = transformed.aabb
+        return RectD(x: aabb.minX, y: aabb.minY,
+                     width: aabb.maxX - aabb.minX, height: aabb.maxY - aabb.minY)
+    }
+
     mutating func mediaInputInCompWorldMatrix(frame: Int = 0) -> Matrix2D? {
         guard let inputGeo = inputGeometry else { return nil }
 

@@ -14,7 +14,7 @@ public final class SceneLibrary {
     // MARK: - State
 
     private var snapshot: SceneLibrarySnapshot?
-    private var isLoading = false
+    private var loadTask: Task<SceneLibrarySnapshot, Error>?
 
     // MARK: - Initialization
 
@@ -23,6 +23,8 @@ public final class SceneLibrary {
     // MARK: - Public API
 
     /// Loads the scene library from bundle if not already loaded.
+    /// Bundle IO runs on a background thread; main actor only caches the result.
+    /// Concurrent callers coalesce into a single load operation.
     /// - Returns: Scene library snapshot
     /// - Throws: `SceneLibraryError` on load failure
     public func load() async throws -> SceneLibrarySnapshot {
@@ -30,29 +32,32 @@ public final class SceneLibrary {
             return snapshot
         }
 
-        guard !isLoading else {
-            // Wait for loading to complete (simple polling)
-            while isLoading {
-                try await Task.sleep(nanoseconds: 10_000_000) // 10ms
-            }
-            if let snapshot = snapshot {
-                return snapshot
-            }
-            throw SceneLibraryError.loadFailed("Loading was interrupted")
+        // Coalesce concurrent callers into one load
+        if let existingTask = loadTask {
+            return try await existingTask.value
         }
 
-        isLoading = true
-        defer { isLoading = false }
+        loadTask = Task<SceneLibrarySnapshot, Error> {
+            let loaded = try await Task.detached(priority: .userInitiated) {
+                try BundleSceneLibraryLoader().load()
+            }.value
+            return loaded
+        }
 
-        let loader = BundleSceneLibraryLoader()
-        let loadedSnapshot = try loader.load()
-        self.snapshot = loadedSnapshot
+        do {
+            let loaded = try await loadTask!.value
+            snapshot = loaded
+            loadTask = nil
 
-        #if DEBUG
-        print("[SceneLibrary] Loaded \(loadedSnapshot.scenesById.count) scenes, fps=\(loadedSnapshot.fps)")
-        #endif
+            #if DEBUG
+            print("[SceneLibrary] Loaded \(loaded.scenesById.count) scenes, fps=\(loaded.fps)")
+            #endif
 
-        return loadedSnapshot
+            return loaded
+        } catch {
+            loadTask = nil
+            throw error
+        }
     }
 
     /// Returns cached snapshot or nil if not loaded.

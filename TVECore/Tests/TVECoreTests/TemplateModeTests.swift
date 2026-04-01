@@ -504,9 +504,7 @@ final class TemplateModeTests: XCTestCase {
                     zIndex: 0,
                     rect: Rect(x: 0, y: 0, width: 540, height: 960),
                     containerClip: .slotRect,
-                    input: MediaInput(
-                        rect: Rect(x: 0, y: 0, width: 540, height: 960),
-                        bindingKey: "media",
+                    input: MediaInput(bindingKey: "media",
                         allowedMedia: ["photo"]
                     ),
                     variants: [

@@ -344,9 +344,7 @@ final class ProjectDraftHydratorTests: XCTestCase {
 
     /// Creates a MediaBlock with the given id and defaultFit.
     private func makeMediaBlock(id: String, defaultFit: FitMode) -> MediaBlock {
-        let input = MediaInput(
-            rect: Rect(x: 0, y: 0, width: 1080, height: 1920),
-            bindingKey: "media",
+        let input = MediaInput(bindingKey: "media",
             allowedMedia: ["photo", "video"],
             defaultFit: defaultFit
         )

@@ -83,8 +83,14 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
             stillRequestTimes.append(videoTimeSeconds)
 
             if shouldBlockStill {
-                return try await withCheckedThrowingContinuation { continuation in
-                    stillContinuation = continuation
+                return try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        self.stillContinuation = continuation
+                    }
+                } onCancel: {
+                    // Resume the leaked continuation so it doesn't stay suspended forever
+                    self.stillContinuation?.resume(throwing: CancellationError())
+                    self.stillContinuation = nil
                 }
             }
 

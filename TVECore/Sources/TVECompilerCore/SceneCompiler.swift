@@ -227,12 +227,29 @@ public final class SceneCompiler {
             variants: variantRuntimes
         )
 
+        // PR-H: Compute canonical media aperture geometry from editVariant AnimIR
+        var editIR = editVariant.animIR
+        guard let apertureBounds = editIR.mediaInputBoundsInCompSpace(frame: SceneRenderPlan.editFrameIndex) else {
+            throw ScenePlayerError.invalidMediaInputGeometry(
+                blockId: mediaBlock.id,
+                reason: "mediaInputBoundsInCompSpace returned nil"
+            )
+        }
+        guard apertureBounds.width > 0, apertureBounds.height > 0,
+              apertureBounds.width.isFinite, apertureBounds.height.isFinite else {
+            throw ScenePlayerError.invalidMediaInputGeometry(
+                blockId: mediaBlock.id,
+                reason: "aperture bounds invalid: \(apertureBounds.width)x\(apertureBounds.height)"
+            )
+        }
+        let mediaInputGeometry = MediaInputGeometryRuntime(placementRectLocal: apertureBounds)
+
         return BlockRuntime(
             blockId: mediaBlock.id,
             zIndex: mediaBlock.zIndex,
             orderIndex: orderIndex,
             rectCanvas: RectD(from: mediaBlock.rect),
-            inputRect: RectD(from: mediaBlock.input.rect),
+            mediaInputGeometry: mediaInputGeometry,
             timing: timing,
             containerClip: mediaBlock.containerClip,
             hitTestMode: mediaBlock.input.hitTest,

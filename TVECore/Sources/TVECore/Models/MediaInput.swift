@@ -2,9 +2,6 @@ import Foundation
 
 /// MediaInput defines the editable input slot within a media block
 public struct MediaInput: Codable, Equatable, Sendable {
-    /// Rectangle defining the input slot position in local block coordinates
-    public let rect: Rect
-
     /// Key used to bind this input to the replaceable placeholder in the animation
     public let bindingKey: String
 
@@ -33,7 +30,6 @@ public struct MediaInput: Codable, Equatable, Sendable {
     public let maskRef: String?
 
     public init(
-        rect: Rect,
         bindingKey: String,
         hitTest: HitTestMode? = nil,
         allowedMedia: [String],
@@ -44,7 +40,6 @@ public struct MediaInput: Codable, Equatable, Sendable {
         audio: AudioConfig? = nil,
         maskRef: String? = nil
     ) {
-        self.rect = rect
         self.bindingKey = bindingKey
         self.hitTest = hitTest
         self.allowedMedia = allowedMedia

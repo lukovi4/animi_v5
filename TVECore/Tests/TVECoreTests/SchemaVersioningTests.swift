@@ -96,42 +96,50 @@ final class SchemaVersioningTests: XCTestCase {
         return try writeTempTve(newData)
     }
 
-    // MARK: - Test 1: Legacy header (16 bytes) loads with implicit schema=1
+    // MARK: - Test 1: Legacy header (16 bytes) now rejected (implicit schema=1 < supported 2...2)
 
-    func testLegacyHeader_loadsWithImplicitSchema1() throws {
-        // Given: Legacy .tve with headerLength=16 (no irSchemaVersion field)
+    func testLegacyHeader_throwsUnsupportedSchema() throws {
+        // Given: Legacy .tve with headerLength=16 (no irSchemaVersion field → implicit schema=1)
         let tempDir = try createModifiedTve(headerLength: 16)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let loader = CompiledScenePackageLoader(engineVersion: TVECore.version)
 
-        // When
-        let package = try loader.load(from: tempDir)
-
-        // Then: Should load successfully (implicit schema=1)
-        XCTAssertNotNil(package.compiled)
+        // When/Then: Should throw unsupportedSchemaVersion (implicit 1 not in 2...2)
+        XCTAssertThrowsError(try loader.load(from: tempDir)) { error in
+            guard case CompiledPackageError.unsupportedSchemaVersion(let found, let supported) = error else {
+                XCTFail("Expected unsupportedSchemaVersion error, got \(error)")
+                return
+            }
+            XCTAssertEqual(found, 1)
+            XCTAssertEqual(supported, 2...2)
+        }
     }
 
-    // MARK: - Test 2: New header (18 bytes) loads with schema=1
+    // MARK: - Test 2: Schema=1 now rejected (below supported 2...2)
 
-    func testNewHeader_loadsWithSchema1() throws {
-        // Given: New .tve with headerLength=18 and irSchemaVersion=1
+    func testSchema1_throwsUnsupportedSchema() throws {
+        // Given: .tve with headerLength=18 and irSchemaVersion=1 (below supported 2...2)
         let tempDir = try createModifiedTve(headerLength: 18, schemaVersion: 1)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let loader = CompiledScenePackageLoader(engineVersion: TVECore.version)
 
-        // When
-        let package = try loader.load(from: tempDir)
-
-        // Then: Should load successfully
-        XCTAssertNotNil(package.compiled)
+        // When/Then: Should throw unsupportedSchemaVersion
+        XCTAssertThrowsError(try loader.load(from: tempDir)) { error in
+            guard case CompiledPackageError.unsupportedSchemaVersion(let found, let supported) = error else {
+                XCTFail("Expected unsupportedSchemaVersion error, got \(error)")
+                return
+            }
+            XCTAssertEqual(found, 1)
+            XCTAssertEqual(supported, 2...2)
+        }
     }
 
     // MARK: - Test 3: Unsupported schema version (too old) throws error
 
     func testUnsupportedSchemaVersion_tooOld_throwsError() throws {
-        // Given: .tve with schema=0 (below supported range 1...1)
+        // Given: .tve with schema=0 (below supported range 2...2)
         let tempDir = try createModifiedTve(headerLength: 18, schemaVersion: 0)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -144,14 +152,14 @@ final class SchemaVersioningTests: XCTestCase {
                 return
             }
             XCTAssertEqual(found, 0)
-            XCTAssertEqual(supported, 1...1)
+            XCTAssertEqual(supported, 2...2)
         }
     }
 
     // MARK: - Test 4: Unsupported schema version (too new) throws error
 
     func testUnsupportedSchemaVersion_tooNew_throwsError() throws {
-        // Given: .tve with schema=999 (above supported range 1...1)
+        // Given: .tve with schema=999 (above supported range 2...2)
         let tempDir = try createModifiedTve(headerLength: 18, schemaVersion: 999)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -164,7 +172,7 @@ final class SchemaVersioningTests: XCTestCase {
                 return
             }
             XCTAssertEqual(found, 999)
-            XCTAssertEqual(supported, 1...1)
+            XCTAssertEqual(supported, 2...2)
         }
     }
 
@@ -173,7 +181,7 @@ final class SchemaVersioningTests: XCTestCase {
     func testEngineHashMismatch_isNotError() throws {
         // Given: .tve with different engineVersionHash (simulates compiled with older engine)
         let differentHash: UInt32 = 0x12345678
-        let tempDir = try createModifiedTve(headerLength: 18, engineHash: differentHash, schemaVersion: 1)
+        let tempDir = try createModifiedTve(headerLength: 18, engineHash: differentHash, schemaVersion: 2)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let loader = CompiledScenePackageLoader(engineVersion: TVECore.version)

@@ -113,7 +113,6 @@ final class HitTestOverlayTests: XCTestCase {
                     rect: blockRect,
                     containerClip: .slotRect,
                     input: MediaInput(
-                        rect: blockRect,
                         bindingKey: "media",
                         hitTest: hitTestMode,
                         allowedMedia: ["photo"]
@@ -167,9 +166,7 @@ final class HitTestOverlayTests: XCTestCase {
                     zIndex: 0,
                     rect: Rect(x: 0, y: 0, width: 1080, height: 960),
                     containerClip: .slotRect,
-                    input: MediaInput(
-                        rect: Rect(x: 0, y: 0, width: 1080, height: 960),
-                        bindingKey: "media",
+                    input: MediaInput(bindingKey: "media",
                         hitTest: hitTestA,
                         allowedMedia: ["photo"]
                     ),
@@ -184,9 +181,7 @@ final class HitTestOverlayTests: XCTestCase {
                     rect: Rect(x: 0, y: 0, width: 1080, height: 1920),
                     containerClip: .slotRect,
                     timing: timingB,
-                    input: MediaInput(
-                        rect: Rect(x: 0, y: 0, width: 1080, height: 1920),
-                        bindingKey: "media",
+                    input: MediaInput(bindingKey: "media",
                         hitTest: hitTestB,
                         allowedMedia: ["photo"]
                     ),
@@ -762,7 +757,7 @@ final class HitTestOverlayTests: XCTestCase {
             zIndex: 0,
             orderIndex: 0,
             rectCanvas: RectD(x: 0, y: 0, width: 100, height: 100),
-            inputRect: RectD(x: 0, y: 0, width: 100, height: 100),
+            mediaInputGeometry: MediaInputGeometryRuntime(placementRectLocal: RectD(x: 0, y: 0, width: 100, height: 100)),
             timing: BlockTiming(startFrame: 0, endFrame: 100),
             containerClip: .slotRect,
             selectedVariantId: "v1",

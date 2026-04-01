@@ -1,4 +1,5 @@
 import Metal
+import Foundation
 
 // MARK: - Layered Texture Provider
 
@@ -23,7 +24,7 @@ import Metal
 /// // Base textures remain unchanged
 /// let baseTexture = layered.texture(for: "preloaded_asset_id")
 /// ```
-public final class LayeredTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
+public final class LayeredTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider, MutableAssetDisplaySizeProvider {
 
     // MARK: - Layers
 
@@ -35,6 +36,9 @@ public final class LayeredTextureProvider: MutableTextureProvider, MutableAssetP
 
     /// Per-instance video presentation metadata.
     private var presentationInfos: [String: VideoPresentationInfo] = [:]
+
+    /// Per-instance display size metadata for user media.
+    private var displaySizes: [String: CGSize] = [:]
 
     // MARK: - Init
 
@@ -78,6 +82,28 @@ public final class LayeredTextureProvider: MutableTextureProvider, MutableAssetP
     /// Model A contract: texture mutations happen only on main during playback/render.
     public func removeTexture(for assetId: String) {
         overlay.removeTexture(for: assetId)
+        displaySizes.removeValue(forKey: assetId)
+    }
+
+    // MARK: - MutableAssetDisplaySizeProvider
+
+    /// Returns display size: own dict first, then overlay, then base.
+    public func displaySize(for assetId: String) -> CGSize? {
+        if let size = displaySizes[assetId] {
+            return size
+        }
+        if let size = (overlay as? AssetDisplaySizeProvider)?.displaySize(for: assetId) {
+            return size
+        }
+        return (base as? AssetDisplaySizeProvider)?.displaySize(for: assetId)
+    }
+
+    public func setDisplaySize(_ size: CGSize, for assetId: String) {
+        displaySizes[assetId] = size
+    }
+
+    public func removeDisplaySize(for assetId: String) {
+        displaySizes.removeValue(forKey: assetId)
     }
 
     // MARK: - MutableAssetPresentationInfoProvider

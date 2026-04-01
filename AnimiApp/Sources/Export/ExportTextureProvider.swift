@@ -30,7 +30,7 @@ import TVECore
 /// // On scene eviction:
 /// exportProvider.clearAll()
 /// ```
-public final class ExportTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
+public final class ExportTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider, MutableAssetDisplaySizeProvider {
     // MARK: - Properties
 
     private let device: MTLDevice
@@ -44,6 +44,7 @@ public final class ExportTextureProvider: MutableTextureProvider, MutableAssetPr
     private var cache: [String: MTLTexture] = [:]
     private var missingAssets: Set<String> = []
     private var presentationInfos: [String: VideoPresentationInfo] = [:]
+    private var displaySizes: [String: CGSize] = [:]
 
     // MARK: - Initialization
 
@@ -99,6 +100,7 @@ public final class ExportTextureProvider: MutableTextureProvider, MutableAssetPr
         defer { lock.unlock() }
 
         cache.removeValue(forKey: assetId)
+        displaySizes.removeValue(forKey: assetId)
     }
 
     // MARK: - Targeted Loading
@@ -170,6 +172,7 @@ public final class ExportTextureProvider: MutableTextureProvider, MutableAssetPr
             cache.removeValue(forKey: assetId)
             missingAssets.remove(assetId)
             presentationInfos.removeValue(forKey: assetId)
+            displaySizes.removeValue(forKey: assetId)
         }
     }
 
@@ -181,6 +184,27 @@ public final class ExportTextureProvider: MutableTextureProvider, MutableAssetPr
         cache.removeAll()
         missingAssets.removeAll()
         presentationInfos.removeAll()
+        displaySizes.removeAll()
+    }
+
+    // MARK: - MutableAssetDisplaySizeProvider
+
+    public func displaySize(for assetId: String) -> CGSize? {
+        lock.lock()
+        defer { lock.unlock() }
+        return displaySizes[assetId]
+    }
+
+    public func setDisplaySize(_ size: CGSize, for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        displaySizes[assetId] = size
+    }
+
+    public func removeDisplaySize(for assetId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        displaySizes.removeValue(forKey: assetId)
     }
 
     // MARK: - MutableAssetPresentationInfoProvider

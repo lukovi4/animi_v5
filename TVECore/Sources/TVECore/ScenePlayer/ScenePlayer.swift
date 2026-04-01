@@ -336,31 +336,41 @@ public final class ScenePlayer {
     ///
     /// - Parameter blockId: Identifier of the media block
     /// - Returns: MediaInput configuration, or `nil` if block not found
-    public func mediaInput(blockId: String) -> MediaInput? {
+    public func mediaInputConfig(blockId: String) -> MediaInput? {
         compiledScene?.runtime.scene.mediaBlocks.first { $0.id == blockId }?.input
+    }
+
+    /// Returns the canonical media aperture geometry for a block (PR-H).
+    ///
+    /// Single source of truth for placement geometry — computed from AnimIR during compilation.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: MediaInputGeometryRuntime, or `nil` if block not found
+    public func mediaInputGeometry(blockId: String) -> MediaInputGeometryRuntime? {
+        compiledScene?.runtime.blocks.first { $0.blockId == blockId }?.mediaInputGeometry
     }
 
     /// Returns the allowed media types for a block.
     ///
-    /// Convenience wrapper around `mediaInput(blockId:)?.allowedMedia`.
+    /// Convenience wrapper around `mediaInputConfig(blockId:)?.allowedMedia`.
     /// UI uses this to enable/disable Add Photo/Add Video buttons.
     ///
     /// - Parameter blockId: Identifier of the media block
     /// - Returns: Array of allowed media types (e.g., ["photo", "video"]), or `nil` if block not found
     public func allowedMedia(blockId: String) -> [String]? {
-        mediaInput(blockId: blockId)?.allowedMedia
+        mediaInputConfig(blockId: blockId)?.allowedMedia
     }
 
     /// Returns the user transform permissions for a block.
     ///
-    /// Convenience wrapper around `mediaInput(blockId:)?.userTransformsAllowed`.
+    /// Convenience wrapper around `mediaInputConfig(blockId:)?.userTransformsAllowed`.
     /// UI uses this to enable/disable pan/zoom/rotate gestures.
     /// `nil` means all transforms are allowed (backward compatible).
     ///
     /// - Parameter blockId: Identifier of the media block
     /// - Returns: UserTransformsAllowed with pan/zoom/rotate flags, or `nil` (= all allowed)
     public func userTransformsAllowed(blockId: String) -> UserTransformsAllowed? {
-        mediaInput(blockId: blockId)?.userTransformsAllowed
+        mediaInputConfig(blockId: blockId)?.userTransformsAllowed
     }
 
     // MARK: - Layer Toggles (PR-30)

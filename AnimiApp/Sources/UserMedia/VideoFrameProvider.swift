@@ -276,7 +276,7 @@ public final class VideoFrameProvider {
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
 
-        let (cgImage, _) = try await generator.image(at: targetTime)
+        let (cgImage, _) = try await Self.cancellableImage(generator: generator, at: targetTime)
         guard token == generation else { throw CancellationError() }
         try Task.checkCancellation()
 
@@ -320,7 +320,7 @@ public final class VideoFrameProvider {
         }
 
         let generator = ensureInteractiveStillGenerator()
-        let (cgImage, _) = try await generator.image(at: targetTime)
+        let (cgImage, _) = try await Self.cancellableImage(generator: generator, at: targetTime)
         guard token == generation else { throw CancellationError() }
         try Task.checkCancellation()
 
@@ -339,6 +339,26 @@ public final class VideoFrameProvider {
         interactiveStillGenerator = nil
         lastInteractiveStillTexture = nil
         lastInteractiveStillVideoTime = .invalid
+    }
+
+    // MARK: - Cancellation-Safe Image Generation
+
+    /// Wraps AVAssetImageGenerator.image(at:) with task cancellation support.
+    /// On cancellation, calls cancelAllCGImageGeneration() so the generator
+    /// doesn't hold a leaked continuation.
+    private static func cancellableImage(
+        generator: AVAssetImageGenerator,
+        at time: CMTime
+    ) async throws -> (CGImage, CMTime) {
+        // Check cancellation before entering the generator call —
+        // AVAssetImageGenerator.image(at:) can leak its internal continuation
+        // if cancelAllCGImageGeneration() fires before generation starts.
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await generator.image(at: time)
+        } onCancel: {
+            generator.cancelAllCGImageGeneration()
+        }
     }
 
     // MARK: - Poster Generation (PR1)

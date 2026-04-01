@@ -59,8 +59,6 @@ final class AnimValidatorTests: XCTestCase {
 
     private func sceneJSON(
         fps: Int = 30,
-        inputWidth: Double = 540,
-        inputHeight: Double = 960,
         bindingKey: String = "media",
         animRef: String = "anim-1.json"
     ) -> String {
@@ -74,7 +72,6 @@ final class AnimValidatorTests: XCTestCase {
             "rect": { "x": 0, "y": 0, "width": 540, "height": 960 },
             "containerClip": "slotRect",
             "input": {
-              "rect": { "x": 0, "y": 0, "width": \(inputWidth), "height": \(inputHeight) },
               "bindingKey": "\(bindingKey)",
               "allowedMedia": ["photo"]
             },
@@ -192,25 +189,12 @@ final class AnimValidatorTests: XCTestCase {
     // MARK: - Happy Path Tests
 
     func testValidate_validAnim_noErrors() throws {
-        let scene = sceneJSON(inputWidth: 1080, inputHeight: 1920)
+        let scene = sceneJSON()
         let anim = animJSON()
         let report = try validatePackage(sceneJSON: scene, animJSON: anim)
 
         XCTAssertFalse(report.hasErrors)
         XCTAssertEqual(report.errors.count, 0)
-    }
-
-    func testValidate_sizeMismatch_returnsWarning() throws {
-        let scene = sceneJSON(inputWidth: 540, inputHeight: 960)
-        let anim = animJSON(width: 1080, height: 1920)
-        let report = try validatePackage(sceneJSON: scene, animJSON: anim)
-
-        let warning = report.warnings.first {
-            $0.code == AnimValidationCode.warningAnimSizeMismatch
-        }
-        XCTAssertNotNil(warning)
-        XCTAssertTrue(warning?.message.contains("1080x1920") ?? false)
-        XCTAssertTrue(warning?.message.contains("540x960") ?? false)
     }
 
     // MARK: - FPS Mismatch Tests

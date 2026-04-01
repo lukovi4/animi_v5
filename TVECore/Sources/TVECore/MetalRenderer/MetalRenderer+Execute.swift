@@ -1892,12 +1892,19 @@ extension MetalRenderer {
         let videoInfo = (ctx.textureProvider as? AssetPresentationInfoProvider)?
             .presentationInfo(for: assetId)
 
-        // Size priority: orientedSize → assetSizes → texture.size
+        // PR-F: Check for user media display size metadata
+        let userDisplaySize = (ctx.textureProvider as? AssetDisplaySizeProvider)?
+            .displaySize(for: assetId)
+
+        // Size priority: orientedSize → displaySize → assetSizes → texture.size
         let quadWidth: Float
         let quadHeight: Float
         if let videoInfo {
             quadWidth = Float(videoInfo.orientedSize.width)
             quadHeight = Float(videoInfo.orientedSize.height)
+        } else if let userDisplaySize {
+            quadWidth = Float(userDisplaySize.width)
+            quadHeight = Float(userDisplaySize.height)
         } else if let assetSize = ctx.assetSizes[assetId] {
             quadWidth = Float(assetSize.width)
             quadHeight = Float(assetSize.height)

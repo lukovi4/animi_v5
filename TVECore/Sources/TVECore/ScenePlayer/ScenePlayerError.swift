@@ -33,6 +33,9 @@ public enum ScenePlayerError: Error, Sendable, Equatable {
     /// (e.g. binding is reachable by layer visibility but its precomp container is invisible)
     case noAnimBindingNotRenderedAtEditFrame(blockId: String, animRef: String, editFrameIndex: Int)
 
+    /// Media input aperture geometry is invalid (nil, zero-size, or non-finite) (PR-H)
+    case invalidMediaInputGeometry(blockId: String, reason: String)
+
     /// Template is corrupted — fatal structural error in toggle configuration (PR-30).
     /// Reason codes:
     /// - `TOGGLE_SCENE_MISSING_ID`: sceneId required when toggles are present
@@ -68,6 +71,8 @@ extension ScenePlayerError: LocalizedError {
             return "Binding layer in no-anim variant '\(animRef)' for block '\(blockId)' is not visible at edit frame \(editFrameIndex)"
         case .noAnimBindingNotRenderedAtEditFrame(let blockId, let animRef, let editFrameIndex):
             return "Binding layer in no-anim variant '\(animRef)' for block '\(blockId)' is not rendered at edit frame \(editFrameIndex) (unreachable via precomp chain)"
+        case .invalidMediaInputGeometry(let blockId, let reason):
+            return "Invalid media input geometry for block '\(blockId)': \(reason)"
         case .templateCorrupted(let reason):
             return "Template corrupted: \(reason)"
         }

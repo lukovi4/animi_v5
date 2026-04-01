@@ -17,13 +17,13 @@ public enum MediaPlacementResolver {
 
     /// Input geometry for resolution.
     public struct SlotGeometry: Equatable, Sendable {
-        /// Slot rectangle in local block coordinates (from `mediaInput.rect`).
-        public let slotRect: Rect
+        /// Slot rectangle in local block coordinates, from compiled media aperture geometry.
+        public let slotRect: RectD
         /// Presentation-correct media size (after EXIF for photos, from `presentationInfo` for videos).
         public let mediaWidth: Double
         public let mediaHeight: Double
 
-        public init(slotRect: Rect, mediaWidth: Double, mediaHeight: Double) {
+        public init(slotRect: RectD, mediaWidth: Double, mediaHeight: Double) {
             self.slotRect = slotRect
             self.mediaWidth = mediaWidth
             self.mediaHeight = mediaHeight

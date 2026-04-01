@@ -1,4 +1,5 @@
 import Foundation
+import TVECore
 
 // MARK: - Scene Library Errors
 
@@ -28,16 +29,26 @@ public enum SceneLibraryError: Error, LocalizedError {
 // MARK: - Bundle Scene Library Loader
 
 /// Loads scene library from app bundle.
+/// Validates each scene package is loadable before publishing.
 public final class BundleSceneLibraryLoader {
 
     private let bundle: Bundle
+    private let loadabilityProbe: (URL) throws -> Void
 
-    public init(bundle: Bundle = .main) {
+    /// - Parameters:
+    ///   - bundle: Bundle to load from (default: .main)
+    ///   - loadabilityProbe: Validates that a scene folder contains a loadable compiled.tve.
+    ///     Default uses `CompiledScenePackageLoader`. Inject a custom closure for testing.
+    public init(
+        bundle: Bundle = .main,
+        loadabilityProbe: @escaping (URL) throws -> Void = BundleSceneLibraryLoader.defaultProbe
+    ) {
         self.bundle = bundle
+        self.loadabilityProbe = loadabilityProbe
     }
 
-    /// Loads library.json and resolves all folder URLs by convention: Scenes/<id>.
-    /// - Returns: Scene library snapshot with resolved URLs
+    /// Loads library.json, resolves folder URLs, and validates each scene package is loadable.
+    /// - Returns: Scene library snapshot with only loadable scenes
     /// - Throws: `SceneLibraryError` on failure
     public func load() throws -> SceneLibrarySnapshot {
         // Find library.json in Scenes/
@@ -66,34 +77,44 @@ public final class BundleSceneLibraryLoader {
             throw SceneLibraryError.decodingFailed(error)
         }
 
-        // Resolve folder URLs by convention: Scenes/<scene.id>
+        // Resolve folder URLs and validate loadability
         var resolvedScenes: [SceneTypeDescriptor] = []
 
         for scene in manifest.scenes {
             var resolved = scene
 
-            if let folderURL = bundle.url(
+            guard let folderURL = bundle.url(
                 forResource: scene.id,
                 withExtension: nil,
                 subdirectory: "Scenes"
-            ) {
-                resolved.folderURL = folderURL
-                resolvedScenes.append(resolved)
-
-                #if DEBUG
-                print("[SceneLibrary] Resolved scene '\(scene.id)' -> \(folderURL.path)")
-                #endif
-            } else {
+            ) else {
                 #if DEBUG
                 print("[SceneLibrary] WARNING: Scene '\(scene.id)' folder not found at Scenes/\(scene.id)")
                 #endif
-                // Skip scenes with missing folders
+                continue
             }
+
+            // Validate compiled.tve is loadable
+            do {
+                try loadabilityProbe(folderURL)
+            } catch {
+                #if DEBUG
+                print("[SceneLibrary] WARNING: Scene '\(scene.id)' failed loadability probe: \(error)")
+                #endif
+                continue
+            }
+
+            resolved.folderURL = folderURL
+            resolvedScenes.append(resolved)
+
+            #if DEBUG
+            print("[SceneLibrary] Resolved scene '\(scene.id)' -> \(folderURL.path)")
+            #endif
         }
 
-        // Validate at least one scene exists
+        // Validate at least one loadable scene exists
         guard !resolvedScenes.isEmpty else {
-            throw SceneLibraryError.contentCorrupted("No valid scenes found in library")
+            throw SceneLibraryError.contentCorrupted("No loadable scenes found in library")
         }
 
         return SceneLibrarySnapshot(
@@ -101,5 +122,16 @@ public final class BundleSceneLibraryLoader {
             canvas: manifest.canvas,
             scenes: resolvedScenes
         )
+    }
+}
+
+// MARK: - Default Loadability Probe
+
+extension BundleSceneLibraryLoader {
+    /// Default probe: loads compiled.tve via CompiledScenePackageLoader to validate
+    /// magic bytes, format version, IR schema version, and payload decode.
+    public static let defaultProbe: (URL) throws -> Void = { folderURL in
+        let loader = CompiledScenePackageLoader(engineVersion: TVECore.version)
+        _ = try loader.load(from: folderURL)
     }
 }

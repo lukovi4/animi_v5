@@ -501,7 +501,17 @@ final class PlayerViewController: UIViewController {
                 // Template not found in catalog (deleted/old templateId)
                 if draft.canonicalTimeline.sceneItems.isEmpty {
                     log("[Release v1] ERROR: Template not in catalog and draft has no timeline: \(error)")
-                    loadingState = .failed(message: "Template not found")
+                    let message: String
+                    if let catalogError = error as? TemplateCatalogError {
+                        switch catalogError {
+                        case .templateNotFound: message = "Template not found"
+                        case .emptySceneList: message = "Template has no scenes"
+                        case .sceneNotInLibrary: message = "Template is unavailable"
+                        }
+                    } else {
+                        message = "Template not found"
+                    }
+                    loadingState = .failed(message: message)
                     updateLoadingStateUI()
                     return
                 }
@@ -1991,7 +2001,7 @@ final class PlayerViewController: UIViewController {
         // For other scenes, engine hydrates via updateSceneState with correct per-sceneType resources.
         var hydratedSlot = slot
         if isActiveScene, var s = hydratedSlot, s.asset.placement == nil, let player = scenePlayer {
-            let fitMode = player.mediaInput(blockId: blockId)?.defaultFit ?? .cover
+            let fitMode = player.mediaInputConfig(blockId: blockId)?.defaultFit ?? .cover
             s.asset.placement = .default(fitMode: fitMode)
             hydratedSlot = s
             editorStore?.writeHydratedSlotPlacement(fitMode, for: instanceId, blockId: blockId)
@@ -3410,24 +3420,12 @@ final class PlayerViewController: UIViewController {
             slot: result.slot
         ))
 
-        // Runtime apply ONLY if this is the currently active scene
-        if activeSceneInstanceId == result.sceneInstanceId {
-            switch result.slot.mediaRef.mediaKind {
-            case .photo:
-                userMediaService?.setPhoto(blockId: result.blockId, fileURL: result.persistedURL, presentOnReady: result.slot.visibility, mediaRefId: result.slot.mediaRef.id)
-            case .video:
-                userMediaService?.setVideo(
-                    blockId: result.blockId,
-                    url: result.persistedURL,
-                    presentOnReady: result.slot.visibility,
-                    persistedSelection: result.slot.videoWindow!
-                )
-            }
-            metalView.setNeedsDisplay()
-        }
+        // PR-F: Runtime apply is handled canonically via dispatch(.setMediaSlot) → onMediaSlotChanged
+        // → handleMediaSlotChanged → SceneRuntimeStateApplier.applySlotChange → MediaRestoreCoordinator.restore.
+        // No manual setPhoto/setVideo call needed here — it was a duplicate path causing a race.
 
-        log("[UserMedia] Ingest complete for block '\(result.blockId)'@\(result.sceneInstanceId): \(result.slot.mediaRef.id)" +
-            (activeSceneInstanceId == result.sceneInstanceId ? " (applied to runtime)" : " (persisted only, different active scene)"))
+        log("[UserMedia] Ingest complete for block '\(result.blockId)'@\(result.sceneInstanceId): \(result.slot.mediaRef.id)")
+
     }
 
     private func presentPhotoPicker(for filter: PHPickerFilter) {
@@ -3579,151 +3577,10 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    /// Loads a pre-compiled template from the app bundle.
-    /// PR-D: Async pipeline — file IO and texture preload on background, UI never blocks.
-    private func loadCompiledTemplateFromBundle(templateName: String) {
-        stopPlayback()
-        renderErrorLogged = false
-        currentTemplateId = templateName  // PR3: Store for ProjectStore
-        log("---\nLoading compiled template '\(templateName)'...")
-
-        guard let device = metalView.device else {
-            log("ERROR: No Metal device")
-            loadingState = .failed(message: "No Metal device")
-            updateLoadingStateUI()
-            return
-        }
-
-        // Find template folder in bundle
-        guard let templateURL = Bundle.main.url(forResource: templateName, withExtension: nil, subdirectory: "Templates") else {
-            log("ERROR: Template '\(templateName)' not found in bundle")
-            loadingState = .failed(message: "Template not found")
-            updateLoadingStateUI()
-            return
-        }
-
-        // PR-D: Cancel previous loading task if any
-        preparingTask?.cancel()
-
-        // PR-D: Generate new request ID for cancellation check
-        let requestId = UUID()
-        currentRequestId = requestId
-        loadingState = .preparing(requestId: requestId)
-        updateLoadingStateUI()
-
-        // PR-D: Async loading pipeline
-        preparingTask = Task { [weak self] in
-            guard let self = self else { return }
-
-            // === PHASE 1: Background ===
-            // File IO + JSON decode + asset index creation
-            // PR-D.1: Use child Task (not detached) so cancellation propagates
-            do {
-                let result: BackgroundLoadResult = try await Task(priority: .userInitiated) {
-                    // Check cancellation before starting
-                    try Task.checkCancellation()
-
-                    // Load .tve file (IO)
-                    let compiledLoader = CompiledScenePackageLoader(engineVersion: TVECore.version)
-                    let compiledPackage = try compiledLoader.load(from: templateURL)
-
-                    // Check cancellation after file load
-                    try Task.checkCancellation()
-
-                    // Create asset indices (may scan directories)
-                    let localIndex = try LocalAssetsIndex(imagesRootURL: templateURL.appendingPathComponent("images"))
-                    let sharedIndex = try SharedAssetsIndex(bundle: Bundle.main, rootFolderName: "SharedAssets")
-                    let resolver = CompositeAssetResolver(localIndex: localIndex, sharedIndex: sharedIndex)
-
-                    return BackgroundLoadResult(
-                        compiledPackage: compiledPackage,
-                        resolver: resolver
-                    )
-                }.value
-
-                // Check if this request is still current
-                guard !Task.isCancelled, self.currentRequestId == requestId else {
-                    await MainActor.run { self.log("Load cancelled (new template selected)") }
-                    return
-                }
-
-                // === PHASE 2: Main Actor — ScenePlayer setup ===
-                await MainActor.run {
-                    self.log("Compiled package loaded: \(result.compiledPackage.sceneId ?? "unknown")")
-                    self.preparingOverlay.setStatus("Preparing scene...")
-                }
-
-                let sceneSetupResult: SceneSetupResult = await MainActor.run {
-                    let player = ScenePlayer()
-                    let compiled = player.loadCompiledScene(result.compiledPackage.compiled)
-                    return SceneSetupResult(player: player, compiled: compiled)
-                }
-
-                // Check cancellation
-                guard !Task.isCancelled, self.currentRequestId == requestId else { return }
-
-                // === PHASE 3: Background — Texture preload ===
-                await MainActor.run {
-                    self.preparingOverlay.setStatus("Loading textures...")
-                }
-
-                // Capture commandQueue on main before background preload
-                let (provider, queue): (ScenePackageTextureProvider, MTLCommandQueue?) = await MainActor.run {
-                    let p = SceneTextureProviderFactory.create(
-                        device: device,
-                        mergedAssetIndex: sceneSetupResult.compiled.mergedAssetIndex,
-                        resolver: result.resolver,
-                        bindingAssetIds: sceneSetupResult.compiled.bindingAssetIds,
-                        logger: { [weak self] msg in
-                            Task { @MainActor in self?.log(msg) }
-                        }
-                    )
-                    return (p, self.commandQueue)
-                }
-
-                // Preload on background (PR-D: safe because draw not running)
-                // PR-D.1: Use child Task so cancellation propagates
-                // Alpha Fix: Use commandQueue for premultiplied alpha texture loading
-                try await Task(priority: .userInitiated) {
-                    try Task.checkCancellation()
-                    if let q = queue {
-                        provider.preloadAll(commandQueue: q)
-                    }
-                }.value
-
-                // Check cancellation after preload
-                guard !Task.isCancelled, self.currentRequestId == requestId else { return }
-
-                // === PHASE 4: Main Actor — Finalize and go ready ===
-                await MainActor.run {
-                    self.applyLoadedTemplate(
-                        player: sceneSetupResult.player,
-                        compiled: sceneSetupResult.compiled,
-                        provider: provider,
-                        resolver: result.resolver,
-                        requestId: requestId
-                    )
-                }
-
-            } catch is CancellationError {
-                await MainActor.run { self.log("Load cancelled") }
-            } catch {
-                // Check if still current request before showing error
-                guard self.currentRequestId == requestId else { return }
-                await MainActor.run {
-                    self.log("ERROR: Failed to load compiled template: \(error)")
-                    self.loadingState = .failed(message: "Failed to load template")
-                    self.updateLoadingStateUI()
-                }
-            }
-        }
-    }
-
     // MARK: - Release v1: Scene Type Loading
 
     /// Loads a scene type from the SceneLibrary.
-    /// Release v1: Replaces loadCompiledTemplateFromBundle for editor mode.
-    /// Uses sceneLibrarySnapshot.folderURL instead of Templates/<name>.
+    /// Uses sceneLibrarySnapshot.folderURL for scene resolution.
     private func loadSceneTypeFromBundle(sceneTypeId: String) {
         stopPlayback()
         renderErrorLogged = false
@@ -3931,87 +3788,6 @@ final class PlayerViewController: UIViewController {
         updateLoadingStateUI()
 
         // Trigger first frame render
-        metalView.setNeedsDisplay()
-    }
-
-    /// PR-D: Applies loaded template to UI (must be called on main).
-    private func applyLoadedTemplate(
-        player: ScenePlayer,
-        compiled: CompiledScene,
-        provider: ScenePackageTextureProvider,
-        resolver: CompositeAssetResolver,
-        requestId: UUID
-    ) {
-        // Final cancellation check
-        guard currentRequestId == requestId else {
-            log("Load result discarded (new template selected)")
-            return
-        }
-
-        // Log preload stats
-        if let stats = provider.lastPreloadStats {
-            log(String(format: "[Preload] loaded: %d, missing: %d, skipped: %d, duration: %.1fms",
-                       stats.loadedCount, stats.missingCount, stats.skippedBindingCount, stats.durationMs))
-        }
-
-        // PR-E: Apply to state
-        compiledScene = compiled
-        scenePlayer = player
-        textureProvider = provider
-        currentResolver = resolver
-
-        // Store canvas size
-        canvasSize = compiled.runtime.canvasSize
-
-        // Store merged asset sizes
-        mergedAssetSizes = compiled.mergedAssetIndex.sizeById
-
-        // Create UserMediaService
-        if let tp = textureProvider, let queue = commandQueue {
-            userMediaService = UserMediaService(
-                device: metalView.device!,
-                commandQueue: queue,
-                scenePlayer: player,
-                textureProvider: tp
-            )
-            userMediaService?.setSceneFPS(Double(compiled.runtime.fps))
-            userMediaService?.onNeedsDisplay = { [weak self] in
-                self?.metalView.setNeedsDisplay()
-                // PR-F: Sync video frame when provider becomes ready after undo/redo
-                self?.syncPausedVideoStill(force: true)
-            }
-            // PR2: Render-only callback for async still frame delivery (no re-sync)
-            userMediaService?.onStillFrameDelivered = { [weak self] in
-                self?.metalView.setNeedsDisplay()
-            }
-            // PR4: Re-resolve placement after async media load
-            userMediaService?.onMediaReady = { [weak self] blockId in
-                self?.handleMediaReadyForPlacement(blockId: blockId)
-            }
-            log("UserMediaService initialized")
-        }
-
-        // PR3: Setup background state
-        setupBackgroundState(compiled: compiled)
-
-        // Log results
-        let runtime = compiled.runtime
-        let canvasSizeStr = "\(Int(canvasSize.width))x\(Int(canvasSize.height))"
-        log("Template loaded: \(canvasSizeStr) @ \(runtime.fps)fps, \(runtime.durationFrames) frames, \(runtime.blocks.count) blocks")
-
-        // Setup playback controls
-        totalFrames = runtime.durationFrames
-        sceneFPS = Double(runtime.fps)
-        currentFrameIndex = 0
-
-        // Enter ready state
-        loadingState = .ready
-        updateLoadingStateUI()
-
-        // PR-E: Configure timeline for editor mode
-        configureEditorTimeline()
-
-        log("Ready for playback!")
         metalView.setNeedsDisplay()
     }
 

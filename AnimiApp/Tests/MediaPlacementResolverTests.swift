@@ -8,13 +8,13 @@ final class MediaPlacementResolverTests: XCTestCase {
     // MARK: - Helpers
 
     /// Landscape slot: 540×960 at origin
-    private let landscapeSlot = Rect(x: 0, y: 0, width: 540, height: 960)
+    private let landscapeSlot = RectD(x: 0, y: 0, width: 540, height: 960)
     /// Portrait slot: 960×540 at origin
-    private let portraitSlot = Rect(x: 0, y: 0, width: 960, height: 540)
+    private let portraitSlot = RectD(x: 0, y: 0, width: 960, height: 540)
     /// Offset slot (non-zero origin)
-    private let offsetSlot = Rect(x: 100, y: 50, width: 400, height: 300)
+    private let offsetSlot = RectD(x: 100, y: 50, width: 400, height: 300)
 
-    private func geom(slot: Rect, mediaW: Double, mediaH: Double) -> MediaPlacementResolver.SlotGeometry {
+    private func geom(slot: RectD, mediaW: Double, mediaH: Double) -> MediaPlacementResolver.SlotGeometry {
         MediaPlacementResolver.SlotGeometry(slotRect: slot, mediaWidth: mediaW, mediaHeight: mediaH)
     }
 
@@ -222,7 +222,7 @@ final class MediaPlacementResolverTests: XCTestCase {
     }
 
     func test_zeroSlotSize_returnsIdentity() {
-        let g = geom(slot: Rect(x: 0, y: 0, width: 0, height: 0), mediaW: 100, mediaH: 100)
+        let g = geom(slot: RectD(x: 0, y: 0, width: 0, height: 0), mediaW: 100, mediaH: 100)
         let m = MediaPlacementResolver.baseFitTransform(fitMode: .cover, geometry: g)
         XCTAssertTrue(m.isApproximatelyEqual(to: .identity, epsilon: 1e-10))
     }

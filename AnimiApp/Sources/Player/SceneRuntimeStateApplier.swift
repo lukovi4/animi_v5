@@ -7,7 +7,8 @@ import TVECore
 /// Production: ScenePlayer. Tests: spy via @testable import.
 @MainActor
 protocol ScenePlayerApplying: AnyObject {
-    func mediaInput(blockId: String) -> MediaInput?
+    func mediaInputConfig(blockId: String) -> MediaInput?
+    func mediaInputGeometry(blockId: String) -> MediaInputGeometryRuntime?
     func applyVariantSelection(_ mapping: [String: String])
     func setUserTransform(blockId: String, transform: Matrix2D)
     func setUserMediaPresent(blockId: String, present: Bool)
@@ -28,7 +29,7 @@ public struct ScenePlayerMediaInputProvider: MediaInputProvider {
     }
 
     public func defaultFit(forBlockId blockId: String) -> FitMode? {
-        scenePlayer.mediaInput(blockId: blockId)?.defaultFit
+        scenePlayer.mediaInputConfig(blockId: blockId)?.defaultFit
     }
 }
 
@@ -291,11 +292,11 @@ public enum SceneRuntimeStateApplier {
         player: any ScenePlayerApplying,
         userMediaService: UserMediaService? = nil
     ) -> Matrix2D {
-        guard let mediaInput = player.mediaInput(blockId: blockId) else {
+        guard let geo = player.mediaInputGeometry(blockId: blockId) else {
             return .identity
         }
 
-        let slotRect = mediaInput.rect
+        let slotRect = geo.placementRectLocal
 
         // Use actual presentation-correct media size if available (loaded texture/video),
         // otherwise fall back to slot dimensions (will be corrected on next apply after load).

@@ -16,13 +16,13 @@ final class TemplateCatalog {
     private var snapshot: TemplateCatalogSnapshot?
     private var loadTask: Task<Result<TemplateCatalogSnapshot, Error>, Never>?
 
-    private let loader = BundleTemplateCatalogLoader()
-
     private init() {}
 
     // MARK: - Loading
 
     /// Loads catalog from bundle. Safe to call multiple times.
+    /// Uses SceneLibrary.shared as the authoritative source for hardened scene data.
+    /// Concurrent callers coalesce into a single load operation.
     func load() async -> Result<TemplateCatalogSnapshot, Error> {
         // Return cached if available
         if let snapshot = snapshot {
@@ -34,13 +34,17 @@ final class TemplateCatalog {
             return await existingTask.value
         }
 
-        // Create new load task
-        let loader = self.loader
+        // Assign loadTask immediately before any suspension point
+        // so concurrent callers coalesce into this single task.
         loadTask = Task<Result<TemplateCatalogSnapshot, Error>, Never> {
             do {
-                // Run IO on background thread
+                // Get hardened library on @MainActor (no duplicate probe)
+                let library = try await SceneLibrary.shared.load()
+
+                // Load raw catalog manifest on background, prune against hardened library
                 let loaded = try await Task.detached(priority: .userInitiated) {
-                    try loader.loadManifest()
+                    let rawCatalog = try BundleTemplateCatalogLoader().loadManifest()
+                    return rawCatalog.pruned(against: library)
                 }.value
                 return .success(loaded)
             } catch {

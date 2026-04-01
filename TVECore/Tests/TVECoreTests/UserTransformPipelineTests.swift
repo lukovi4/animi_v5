@@ -122,9 +122,7 @@ final class UserTransformPipelineTests: XCTestCase {
                     zIndex: 0,
                     rect: Rect(x: 0, y: 0, width: 1080, height: 1920),
                     containerClip: .slotRect,
-                    input: MediaInput(
-                        rect: Rect(x: 0, y: 0, width: 1080, height: 1920),
-                        bindingKey: "media",
+                    input: MediaInput(bindingKey: "media",
                         allowedMedia: ["photo"]
                     ),
                     variants: [
@@ -172,9 +170,7 @@ final class UserTransformPipelineTests: XCTestCase {
                     zIndex: 0,
                     rect: Rect(x: 0, y: 0, width: 1080, height: 960),
                     containerClip: .slotRect,
-                    input: MediaInput(
-                        rect: Rect(x: 0, y: 0, width: 1080, height: 960),
-                        bindingKey: "media",
+                    input: MediaInput(bindingKey: "media",
                         allowedMedia: ["photo"]
                     ),
                     variants: [
@@ -187,9 +183,7 @@ final class UserTransformPipelineTests: XCTestCase {
                     zIndex: 1,
                     rect: Rect(x: 0, y: 960, width: 1080, height: 960),
                     containerClip: .slotRect,
-                    input: MediaInput(
-                        rect: Rect(x: 0, y: 960, width: 1080, height: 960),
-                        bindingKey: "media",
+                    input: MediaInput(bindingKey: "media",
                         allowedMedia: ["photo"]
                     ),
                     variants: [

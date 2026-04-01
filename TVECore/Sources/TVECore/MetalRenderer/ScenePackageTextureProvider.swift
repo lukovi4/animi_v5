@@ -1,6 +1,6 @@
+import Foundation
 import Metal
 import MetalKit
-import Foundation
 
 // MARK: - Logger Type
 
@@ -149,7 +149,7 @@ final class TexturePreloadCore {
 /// Does NOT conform to `MutableTextureProvider` — no `setTexture`/`removeTexture`.
 /// Used by `SceneTypeResourcesCache` for the shared base layer in timeline runtime.
 /// Per-instance user media is handled by a separate overlay provider via `LayeredTextureProvider`.
-public final class ScenePackageBaseTextureProvider: TextureProvider {
+public final class ScenePackageBaseTextureProvider: TextureProvider, AssetDisplaySizeProvider {
 
     private let core: TexturePreloadCore
 
@@ -221,6 +221,12 @@ public final class ScenePackageBaseTextureProvider: TextureProvider {
     public func clearCache() {
         core.clearCache()
     }
+
+    // MARK: - AssetDisplaySizeProvider (read-only, always nil for base)
+
+    public func displaySize(for assetId: String) -> CGSize? {
+        nil
+    }
 }
 
 // MARK: - Scene Package Texture Provider (Mutable, Scene-Edit Path)
@@ -232,7 +238,7 @@ public final class ScenePackageBaseTextureProvider: TextureProvider {
 /// `removeTexture(for:)` removes only the overlay override, revealing base texture if present.
 ///
 /// Conforms to `MutableTextureProvider` (PR-32) for user media injection.
-public final class ScenePackageTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider {
+public final class ScenePackageTextureProvider: MutableTextureProvider, MutableAssetPresentationInfoProvider, MutableAssetDisplaySizeProvider {
 
     private let core: TexturePreloadCore
 
@@ -241,6 +247,9 @@ public final class ScenePackageTextureProvider: MutableTextureProvider, MutableA
 
     /// Per-instance video presentation metadata (analogous to overlayCache).
     private var presentationInfos: [String: VideoPresentationInfo] = [:]
+
+    /// Per-instance display size metadata for user media.
+    private var displaySizes: [String: CGSize] = [:]
 
     /// PR-B: Last preload statistics (available after preloadAll(commandQueue:) call).
     public var lastPreloadStats: PreloadStats? {
@@ -327,6 +336,7 @@ public final class ScenePackageTextureProvider: MutableTextureProvider, MutableA
     public func removeTexture(for assetId: String) {
         dispatchPrecondition(condition: .onQueue(.main))
         overlayCache.removeValue(forKey: assetId)
+        displaySizes.removeValue(forKey: assetId)
     }
 
     // MARK: - Preloading
@@ -335,6 +345,23 @@ public final class ScenePackageTextureProvider: MutableTextureProvider, MutableA
     /// - Parameter commandQueue: Metal command queue for staging → private texture blit
     public func preloadAll(commandQueue: MTLCommandQueue) {
         core.preloadAll(commandQueue: commandQueue)
+    }
+
+    // MARK: - MutableAssetDisplaySizeProvider
+
+    public func displaySize(for assetId: String) -> CGSize? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return displaySizes[assetId]
+    }
+
+    public func setDisplaySize(_ size: CGSize, for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        displaySizes[assetId] = size
+    }
+
+    public func removeDisplaySize(for assetId: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        displaySizes.removeValue(forKey: assetId)
     }
 
     // MARK: - MutableAssetPresentationInfoProvider
@@ -361,6 +388,7 @@ public final class ScenePackageTextureProvider: MutableTextureProvider, MutableA
         core.clearCache()
         overlayCache.removeAll()
         presentationInfos.removeAll()
+        displaySizes.removeAll()
     }
 }
 
