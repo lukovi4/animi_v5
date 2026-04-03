@@ -30,13 +30,29 @@ public enum IngestSlotStatus: Equatable, Sendable {
 // MARK: - Ingest Result
 
 /// Result of a completed ingest operation.
+///
+/// Contains only persisted media payload — no placement policy.
+/// The caller (PlayerViewController) is responsible for resolving `defaultFit`
+/// from template metadata and assembling the final `SceneMediaSlot`.
 public struct IngestResult: Sendable {
     public let key: IngestSlotKey
-    public let slot: SceneMediaSlot
+    /// Reference to the persisted media file.
+    public let mediaRef: MediaRef
+    /// Media kind detected from picker result.
+    public let mediaKind: IngestMediaKind
+    /// Video trim/audio parameters. Nil for photos.
+    public let videoWindow: PersistedVideoSelection?
+    /// URL of the persisted file on disk.
     public let persistedURL: URL
 
     public var sceneInstanceId: UUID { key.sceneInstanceId }
     public var blockId: String { key.blockId }
+}
+
+/// Media kind determined during ingest.
+public enum IngestMediaKind: Sendable {
+    case photo
+    case video
 }
 
 // MARK: - Media Ingest Coordinator
@@ -113,7 +129,9 @@ public final class MediaIngestCoordinator {
                 // Determine media kind before extraction
                 let mediaKind = PickerAssetAdapter.mediaKind(of: result)
 
-                let slot: SceneMediaSlot
+                let ingestedMediaRef: MediaRef
+                let ingestedMediaKind: IngestMediaKind
+                var ingestedVideoWindow: PersistedVideoSelection?
                 let persistedURL: URL
 
                 switch mediaKind {
@@ -148,7 +166,8 @@ public final class MediaIngestCoordinator {
                         return
                     }
 
-                    slot = .photo(mediaRef: mediaRef)
+                    ingestedMediaRef = mediaRef
+                    ingestedMediaKind = .photo
 
                 case .video:
                     // Step 1: Persist video directly from PHPicker callback (single copy, no temp)
@@ -175,7 +194,9 @@ public final class MediaIngestCoordinator {
                         return
                     }
 
-                    slot = .video(mediaRef: mediaRef, videoWindow: validatedSelection)
+                    ingestedMediaRef = mediaRef
+                    ingestedMediaKind = .video
+                    ingestedVideoWindow = validatedSelection
 
                 case nil:
                     throw PickerAssetError.unsupportedMediaType
@@ -188,7 +209,13 @@ public final class MediaIngestCoordinator {
 
                 // Step 3: Complete — file is now owned by the store, not us
                 ownedPersistedURL = nil
-                self.finalizeSuccess(key: key, slot: slot, persistedURL: persistedURL)
+                self.finalizeSuccess(
+                    key: key,
+                    mediaRef: ingestedMediaRef,
+                    mediaKind: ingestedMediaKind,
+                    videoWindow: ingestedVideoWindow,
+                    persistedURL: persistedURL
+                )
 
             } catch is CancellationError {
                 self.cleanupOrphan(ownedPersistedURL)
@@ -322,10 +349,22 @@ public final class MediaIngestCoordinator {
     // MARK: - Success Finalization
 
     /// Shared success finalization: .ready → onIngestComplete → .idle
-    private func finalizeSuccess(key: IngestSlotKey, slot: SceneMediaSlot, persistedURL: URL) {
+    private func finalizeSuccess(
+        key: IngestSlotKey,
+        mediaRef: MediaRef,
+        mediaKind: IngestMediaKind,
+        videoWindow: PersistedVideoSelection?,
+        persistedURL: URL
+    ) {
         updateStatus(key: key, status: .ready)
         ingestTasks.removeValue(forKey: key)
-        let result = IngestResult(key: key, slot: slot, persistedURL: persistedURL)
+        let result = IngestResult(
+            key: key,
+            mediaRef: mediaRef,
+            mediaKind: mediaKind,
+            videoWindow: videoWindow,
+            persistedURL: persistedURL
+        )
         onIngestComplete?(result)
         // Transient ready: immediately transition to idle
         slotStatus.removeValue(forKey: key)
@@ -334,9 +373,21 @@ public final class MediaIngestCoordinator {
 
     /// Test-only: simulates a complete ingest success for lifecycle testing.
     /// Calls the same finalizeSuccess path as production code.
-    internal func simulateIngestCompletion(key: IngestSlotKey, slot: SceneMediaSlot, persistedURL: URL) {
+    internal func simulateIngestCompletion(
+        key: IngestSlotKey,
+        mediaRef: MediaRef,
+        mediaKind: IngestMediaKind,
+        videoWindow: PersistedVideoSelection? = nil,
+        persistedURL: URL
+    ) {
         updateStatus(key: key, status: .processing)
-        finalizeSuccess(key: key, slot: slot, persistedURL: persistedURL)
+        finalizeSuccess(
+            key: key,
+            mediaRef: mediaRef,
+            mediaKind: mediaKind,
+            videoWindow: videoWindow,
+            persistedURL: persistedURL
+        )
     }
 
     // MARK: - Private

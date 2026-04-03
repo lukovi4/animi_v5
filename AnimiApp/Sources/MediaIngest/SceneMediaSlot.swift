@@ -4,10 +4,9 @@ import Foundation
 
 /// Unified persisted contract for a single media block in a scene instance.
 ///
-/// New format (nested): `{ visibility, asset: { mediaRef, placement?, videoWindow? } }`
-/// Old v8 format (flat): `{ mediaRef, visibility, videoWindow? }` — decoded with `placement = nil`.
+/// Format: `{ visibility, asset: { mediaRef, placement, videoWindow? } }`
 ///
-/// Encoding always writes the new nested format.
+/// `placement` is always present — initialized to default fit mode on ingest.
 public struct SceneMediaSlot: Equatable, Sendable {
 
     /// Whether the binding layer should be rendered.
@@ -22,17 +21,6 @@ public struct SceneMediaSlot: Equatable, Sendable {
     public init(visibility: Bool = true, asset: SceneMediaAsset) {
         self.visibility = visibility
         self.asset = asset
-    }
-
-    /// Backward-compatible init matching the old flat API.
-    /// Creates a slot wrapping the fields into a `SceneMediaAsset` with `placement = nil`.
-    public init(
-        mediaRef: MediaRef,
-        visibility: Bool = true,
-        videoWindow: PersistedVideoSelection? = nil
-    ) {
-        self.visibility = visibility
-        self.asset = SceneMediaAsset(mediaRef: mediaRef, placement: nil, videoWindow: videoWindow)
     }
 
     // MARK: - Convenience Accessors (bridge)
@@ -50,7 +38,7 @@ public struct SceneMediaSlot: Equatable, Sendable {
     }
 
     /// Shortcut to placement state.
-    public var placement: MediaPlacementState? {
+    public var placement: MediaPlacementState {
         get { asset.placement }
         set { asset.placement = newValue }
     }
@@ -61,7 +49,7 @@ public struct SceneMediaSlot: Equatable, Sendable {
     public static func photo(
         mediaRef: MediaRef,
         visibility: Bool = true,
-        placement: MediaPlacementState? = nil
+        placement: MediaPlacementState
     ) -> SceneMediaSlot {
         SceneMediaSlot(
             visibility: visibility,
@@ -74,7 +62,7 @@ public struct SceneMediaSlot: Equatable, Sendable {
     public static func video(
         mediaRef: MediaRef,
         visibility: Bool = true,
-        placement: MediaPlacementState? = nil,
+        placement: MediaPlacementState,
         videoWindow: PersistedVideoSelection
     ) -> SceneMediaSlot {
         SceneMediaSlot(
@@ -88,34 +76,18 @@ public struct SceneMediaSlot: Equatable, Sendable {
 
 extension SceneMediaSlot: Codable {
 
-    private enum NewCodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey {
         case visibility, asset
     }
 
-    private enum LegacyCodingKeys: String, CodingKey {
-        case mediaRef, visibility, videoWindow
-    }
-
     public init(from decoder: Decoder) throws {
-        // Try new nested format first: { visibility, asset }
-        let newContainer = try? decoder.container(keyedBy: NewCodingKeys.self)
-        if let newContainer, newContainer.contains(.asset) {
-            self.visibility = try newContainer.decode(Bool.self, forKey: .visibility)
-            self.asset = try newContainer.decode(SceneMediaAsset.self, forKey: .asset)
-            return
-        }
-
-        // Fall back to legacy v8 flat format: { mediaRef, visibility, videoWindow }
-        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
-        let mediaRef = try legacy.decode(MediaRef.self, forKey: .mediaRef)
-        self.visibility = try legacy.decode(Bool.self, forKey: .visibility)
-        let videoWindow = try legacy.decodeIfPresent(PersistedVideoSelection.self, forKey: .videoWindow)
-        self.asset = SceneMediaAsset(mediaRef: mediaRef, placement: nil, videoWindow: videoWindow)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.visibility = try container.decode(Bool.self, forKey: .visibility)
+        self.asset = try container.decode(SceneMediaAsset.self, forKey: .asset)
     }
 
     public func encode(to encoder: Encoder) throws {
-        // Always encode new nested format
-        var container = encoder.container(keyedBy: NewCodingKeys.self)
+        var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(visibility, forKey: .visibility)
         try container.encode(asset, forKey: .asset)
     }
