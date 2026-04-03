@@ -215,6 +215,8 @@
 		F961CD47EE4C66EE891B00AF /* ExportResourceBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5C7008F00886664C0E46721 /* ExportResourceBudget.swift */; };
 		FA72E6CEF83D57DE1252D780 /* SceneClipSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05A4F385A358366E47B026B /* SceneClipSnapshot.swift */; };
 		FE30676DCE3F9DF63B5A23A2 /* EditorRenderContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59971755844E2F253995D2F /* EditorRenderContract.swift */; };
+		DD01AA01BB01CC01DD01EE01 /* DefaultFitResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD01AA01BB01CC01DD01EE02 /* DefaultFitResolver.swift */; };
+		DD02AA02BB02CC02DD02EE01 /* DefaultFitResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD02AA02BB02CC02DD02EE02 /* DefaultFitResolverTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -241,6 +243,8 @@
 		AA01BB01CC01DD01EE01FF01 /* MediaPlacementState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlacementState.swift; sourceTree = "<group>"; };
 		AA02BB02CC02DD02EE02FF01 /* SceneMediaAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneMediaAsset.swift; sourceTree = "<group>"; };
 		AA05BB05CC05DD05EE05FF01 /* SceneMediaSlotCodableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneMediaSlotCodableTests.swift; sourceTree = "<group>"; };
+		DD01AA01BB01CC01DD01EE02 /* DefaultFitResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultFitResolver.swift; sourceTree = "<group>"; };
+		DD02AA02BB02CC02DD02EE02 /* DefaultFitResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultFitResolverTests.swift; sourceTree = "<group>"; };
 		008B456A6D18BC55E52A997F /* EditorReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerTests.swift; sourceTree = "<group>"; };
 		04D28A21C0AC2850C95C3A29 /* WriterPumpProtocols.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WriterPumpProtocols.swift; sourceTree = "<group>"; };
 		04FD61F7F2B54ED500C58A8B /* ExportPreflightPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportPreflightPlanner.swift; sourceTree = "<group>"; };
@@ -456,6 +460,7 @@
 		0C30BD67F1694F5E87D23958 /* Player */ = {
 			isa = PBXGroup;
 			children = (
+				DD01AA01BB01CC01DD01EE02 /* DefaultFitResolver.swift */,
 				797FEE14029DDD1E23F49456 /* EditorRenderCommandResolver.swift */,
 				D59971755844E2F253995D2F /* EditorRenderContract.swift */,
 				309F76627D024207657CC40A /* PlayerViewController.swift */,
@@ -473,6 +478,7 @@
 			children = (
 				674596031572692DF249640B /* AudioWriterPumpTests.swift */,
 				AABB0001CCDD0001EEFF0002 /* BackgroundTextureServiceTests.swift */,
+				DD02AA02BB02CC02DD02EE02 /* DefaultFitResolverTests.swift */,
 				1F9CDE81C26B36887FEDB85F /* DownsampledImageLoaderTests.swift */,
 				1D2F81B686E29455B8A0D22E /* EditorReducerNormalizationTests.swift */,
 				3CE2CD88AC9A98A104AADE80 /* EditorReducerPlayheadSelectionTests.swift */,
@@ -940,6 +946,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				58EE44C0463EA2560509056E /* AudioWriterPumpTests.swift in Sources */,
+				DD02AA02BB02CC02DD02EE01 /* DefaultFitResolverTests.swift in Sources */,
 				902EAF22F2E3D1840F714372 /* DownsampledImageLoaderTests.swift in Sources */,
 				E6323309E0940448959313A1 /* EditorReducerNormalizationTests.swift in Sources */,
 				013731CC3FC39787721CDE70 /* EditorReducerPlayheadSelectionTests.swift in Sources */,
@@ -1064,6 +1071,7 @@
 				8D691BE6A5CB108B0C1A236B /* MyProjectsViewController.swift in Sources */,
 				77F2DBD7DB4DFA6DCE1E67B9 /* PerfLogger.swift in Sources */,
 				8E10312933F00CF946AC6294 /* PhotoLibraryVideoSaveService.swift in Sources */,
+				DD01AA01BB01CC01DD01EE01 /* DefaultFitResolver.swift in Sources */,
 				404981E927E535F603698579 /* PlayerViewController.swift in Sources */,
 				AA11BB11CC11DD11EE11FF02 /* SceneRuntimeStateApplier.swift in Sources */,
 				5C6F794FED16BDF583B38CB6 /* PlayheadView.swift in Sources */,

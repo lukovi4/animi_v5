@@ -66,10 +66,16 @@ Binding-слой и mediaInput могут быть как в root-компози
 - Тип: `ty: 4` (shape)
 - Имя (`nm`): строго `"mediaInput"`
 - Скрытый: `"hd": true`
-- Содержит ровно один shape path (прямоугольник, определяющий зону тапа)
+- Содержит ровно один shape path (определяющий зону тапа и clip-маску)
 - Должен находиться в той же композиции, что и binding-слой
 - Запрещены модификаторы: Trim Paths (`tm`), Merge Paths (`mm`), Repeater (`rp`)
 - В анимированных вариантах (`anim-*.json`) mediaInput опционален
+- Если anim-вариант содержит свой mediaInput, его path должен совпадать с edit variant
+
+**Placement contract:**
+- Placement (cover/contain/fill + pan/zoom/rotate) вычисляется относительно binding-слоя placeholder asset, а не mediaInput path
+- mediaInput path определяет только clip-маску и hit-test зону
+- Это позволяет шаблонам с диагональными масками и рамками (polaroid) корректно вставлять медиа
 
 **3. Декоративные слои (опционально)**
 
@@ -131,7 +137,6 @@ SceneSources/my_scene/
       "containerClip": "none",
       "timing": { "startFrame": 0, "endFrame": 150 },
       "input": {
-        "rect": { "x": 0, "y": 0, "width": 1080, "height": 1920 },
         "bindingKey": "media",
         "hitTest": "mask",
         "allowedMedia": ["photo", "video", "color"],

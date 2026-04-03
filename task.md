@@ -1,211 +1,117 @@
-**Final Canonical Plan**
+**ТЗ**
 
-Ниже финальное каноническое техническое задание на **полное закрытие оставшихся проблем** по текущему реальному коду продукта.
-Scope **разбит на отдельные PR**, потому что это не одна задача, а несколько независимых архитектурных изменений с разным риском и разным review surface.
+Исправить баг неправильного размера/позиции пользовательских фото и видео в **track matte**-блоках канонически, строго по текущему коду продукта, без костылей по шаблонам и без отката предыдущих рефакторингов.
 
----
+**1. Подтвержденная проблема**
+- Корень бага находится в рассинхроне между matte bbox dry-run и реальным `drawImage`.
+- Matte bbox считается в [MatteBboxCompute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MatteBboxCompute.swift#L26). В ветке `.drawImage` внутри `computeRangeBBox` используется только `assetSizes[assetId]` как размер картинки в [MatteBboxCompute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MatteBboxCompute.swift#L92).
+- Реальный рендер той же картинки идет в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1879) и использует другой контракт геометрии: `videoOrientedSize -> displaySize -> assetSize -> textureSize`.
+- Канонический resolver для этой геометрии уже существует в [AssetRenderGeometryResolver.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/AssetRenderGeometryResolver.swift#L10).
+- Bbox-sized matte offscreen path запускается в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L976) и затем рендерит в bbox-local textures в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1027).
+- Если bbox посчитан по `assetSize`, а реальный user media quad рисуется по `displaySize` или `videoOrientedSize`, matte texture выделяется слишком маленькой или со смещенным origin. Визуальный симптом: медиа выглядит уменьшенным и/или сдвинутым.
+- Это касается именно **track matte** path (`beginMatte/endMatte`) из [RenderCommand.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/RenderGraph/RenderCommand.swift#L98), а не обычного `hasMask` path.
+- Подтверждено на реальных шаблонах:
+  - matte-based: [block_02/no-anim.json](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/SceneSources/example_4blocks/block_02/no-anim.json), [block_03/no-anim.json](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/SceneSources/example_4blocks/block_03/no-anim.json), [no-anim.json](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/SceneSources/polaroid_shared_demo/no-anim.json)
+  - control via normal mask: [block_04/no-anim.json](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/SceneSources/example_4blocks/block_04/no-anim.json)
 
-**Завершённые PR**
+**2. Целевой контракт**
+- В renderer должен существовать **один** source of truth для quad geometry `drawImage`.
+- Matte bbox dry-run и фактический `drawImage` обязаны использовать **одинаковые** `width/height` для одного и того же `assetId`.
+- Приоритет источников геометрии должен быть единым везде:
+  `videoOrientedSize -> displaySize -> assetSize -> textureSize`
+- Если matte dry-run не может надежно определить геометрию изображения, он **не должен** считать bbox по неверным данным. Он должен вернуть `nil`, чтобы renderer ушел в уже существующий full-frame fallback в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1127).
+- Никакие изменения в `placement`, `BindingBaselineRuntime`, `SceneRuntimeStateApplier`, compiler или scene JSON для этого фикса не нужны.
 
-- **PRs H–L** (geometry refactor, template/resource hardening, loadability probe, cancellation fixes, ExportWriterPipeline crash fix) — **done**, commit `513d23f`
-- **PR M: Legacy Transform Contract Removal** — **done**, принят лидом
-- **PR N: SceneTypeLoadPipeline Unification** — **done**, принят лидом
+**3. Архитектурное решение**
+1. Не дублировать размерную логику второй раз.
+2. Вынести lookup raw geometry для `assetId` в один внутренний helper renderer-модуля.
+3. Этот helper должен собирать входы для [AssetRenderGeometryResolver.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/AssetRenderGeometryResolver.swift#L10):
+   - `videoOrientedSize` через `AssetPresentationInfoProvider` из [VideoPresentationInfo.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/VideoPresentationInfo.swift#L127)
+   - `displaySize` через `AssetDisplaySizeProvider` из [AssetDisplaySizeProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/AssetDisplaySizeProvider.swift#L10)
+   - `assetSize` из `ctx.assetSizes`
+   - `textureSize` через `TextureProvider.texture(for:)` из [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L8)
+4. Этот helper должен быть **internal**, не public API.
+5. `drawImage` в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1879) должен перестать вручную дублировать priority-chain и перейти на этот shared helper.
+6. `computeMatteBBox` в [MatteBboxCompute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MatteBboxCompute.swift#L26) тоже должен использовать тот же shared helper.
+7. Канонически лучше передавать в `computeMatteBBox` не `TextureProvider` напрямую, а resolver closure вида:
+   `resolveImageGeometry: (String) -> AssetRenderGeometryResolver.Result?`
+   Это сохраняет bbox helper максимально чистым и тестируемым.
+8. `renderMatteScope` в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L976) должен собирать этот closure из `ctx.textureProvider + ctx.assetSizes` и передавать его в `computeMatteBBox`.
 
----
+**4. Изменения по файлам**
+- [MatteBboxCompute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MatteBboxCompute.swift#L26)
+  - изменить сигнатуры `computeMatteBBox` и `computeRangeBBox`
+  - добавить параметр `resolveImageGeometry`
+  - в ветке `.drawImage` больше не использовать `assetSizes[assetId]` напрямую
+  - вместо этого брать `Result.width/height` из shared geometry resolver
+  - если resolver вернул `nil`, возвращать `nil` из bbox computation, чтобы matte path ушел в full-frame fallback
+- [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L976)
+  - при вызове `computeMatteBBox` передавать geometry-resolver closure
+- [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1879)
+  - убрать inline priority-chain
+  - вызывать тот же shared helper, что и matte bbox
+- Новый internal helper-файл в `TVECore/Sources/TVECore/MetalRenderer/`
+  - например `AssetQuadGeometryLookup.swift`
+  - обязан быть внутренним для модуля `TVECore`
+  - не должен вводить новую public surface area
+- [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift)
+  - менять протоколы не нужно
+  - текущие провайдеры уже умеют нужные метаданные:
+    [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L95),
+    [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L112),
+    [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L180),
+    [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L200),
+    [ScenePackageTextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/ScenePackageTextureProvider.swift#L227),
+    [ScenePackageTextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/ScenePackageTextureProvider.swift#L369),
+    [LayeredTextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/LayeredTextureProvider.swift#L91),
+    [LayeredTextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/LayeredTextureProvider.swift#L112)
 
-**PR M: Legacy Transform Contract Removal — DONE**
+**5. Обязательные правила поведения после фикса**
+- Для template assets без user metadata поведение не меняется: используется `assetSize`.
+- Для user photos с `displaySize` matte bbox обязан использовать `displaySize`, а не template `assetSize`.
+- Для videos с `presentationInfo.orientedSize` matte bbox обязан использовать oriented size, а не template `assetSize`.
+- Если у asset нет ни metadata, ни texture, matte bbox не имеет права строить “приблизительный” bbox по мусорным данным.
+- Full-frame fallback остается допустимым safety net и baseline visual behavior.
 
-**Что было сделано**
+**6. Что делать нельзя**
+- Не лечить `example_4blocks/block_02` или `polaroid_shared_demo` special-case’ами.
+- Не менять `BindingBaselineRuntime`, `MediaPlacementResolver`, `SceneRuntimeStateApplier`, `SceneCompiler`.
+- Не откатывать bbox optimization из `be7e3d5`.
+- Не откатывать `displaySize` / `videoOrientedSize` renderer contract из `513d23f` и `c1edf94`.
+- Не возвращаться к `assetSize` как универсальной геометрии для user media.
 
-Production code — удалено:
-- `SceneState.userTransforms` property + constructor param
-- `SceneStateMigrationHelper.swift` (целиком)
-- `ProjectDraftHydrator.swift` (целиком)
-- `Matrix2DDecomposer.swift` (целиком)
-- Legacy fallback в `SceneRuntimeStateApplier` (был line 280-283)
-- `onSceneStateHydrated` callback + все `needsHydration` checks в `TimelineCompositionEngine`
-- Hydration call + callback в `PlayerViewController`
-- `writeHydratedSceneState` dead method в `EditorStore`
-- `CompiledSceneMediaInputProvider` (no callers after engine hydration removal)
+**7. Тесты**
+- Обязательно расширить [MetalRendererMatteTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Tests/TVECoreTests/MetalRendererMatteTests.swift#L10).
+- Добавить regression test для фото:
+  - matte source полностью покрывает кадр
+  - consumer имеет `assetSize` меньше, чем `displaySize`
+  - `displaySize` задается через provider, совместимый с `AssetDisplaySizeProvider`
+  - пиксели внутри `displaySize`-области, но вне `assetSize`-области, должны быть видимы после matte compositing
+- Добавить regression test для видео:
+  - `assetSize` и `videoOrientedSize` различаются
+  - bbox и финальный matte output должны следовать `videoOrientedSize`
+- Добавить unit/regression test на сам shared helper или на `computeMatteBBox`, чтобы он возвращал bbox по `displaySize`/`videoOrientedSize`, а не по `assetSize`
+- Существующие тесты на matte semantics должны остаться зелеными:
+  [MetalRendererMatteTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Tests/TVECoreTests/MetalRendererMatteTests.swift#L176),
+  [MetalRendererMatteTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Tests/TVECoreTests/MetalRendererMatteTests.swift#L351)
+- Дополнительно сохранить существующие тесты на `AssetRenderGeometryResolver` и export metadata:
+  [AssetRenderGeometryResolverTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Tests/TVECoreTests/AssetRenderGeometryResolverTests.swift#L8),
+  [ExportDisplaySizeRegressionTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/ExportDisplaySizeRegressionTests.swift#L1)
 
-Production code — рефакторинг:
-- `SceneRenderStateSnapshot.userTransforms` → `resolvedTransforms` (ScenePlayerTypes, SceneRenderPlan, ScenePlayer, TimelineCompositionEngine, TimelineExportRuntime, VideoExporter)
-- `resolveTransformsForExport` starts from `[:]` instead of `state.userTransforms`
-- `MediaInputProvider` protocol moved from deleted file to `SceneRuntimeStateApplier.swift`
-- Stale doc comments cleaned in SceneRuntimeStateApplier, EditorStore, SceneMediaAsset, PlayerViewController
+**8. Acceptance Criteria**
+- `example_4blocks/block_02` и `block_03` больше не выглядят уменьшенными или сдвинутыми при вставке user photo/video.
+- `polaroid_shared_demo` больше не выглядит уменьшенным или сдвинутым в matte-блоке.
+- Контрольные mask-based блоки не меняют визуальное поведение.
+- `PlacementDiag` для таких блоков может остаться прежним; меняется именно финальный matte render result.
+- Preview и export совпадают по matte-блокам.
+- В коде остается ровно один renderer contract для размера user media quad.
 
-Tests — удалено:
-- `SceneStateMigrationHelperTests.swift`
-- `ProjectDraftHydratorTests.swift`
-- `Matrix2DDecomposerTests.swift`
-- `TimelineCompositionEngineHydrationTests.swift`
+**9. Финальная проверка**
+- `swift test` в `TVECore`
+- `xcodebuild test` для app test target
+- Ручной QA на девайсе/симуляторе:
+  - `example_4blocks`: `block_02`, `block_03`, контроль `block_04`
+  - `polaroid_shared_demo`
+  - фото и видео отдельно
 
-Tests — обновлено:
-- `SceneRuntimeStateApplierTests.swift` — removed `userTransforms` references, replaced legacy tests with placement-only tests
-- `TimelineCompositionEngineExportSessionTests.swift` — `userTransforms:` → `resolvedTransforms:`
-- `VideoExporterTimelineExportSessionTests.swift` — `userTransforms:` → `resolvedTransforms:`
-- `UserTransformPipelineTests.swift` (TVECore) — `userTransforms:` → `resolvedTransforms:` in SceneRenderPlan calls
-- `EditorReducerTests.swift` — removed `userTransforms` references
-- `ProjectStorePersistenceTests.swift` — removed `userTransforms` references
-
-**Verification**: 755 AnimiApp tests passed, 0 failures. TVECore all green.
-
----
-
-**Подтвержденные открытые проблемы (после PR N)**
-
-1. ~~Legacy transform contract~~ — **CLOSED by PR M**
-
-2. ~~Scene loading дублирование~~ — **CLOSED by PR N**
-
-3. В app layer остается `print`-based operational logging и dead residue:
-   - [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift)
-   - [UserMediaService.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift)
-   - [SceneLibrary.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Content/SceneLibrary.swift)
-   - `kEnableRenderDiagnostics`
-   - `SceneVariantPreset`
-
-4. [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift) остается god-object'ом. Это отдельный epic, не finishing PR.
-
----
-
-**PR N: SceneTypeLoadPipeline Unification — DONE**
-
-**Что было сделано**
-
-Production code — создано:
-- [SceneTypeLoadPipeline.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/SceneLoading/SceneTypeLoadPipeline.swift) — единый lower-level loading сервис в новой папке `Player/SceneLoading/`
-- `LoadedScenePackageResources` struct (`Sendable`) — lightweight result type с тремя полями: `sceneTypeId`, `compiled`, `resolver`
-- `SceneTypeLoadPipeline.load(sceneTypeId:from:)` — async throws, выполняет `CompiledScenePackageLoader` → `LocalAssetsIndex` → `SharedAssetsIndex` → `CompositeAssetResolver` на background thread с cancellation cooperation (`Task.checkCancellation()` до и после `.tve` decode)
-
-Production code — мигрировано на pipeline (4 consumer-а):
-- `PlayerViewController.loadSceneTypeAsync(...)` — inline bundle decode заменён на `SceneTypeLoadPipeline.load()`
-- `PlayerViewController.loadSceneTypeFromBundle(...)` — аналогично; `BackgroundLoadResult` struct удалён
-- `SceneTypeResourcesCache.preload(...)` — inline IO заменён на pipeline call
-- `SceneTypeResourcesCache.preloadMetadata(...)` — inline IO заменён на pipeline call
-
-Production code — без изменений (consumer-specific, остаётся у caller-а):
-- `ScenePlayer` creation — в edit/coordinator path
-- mutable `SceneTextureProviderFactory.create()` — в edit/coordinator path
-- immutable `SceneTextureProviderFactory.createBaseProvider()` — в cache/export path
-- texture preload — в cache и edit paths
-- cancellation / requestId gating / UI state machine — в `loadSceneTypeFromBundle`
-- `TimelinePlaybackCoordinator.LoadedScene` — thin wrapper, собирает pipeline result + consumer-created player/provider
-
-Review findings fixed:
-- P2: Shared load seam cooperates with caller cancellation (`Task.checkCancellation()` внутри detached task)
-- P3: `LoadedScenePackageResources` помечен `Sendable` (не `@unchecked Sendable`)
-
-**Verification**: 755 AnimiApp tests passed, 0 failures. TVECore 920 tests, 0 failures.
-
----
-
-**PR O: Logging Normalization And Dead Code Cleanup**
-
-**Статус: TODO — следующий PR**
-
-**Цель**
-
-Зачистить app-layer operational logging и очевидный dead residue после серии рефакторов.
-
-**Вопросы по scope — ответы зафиксированы**
-
-5. **Scope PR O не ограничивается одним unguarded `print` в `UserMediaService.swift:609`.**  
-   Минимально обязательный blocker — удалить именно этот unguarded operational `print`, но каноничный PR O должен зачистить **все raw `print` call sites** в scoped app-layer files:
-   - [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift)
-   - [UserMediaService.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift)
-   - [SceneLibrary.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Content/SceneLibrary.swift)
-
-6. **PR O должен именно мигрировать logging на `Logger`, а не просто удалять все сообщения.**  
-   Низкоценные debug prints допустимо удалить, но operational logging, который остается полезным, должен быть переведен на structured `Logger` / `os.Logger`, а не сохранен как `print`.
-
-7. **`PlayerViewController.log(_:)` не является dead code и не удаляется как residue сам по себе.**  
-   У метода много call sites; в PR O его нужно либо перевести на `Logger`, либо удалить только вместе с миграцией всех его вызовов.
-
-8. **[PerfLogger.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/PerfLogger.swift) не входит в scope PR O.**  
-   Это dev-only `#if DEBUG` performance tool, а не operational app-layer logging surface.
-
-9. **После миграции на `Logger` часть `#if DEBUG` guard-ов должна сохраниться.**  
-   High-volume diagnostic traces не нужно автоматически делать release-visible только потому, что они переведены на `logger.debug`.
-
-10. **Для [PlayerViewController.log(_:)](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L3931) каноничная стратегия — переписать тело метода, а не трогать все call sites.**  
-    Это самый безопасный и наименее шумный diff для PR O. `log(_:)` должен стать thin wrapper вокруг file-local `Logger`.
-
-11. **`[BUG-GUARD]` print в [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift#L243) не unguarded, но все равно входит в scope PR O.**  
-    Он уже находится под `#if DEBUG`, однако остается raw `print`, а значит должен быть переведен на `#if DEBUG logger.debug(...)`.
-
-12. **Единственный print в [SceneLibrary.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Content/SceneLibrary.swift#L53) тоже должен быть мигрирован, несмотря на `#if DEBUG`.**  
-    Guarded `print` все равно считается raw `print` и не должен оставаться в финальном scoped cleanup.
-
-13. **DEBUG-print traces в [UserMediaService.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift) должны мигрировать на `logger.debug` с сохранением `#if DEBUG` для шумных сообщений.**  
-    Отдельно blocker на [UserMediaService.swift:609](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/UserMedia/UserMediaService.swift#L609) обязателен к устранению как unguarded operational print.
-
-14. **Файлы вне прямого scope PR O не трогать.**  
-    Вне scope остаются, даже если в них есть `print`:
-    - `BackgroundTextureService.swift`
-    - `TimelineView.swift`
-    - `EffectiveBackgroundBuilder.swift`
-    - `EditorReducer.swift`
-    - `ProjectStore.swift`
-    - `PerfLogger.swift`
-
-**Каноничное решение**
-
-- В scoped app-layer files не должно остаться raw `print(...)`
-- Ввести file-local `Logger` instances по примеру уже существующего использования в проекте
-- Раскладывать сообщения по уровням:
-  - `debug` / `info` для диагностических событий
-  - `error` / `fault` для operational failures
-- DEBUG-only сообщения допустимо:
-  - перевести на `logger.debug`
-  - или удалить, если они не несут долгосрочной ценности
-- Для шумных debug traces сохранить `#if DEBUG`, даже если внутри используется `logger.debug`
-- В [PlayerViewController.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Sources/Player/PlayerViewController.swift) не переписывать 56 call sites вручную без необходимости:
-  - сначала перевести тело `log(_:)` на `Logger`
-  - direct `print(...)` call sites перевести отдельно
-- Не делать repo-wide cosmetic sweep вне scoped files
-- Удалить dead residue:
-  - `kEnableRenderDiagnostics`
-  - `SceneVariantPreset`
-
-**Acceptance**
-
-- В scoped app-layer files нет raw `print`
-- `UserMediaService.swift:609` больше не содержит unguarded operational `print`
-- оставшийся полезный logging переведен на `Logger`
-- `PlayerViewController.log(_:)` либо переведен на `Logger`, либо удален вместе со всеми call sites
-- `PerfLogger.swift` остается вне scope и не блокирует PR O
-- `kEnableRenderDiagnostics` и `SceneVariantPreset` удалены
-- Full suite зеленый
-
----
-
-**Epic Q: EditorRuntimeController Split**
-
-**Статус: отдельный epic, не в текущем цикле**
-
-Вынести runtime/mode orchestration из PlayerViewController в отдельный controller/router layer.
-Делать **после** PR N / O.
-
----
-
-**Рекомендуемый порядок выполнения**
-
-1. ~~**PR M**~~ — ✅ legacy transform contract removed
-2. ~~**PR N**~~ — ✅ scene loading pipeline unified
-3. **PR O** — logging normalization + dead code cleanup
-4. **Epic Q** — вынести `EditorRuntimeController`
-
----
-
-**Глобальные критерии закрытия задачи**
-
-Задача считается закрытой на 100% по этому плану, если:
-
-- ~~`userTransforms` исчезает из продового persisted/runtime contract~~ ✅
-- ~~preview/export работают только через placement-based transforms~~ ✅
-- ~~scene loading больше не дублируется в трех production pipeline~~ ✅
-- touched app-layer files очищены от `print`-logging и dead residue
-- full `swift test --package-path TVECore` зеленый
-- full `xcodebuild test -project AnimiApp/AnimiApp.xcodeproj -scheme AnimiApp` зеленый
-- manual smoke pass не показывает regressions
+Это и есть каноническое ТЗ по реальному коду: не трогать placement, а починить рассинхрон matte bbox и actual draw geometry в renderer.
