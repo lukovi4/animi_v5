@@ -509,6 +509,126 @@ final class MetalRendererMatteTests: XCTestCase {
         XCTAssertLessThan(outsidePixel.a, 50, "Pixel outside clip should be transparent")
         XCTAssertGreaterThan(insidePixel.a, 200, "Pixel inside clip should have content")
     }
+
+    // MARK: - Regression: displaySize matte bbox
+
+    /// Regression test: when user photo has displaySize larger than template assetSize,
+    /// the matte-composited output must cover the full displaySize area — not be clipped
+    /// to the smaller assetSize.
+    func testMatteBbox_displaySizeLargerThanAssetSize_coversFullArea() async throws {
+        let size = 64
+
+        // Create textures: matteMask covers full frame, consumer is the user photo
+        guard let matteTex = createTestTexture(width: size, height: size, color: (255, 255, 255, 255)),
+              let consumerTex = createTestTexture(width: size, height: size, color: (255, 0, 0, 255)) else {
+            XCTFail("Failed to create test textures")
+            return
+        }
+
+        // MockTextureProvider with displaySize for the consumer asset.
+        // assetSize is intentionally small (16×16) while displaySize is full frame (64×64).
+        let textures: [String: MTLTexture] = ["mask": matteTex, "photo": consumerTex]
+        let displaySizes: [String: CGSize] = ["photo": CGSize(width: Double(size), height: Double(size))]
+        let textureProvider = MockDisplaySizeTextureProvider(
+            textures: textures,
+            displaySizes: displaySizes
+        )
+
+        let commands: [RenderCommand] = [
+            .beginMatte(mode: .alpha),
+            .beginGroup(name: "matteSource"),
+            .drawImage(assetId: "mask", opacity: 1.0),
+            .endGroup,
+            .beginGroup(name: "matteConsumer"),
+            .drawImage(assetId: "photo", opacity: 1.0),
+            .endGroup,
+            .endMatte,
+        ]
+
+        // assetSize for photo is intentionally small to expose the bug
+        let assetSizes: [String: AssetSize] = [
+            "mask": AssetSize(width: Double(size), height: Double(size)),
+            "photo": AssetSize(width: 16, height: 16),
+        ]
+
+        let resultTex = try renderer.drawOffscreen(
+            commands: commands,
+            device: device,
+            sizePx: (width: size, height: size),
+            animSize: SizeD(width: Double(size), height: Double(size)),
+            textureProvider: textureProvider,
+            assetSizes: assetSizes,
+            pathRegistry: PathRegistry()
+        )
+
+        // Pixel at center should be visible (red from consumer, masked by white alpha matte)
+        let center = readPixel(from: resultTex, x: size / 2, y: size / 2)
+        XCTAssertGreaterThan(center.a, 200, "Center pixel should be visible through matte with displaySize geometry")
+
+        // Pixel at (size-2, size-2) — near edge, should also be visible since displaySize = full frame
+        let edge = readPixel(from: resultTex, x: size - 2, y: size - 2)
+        XCTAssertGreaterThan(edge.a, 200, "Edge pixel should be visible — displaySize covers full frame")
+    }
+
+    // MARK: - Regression: videoOrientedSize matte bbox
+
+    /// Regression test: when a video has videoOrientedSize different from template assetSize,
+    /// the matte bbox and composite must use videoOrientedSize geometry.
+    /// Uses a portrait-oriented video (raw 64×64, 90° CW → oriented 64×64 identity for simplicity).
+    func testMatteBbox_videoOrientedSize_coversFullArea() async throws {
+        let size = 64
+
+        // Create textures
+        guard let matteTex = createTestTexture(width: size, height: size, color: (255, 255, 255, 255)),
+              let videoTex = createTestTexture(width: size, height: size, color: (0, 255, 0, 255)) else {
+            XCTFail("Failed to create test textures")
+            return
+        }
+
+        // Mock provider with video presentation info.
+        // assetSize is intentionally small (16×16), but videoOrientedSize is full frame.
+        let textureProvider = MockVideoPresentationTextureProvider(
+            textures: ["mask": matteTex, "video": videoTex],
+            presentationInfos: [
+                "video": VideoPresentationInfo(
+                    rawTrackSize: CGSize(width: Double(size), height: Double(size)),
+                    preferredTransform: .identity
+                ),
+            ]
+        )
+
+        let commands: [RenderCommand] = [
+            .beginMatte(mode: .alpha),
+            .beginGroup(name: "matteSource"),
+            .drawImage(assetId: "mask", opacity: 1.0),
+            .endGroup,
+            .beginGroup(name: "matteConsumer"),
+            .drawImage(assetId: "video", opacity: 1.0),
+            .endGroup,
+            .endMatte,
+        ]
+
+        let assetSizes: [String: AssetSize] = [
+            "mask": AssetSize(width: Double(size), height: Double(size)),
+            "video": AssetSize(width: 16, height: 16),
+        ]
+
+        let resultTex = try renderer.drawOffscreen(
+            commands: commands,
+            device: device,
+            sizePx: (width: size, height: size),
+            animSize: SizeD(width: Double(size), height: Double(size)),
+            textureProvider: textureProvider,
+            assetSizes: assetSizes,
+            pathRegistry: PathRegistry()
+        )
+
+        let center = readPixel(from: resultTex, x: size / 2, y: size / 2)
+        XCTAssertGreaterThan(center.a, 200, "Center pixel should be visible through matte with videoOrientedSize geometry")
+
+        let edge = readPixel(from: resultTex, x: size - 2, y: size - 2)
+        XCTAssertGreaterThan(edge.a, 200, "Edge pixel should be visible — videoOrientedSize covers full frame")
+    }
 }
 
 // MARK: - Mock Texture Provider
@@ -522,6 +642,44 @@ private final class MockTextureProvider: TextureProvider {
 
     func texture(for assetId: String) -> MTLTexture? {
         textures[assetId]
+    }
+}
+
+/// Mock that provides both textures and display sizes (simulates user media injection).
+private final class MockDisplaySizeTextureProvider: TextureProvider, AssetDisplaySizeProvider {
+    private let textures: [String: MTLTexture]
+    private let displaySizes: [String: CGSize]
+
+    init(textures: [String: MTLTexture], displaySizes: [String: CGSize]) {
+        self.textures = textures
+        self.displaySizes = displaySizes
+    }
+
+    func texture(for assetId: String) -> MTLTexture? {
+        textures[assetId]
+    }
+
+    func displaySize(for assetId: String) -> CGSize? {
+        displaySizes[assetId]
+    }
+}
+
+/// Mock that provides both textures and video presentation info (simulates video injection).
+private final class MockVideoPresentationTextureProvider: TextureProvider, AssetPresentationInfoProvider {
+    private let textures: [String: MTLTexture]
+    private let presentationInfos: [String: VideoPresentationInfo]
+
+    init(textures: [String: MTLTexture], presentationInfos: [String: VideoPresentationInfo]) {
+        self.textures = textures
+        self.presentationInfos = presentationInfos
+    }
+
+    func texture(for assetId: String) -> MTLTexture? {
+        textures[assetId]
+    }
+
+    func presentationInfo(for assetId: String) -> VideoPresentationInfo? {
+        presentationInfos[assetId]
     }
 }
 // swiftlint:enable file_length identifier_name type_body_length large_tuple line_length

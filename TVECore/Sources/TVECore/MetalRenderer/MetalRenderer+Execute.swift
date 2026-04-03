@@ -983,14 +983,23 @@ extension MetalRenderer {
         let currentScissor = inheritedState.currentScissor
 
         // Step 0: Compute bbox for matte scope
+        let textureProvider = ctx.textureProvider
+        let assetSizes = ctx.assetSizes
         let bboxFloat = computeMatteBBox(
             commands: commands,
             sourceRange: scope.sourceRange,
             consumerRange: scope.consumerRange,
             inheritedTransform: inheritedState.currentTransform,
             animToViewport: ctx.animToViewport,
-            assetSizes: ctx.assetSizes,
-            pathRegistry: ctx.pathRegistry
+            assetSizes: assetSizes,
+            pathRegistry: ctx.pathRegistry,
+            resolveImageGeometry: { assetId in
+                AssetQuadGeometryLookup.resolve(
+                    assetId: assetId,
+                    textureProvider: textureProvider,
+                    assetSizes: assetSizes
+                )
+            }
         )
 
         // Check if bbox is valid and convert to pixels
@@ -1892,26 +1901,16 @@ extension MetalRenderer {
         let videoInfo = (ctx.textureProvider as? AssetPresentationInfoProvider)?
             .presentationInfo(for: assetId)
 
-        // PR-F: Check for user media display size metadata
-        let userDisplaySize = (ctx.textureProvider as? AssetDisplaySizeProvider)?
-            .displaySize(for: assetId)
-
-        // Size priority: orientedSize → displaySize → assetSizes → texture.size
-        let quadWidth: Float
-        let quadHeight: Float
-        if let videoInfo {
-            quadWidth = Float(videoInfo.orientedSize.width)
-            quadHeight = Float(videoInfo.orientedSize.height)
-        } else if let userDisplaySize {
-            quadWidth = Float(userDisplaySize.width)
-            quadHeight = Float(userDisplaySize.height)
-        } else if let assetSize = ctx.assetSizes[assetId] {
-            quadWidth = Float(assetSize.width)
-            quadHeight = Float(assetSize.height)
-        } else {
-            quadWidth = Float(texture.width)
-            quadHeight = Float(texture.height)
-        }
+        // Resolve quad geometry via shared helper (single source of truth).
+        // Pass pre-fetched texture to avoid redundant lookup on hot path.
+        let geometry = AssetQuadGeometryLookup.resolve(
+            assetId: assetId,
+            textureProvider: ctx.textureProvider,
+            assetSizes: ctx.assetSizes,
+            prefetchedTexture: texture
+        )
+        let quadWidth = Float(geometry?.width ?? Double(texture.width))
+        let quadHeight = Float(geometry?.height ?? Double(texture.height))
 
         let fullTransform = ctx.animToViewport.concatenating(transform)
 

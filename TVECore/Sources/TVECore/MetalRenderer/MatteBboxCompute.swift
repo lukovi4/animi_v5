@@ -22,6 +22,9 @@ import CoreGraphics
 ///   - animToViewport: Animation to viewport coordinate transform
 ///   - assetSizes: Asset size metadata for drawImage bounds
 ///   - pathRegistry: Path registry for drawShape/drawStroke bounds
+///   - resolveImageGeometry: Closure that resolves the canonical quad geometry for a given
+///     asset ID using the full 4-tier priority chain (videoOrientedSize → displaySize →
+///     assetSize → textureSize). Returns nil if no geometry source is available.
 /// - Returns: Float bounding box in viewport coordinates, or nil if cannot be computed
 func computeMatteBBox(
     commands: [RenderCommand],
@@ -30,7 +33,8 @@ func computeMatteBBox(
     inheritedTransform: Matrix2D,
     animToViewport: Matrix2D,
     assetSizes: [String: AssetSize],
-    pathRegistry: PathRegistry
+    pathRegistry: PathRegistry,
+    resolveImageGeometry: (String) -> AssetRenderGeometryResolver.Result? = { _ in nil }
 ) -> CGRect? {
     // Compute source and consumer bboxes separately
     let sourceBbox = computeRangeBBox(
@@ -39,7 +43,8 @@ func computeMatteBBox(
         inheritedTransform: inheritedTransform,
         animToViewport: animToViewport,
         assetSizes: assetSizes,
-        pathRegistry: pathRegistry
+        pathRegistry: pathRegistry,
+        resolveImageGeometry: resolveImageGeometry
     )
 
     let consumerBbox = computeRangeBBox(
@@ -48,7 +53,8 @@ func computeMatteBBox(
         inheritedTransform: inheritedTransform,
         animToViewport: animToViewport,
         assetSizes: assetSizes,
-        pathRegistry: pathRegistry
+        pathRegistry: pathRegistry,
+        resolveImageGeometry: resolveImageGeometry
     )
 
     // Per review.md #2: intersection(source, consumer)
@@ -88,6 +94,7 @@ func computeMatteBBox(
 ///   - animToViewport: Animation to viewport transform
 ///   - assetSizes: Asset sizes for drawImage
 ///   - pathRegistry: Path registry for shapes
+///   - resolveImageGeometry: Closure to resolve canonical quad geometry for an asset
 /// - Returns: Accumulated bbox in viewport coordinates, or nil if no valid bounds
 private func computeRangeBBox(
     commands: [RenderCommand],
@@ -95,7 +102,8 @@ private func computeRangeBBox(
     inheritedTransform: Matrix2D,
     animToViewport: Matrix2D,
     assetSizes: [String: AssetSize],
-    pathRegistry: PathRegistry
+    pathRegistry: PathRegistry,
+    resolveImageGeometry: (String) -> AssetRenderGeometryResolver.Result?
 ) -> CGRect? {
     guard !range.isEmpty else { return nil }
 
@@ -128,16 +136,16 @@ private func computeRangeBBox(
         case .drawImage(let assetId, let opacity):
             guard opacity > 0 else { continue }
 
-            // Get asset size from metadata
-            guard let assetSize = assetSizes[assetId] else {
-                // Per review.md #4: missing asset size → bbox invalid → return nil
+            // Use shared geometry resolver (4-tier priority: videoOrientedSize → displaySize → assetSize → textureSize)
+            guard let geometry = resolveImageGeometry(assetId) else {
+                // No geometry source available → bbox invalid → return nil for full-frame fallback
                 return nil
             }
 
             let currentTransform = transformStack.last ?? .identity
             let bounds = computeImageBounds(
-                width: assetSize.width,
-                height: assetSize.height,
+                width: geometry.width,
+                height: geometry.height,
                 transform: currentTransform,
                 animToViewport: animToViewport
             )
