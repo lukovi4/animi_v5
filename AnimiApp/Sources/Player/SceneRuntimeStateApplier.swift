@@ -1,5 +1,11 @@
 import Foundation
+import os.log
 import TVECore
+
+private let placementDiagnosticsLogger = Logger(
+    subsystem: "com.animi.app",
+    category: "PlacementDiagnostics"
+)
 
 // MARK: - ScenePlayerApplying Protocol
 
@@ -8,6 +14,7 @@ import TVECore
 @MainActor
 protocol ScenePlayerApplying: AnyObject {
     func mediaInputConfig(blockId: String) -> MediaInput?
+    func bindingBaseline(blockId: String) -> BindingBaselineRuntime?
     func mediaInputGeometry(blockId: String) -> MediaInputGeometryRuntime?
     func applyVariantSelection(_ mapping: [String: String])
     func setUserTransform(blockId: String, transform: Matrix2D)
@@ -56,6 +63,42 @@ public struct ScenePlayerMediaInputProvider: MediaInputProvider {
 /// ## Resolver Integration
 /// For media blocks with `placement != nil`, `MediaPlacementResolver` generates the `Matrix2D`.
 public enum SceneRuntimeStateApplier {
+#if DEBUG
+    @MainActor
+    private static var lastPlacementDiagnosticsByKey: [String: (payload: String, timestamp: TimeInterval)] = [:]
+    private static let placementDiagnosticsDedupWindow: TimeInterval = 0.5
+#endif
+
+    private struct ResolvedPlacement {
+        let matrix: Matrix2D
+        let diagnostics: PlacementDiagnostics?
+    }
+
+    private struct PlacementDiagnostics {
+        let sceneId: String?
+        let blockId: String
+        let activeVariantId: String?
+        let editVariantId: String?
+        let defaultFit: FitMode?
+        let placement: MediaPlacementState
+        let baselineRectLocal: RectD
+        let apertureRectLocal: RectD?
+        let mediaSize: SizeD
+        let mediaSizeSource: String
+        let baseFitTransform: Matrix2D
+        let resolvedTransform: Matrix2D
+        let expectedFrameLocal: RectD
+        let actualQuadLocal: [Vec2D]
+        let actualQuadAABBLocal: RectD
+        let blockRectCanvas: RectD?
+        let bindingToCanvasMatrix: Matrix2D?
+        let finalToCanvasMatrix: Matrix2D?
+        let expectedQuadCanvas: [Vec2D]?
+        let expectedQuadAABBCanvas: RectD?
+        let apertureAABBCanvas: RectD?
+        let actualQuadCanvas: [Vec2D]?
+        let actualQuadAABBCanvas: RectD?
+    }
 
     /// Dependencies needed for a full state apply.
     public struct Dependencies: Sendable {
@@ -147,13 +190,17 @@ public enum SceneRuntimeStateApplier {
         player: any ScenePlayerApplying,
         userMediaService: UserMediaService? = nil
     ) {
-        let matrix = resolveTransform(
+        let resolved = resolvePlacement(
             blockId: blockId,
             placement: placement,
             player: player,
             userMediaService: userMediaService
         )
-        player.setUserTransform(blockId: blockId, transform: matrix)
+        player.setUserTransform(blockId: blockId, transform: resolved.matrix)
+        logPlacementDiagnostics(
+            stage: "fast-path",
+            resolved: resolved
+        )
     }
 
     // MARK: - Fast-Path: Visibility Only
@@ -229,15 +276,13 @@ public enum SceneRuntimeStateApplier {
             let singleSlot: [String: SceneMediaSlot]? = [blockId: slot]
             let count = restore(singleSlot, userMediaService)
 
-            // Apply placement if present
-            if let placement = slot.asset.placement {
-                applyPlacementChange(
-                    blockId: blockId,
-                    placement: placement,
-                    player: player,
-                    userMediaService: userMediaService
-                )
-            }
+            // Apply placement
+            applyPlacementChange(
+                blockId: blockId,
+                placement: slot.asset.placement,
+                player: player,
+                userMediaService: userMediaService
+            )
 
             return count
         } else {
@@ -255,26 +300,29 @@ public enum SceneRuntimeStateApplier {
         // Track which blocks got placement-based transforms
         var placementApplied: Set<String> = []
 
-        // Media blocks with placement: resolve via MediaPlacementResolver
+        // Media blocks: resolve placement via MediaPlacementResolver
         if let slots = state.mediaSlotsByBlockId {
             for (blockId, slot) in slots {
-                if let placement = slot.asset.placement {
-                    let matrix = resolveTransform(
-                        blockId: blockId,
-                        placement: placement,
-                        player: player,
-                        userMediaService: userMediaService
-                    )
-                    player.setUserTransform(blockId: blockId, transform: matrix)
-                    placementApplied.insert(blockId)
-                }
+                let resolved = resolvePlacement(
+                    blockId: blockId,
+                    placement: slot.asset.placement,
+                    player: player,
+                    userMediaService: userMediaService
+                )
+                player.setUserTransform(blockId: blockId, transform: resolved.matrix)
+                logPlacementDiagnostics(
+                    stage: "full-apply",
+                    resolved: resolved
+                )
+                placementApplied.insert(blockId)
             }
         }
 
     }
 
     /// Resolves a placement to Matrix2D using MediaPlacementResolver.
-    /// Uses actual loaded media size when available, falls back to slot rect.
+    /// Uses binding baseline rect (not aperture AABB) as the target for fitting.
+    /// Uses actual loaded media size when available, falls back to baseline rect.
     @MainActor
     private static func resolveTransform(
         blockId: String,
@@ -282,30 +330,205 @@ public enum SceneRuntimeStateApplier {
         player: any ScenePlayerApplying,
         userMediaService: UserMediaService? = nil
     ) -> Matrix2D {
-        guard let geo = player.mediaInputGeometry(blockId: blockId) else {
-            return .identity
+        resolvePlacement(
+            blockId: blockId,
+            placement: placement,
+            player: player,
+            userMediaService: userMediaService
+        ).matrix
+    }
+
+    @MainActor
+    private static func resolvePlacement(
+        blockId: String,
+        placement: MediaPlacementState,
+        player: any ScenePlayerApplying,
+        userMediaService: UserMediaService? = nil
+    ) -> ResolvedPlacement {
+        guard let baseline = player.bindingBaseline(blockId: blockId) else {
+            return ResolvedPlacement(matrix: .identity, diagnostics: nil)
         }
 
-        let slotRect = geo.placementRectLocal
+        let baselineRect = baseline.contentRectLocal
 
         // Use actual presentation-correct media size if available (loaded texture/video),
-        // otherwise fall back to slot dimensions (will be corrected on next apply after load).
+        // otherwise fall back to baseline rect dimensions (will be corrected on next apply after load).
         let mediaW: Double
         let mediaH: Double
+        let mediaSizeSource: String
         if let size = userMediaService?.mediaPresentationSize(blockId: blockId) {
             mediaW = size.width
             mediaH = size.height
+            mediaSizeSource = "presentation"
         } else {
-            mediaW = slotRect.width
-            mediaH = slotRect.height
+            mediaW = baselineRect.width
+            mediaH = baselineRect.height
+            mediaSizeSource = "baseline-fallback"
         }
 
         let geometry = MediaPlacementResolver.SlotGeometry(
-            slotRect: slotRect,
+            baselineRectLocal: baselineRect,
             mediaWidth: mediaW,
             mediaHeight: mediaH
         )
 
-        return MediaPlacementResolver.resolve(placement: placement, geometry: geometry)
+        let baseFit = MediaPlacementResolver.baseFitTransform(
+            fitMode: placement.fitMode,
+            geometry: geometry
+        )
+        let resolved = MediaPlacementResolver.resolve(placement: placement, geometry: geometry)
+        let actualQuadLocal = transformQuad(width: mediaW, height: mediaH, matrix: resolved)
+        let actualQuadAABBLocal = boundingRect(points: actualQuadLocal)
+
+        let scenePlayer = player as? ScenePlayer
+        let compiled = scenePlayer?.compiledScene
+        let runtimeBlock = compiled?.runtime.blocks.first(where: { $0.blockId == blockId })
+        let activeVariantId = scenePlayer?.selectedVariantId(blockId: blockId)
+        let editVariantId = runtimeBlock?.editVariantId
+        let blockRectCanvas = runtimeBlock?.rectCanvas
+        let bindingToCanvasMatrix = scenePlayer?.editBindingToCanvasMatrix(blockId: blockId)
+        let expectedQuadCanvas = bindingToCanvasMatrix.map { transformRectAsQuad(rect: baselineRect, matrix: $0) }
+        let expectedQuadAABBCanvas = expectedQuadCanvas.map(boundingRect(points:))
+        let finalToCanvasMatrix = bindingToCanvasMatrix.map { $0.concatenating(resolved) }
+        let actualQuadCanvas = finalToCanvasMatrix.map { transformQuad(width: mediaW, height: mediaH, matrix: $0) }
+        let actualQuadAABBCanvas = actualQuadCanvas.map(boundingRect(points:))
+        let apertureAABBCanvas = scenePlayer?.mediaInputHitPath(
+            blockId: blockId,
+            frame: ScenePlayer.editFrameIndex,
+            mode: .edit
+        ).map { boundingRect(points: $0.vertices) }
+
+        let diagnostics = PlacementDiagnostics(
+            sceneId: compiled?.runtime.scene.sceneId,
+            blockId: blockId,
+            activeVariantId: activeVariantId,
+            editVariantId: editVariantId,
+            defaultFit: player.mediaInputConfig(blockId: blockId)?.defaultFit,
+            placement: placement,
+            baselineRectLocal: baselineRect,
+            apertureRectLocal: player.mediaInputGeometry(blockId: blockId)?.placementRectLocal,
+            mediaSize: SizeD(width: mediaW, height: mediaH),
+            mediaSizeSource: mediaSizeSource,
+            baseFitTransform: baseFit,
+            resolvedTransform: resolved,
+            expectedFrameLocal: baselineRect,
+            actualQuadLocal: actualQuadLocal,
+            actualQuadAABBLocal: actualQuadAABBLocal,
+            blockRectCanvas: blockRectCanvas,
+            bindingToCanvasMatrix: bindingToCanvasMatrix,
+            finalToCanvasMatrix: finalToCanvasMatrix,
+            expectedQuadCanvas: expectedQuadCanvas,
+            expectedQuadAABBCanvas: expectedQuadAABBCanvas,
+            apertureAABBCanvas: apertureAABBCanvas,
+            actualQuadCanvas: actualQuadCanvas,
+            actualQuadAABBCanvas: actualQuadAABBCanvas
+        )
+
+        return ResolvedPlacement(matrix: resolved, diagnostics: diagnostics)
+    }
+
+    private static func transformRectAsQuad(rect: RectD, matrix: Matrix2D) -> [Vec2D] {
+        let quad = [
+            Vec2D(x: rect.x, y: rect.y),
+            Vec2D(x: rect.x + rect.width, y: rect.y),
+            Vec2D(x: rect.x + rect.width, y: rect.y + rect.height),
+            Vec2D(x: rect.x, y: rect.y + rect.height)
+        ]
+        return quad.map { matrix.apply(to: $0) }
+    }
+
+    private static func transformQuad(width: Double, height: Double, matrix: Matrix2D) -> [Vec2D] {
+        let quad = [
+            Vec2D(x: 0, y: 0),
+            Vec2D(x: width, y: 0),
+            Vec2D(x: width, y: height),
+            Vec2D(x: 0, y: height)
+        ]
+        return quad.map { matrix.apply(to: $0) }
+    }
+
+    private static func boundingRect(points: [Vec2D]) -> RectD {
+        guard let first = points.first else { return .zero }
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+
+        return RectD(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    private static func format(rect: RectD) -> String {
+        "x=\(fmt(rect.x)) y=\(fmt(rect.y)) w=\(fmt(rect.width)) h=\(fmt(rect.height))"
+    }
+
+    private static func format(size: SizeD) -> String {
+        "w=\(fmt(size.width)) h=\(fmt(size.height))"
+    }
+
+    private static func format(point: Vec2D) -> String {
+        "(\(fmt(point.x)), \(fmt(point.y)))"
+    }
+
+    private static func format(points: [Vec2D]) -> String {
+        points.map(format(point:)).joined(separator: ", ")
+    }
+
+    private static func format(optionalRect: RectD?) -> String {
+        guard let rect = optionalRect else { return "nil" }
+        return format(rect: rect)
+    }
+
+    private static func format(optionalMatrix: Matrix2D?) -> String {
+        guard let matrix = optionalMatrix else { return "nil" }
+        return format(matrix: matrix)
+    }
+
+    private static func format(optionalPoints: [Vec2D]?) -> String {
+        guard let points = optionalPoints else { return "nil" }
+        return "[\(format(points: points))]"
+    }
+
+    private static func format(matrix: Matrix2D) -> String {
+        "a=\(fmt(matrix.a)) b=\(fmt(matrix.b)) c=\(fmt(matrix.c)) d=\(fmt(matrix.d)) tx=\(fmt(matrix.tx)) ty=\(fmt(matrix.ty))"
+    }
+
+    private static func fmt(_ value: Double) -> String {
+        String(format: "%.3f", value)
+    }
+
+    @MainActor
+    private static func logPlacementDiagnostics(stage: String, resolved: ResolvedPlacement) {
+#if DEBUG
+        guard let diagnostics = resolved.diagnostics else { return }
+
+        let payload = """
+scene=\(diagnostics.sceneId ?? "nil") block=\(diagnostics.blockId) variants={active=\(diagnostics.activeVariantId ?? "nil") edit=\(diagnostics.editVariantId ?? "nil")} defaultFit=\(String(describing: diagnostics.defaultFit)) placement={fit=\(String(describing: diagnostics.placement.fitMode)) offset=(\(fmt(diagnostics.placement.offsetX)), \(fmt(diagnostics.placement.offsetY))) scale=\(fmt(diagnostics.placement.userScale)) rotation=\(fmt(diagnostics.placement.rotationDegrees))}
+template.expected bindingBaseline(binding-local)=\(format(rect: diagnostics.baselineRectLocal)) apertureAABB(block-local)=\(format(optionalRect: diagnostics.apertureRectLocal))
+template.expected blockRect(canvas)=\(format(optionalRect: diagnostics.blockRectCanvas)) bindingToCanvas(edit)=\(format(optionalMatrix: diagnostics.bindingToCanvasMatrix))
+template.expected frame(canvas-edit)=\(format(optionalPoints: diagnostics.expectedQuadCanvas)) aabb=\(format(optionalRect: diagnostics.expectedQuadAABBCanvas)) apertureAABB(canvas-edit)=\(format(optionalRect: diagnostics.apertureAABBCanvas))
+runtime.actual mediaSize[\(diagnostics.mediaSizeSource)]=\(format(size: diagnostics.mediaSize)) expectedFrame(binding-local)=\(format(rect: diagnostics.expectedFrameLocal))
+runtime.actual baseFit=\(format(matrix: diagnostics.baseFitTransform)) resolved=\(format(matrix: diagnostics.resolvedTransform)) finalToCanvas(edit)=\(format(optionalMatrix: diagnostics.finalToCanvasMatrix))
+runtime.actual quad(binding-local)=[\(format(points: diagnostics.actualQuadLocal))] aabb=\(format(rect: diagnostics.actualQuadAABBLocal))
+runtime.actual quad(canvas-edit)=\(format(optionalPoints: diagnostics.actualQuadCanvas)) aabb=\(format(optionalRect: diagnostics.actualQuadAABBCanvas))
+"""
+
+        let key = "\(diagnostics.sceneId ?? "nil")|\(diagnostics.blockId)"
+        let now = Date().timeIntervalSinceReferenceDate
+        if let last = lastPlacementDiagnosticsByKey[key],
+           last.payload == payload,
+           now - last.timestamp < placementDiagnosticsDedupWindow {
+            return
+        }
+        lastPlacementDiagnosticsByKey[key] = (payload: payload, timestamp: now)
+
+        placementDiagnosticsLogger.debug("[PlacementDiag][\(stage, privacy: .public)]\n\(payload, privacy: .public)")
+#endif
     }
 }
