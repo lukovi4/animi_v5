@@ -9,22 +9,25 @@ import TVECore
 /// ## Transform formula
 /// ```
 /// final = T(offset) * T(center) * R(rotation) * S(userScale) * T(-center) * baseFit
-/// center = center of slot rect
+/// center = center of baseline rect
 /// ```
 ///
-/// `baseFit` scales and positions media to fit the slot according to `fitMode`.
+/// `baseFit` scales and positions media to fit the binding baseline rect
+/// according to `fitMode`. The baseline rect comes from the template's
+/// binding placeholder asset size, not from the mediaInput aperture AABB.
 public enum MediaPlacementResolver {
 
     /// Input geometry for resolution.
     public struct SlotGeometry: Equatable, Sendable {
-        /// Slot rectangle in local block coordinates, from compiled media aperture geometry.
-        public let slotRect: RectD
+        /// Binding baseline rect in local coordinates (from placeholder asset size).
+        /// This is the content area of the binding layer — NOT the mediaInput aperture.
+        public let baselineRectLocal: RectD
         /// Presentation-correct media size (after EXIF for photos, from `presentationInfo` for videos).
         public let mediaWidth: Double
         public let mediaHeight: Double
 
-        public init(slotRect: RectD, mediaWidth: Double, mediaHeight: Double) {
-            self.slotRect = slotRect
+        public init(baselineRectLocal: RectD, mediaWidth: Double, mediaHeight: Double) {
+            self.baselineRectLocal = baselineRectLocal
             self.mediaWidth = mediaWidth
             self.mediaHeight = mediaHeight
         }
@@ -36,7 +39,7 @@ public enum MediaPlacementResolver {
     ///
     /// - Parameters:
     ///   - placement: The persisted placement state.
-    ///   - geometry: Slot and media dimensions.
+    ///   - geometry: Baseline rect and media dimensions.
     /// - Returns: A `Matrix2D` suitable for `ScenePlayer.setUserTransform`.
     public static func resolve(
         placement: MediaPlacementState,
@@ -50,9 +53,9 @@ public enum MediaPlacementResolver {
         let snapped = snapRotation(placement.rotationDegrees)
         let radians = snapped * .pi / 180.0
 
-        // Center of the slot rect (pivot for rotation/scale)
-        let cx = geometry.slotRect.x + geometry.slotRect.width / 2.0
-        let cy = geometry.slotRect.y + geometry.slotRect.height / 2.0
+        // Center of the baseline rect (pivot for rotation/scale)
+        let cx = geometry.baselineRectLocal.x + geometry.baselineRectLocal.width / 2.0
+        let cy = geometry.baselineRectLocal.y + geometry.baselineRectLocal.height / 2.0
 
         // Build: T(offset) * T(center) * R(rotation) * S(userScale) * T(-center) * baseFit
         let tNegCenter = Matrix2D.translation(x: -cx, y: -cy)
@@ -84,7 +87,7 @@ public enum MediaPlacementResolver {
 
     // MARK: - Base Fit
 
-    /// Computes the base fit transform that scales and centers media within the slot.
+    /// Computes the base fit transform that scales and centers media within the baseline rect.
     ///
     /// - `cover`: scale to fill (may crop), centered
     /// - `contain`: scale to fit (may letterbox), centered
@@ -93,8 +96,8 @@ public enum MediaPlacementResolver {
         fitMode: FitMode,
         geometry: SlotGeometry
     ) -> Matrix2D {
-        let slotW = geometry.slotRect.width
-        let slotH = geometry.slotRect.height
+        let slotW = geometry.baselineRectLocal.width
+        let slotH = geometry.baselineRectLocal.height
         let mediaW = geometry.mediaWidth
         let mediaH = geometry.mediaHeight
 
@@ -119,11 +122,11 @@ public enum MediaPlacementResolver {
             scaleY = slotH / mediaH
         }
 
-        // Center the scaled media within the slot
+        // Center the scaled media within the baseline rect
         let scaledW = mediaW * scaleX
         let scaledH = mediaH * scaleY
-        let tx = geometry.slotRect.x + (slotW - scaledW) / 2.0
-        let ty = geometry.slotRect.y + (slotH - scaledH) / 2.0
+        let tx = geometry.baselineRectLocal.x + (slotW - scaledW) / 2.0
+        let ty = geometry.baselineRectLocal.y + (slotH - scaledH) / 2.0
 
         // Combined scale + translate
         return Matrix2D(

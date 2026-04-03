@@ -8,10 +8,10 @@ public struct MediaPlacementState: Codable, Equatable, Sendable {
     /// How media fits the slot (cover/contain/fill).
     public var fitMode: FitMode
 
-    /// User pan offset in slot-local points.
+    /// User pan offset in binding-local points.
     public var offsetX: Double
 
-    /// User pan offset in slot-local points.
+    /// User pan offset in binding-local points.
     public var offsetY: Double
 
     /// User scale factor relative to base fit. Clamped to `scaleRange`.

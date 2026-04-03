@@ -1,14 +1,14 @@
 import Foundation
 
 /// Persisted asset within a media slot: file reference + placement + video params.
-/// Wraps `MediaRef`, optional `MediaPlacementState`, and optional `PersistedVideoSelection`.
+/// Wraps `MediaRef`, `MediaPlacementState`, and optional `PersistedVideoSelection`.
 public struct SceneMediaAsset: Codable, Equatable, Sendable {
 
     /// Reference to the persisted media file.
     public var mediaRef: MediaRef
 
-    /// User placement state. `nil` means no placement configured yet.
-    public var placement: MediaPlacementState?
+    /// User placement state. Always present — initialized to default on ingest.
+    public var placement: MediaPlacementState
 
     /// Video trim/audio parameters. Nil for photos.
     public var videoWindow: PersistedVideoSelection?
@@ -17,7 +17,7 @@ public struct SceneMediaAsset: Codable, Equatable, Sendable {
 
     public init(
         mediaRef: MediaRef,
-        placement: MediaPlacementState? = nil,
+        placement: MediaPlacementState,
         videoWindow: PersistedVideoSelection? = nil
     ) {
         self.mediaRef = mediaRef
@@ -30,7 +30,7 @@ public struct SceneMediaAsset: Codable, Equatable, Sendable {
     /// Creates a photo asset.
     public static func photo(
         mediaRef: MediaRef,
-        placement: MediaPlacementState? = nil
+        placement: MediaPlacementState
     ) -> SceneMediaAsset {
         SceneMediaAsset(mediaRef: mediaRef, placement: placement)
     }
@@ -38,7 +38,7 @@ public struct SceneMediaAsset: Codable, Equatable, Sendable {
     /// Creates a video asset.
     public static func video(
         mediaRef: MediaRef,
-        placement: MediaPlacementState? = nil,
+        placement: MediaPlacementState,
         videoWindow: PersistedVideoSelection
     ) -> SceneMediaAsset {
         SceneMediaAsset(mediaRef: mediaRef, placement: placement, videoWindow: videoWindow)
