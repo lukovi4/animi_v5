@@ -860,9 +860,6 @@ private extension EditorReducer {
             if let existingSlot = sceneState.mediaSlotsByBlockId?[blockId] {
                 slot.visibility = existingSlot.visibility
             }
-            // Note: slot.asset.placement may be nil here (from ingest).
-            // Hydration in PlayerViewController/TimelineCompositionEngine will set the
-            // correct default placement from template mediaInput.defaultFit on next apply.
             sceneState.mediaSlotsByBlockId?[blockId] = slot
         } else {
             sceneState.mediaSlotsByBlockId?.removeValue(forKey: blockId)
@@ -1082,10 +1079,11 @@ private extension EditorReducer {
         var sceneState = newState.draft.sceneInstanceStates[sceneInstanceId] ?? .empty
         var slots = sceneState.mediaSlotsByBlockId ?? [:]
 
-        guard var slot = slots[blockId], let currentPlacement = slot.asset.placement else {
+        guard var slot = slots[blockId] else {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
 
+        let currentPlacement = slot.asset.placement
         slot.asset.placement = .default(fitMode: currentPlacement.fitMode)
         slots[blockId] = slot
         sceneState.mediaSlotsByBlockId = slots

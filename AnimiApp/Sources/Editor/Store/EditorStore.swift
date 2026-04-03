@@ -341,14 +341,6 @@ public final class EditorStore {
         return notices
     }
 
-    // MARK: - Silent State Mutations (No Undo)
-
-    /// Writes default placement for a slot that was inserted without one.
-    /// No undo snapshot — this is a canonicalization fix, not a user action.
-    public func writeHydratedSlotPlacement(_ fitMode: FitMode, for instanceId: UUID, blockId: String) {
-        state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.asset.placement = .default(fitMode: fitMode)
-    }
-
     // MARK: - Convenience Accessors
 
     /// Returns the current draft (for persistence).
@@ -456,9 +448,8 @@ public final class EditorStore {
             return (instanceId, blockId, .default(fitMode: fitMode))
         case .resetMediaPlacement(let instanceId, let blockId):
             // Look up current fitMode from state to build the reset placement
-            if let slot = state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
-               let placement = slot.asset.placement {
-                return (instanceId, blockId, placement)
+            if let slot = state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] {
+                return (instanceId, blockId, slot.asset.placement)
             }
             return nil
         default:
