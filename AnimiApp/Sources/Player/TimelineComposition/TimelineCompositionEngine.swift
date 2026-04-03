@@ -1262,22 +1262,22 @@ public final class TimelineCompositionEngine {
         if let slots = state.mediaSlotsByBlockId {
             let blocks = compiled.runtime.blocks
             for (blockId, slot) in slots {
-                guard let placement = slot.asset.placement else { continue }
+                let placement = slot.asset.placement
                 guard let block = blocks.first(where: { $0.blockId == blockId }) else { continue }
 
-                let slotRect = block.mediaInputGeometry.placementRectLocal
+                let baselineRect = block.bindingBaseline.contentRectLocal
                 let mediaW: Double
                 let mediaH: Double
                 if let size = mediaSizes[blockId] {
                     mediaW = size.0
                     mediaH = size.1
                 } else {
-                    mediaW = slotRect.width
-                    mediaH = slotRect.height
+                    mediaW = baselineRect.width
+                    mediaH = baselineRect.height
                 }
 
                 let geometry = MediaPlacementResolver.SlotGeometry(
-                    slotRect: slotRect,
+                    baselineRectLocal: baselineRect,
                     mediaWidth: mediaW,
                     mediaHeight: mediaH
                 )
