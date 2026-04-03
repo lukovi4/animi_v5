@@ -320,7 +320,14 @@ final class PlayerViewController: UIViewController {
     private lazy var mediaIngestCoordinator: MediaIngestCoordinator = {
         let coordinator = MediaIngestCoordinator()
         coordinator.onIngestComplete = { [weak self] result in
-            self?.handleIngestComplete(result)
+            guard let self else {
+                // VC deallocated — clean up orphaned persisted file immediately
+                try? FileManager.default.removeItem(at: result.persistedURL)
+                return
+            }
+            Task { @MainActor [self] in
+                await self.handleIngestComplete(result)
+            }
         }
         coordinator.onStatusChanged = { [weak self] key, status in
             self?.handleIngestStatusChanged(key: key, status: status)
@@ -1234,7 +1241,7 @@ final class PlayerViewController: UIViewController {
                   let slot = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else {
                 return .defaultCover
             }
-            return slot.asset.placement ?? .defaultCover
+            return slot.asset.placement
         }
 
         sceneEditCtrl.onPlacementChanged = { [weak self] blockId, placement, phase in
@@ -1929,24 +1936,14 @@ final class PlayerViewController: UIViewController {
     private func handleMediaSlotChanged(instanceId: UUID, blockId: String, slot: SceneMediaSlot?) {
         let isActiveScene = activeSceneInstanceId == instanceId || sceneEditTargetInstanceId == instanceId
 
-        // Hydrate nil placement only for the active scene (where scenePlayer has correct template).
-        // For other scenes, engine hydrates via updateSceneState with correct per-sceneType resources.
-        var hydratedSlot = slot
-        if isActiveScene, var s = hydratedSlot, s.asset.placement == nil, let player = scenePlayer {
-            let fitMode = player.mediaInputConfig(blockId: blockId)?.defaultFit ?? .cover
-            s.asset.placement = .default(fitMode: fitMode)
-            hydratedSlot = s
-            editorStore?.writeHydratedSlotPlacement(fitMode, for: instanceId, blockId: blockId)
-        }
-
         // Scene-edit path: apply directly (only for active scene)
         if isActiveScene, let player = scenePlayer, let service = userMediaService {
             let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
-            SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: hydratedSlot, deps: deps)
+            SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slot, deps: deps)
             metalView.setNeedsDisplay()
         }
 
-        // Timeline path: full state update (engine hydrates if needed for any scene)
+        // Timeline path: full state update for any scene
         if let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId] {
             Task { @MainActor in
                 await timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId)
@@ -1967,8 +1964,8 @@ final class PlayerViewController: UIViewController {
         // Find active instance and its placement
         let instanceId = sceneEditTargetInstanceId ?? activeSceneInstanceId
         guard let instanceId,
-              let slot = editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
-              let placement = slot.asset.placement else { return }
+              let slot = editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else { return }
+        let placement = slot.asset.placement
 
         // Re-resolve with actual media size now available
         let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
@@ -2100,7 +2097,7 @@ final class PlayerViewController: UIViewController {
         let ingestStatus = mediaIngestCoordinator.status(for: ingestKey)
 
         // Check if placement is at default (for reset button visibility)
-        let isPlacementDefault = slot?.asset.placement?.isNearDefault ?? true
+        let isPlacementDefault = slot?.asset.placement.isNearDefault ?? true
 
         editorLayoutContainer.configureMediaBlockActionBar(
             blockId: blockId,
@@ -3333,31 +3330,77 @@ final class PlayerViewController: UIViewController {
     /// 2. Persist slot to store for result.sceneInstanceId (always, if scene exists).
     /// 3. Runtime apply ONLY if activeSceneInstanceId == result.sceneInstanceId.
     /// 4. If target scene was deleted, delete the persisted file (orphan cleanup).
-    private func handleIngestComplete(_ result: IngestResult) {
-        // Guard: target scene must still exist in the timeline
-        let sceneExists = editorStore?.state.canonicalTimeline.sceneItems
-            .contains(where: { $0.id == result.sceneInstanceId }) ?? false
+    @MainActor
+    private func handleIngestComplete(_ result: IngestResult) async {
+        let timeline = editorStore?.state.canonicalTimeline
 
-        if !sceneExists {
+        // Guard: target scene must still exist in the timeline
+        guard let sceneItem = timeline?.sceneItems.first(where: { $0.id == result.sceneInstanceId }) else {
             // Scene was deleted while ingest was in-flight — clean up persisted file
             try? FileManager.default.removeItem(at: result.persistedURL)
             log("[UserMedia] Ingest completed for deleted scene \(result.sceneInstanceId), cleaned up orphan")
             return
         }
 
-        // Persist slot to store (safe: reducer has its own guard, but scene exists here)
+        // Resolve defaultFit from template metadata of the target scene
+        let defaultFit: FitMode = await resolveDefaultFitAsync(
+            sceneItem: sceneItem,
+            timeline: timeline,
+            blockId: result.blockId
+        )
+
+        // Re-validate: scene may have been deleted during async defaultFit resolution
+        let currentTimeline = editorStore?.state.canonicalTimeline
+        guard currentTimeline?.sceneItems.contains(where: { $0.id == result.sceneInstanceId }) == true else {
+            try? FileManager.default.removeItem(at: result.persistedURL)
+            log("[UserMedia] Scene \(result.sceneInstanceId) deleted during defaultFit resolution, cleaned up orphan")
+            return
+        }
+
+        let placement = MediaPlacementState.default(fitMode: defaultFit)
+
+        // Build final slot with non-nil placement
+        let slot: SceneMediaSlot
+        switch result.mediaKind {
+        case .photo:
+            slot = .photo(mediaRef: result.mediaRef, placement: placement)
+        case .video:
+            guard let videoWindow = result.videoWindow else {
+                assertionFailure("[UserMedia] Video ingest missing videoWindow")
+                try? FileManager.default.removeItem(at: result.persistedURL)
+                log("[UserMedia] Video ingest missing videoWindow, cleaned up orphan")
+                return
+            }
+            slot = .video(mediaRef: result.mediaRef, placement: placement, videoWindow: videoWindow)
+        }
+
+        // Persist slot to store
         editorStore?.dispatch(.setMediaSlot(
             sceneInstanceId: result.sceneInstanceId,
             blockId: result.blockId,
-            slot: result.slot
+            slot: slot
         ))
 
-        // PR-F: Runtime apply is handled canonically via dispatch(.setMediaSlot) → onMediaSlotChanged
-        // → handleMediaSlotChanged → SceneRuntimeStateApplier.applySlotChange → MediaRestoreCoordinator.restore.
-        // No manual setPhoto/setVideo call needed here — it was a duplicate path causing a race.
+        log("[UserMedia] Ingest complete for block '\(result.blockId)'@\(result.sceneInstanceId): \(result.mediaRef.id)")
+    }
 
-        log("[UserMedia] Ingest complete for block '\(result.blockId)'@\(result.sceneInstanceId): \(result.slot.mediaRef.id)")
-
+    /// Resolves defaultFit from template metadata via scene-type resources cache.
+    /// For cold/inactive scenes, preloads metadata asynchronously before retry.
+    private func resolveDefaultFitAsync(
+        sceneItem: TimelineItem,
+        timeline: CanonicalTimeline?,
+        blockId: String
+    ) async -> FitMode {
+        guard let payload = timeline?.payloads[sceneItem.payloadId],
+              case .scene(let scenePayload) = payload,
+              let cache = timelineCompositionEngine?.resourcesCache else {
+            return .cover
+        }
+        return await DefaultFitResolver.resolve(
+            sceneTypeId: scenePayload.sceneTypeId,
+            blockId: blockId,
+            cache: cache
+        )
     }
 
     private func presentPhotoPicker(for filter: PHPickerFilter) {
