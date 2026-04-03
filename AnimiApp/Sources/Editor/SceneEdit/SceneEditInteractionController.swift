@@ -133,7 +133,21 @@ final class SceneEditInteractionController {
         case .changed:
             guard var session = gestureSession else { return }
             let canvasDelta = mapper.viewDeltaToCanvas(translation)
-            session.translationDelta = (x: Double(canvasDelta.x), y: Double(canvasDelta.y))
+
+            // Convert canvas delta to binding-local delta via inverse edit binding matrix
+            let bindingLocalDelta: (x: Double, y: Double)
+            if let player = getScenePlayer?(),
+               let bindingToCanvas = player.editBindingToCanvasMatrix(blockId: blockId),
+               let inverseBTC = bindingToCanvas.inverse {
+                // Transform delta vector (not point): apply inverse matrix to direction only
+                let localDelta = inverseBTC.applyToVector(Vec2D(x: Double(canvasDelta.x), y: Double(canvasDelta.y)))
+                bindingLocalDelta = (x: localDelta.x, y: localDelta.y)
+            } else {
+                // Fallback: use canvas delta directly (scale-only, no rotation)
+                bindingLocalDelta = (x: Double(canvasDelta.x), y: Double(canvasDelta.y))
+            }
+
+            session.translationDelta = bindingLocalDelta
             gestureSession = session
             onPlacementChanged?(blockId, session.currentPlacement(), .changed)
 

@@ -12,7 +12,8 @@ struct PlacementGestureSession {
     /// Placement snapshot at gesture start (read from store).
     let baseline: MediaPlacementState
 
-    /// Cumulative canvas-space translation from gesture start.
+    /// Cumulative binding-local translation from gesture start.
+    /// Converted from canvas-space via inverse edit binding world matrix.
     var translationDelta: (x: Double, y: Double) = (0, 0)
 
     /// Scale multiplier from UIPinchGestureRecognizer (1.0 = no change).
