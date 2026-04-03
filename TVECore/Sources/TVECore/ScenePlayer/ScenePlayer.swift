@@ -340,14 +340,60 @@ public final class ScenePlayer {
         compiledScene?.runtime.scene.mediaBlocks.first { $0.id == blockId }?.input
     }
 
-    /// Returns the canonical media aperture geometry for a block (PR-H).
+    /// Returns the canonical binding baseline geometry for media placement.
     ///
-    /// Single source of truth for placement geometry — computed from AnimIR during compilation.
+    /// Single source of truth for placement — derived from the edit variant's
+    /// binding placeholder asset size during compilation.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: BindingBaselineRuntime, or `nil` if block not found
+    public func bindingBaseline(blockId: String) -> BindingBaselineRuntime? {
+        compiledScene?.runtime.blocks.first { $0.blockId == blockId }?.bindingBaseline
+    }
+
+    /// Returns the media aperture geometry for clip/hit-test/overlay.
+    ///
+    /// **Not used for placement math.** Use `bindingBaseline(blockId:)` for placement.
     ///
     /// - Parameter blockId: Identifier of the media block
     /// - Returns: MediaInputGeometryRuntime, or `nil` if block not found
     public func mediaInputGeometry(blockId: String) -> MediaInputGeometryRuntime? {
         compiledScene?.runtime.blocks.first { $0.blockId == blockId }?.mediaInputGeometry
+    }
+
+    /// Returns the full binding-local-to-canvas matrix for the edit variant.
+    ///
+    /// Composition: `blockTransform * bindingLayerWorldInAnim`
+    ///
+    /// Used by gesture controllers to convert canvas-space pan deltas
+    /// into binding-local deltas via `matrix.inverted()`.
+    ///
+    /// - Parameter blockId: Identifier of the media block
+    /// - Returns: Matrix2D mapping binding-local space to canvas space, or `nil` on failure
+    public func editBindingToCanvasMatrix(blockId: String) -> Matrix2D? {
+        guard let compiled = compiledScene else { return nil }
+        let runtime = compiled.runtime
+
+        guard let block = runtime.blocks.first(where: { $0.blockId == blockId }),
+              var editVariant = resolveVariant(for: block, mode: .edit) else {
+            return nil
+        }
+
+        // Get binding layer world matrix in animation space
+        guard let bindingWorld = editVariant.animIR.bindingLayerWorldMatrix(
+            frame: SceneRenderPlan.editFrameIndex
+        ) else {
+            return nil
+        }
+
+        // Compose with blockTransform (anim space -> canvas space)
+        let blockTransform = SceneTransforms.blockTransform(
+            animSize: editVariant.animIR.meta.size,
+            blockRect: block.rectCanvas,
+            canvasSize: runtime.canvasSize
+        )
+
+        return blockTransform.concatenating(bindingWorld)
     }
 
     /// Returns the allowed media types for a block.

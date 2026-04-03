@@ -227,7 +227,76 @@ public final class SceneCompiler {
             variants: variantRuntimes
         )
 
-        // PR-H: Compute canonical media aperture geometry from editVariant AnimIR
+        // Compute canonical binding baseline from edit variant's placeholder asset
+        let editBinding = editVariant.animIR.binding
+        guard let editAssetSize = editVariant.animIR.assets.sizeById[editBinding.boundAssetId] else {
+            throw ScenePlayerError.invalidMediaInputGeometry(
+                blockId: mediaBlock.id,
+                reason: "boundAssetId '\(editBinding.boundAssetId)' has no asset size in edit variant"
+            )
+        }
+        guard editAssetSize.width > 0, editAssetSize.height > 0,
+              editAssetSize.width.isFinite, editAssetSize.height.isFinite else {
+            throw ScenePlayerError.invalidMediaInputGeometry(
+                blockId: mediaBlock.id,
+                reason: "binding asset size invalid: \(editAssetSize.width)x\(editAssetSize.height)"
+            )
+        }
+        let bindingBaseline = BindingBaselineRuntime(
+            boundAssetId: editBinding.boundAssetId,
+            contentSizeLocal: SizeD(width: editAssetSize.width, height: editAssetSize.height)
+        )
+
+        // Validate variant baseline compatibility:
+        // All variants must have matching binding asset size
+        for variant in variantRuntimes where variant.variantId != editVariant.variantId {
+            let variantBinding = variant.animIR.binding
+
+            // Binding layer must resolve to an asset size
+            guard let variantAssetSize = variant.animIR.assets.sizeById[variantBinding.boundAssetId] else {
+                throw ScenePlayerError.invalidMediaInputGeometry(
+                    blockId: mediaBlock.id,
+                    reason: "variant '\(variant.variantId)': boundAssetId '\(variantBinding.boundAssetId)' has no asset size"
+                )
+            }
+
+            // Variant binding asset size must match canonical baseline.
+            // Mismatch indicates a template authoring error — placement assumes uniform size.
+            if variantAssetSize.width != editAssetSize.width ||
+               variantAssetSize.height != editAssetSize.height {
+                throw ScenePlayerError.invalidMediaInputGeometry(
+                    blockId: mediaBlock.id,
+                    reason: "variant '\(variant.variantId)': binding asset size " +
+                            "\(variantAssetSize.width)x\(variantAssetSize.height) differs from " +
+                            "baseline \(editAssetSize.width)x\(editAssetSize.height)"
+                )
+            }
+
+            // Clip contract: if variant has its own mediaInput, validate path consistency.
+            // Edit variant clip is always used via InputClipOverride when variant lacks mediaInput.
+            // When variant has its own mediaInput with different geometry, it's used for that variant's clip.
+            if let variantInputGeo = variant.animIR.inputGeometry,
+               let editInputGeo = editVariant.animIR.inputGeometry {
+                if variantInputGeo.compId != editInputGeo.compId {
+                    throw ScenePlayerError.invalidMediaInputGeometry(
+                        blockId: mediaBlock.id,
+                        reason: "variant '\(variant.variantId)': " +
+                                "mediaInput in different composition than edit variant"
+                    )
+                }
+                if let variantPath = variantInputGeo.animPath.staticPath,
+                   let editPath = editInputGeo.animPath.staticPath,
+                   variantPath != editPath {
+                    throw ScenePlayerError.invalidMediaInputGeometry(
+                        blockId: mediaBlock.id,
+                        reason: "variant '\(variant.variantId)': " +
+                                "mediaInput clip path differs from edit variant"
+                    )
+                }
+            }
+        }
+
+        // Compute media aperture geometry for clip/hit-test/overlay (not for placement)
         var editIR = editVariant.animIR
         guard let apertureBounds = editIR.mediaInputBoundsInCompSpace(frame: SceneRenderPlan.editFrameIndex) else {
             throw ScenePlayerError.invalidMediaInputGeometry(
@@ -249,6 +318,7 @@ public final class SceneCompiler {
             zIndex: mediaBlock.zIndex,
             orderIndex: orderIndex,
             rectCanvas: RectD(from: mediaBlock.rect),
+            bindingBaseline: bindingBaseline,
             mediaInputGeometry: mediaInputGeometry,
             timing: timing,
             containerClip: mediaBlock.containerClip,

@@ -67,12 +67,43 @@ public struct SceneRuntime: Sendable, Codable {
 
 }
 
+// MARK: - Binding Baseline Runtime
+
+/// Canonical binding placeholder geometry for media placement.
+///
+/// Single source of truth for how user media is fitted into a template block.
+/// Derived from the edit variant's binding layer placeholder asset size.
+///
+/// `contentRectLocal` defines the local-space rect of the placeholder image asset.
+/// The renderer draws quads from (0,0) to (w,h), and anchor/position transforms
+/// are already baked into the binding layer's world matrix (`resolved.worldMatrix`).
+///
+/// User placement (`userTransform`) is computed as a delta relative to this rect,
+/// not relative to the mediaInput aperture AABB.
+public struct BindingBaselineRuntime: Sendable, Codable, Equatable {
+    /// Namespaced asset ID of the binding placeholder (e.g., "no-anim.json|image_2")
+    public let boundAssetId: String
+
+    /// Placeholder asset size in local coordinates
+    public let contentSizeLocal: SizeD
+
+    /// Content rect in local coordinates: always RectD(x: 0, y: 0, width: w, height: h).
+    /// Matches the renderer's quad geometry origin.
+    public let contentRectLocal: RectD
+
+    public init(boundAssetId: String, contentSizeLocal: SizeD) {
+        self.boundAssetId = boundAssetId
+        self.contentSizeLocal = contentSizeLocal
+        self.contentRectLocal = RectD(x: 0, y: 0, width: contentSizeLocal.width, height: contentSizeLocal.height)
+    }
+}
+
 // MARK: - Media Input Geometry Runtime (PR-H)
 
-/// Canonical media aperture geometry computed from the compiled animation IR.
+/// Media aperture geometry for clip, hit-test, and overlay.
 ///
-/// Single source of truth for media placement — replaces the legacy `inputRect`
-/// which came from scene.json's `MediaInput.rect` (wrong for aperture-based templates).
+/// **Not used for placement math.** Placement is driven by `BindingBaselineRuntime`.
+/// This type provides the mediaInput aperture AABB for clipping and editor overlays only.
 public struct MediaInputGeometryRuntime: Sendable, Codable, Equatable {
     /// Bounding rect of the media aperture in block-local coordinates,
     /// from compiled media aperture geometry.
@@ -99,7 +130,11 @@ public struct BlockRuntime: Sendable, Codable {
     /// Block rectangle in canvas coordinates
     public let rectCanvas: RectD
 
-    /// Canonical media aperture geometry from compiled AnimIR (PR-H).
+    /// Canonical binding baseline geometry for media placement.
+    /// Derived from the edit variant's binding placeholder asset size.
+    public let bindingBaseline: BindingBaselineRuntime
+
+    /// Media aperture geometry for clip/hit-test/overlay (not for placement).
     public let mediaInputGeometry: MediaInputGeometryRuntime
 
     /// Block timing (visibility window)
@@ -145,6 +180,7 @@ public struct BlockRuntime: Sendable, Codable {
         zIndex: Int,
         orderIndex: Int,
         rectCanvas: RectD,
+        bindingBaseline: BindingBaselineRuntime,
         mediaInputGeometry: MediaInputGeometryRuntime,
         timing: BlockTiming,
         containerClip: ContainerClip,
@@ -157,6 +193,7 @@ public struct BlockRuntime: Sendable, Codable {
         self.zIndex = zIndex
         self.orderIndex = orderIndex
         self.rectCanvas = rectCanvas
+        self.bindingBaseline = bindingBaseline
         self.mediaInputGeometry = mediaInputGeometry
         self.timing = timing
         self.containerClip = containerClip

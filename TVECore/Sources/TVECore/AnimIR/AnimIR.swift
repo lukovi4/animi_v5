@@ -1131,5 +1131,51 @@ extension AnimIR {
             sceneFrameIndex: frame
         )
     }
+
+    // MARK: - Binding Layer World Matrix
+
+    /// Returns the binding layer's world matrix in animation composition space.
+    ///
+    /// Includes parent chain, precomp container chain, and the layer's own local transform.
+    /// Does NOT include userTransform — this is the pure template baseline.
+    ///
+    /// Used by `ScenePlayer.editBindingToCanvasMatrix(blockId:)` to convert
+    /// gesture deltas from canvas space to binding-local space.
+    ///
+    /// - Parameter frame: Frame index (default: 0)
+    /// - Returns: World matrix in composition space, or nil on resolution failure
+    public mutating func bindingLayerWorldMatrix(frame: Int = 0) -> Matrix2D? {
+        let bindingCompId = binding.boundCompId
+        let bindingLayerId = binding.boundLayerId
+
+        guard let comp = comps[bindingCompId],
+              let layer = comp.layers.first(where: { $0.id == bindingLayerId }) else {
+            return nil
+        }
+
+        // Resolve precomp container chain from root to binding comp
+        guard let precompChain = resolvePrecompChainTransform(
+            targetCompId: bindingCompId,
+            frame: Double(frame),
+            sceneFrameIndex: frame
+        ) else {
+            return nil
+        }
+
+        // Compute layer world within its composition
+        let layerById = Dictionary(uniqueKeysWithValues: comp.layers.map { ($0.id, $0) })
+        guard let (layerWorld, _) = computeWorldTransform(
+            for: layer,
+            at: Double(frame),
+            baseWorldMatrix: precompChain,
+            baseWorldOpacity: 1.0,
+            layerById: layerById,
+            sceneFrameIndex: frame
+        ) else {
+            return nil
+        }
+
+        return layerWorld
+    }
 }
 
