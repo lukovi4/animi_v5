@@ -757,6 +757,7 @@ final class HitTestOverlayTests: XCTestCase {
             zIndex: 0,
             orderIndex: 0,
             rectCanvas: RectD(x: 0, y: 0, width: 100, height: 100),
+            bindingBaseline: BindingBaselineRuntime(boundAssetId: "test|img", contentSizeLocal: SizeD(width: 100, height: 100)),
             mediaInputGeometry: MediaInputGeometryRuntime(placementRectLocal: RectD(x: 0, y: 0, width: 100, height: 100)),
             timing: BlockTiming(startFrame: 0, endFrame: 100),
             containerClip: .slotRect,
