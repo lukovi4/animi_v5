@@ -426,7 +426,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             mediaSlotsByBlockId: [
                 "block_v1": .video(
                     mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
-                    visibility: true,
+                    placement: .defaultCover,
                     videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: durationSeconds)
                 )
             ]
@@ -478,9 +478,11 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let state = SceneState(
             mediaSlotsByBlockId: [
                 "block_v1": SceneMediaSlot(
-                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
-                    visibility: true,
-                    videoWindow: nil
+                    asset: SceneMediaAsset(
+                        mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                        placement: .defaultCover,
+                        videoWindow: nil
+                    )
                 )
             ]
         )
@@ -527,7 +529,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             mediaSlotsByBlockId: [
                 "block_v1": .video(
                     mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
-                    visibility: true,
+                    placement: .defaultCover,
                     videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 999.0)
                 )
             ]
@@ -576,6 +578,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
                 "block_v1": .video(
                     mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
                     visibility: false,
+                    placement: .defaultCover,
                     videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
                 )
             ]
@@ -625,7 +628,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             mediaSlotsByBlockId: [
                 "block_v1": .video(
                     mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
-                    visibility: true,
+                    placement: .defaultCover,
                     videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
                 )
             ]

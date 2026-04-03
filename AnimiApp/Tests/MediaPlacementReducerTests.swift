@@ -188,20 +188,17 @@ final class MediaPlacementReducerTests: XCTestCase {
         XCTAssertTrue(updatedPlacement?.isDefault ?? false)
     }
 
-    func test_resetMediaPlacement_noPlacement_noop() {
-        // Slot exists but placement is nil (legacy, not yet hydrated)
-        let (state, instanceId, blockId) = makeStateWithMediaSlot(placement: nil)
-
-        // Override placement to nil
-        var mutState = state
-        mutState.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.asset.placement = nil
+    func test_resetMediaPlacement_alreadyDefault_noop() {
+        // Slot exists with default placement — reset is a no-op
+        let (state, instanceId, blockId) = makeStateWithMediaSlot()
 
         let result = EditorReducer.reduce(
-            state: mutState,
+            state: state,
             action: .resetMediaPlacement(sceneInstanceId: instanceId, blockId: blockId)
         )
 
-        XCTAssertFalse(result.shouldPushSnapshot, "No placement = no-op")
+        // Reset on already-default placement still pushes snapshot (idempotent write)
+        XCTAssertTrue(result.shouldPushSnapshot)
     }
 
     // MARK: - Operations Table (from task.md)
@@ -210,7 +207,8 @@ final class MediaPlacementReducerTests: XCTestCase {
         let (state, instanceId, _) = makeStateWithoutSlot()
         let newBlockId = "block_new"
         let slot = SceneMediaSlot.photo(
-            mediaRef: .file("Media/UserMedia/new.jpg", mediaKind: .photo)
+            mediaRef: .file("Media/UserMedia/new.jpg", mediaKind: .photo),
+            placement: .defaultCover
         )
 
         let result = EditorReducer.reduce(
@@ -227,7 +225,8 @@ final class MediaPlacementReducerTests: XCTestCase {
     func test_replaceMedia_createsNewSlot() {
         let (state, instanceId, blockId) = makeStateWithMediaSlot()
         let newSlot = SceneMediaSlot.photo(
-            mediaRef: .file("Media/UserMedia/replacement.jpg", mediaKind: .photo)
+            mediaRef: .file("Media/UserMedia/replacement.jpg", mediaKind: .photo),
+            placement: .defaultCover
         )
 
         let result = EditorReducer.reduce(
@@ -255,7 +254,8 @@ final class MediaPlacementReducerTests: XCTestCase {
 
         // Then: replace media — visibility must stay false
         let newSlot = SceneMediaSlot.photo(
-            mediaRef: .file("Media/UserMedia/replacement.jpg", mediaKind: .photo)
+            mediaRef: .file("Media/UserMedia/replacement.jpg", mediaKind: .photo),
+            placement: .defaultCover
         )
         let replaceResult = EditorReducer.reduce(
             state: hideResult.state,
@@ -336,9 +336,9 @@ final class MediaPlacementReducerTests: XCTestCase {
 
         let copiedSlot = result.state.draft.sceneInstanceStates[newInstanceId]?.mediaSlotsByBlockId?[blockId]
         XCTAssertNotNil(copiedSlot)
-        XCTAssertEqual(copiedSlot?.asset.placement?.fitMode, .contain)
-        XCTAssertEqual(copiedSlot?.asset.placement?.offsetX, 42)
-        XCTAssertEqual(copiedSlot?.asset.placement?.userScale, 1.5)
+        XCTAssertEqual(copiedSlot?.asset.placement.fitMode, .contain)
+        XCTAssertEqual(copiedSlot?.asset.placement.offsetX, 42)
+        XCTAssertEqual(copiedSlot?.asset.placement.userScale, 1.5)
     }
 
     // MARK: - Callback Routing (EditorStore level)
@@ -369,7 +369,7 @@ final class MediaPlacementReducerTests: XCTestCase {
         var slotCallbackFired = false
         store.onMediaSlotChanged = { _, _, _ in slotCallbackFired = true }
 
-        let slot = SceneMediaSlot.photo(mediaRef: .file("Media/photo.jpg", mediaKind: .photo))
+        let slot = SceneMediaSlot.photo(mediaRef: .file("Media/photo.jpg", mediaKind: .photo), placement: .default(fitMode: .cover))
         store.dispatch(.setMediaSlot(sceneInstanceId: instanceId, blockId: "block1", slot: slot))
 
         XCTAssertTrue(slotCallbackFired)
@@ -457,7 +457,7 @@ final class MediaPlacementReducerTests: XCTestCase {
 
         // Verify mid-gesture state is applied
         let midSlot = store.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]
-        XCTAssertEqual(midSlot?.asset.placement?.offsetX, 100, "Changed should update draft")
+        XCTAssertEqual(midSlot?.asset.placement.offsetX, 100, "Changed should update draft")
 
         // cancelled → restores baseline
         store.dispatch(.setMediaPlacement(
@@ -466,8 +466,8 @@ final class MediaPlacementReducerTests: XCTestCase {
         ))
 
         let restoredSlot = store.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]
-        XCTAssertEqual(restoredSlot?.asset.placement?.offsetX, 0, "Cancel must restore baseline")
-        XCTAssertEqual(restoredSlot?.asset.placement?.userScale, 1.0, "Cancel must restore baseline scale")
+        XCTAssertEqual(restoredSlot?.asset.placement.offsetX, 0, "Cancel must restore baseline")
+        XCTAssertEqual(restoredSlot?.asset.placement.userScale, 1.0, "Cancel must restore baseline scale")
     }
 
     @MainActor
@@ -489,15 +489,15 @@ final class MediaPlacementReducerTests: XCTestCase {
 
         // Verify ended state
         let endedSlot = store.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]
-        XCTAssertEqual(endedSlot?.asset.placement?.offsetX, 200)
-        XCTAssertEqual(endedSlot?.asset.placement?.rotationDegrees, 45)
+        XCTAssertEqual(endedSlot?.asset.placement.offsetX, 200)
+        XCTAssertEqual(endedSlot?.asset.placement.rotationDegrees, 45)
 
         // Undo → restores pre-began baseline
         store.dispatch(.undo)
 
         let undoneSlot = store.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]
-        XCTAssertEqual(undoneSlot?.asset.placement?.offsetX, 0, "Undo must restore pre-gesture baseline")
-        XCTAssertEqual(undoneSlot?.asset.placement?.userScale, 1.0, "Undo must restore baseline scale")
-        XCTAssertEqual(undoneSlot?.asset.placement?.rotationDegrees, 0, "Undo must restore baseline rotation")
+        XCTAssertEqual(undoneSlot?.asset.placement.offsetX, 0, "Undo must restore pre-gesture baseline")
+        XCTAssertEqual(undoneSlot?.asset.placement.userScale, 1.0, "Undo must restore baseline scale")
+        XCTAssertEqual(undoneSlot?.asset.placement.rotationDegrees, 0, "Undo must restore baseline rotation")
     }
 }

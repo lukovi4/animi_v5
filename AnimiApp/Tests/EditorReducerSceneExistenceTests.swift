@@ -51,7 +51,7 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
     func test_setMediaSlot_existingScene_succeeds() {
         let state = makeStateWithOneScene()
         let sceneId = state.sceneItems[0].id
-        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"))
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"), placement: .default(fitMode: .cover))
 
         let result = EditorReducer.reduce(
             state: state,
@@ -67,7 +67,7 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
     func test_setMediaSlot_deletedScene_isNoOp() {
         let state = makeStateWithOneScene()
         let deletedSceneId = UUID() // Not in the timeline
-        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"))
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"), placement: .default(fitMode: .cover))
 
         let result = EditorReducer.reduce(
             state: state,
@@ -100,7 +100,7 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
     func test_setVideoSelection_onPhotoSlot_isNoOp() {
         var state = makeStateWithOneScene()
         let sceneId = state.sceneItems[0].id
-        let photoSlot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"))
+        let photoSlot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"), placement: .default(fitMode: .cover))
 
         // First, assign a photo slot
         state = EditorReducer.reduce(
@@ -142,6 +142,7 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
         let sceneId = state.sceneItems[0].id
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         )
 
@@ -171,6 +172,7 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
         let selection = PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: selection
         )
 
@@ -234,7 +236,7 @@ final class EditorReducerSceneExistenceTests: XCTestCase {
             action: .setMediaSlot(
                 sceneInstanceId: sceneAId,
                 blockId: "block_01",
-                slot: .photo(mediaRef: MediaRef.file("Media/test.jpg"))
+                slot: .photo(mediaRef: MediaRef.file("Media/test.jpg"), placement: .default(fitMode: .cover))
             )
         )
 

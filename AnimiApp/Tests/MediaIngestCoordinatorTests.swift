@@ -131,7 +131,9 @@ final class MediaIngestCoordinatorTests: XCTestCase {
         let key = IngestSlotKey(sceneInstanceId: scene, blockId: "block_01")
         let result = IngestResult(
             key: key,
-            slot: .photo(mediaRef: MediaRef.file("test.jpg")),
+            mediaRef: MediaRef.file("test.jpg"),
+            mediaKind: .photo,
+            videoWindow: nil,
             persistedURL: URL(fileURLWithPath: "/tmp/test.jpg")
         )
 
@@ -259,9 +261,9 @@ final class MediaIngestCoordinatorTests: XCTestCase {
             statusChanges.append((key, status))
         }
 
-        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"))
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"), placement: .default(fitMode: .cover))
         let url = URL(fileURLWithPath: "/tmp/test.jpg")
-        coordinator.simulateIngestCompletion(key: key, slot: slot, persistedURL: url)
+        coordinator.simulateIngestCompletion(key: key, mediaRef: MediaRef.file("test.jpg"), mediaKind: .photo, persistedURL: url)
 
         // Should emit: .processing, .ready, .idle
         XCTAssertEqual(statusChanges.count, 3)
@@ -275,9 +277,9 @@ final class MediaIngestCoordinatorTests: XCTestCase {
         let coordinator = MediaIngestCoordinator()
         let key = IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")
 
-        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"))
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"), placement: .default(fitMode: .cover))
         let url = URL(fileURLWithPath: "/tmp/test.jpg")
-        coordinator.simulateIngestCompletion(key: key, slot: slot, persistedURL: url)
+        coordinator.simulateIngestCompletion(key: key, mediaRef: MediaRef.file("test.jpg"), mediaKind: .photo, persistedURL: url)
 
         XCTAssertEqual(coordinator.status(for: key), .idle)
     }
@@ -292,9 +294,9 @@ final class MediaIngestCoordinatorTests: XCTestCase {
             receivedResult = result
         }
 
-        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"))
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"), placement: .default(fitMode: .cover))
         let url = URL(fileURLWithPath: "/tmp/test.jpg")
-        coordinator.simulateIngestCompletion(key: key, slot: slot, persistedURL: url)
+        coordinator.simulateIngestCompletion(key: key, mediaRef: MediaRef.file("test.jpg"), mediaKind: .photo, persistedURL: url)
 
         XCTAssertNotNil(receivedResult)
         XCTAssertEqual(receivedResult?.key, key)
@@ -354,7 +356,7 @@ final class ControllerIngestRoutingTests: XCTestCase {
         // But the captured key still points to scene A
 
         // When: ingest completes and dispatches to store using captured key
-        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"))
+        let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"), placement: .default(fitMode: .cover))
         let result = EditorReducer.reduce(
             state: state,
             action: .setMediaSlot(
@@ -384,6 +386,7 @@ final class ControllerIngestRoutingTests: XCTestCase {
         // When: setMediaSlot for scene A (which is "inactive" in this scenario)
         let slot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/video.mp4", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
         )
         let result = EditorReducer.reduce(
@@ -418,7 +421,7 @@ final class ControllerIngestRoutingTests: XCTestCase {
             action: .setMediaSlot(
                 sceneInstanceId: sceneA,
                 blockId: "block_01",
-                slot: .photo(mediaRef: MediaRef.file("orphan.jpg"))
+                slot: .photo(mediaRef: MediaRef.file("orphan.jpg"), placement: .default(fitMode: .cover))
             )
         )
 
@@ -441,7 +444,7 @@ final class ControllerIngestRoutingTests: XCTestCase {
         // Add media first
         state = EditorReducer.reduce(
             state: state,
-            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "b1", slot: .photo(mediaRef: MediaRef.file("old.jpg")))
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "b1", slot: .photo(mediaRef: MediaRef.file("old.jpg"), placement: .default(fitMode: .cover)))
         ).state
 
         // Reset scene
@@ -456,7 +459,7 @@ final class ControllerIngestRoutingTests: XCTestCase {
         // Late completion arrives — scene still exists, so it applies
         let result = EditorReducer.reduce(
             state: state,
-            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "b1", slot: .photo(mediaRef: MediaRef.file("new.jpg")))
+            action: .setMediaSlot(sceneInstanceId: sceneId, blockId: "b1", slot: .photo(mediaRef: MediaRef.file("new.jpg"), placement: .default(fitMode: .cover)))
         )
 
         XCTAssertEqual(

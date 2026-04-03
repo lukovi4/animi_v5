@@ -596,7 +596,7 @@ final class EditorReducerTests: XCTestCase {
 
         let sceneId = state.sceneItems[0].id
         let mediaRef = MediaRef.file("Media/UserMedia/test.jpg")
-        let slot = SceneMediaSlot.photo(mediaRef: mediaRef)
+        let slot = SceneMediaSlot.photo(mediaRef: mediaRef, placement: .default(fitMode: .cover))
 
         // When: set slot
         let result = EditorReducer.reduce(
@@ -616,7 +616,7 @@ final class EditorReducerTests: XCTestCase {
         var draft = makeDraft(sceneDurations: [2_000_000])
         let sceneId = draft.canonicalTimeline.sceneItems[0].id
         var sceneState = SceneState.empty
-        sceneState.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("old.jpg"))]
+        sceneState.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("old.jpg"), placement: .default(fitMode: .cover))]
         draft.sceneInstanceStates[sceneId] = sceneState
 
         let state = EditorReducer.reduce(
@@ -695,7 +695,7 @@ final class EditorReducerTests: XCTestCase {
 
         var stateA2 = SceneState.empty
         stateA2.variantOverrides["block1"] = "variant_a2"
-        stateA2.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("media_a2.jpg"))]
+        stateA2.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("media_a2.jpg"), placement: .default(fitMode: .cover))]
         draft.sceneInstanceStates[sceneA2] = stateA2
 
         let state = EditorReducer.reduce(
@@ -962,7 +962,7 @@ final class EditorReducerTests: XCTestCase {
         var state1 = SceneState.empty
         state1.variantOverrides["block1"] = "variant_a"
         state1.layerToggles["block1"] = ["toggle1": true, "toggle2": false]
-        state1.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("Media/test.jpg"))]
+        state1.mediaSlotsByBlockId = ["block1": .photo(mediaRef: MediaRef.file("Media/test.jpg"), placement: .default(fitMode: .cover))]
         draft.sceneInstanceStates[scene1Id] = state1
 
         var state2 = SceneState.empty
@@ -1132,7 +1132,7 @@ final class EditorReducerTests: XCTestCase {
         let sceneId = state.canonicalTimeline.sceneItems[0].id
         // Need an existing slot for visibility to be updated
         var sceneState = SceneState.empty
-        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"), visibility: true)]
+        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"), visibility: true, placement: .default(fitMode: .cover))]
         state.draft.sceneInstanceStates[sceneId] = sceneState
 
         let result = EditorReducer.reduce(
@@ -1150,7 +1150,7 @@ final class EditorReducerTests: XCTestCase {
         let sceneId = state.canonicalTimeline.sceneItems[0].id
         // Start with disabled slot
         var sceneState = SceneState.empty
-        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"), visibility: false)]
+        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"), visibility: false, placement: .default(fitMode: .cover))]
         state.draft.sceneInstanceStates[sceneId] = sceneState
 
         let result = EditorReducer.reduce(
@@ -1168,7 +1168,7 @@ final class EditorReducerTests: XCTestCase {
         // Add some state
         var sceneState = SceneState.empty
         sceneState.variantOverrides["block_1"] = "variant_a"
-        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"))]
+        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("test.jpg"), placement: .default(fitMode: .cover))]
         state.draft.sceneInstanceStates[sceneId] = sceneState
 
         let result = EditorReducer.reduce(
@@ -1185,7 +1185,7 @@ final class EditorReducerTests: XCTestCase {
         let state = makeStateInSceneEdit()
         let sceneId = state.canonicalTimeline.sceneItems[0].id
         let mediaRef = MediaRef.file("Media/UserMedia/test.jpg")
-        let slot = SceneMediaSlot.photo(mediaRef: mediaRef)
+        let slot = SceneMediaSlot.photo(mediaRef: mediaRef, placement: .default(fitMode: .cover))
 
         let result = EditorReducer.reduce(
             state: state,
@@ -1204,7 +1204,7 @@ final class EditorReducerTests: XCTestCase {
         let sceneId = state.canonicalTimeline.sceneItems[0].id
         // Start with assigned slot
         var sceneState = SceneState.empty
-        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("old.jpg"))]
+        sceneState.mediaSlotsByBlockId = ["block_1": .photo(mediaRef: MediaRef.file("old.jpg"), placement: .default(fitMode: .cover))]
         state.draft.sceneInstanceStates[sceneId] = sceneState
 
         let result = EditorReducer.reduce(
@@ -1295,10 +1295,11 @@ final class EditorReducerTests: XCTestCase {
     func test_sceneState_mediaSlots_jsonRoundtrip() throws {
         var state = SceneState.empty
         state.mediaSlotsByBlockId = [
-            "block_1": .photo(mediaRef: MediaRef.file("Media/test.jpg"), visibility: true),
+            "block_1": .photo(mediaRef: MediaRef.file("Media/test.jpg"), visibility: true, placement: .default(fitMode: .cover)),
             "block_2": .video(
                 mediaRef: MediaRef.file("Media/video.mp4", mediaKind: .video),
                 visibility: false,
+                placement: .default(fitMode: .cover),
                 videoWindow: PersistedVideoSelection(trimStart: 1.0, trimEnd: 5.0)
             )
         ]
@@ -1328,6 +1329,7 @@ final class EditorReducerTests: XCTestCase {
         let sceneId = store.state.sceneItems[0].id
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         )
         store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
@@ -1360,6 +1362,7 @@ final class EditorReducerTests: XCTestCase {
         let sceneId = store.state.sceneItems[0].id
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         )
         store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
@@ -1387,6 +1390,7 @@ final class EditorReducerTests: XCTestCase {
         let originalSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: originalSelection
         )
         store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
@@ -1418,6 +1422,7 @@ final class EditorReducerTests: XCTestCase {
         let selection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 9.0)
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: selection
         )
         store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))
@@ -1442,6 +1447,7 @@ final class EditorReducerTests: XCTestCase {
         let sceneId = store.state.sceneItems[0].id
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         )
         store.dispatch(.setMediaSlot(sceneInstanceId: sceneId, blockId: "block_01", slot: videoSlot))

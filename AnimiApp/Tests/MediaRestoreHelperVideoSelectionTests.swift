@@ -180,7 +180,7 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         )
 
         let slots: [String: SceneMediaSlot] = [
-            "block_v1": .video(mediaRef: makeVideoMediaRef(), videoWindow: persisted)
+            "block_v1": .video(mediaRef: makeVideoMediaRef(), placement: .default(fitMode: .cover), videoWindow: persisted)
         ]
 
         MediaRestoreCoordinator.restore(
@@ -207,7 +207,7 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
     func test_restoreVideo_withoutVideoWindow_failsExplicitly() async throws {
         // Construct a slot with nil videoWindow (legacy/corrupt data)
         let slots: [String: SceneMediaSlot] = [
-            "block_v1": SceneMediaSlot(mediaRef: makeVideoMediaRef(), visibility: true, videoWindow: nil)
+            "block_v1": SceneMediaSlot(asset: SceneMediaAsset(mediaRef: makeVideoMediaRef(), placement: .defaultCover, videoWindow: nil))
         ]
 
         MediaRestoreCoordinator.restore(
@@ -227,7 +227,7 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
     func test_restoreVideo_respectsSlotVisibility() async throws {
         let persisted = PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         let slots: [String: SceneMediaSlot] = [
-            "block_v1": .video(mediaRef: makeVideoMediaRef(), visibility: false, videoWindow: persisted)
+            "block_v1": .video(mediaRef: makeVideoMediaRef(), visibility: false, placement: .default(fitMode: .cover), videoWindow: persisted)
         ]
 
         MediaRestoreCoordinator.restore(

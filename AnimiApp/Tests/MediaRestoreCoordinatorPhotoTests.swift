@@ -146,7 +146,7 @@ final class MediaRestoreCoordinatorPhotoTests: XCTestCase {
     /// Valid persisted JPEG → restore → accepted → eventually ready.
     func test_restorePhoto_validFile_eventuallyReady() async throws {
         let slots: [String: SceneMediaSlot] = [
-            "block_p1": .photo(mediaRef: makePhotoMediaRef())
+            "block_p1": .photo(mediaRef: makePhotoMediaRef(), placement: .default(fitMode: .cover))
         ]
 
         let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut)
@@ -167,7 +167,7 @@ final class MediaRestoreCoordinatorPhotoTests: XCTestCase {
         let missingRef = MediaRef(kind: .file, id: missingPath, mediaKind: .photo)
 
         let slots: [String: SceneMediaSlot] = [
-            "block_p1": .photo(mediaRef: missingRef)
+            "block_p1": .photo(mediaRef: missingRef, placement: .default(fitMode: .cover))
         ]
 
         let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut)
@@ -181,7 +181,7 @@ final class MediaRestoreCoordinatorPhotoTests: XCTestCase {
         try Data([0xDE, 0xAD, 0xBE, 0xEF]).write(to: testPhotoURL)
 
         let slots: [String: SceneMediaSlot] = [
-            "block_p1": .photo(mediaRef: makePhotoMediaRef())
+            "block_p1": .photo(mediaRef: makePhotoMediaRef(), placement: .default(fitMode: .cover))
         ]
 
         let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut)

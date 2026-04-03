@@ -15,7 +15,7 @@ final class MediaPlacementResolverTests: XCTestCase {
     private let offsetSlot = RectD(x: 100, y: 50, width: 400, height: 300)
 
     private func geom(slot: RectD, mediaW: Double, mediaH: Double) -> MediaPlacementResolver.SlotGeometry {
-        MediaPlacementResolver.SlotGeometry(slotRect: slot, mediaWidth: mediaW, mediaHeight: mediaH)
+        MediaPlacementResolver.SlotGeometry(baselineRectLocal: slot, mediaWidth: mediaW, mediaHeight: mediaH)
     }
 
     // MARK: - Cover Fit Mode

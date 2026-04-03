@@ -80,8 +80,8 @@ final class PersistedVideoSelectionTests: XCTestCase {
     func test_sceneState_withMediaSlots_encodesDecodes() throws {
         var state = SceneState.empty
         state.mediaSlotsByBlockId = [
-            "block1": .video(mediaRef: MediaRef.file("Media/video1.mp4"), videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)),
-            "block2": .video(mediaRef: MediaRef.file("Media/video2.mp4"), videoWindow: PersistedVideoSelection(trimStart: 1.0, trimEnd: 10.0, isMuted: true))
+            "block1": .video(mediaRef: MediaRef.file("Media/video1.mp4"), placement: .default(fitMode: .cover), videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)),
+            "block2": .video(mediaRef: MediaRef.file("Media/video2.mp4"), placement: .default(fitMode: .cover), videoWindow: PersistedVideoSelection(trimStart: 1.0, trimEnd: 10.0, isMuted: true))
         ]
 
         let data = try JSONEncoder().encode(state)

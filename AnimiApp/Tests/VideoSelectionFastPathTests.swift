@@ -115,6 +115,7 @@ final class VideoSelectionFastPathTests: XCTestCase {
         let originalSelection = PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: originalSelection
         )
         var sceneState = SceneState.empty
@@ -194,7 +195,7 @@ final class VideoSelectionFastPathTests: XCTestCase {
 
         // appliedState with photo slot
         var photoState = SceneState.empty
-        let photoSlot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"))
+        let photoSlot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"), placement: .default(fitMode: .cover))
         photoState.mediaSlotsByBlockId = ["block_01": photoSlot]
         await runtime.applyState(photoState)
 
@@ -278,6 +279,7 @@ final class VideoSelectionFastPathTests: XCTestCase {
         // Set initial state with video slot
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         )
         var sceneState = SceneState.empty
@@ -366,7 +368,7 @@ final class VideoSelectionFastPathTests: XCTestCase {
         let instanceId = timeline.sceneItems[0].id
 
         // Set state with photo slot
-        let photoSlot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"))
+        let photoSlot = SceneMediaSlot.photo(mediaRef: MediaRef.file("Media/test.jpg"), placement: .default(fitMode: .cover))
         var sceneState = SceneState.empty
         sceneState.mediaSlotsByBlockId = ["block_01": photoSlot]
         engine.setTimeline(timeline, sceneStates: [instanceId: sceneState])
@@ -414,6 +416,7 @@ final class VideoSelectionFastPathTests: XCTestCase {
 
         let videoSlot = SceneMediaSlot.video(
             mediaRef: MediaRef.file("Media/test.mov", mediaKind: .video),
+            placement: .defaultCover,
             videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 10.0)
         )
         var sceneState = SceneState.empty

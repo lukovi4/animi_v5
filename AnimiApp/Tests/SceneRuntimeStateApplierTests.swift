@@ -16,9 +16,11 @@ private final class ScenePlayerSpy: ScenePlayerApplying {
 
     var calls: [Call] = []
     var mediaInputConfigsByBlockId: [String: MediaInput] = [:]
+    var bindingBaselinesByBlockId: [String: BindingBaselineRuntime] = [:]
     var mediaInputGeometriesByBlockId: [String: MediaInputGeometryRuntime] = [:]
 
     func mediaInputConfig(blockId: String) -> MediaInput? { mediaInputConfigsByBlockId[blockId] }
+    func bindingBaseline(blockId: String) -> BindingBaselineRuntime? { bindingBaselinesByBlockId[blockId] }
     func mediaInputGeometry(blockId: String) -> MediaInputGeometryRuntime? { mediaInputGeometriesByBlockId[blockId] }
     func applyVariantSelection(_ mapping: [String: String]) { calls.append(.applyVariantSelection(mapping)) }
     func setUserTransform(blockId: String, transform: Matrix2D) { calls.append(.setUserTransform(blockId: blockId, transform: transform)) }
@@ -128,12 +130,12 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
     }
 
     @MainActor
-    func test_slotWithoutPlacement_noTransformApplied() {
+    func test_slotWithDefaultPlacement_producesTransformCall() {
         var state = SceneState.empty
         state.mediaSlotsByBlockId = [
-            "blockNoPlacement": .photo(
-                mediaRef: .file("Media/photo.jpg", mediaKind: .photo)
-                // placement is nil — no transform should be applied
+            "blockDefault": .photo(
+                mediaRef: .file("Media/photo.jpg", mediaKind: .photo),
+                placement: .defaultCover
             )
         ]
 
@@ -141,10 +143,10 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
         SceneRuntimeStateApplier.apply(state, player: spy, userMediaService: nil)
 
         let transformCalls = spy.calls.compactMap { call -> Matrix2D? in
-            if case .setUserTransform(blockId: "blockNoPlacement", transform: let t) = call { return t }
+            if case .setUserTransform(blockId: "blockDefault", transform: let t) = call { return t }
             return nil
         }
-        XCTAssertEqual(transformCalls.count, 0, "Slot without placement should not produce setUserTransform")
+        XCTAssertEqual(transformCalls.count, 1, "Default placement should produce exactly one setUserTransform")
     }
 
     // MARK: - Fast-Path: Placement Change
@@ -190,7 +192,7 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
         let placement = MediaPlacementState(fitMode: .cover, offsetX: 10, offsetY: -5, userScale: 1.5)
         let slotRect = RectD(x: 0, y: 0, width: 540, height: 960)
         let geometry = MediaPlacementResolver.SlotGeometry(
-            slotRect: slotRect,
+            baselineRectLocal: slotRect,
             mediaWidth: slotRect.width,
             mediaHeight: slotRect.height
         )
@@ -205,7 +207,7 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
         let placement = MediaPlacementState.default(fitMode: .cover)
         let slotRect = RectD(x: 0, y: 0, width: 540, height: 960)
         let geometry = MediaPlacementResolver.SlotGeometry(
-            slotRect: slotRect,
+            baselineRectLocal: slotRect,
             mediaWidth: slotRect.width,
             mediaHeight: slotRect.height
         )
@@ -226,14 +228,14 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
         let slotRect = RectD(x: 50, y: 30, width: 400, height: 300)
 
         let previewGeometry = MediaPlacementResolver.SlotGeometry(
-            slotRect: slotRect,
+            baselineRectLocal: slotRect,
             mediaWidth: slotRect.width,
             mediaHeight: slotRect.height
         )
         let previewMatrix = MediaPlacementResolver.resolve(placement: placement, geometry: previewGeometry)
 
         let exportGeometry = MediaPlacementResolver.SlotGeometry(
-            slotRect: slotRect,
+            baselineRectLocal: slotRect,
             mediaWidth: slotRect.width,
             mediaHeight: slotRect.height
         )
@@ -251,7 +253,7 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
         let placement = MediaPlacementState(fitMode: .cover, offsetX: 15, offsetY: -8, userScale: 1.2, rotationDegrees: 30)
         let slotRect = RectD(x: 0, y: 0, width: 540, height: 960)
         let geometry = MediaPlacementResolver.SlotGeometry(
-            slotRect: slotRect,
+            baselineRectLocal: slotRect,
             mediaWidth: slotRect.width,
             mediaHeight: slotRect.height
         )
@@ -266,7 +268,7 @@ final class SceneRuntimeStateApplierTests: XCTestCase {
     func test_slotAsMediaProxy_coverProducesIdentityScale() {
         let slotRect = RectD(x: 100, y: 50, width: 400, height: 300)
         let geometry = MediaPlacementResolver.SlotGeometry(
-            slotRect: slotRect,
+            baselineRectLocal: slotRect,
             mediaWidth: 400,
             mediaHeight: 300
         )

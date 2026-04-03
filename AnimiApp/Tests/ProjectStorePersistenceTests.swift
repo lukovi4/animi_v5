@@ -107,7 +107,7 @@ final class ProjectStorePersistenceTests: XCTestCase {
             var s = SceneState.empty
             s.variantOverrides = ["block_\(i)": "variant_\(i)"]
             s.layerToggles = ["block_\(i)": ["visible": true, "shadow": false]]
-            s.mediaSlotsByBlockId = ["block_\(i)": .photo(mediaRef: MediaRef.file("Media/UserMedia/img_\(i).jpg"), visibility: i % 2 == 0)]
+            s.mediaSlotsByBlockId = ["block_\(i)": .photo(mediaRef: MediaRef.file("Media/UserMedia/img_\(i).jpg"), visibility: i % 2 == 0, placement: .default(fitMode: .cover))]
             states[item.id] = s
         }
 
