@@ -42,20 +42,13 @@ private struct SceneSetupResult {
 /// PR-E: Production-only editor mode (dev-UI removed).
 final class PlayerViewController: UIViewController {
 
-    // MARK: - Entry Context
+    // MARK: - Session
 
-    /// Describes how the editor was entered.
-    enum EntryContext {
-        case newFromTemplate(templateId: String)
-        case openSavedProject(projectId: UUID)
-        case resumeActiveDraft
-    }
-
-    private let entryContext: EntryContext
+    private let session: EditorSession
     private var activeDraftSlot: ActiveDraftSlot?
 
-    init(entryContext: EntryContext) {
-        self.entryContext = entryContext
+    init(session: EditorSession) {
+        self.session = session
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -379,153 +372,32 @@ final class PlayerViewController: UIViewController {
             self?.saveDraftToActiveSlot()
         }
 
-        // Load content based on entry context
+        // Wire session output and start bootstrap
+        session.onOutput = { [weak self] output in
+            self?.handleSessionOutput(output)
+        }
         Task { @MainActor in
-            await loadEditorContent()
+            await session.bootstrap()
         }
     }
 
-    // MARK: - Release v1: Editor Content Loading
+    // MARK: - Session Output
 
-    /// Loads all editor content: SceneLibrary, template defaults, ProjectDraft, and first scene.
-    private func loadEditorContent() async {
-        // Resolve templateId and draft from entry context
-        let templateId: String
-        let draft: ProjectDraft
+    private func handleSessionOutput(_ output: EditorSessionOutput) {
+        switch output {
+        case .bootstrapSucceeded(let editor):
+            activeDraftSlot = editor.activeDraftSlot
+            currentTemplateId = editor.templateId
+            currentProjectDraft = editor.draft
+            currentProjectId = editor.draft.id
+            sceneLibrarySnapshot = editor.sceneLibrary
+            defaultSceneSequence = editor.defaultSceneSequence
+            loadSceneTypeFromBundle(sceneTypeId: editor.firstSceneTypeId)
 
-        switch entryContext {
-        case .newFromTemplate(let tplId):
-            templateId = tplId
-            let newDraft = ProjectDraft.create(for: tplId)
-            let slot = ActiveDraftSlot(
-                entryContext: .newFromTemplate(templateId: tplId),
-                sourceTemplateId: tplId,
-                linkedSavedProjectId: nil,
-                draft: newDraft
-            )
-            do {
-                try ProjectStore.shared.saveActiveDraft(slot)
-            } catch {
-                log("[Editor] ERROR: Failed to save active draft: \(error)")
-            }
-            activeDraftSlot = slot
-            draft = newDraft
-            log("[Editor] New from template: \(tplId), draft: \(newDraft.id)")
-
-        case .openSavedProject(let projectId):
-            guard let record = ProjectStore.shared.loadSavedProject(projectId: projectId) else {
-                log("[Editor] ERROR: Cannot load saved project \(projectId)")
-                loadingState = .failed(message: "Project load failed")
-                updateLoadingStateUI()
-                return
-            }
-            templateId = record.sourceTemplateId
-            let slot = ActiveDraftSlot(
-                entryContext: .openSavedProject(projectId: projectId),
-                sourceTemplateId: record.sourceTemplateId,
-                linkedSavedProjectId: projectId,
-                draft: record.draft
-            )
-            do {
-                try ProjectStore.shared.saveActiveDraft(slot)
-            } catch {
-                log("[Editor] ERROR: Failed to save active draft: \(error)")
-            }
-            activeDraftSlot = slot
-            draft = record.draft
-            log("[Editor] Opened saved project: \(projectId)")
-
-        case .resumeActiveDraft:
-            guard let slot = ProjectStore.shared.loadActiveDraft() else {
-                log("[Editor] ERROR: No active draft to resume")
-                loadingState = .failed(message: "No draft to resume")
-                updateLoadingStateUI()
-                return
-            }
-            activeDraftSlot = slot
-            templateId = slot.sourceTemplateId
-            draft = slot.draft
-            log("[Editor] Resumed active draft: \(draft.id), template: \(templateId)")
-        }
-
-        currentTemplateId = templateId
-        currentProjectDraft = draft
-        currentProjectId = draft.id
-
-        // Step 1: Load SceneLibrary
-        do {
-            let library = try await SceneLibrary.shared.load()
-            sceneLibrarySnapshot = library
-            log("[Release v1] SceneLibrary loaded: \(library.scenesById.count) scenes, fps=\(library.fps)")
-        } catch {
-            log("[Release v1] ERROR: Failed to load SceneLibrary: \(error)")
-            loadingState = .failed(message: "Scene library load failed")
+        case .bootstrapFailed(let msg):
+            loadingState = .failed(message: msg)
             updateLoadingStateUI()
-            return
         }
-
-        // Step 2: Get scene defaults from template catalog
-        let catalogResult = await TemplateCatalog.shared.load()
-        switch catalogResult {
-        case .failure(let catalogError):
-            // Catalog itself failed to load (IO/decode/manifest error)
-            if draft.canonicalTimeline.sceneItems.isEmpty {
-                log("[Release v1] ERROR: Catalog load failed and draft has no timeline: \(catalogError)")
-                loadingState = .failed(message: "Catalog load failed")
-                updateLoadingStateUI()
-                return
-            }
-            log("[Release v1] WARN: Catalog load failed, using draft timeline: \(catalogError)")
-            defaultSceneSequence = []
-
-        case .success:
-            do {
-                defaultSceneSequence = try TemplateCatalog.shared.sceneTypeDefaults(
-                    for: templateId, library: sceneLibrarySnapshot!
-                )
-                log("[Release v1] Template loaded: \(defaultSceneSequence.count) scenes")
-            } catch {
-                // Template not found in catalog (deleted/old templateId)
-                if draft.canonicalTimeline.sceneItems.isEmpty {
-                    log("[Release v1] ERROR: Template not in catalog and draft has no timeline: \(error)")
-                    let message: String
-                    if let catalogError = error as? TemplateCatalogError {
-                        switch catalogError {
-                        case .templateNotFound: message = "Template not found"
-                        case .emptySceneList: message = "Template has no scenes"
-                        case .sceneNotInLibrary: message = "Template is unavailable"
-                        }
-                    } else {
-                        message = "Template not found"
-                    }
-                    loadingState = .failed(message: message)
-                    updateLoadingStateUI()
-                    return
-                }
-                log("[Release v1] WARN: Template '\(templateId)' not in catalog, using draft timeline")
-                defaultSceneSequence = []
-            }
-        }
-
-        let hydratedDraft = draft
-
-        // Step 3: Determine first scene from draft or template defaults
-        let firstSceneTypeId: String
-        if let draftFirstSceneTypeId = hydratedDraft.canonicalTimeline.firstSceneTypeId {
-            firstSceneTypeId = draftFirstSceneTypeId
-            log("[Release v1] Using first scene from draft: \(firstSceneTypeId)")
-        } else if let defaultFirstSceneTypeId = defaultSceneSequence.first?.sceneTypeId {
-            firstSceneTypeId = defaultFirstSceneTypeId
-            log("[Release v1] Using first scene from template defaults: \(firstSceneTypeId)")
-        } else {
-            log("[Release v1] ERROR: No scenes in draft or template defaults")
-            loadingState = .failed(message: "Empty project")
-            updateLoadingStateUI()
-            return
-        }
-
-        // Load the first scene (this also configures the editor timeline)
-        loadSceneTypeFromBundle(sceneTypeId: firstSceneTypeId)
     }
 
     // MARK: - PR2: Editor Layout Setup
@@ -981,7 +853,17 @@ final class PlayerViewController: UIViewController {
 
     private func handleEditorClose() {
         stopPlayback()
+        let action = session.requestClose(isDirty: draftIsDirty)
+        switch action {
+        case .safeToClose:
+            userMadeExplicitCloseChoice = true
+            navigationController?.popViewController(animated: true)
+        case .needsUserDecision:
+            presentCloseAlert()
+        }
+    }
 
+    private func presentCloseAlert() {
         let alert = UIAlertController(title: nil, message: "Save changes?", preferredStyle: .actionSheet)
         alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self] _ in
             self?.saveAndClose()
@@ -999,30 +881,25 @@ final class PlayerViewController: UIViewController {
     }
 
     private func saveAndClose() {
-        guard var slot = activeDraftSlot,
-              let draft = currentMergedDraft() else {
-            navigationController?.popViewController(animated: true)
-            return
-        }
-        slot.draft = draft
-        slot.draft.updatedAt = Date()
-
         do {
-            try ProjectStore.shared.materializeSavedProject(from: &slot)
-            try ProjectStore.shared.deleteActiveDraft()
+            try session.executeSaveAndClose(
+                currentDraft: { [weak self] in self?.currentMergedDraft() }
+            )
         } catch {
             log("[Close] Save failed: \(error)")
             presentSaveError(error)
             return
         }
-
         userMadeExplicitCloseChoice = true
         navigationController?.popViewController(animated: true)
     }
 
     private func discardAndClose() {
-        do { try ProjectStore.shared.deleteActiveDraft() }
-        catch { log("[Close] Discard error: \(error)") }
+        do {
+            try session.executeDiscardAndClose()
+        } catch {
+            log("[Close] Discard error: \(error)")
+        }
         userMadeExplicitCloseChoice = true
         navigationController?.popViewController(animated: true)
     }
@@ -1039,17 +916,10 @@ final class PlayerViewController: UIViewController {
 
     /// Materializes saved project after successful export.
     private func handleExportSuccess() {
-        guard var slot = activeDraftSlot,
-              let draft = currentMergedDraft() else { return }
-        slot.draft = draft
-        slot.draft.updatedAt = Date()
-        do {
-            try ProjectStore.shared.materializeSavedProject(from: &slot)
-            activeDraftSlot = slot
-            try ProjectStore.shared.saveActiveDraft(slot)
-        } catch {
-            log("[Export] Save error: \(error.localizedDescription)")
-        }
+        session.commitAfterExportSuccess(
+            currentDraft: { [weak self] in self?.currentMergedDraft() }
+        )
+        activeDraftSlot = session.activeDraftSlot
     }
 
     private func handleFullScreenPreview() {
@@ -2534,17 +2404,13 @@ final class PlayerViewController: UIViewController {
     /// Saves current draft to the active draft slot (not to SavedProject).
     /// Called on background, autosave timer, and viewWillDisappear safety net.
     private func saveDraftToActiveSlot() {
-        guard draftIsDirty, var slot = activeDraftSlot,
-              let draft = currentMergedDraft() else { return }
-        slot.draft = draft
-        slot.draft.updatedAt = Date()
-        do {
-            try ProjectStore.shared.saveActiveDraft(slot)
-            activeDraftSlot = slot
+        let saved = session.persistCheckpointIfNeeded(
+            currentDraft: { [weak self] in self?.currentMergedDraft() },
+            isDirty: draftIsDirty
+        )
+        if saved {
+            activeDraftSlot = session.activeDraftSlot
             draftIsDirty = false
-            log("[Autosave] Draft saved to active slot")
-        } catch {
-            log("[Autosave] Error: \(error.localizedDescription)")
         }
     }
 

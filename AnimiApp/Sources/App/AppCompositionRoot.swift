@@ -58,20 +58,26 @@ final class AppCompositionRoot {
     // MARK: - Editor Routing
 
     func openEditor(_ intent: EditorLaunchIntent) {
-        let entryContext: PlayerViewController.EntryContext
-        switch intent {
-        case .template(let templateId):
-            entryContext = .newFromTemplate(templateId: templateId)
-        case .savedProject(let projectId):
-            entryContext = .openSavedProject(projectId: projectId)
-        case .resumeDraft:
-            entryContext = .resumeActiveDraft
-        case .blankProject:
-            // PR 7: blank project UI entry point — for now, no-op.
-            return
-        }
+        if case .blankProject = intent { return }  // PR 7
 
-        let editorVC = PlayerViewController(entryContext: entryContext)
+        let deps = EditorSessionDependencies(
+            saveActiveDraft: { try ProjectStore.shared.saveActiveDraft($0) },
+            loadActiveDraft: { ProjectStore.shared.loadActiveDraft() },
+            deleteActiveDraft: { try ProjectStore.shared.deleteActiveDraft() },
+            loadSavedProject: { ProjectStore.shared.loadSavedProject(projectId: $0) },
+            materializeSavedProject: { try ProjectStore.shared.materializeSavedProject(from: &$0) },
+            loadSceneLibrary: { [sceneLibraryRepository] in
+                try await sceneLibraryRepository.load()
+            },
+            sceneTypeDefaults: { [templateCatalogRepository] templateId, library in
+                try templateCatalogRepository.sceneTypeDefaults(for: templateId, library: library)
+            },
+            loadTemplateCatalog: { [templateCatalogRepository] in
+                await templateCatalogRepository.load()
+            }
+        )
+        let session = EditorSession(intent: intent, dependencies: deps)
+        let editorVC = PlayerViewController(session: session)
         navigationController?.pushViewController(editorVC, animated: true)
     }
 
