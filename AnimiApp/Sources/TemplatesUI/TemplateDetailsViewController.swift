@@ -3,9 +3,14 @@ import UIKit
 /// Full-screen template preview with Close and Use template buttons.
 final class TemplateDetailsViewController: UIViewController {
 
-    // MARK: - Properties
+    // MARK: - Dependencies
 
     private let templateId: TemplateID
+    private let catalogRepository: TemplateCatalogProviding
+    private let onOpenEditor: (EditorLaunchIntent) -> Void
+
+    // MARK: - State
+
     private var template: TemplateDescriptor?
     private var loadState: LoadState<TemplateDescriptor> = .loading
 
@@ -57,8 +62,14 @@ final class TemplateDetailsViewController: UIViewController {
 
     // MARK: - Init
 
-    init(templateId: TemplateID) {
+    init(
+        templateId: TemplateID,
+        catalogRepository: TemplateCatalogProviding,
+        onOpenEditor: @escaping (EditorLaunchIntent) -> Void
+    ) {
         self.templateId = templateId
+        self.catalogRepository = catalogRepository
+        self.onOpenEditor = onOpenEditor
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -138,11 +149,11 @@ final class TemplateDetailsViewController: UIViewController {
         updateUI()
 
         Task {
-            let result = await TemplateCatalog.shared.load()
+            let result = await catalogRepository.load()
             await MainActor.run {
                 switch result {
                 case .success:
-                    if let loaded = TemplateCatalog.shared.template(by: templateId) {
+                    if let loaded = catalogRepository.template(by: templateId) {
                         template = loaded
                         loadState = .content(loaded)
                         previewVideoView.configure(url: loaded.previewURL)
@@ -188,7 +199,6 @@ final class TemplateDetailsViewController: UIViewController {
 
     @objc private func useTemplateTapped() {
         guard template != nil else { return }
-        let editorVC = PlayerViewController(entryContext: .newFromTemplate(templateId: templateId))
-        navigationController?.pushViewController(editorVC, animated: true)
+        onOpenEditor(.template(templateId: templateId))
     }
 }

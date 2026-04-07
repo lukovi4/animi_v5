@@ -3,6 +3,14 @@ import UIKit
 /// Main templates catalog screen with categories and horizontal sliders.
 final class TemplatesHomeViewController: UIViewController {
 
+    // MARK: - Dependencies
+
+    private let catalogRepository: TemplateCatalogProviding
+    private let onOpenEditor: (EditorLaunchIntent) -> Void
+    private let onOpenTemplateDetails: (TemplateID) -> Void
+    private let onOpenCategory: (TemplateCategory) -> Void
+    private let onOpenMyProjects: () -> Void
+
     // MARK: - State
 
     private var loadState: LoadState<TemplateCatalogSnapshot> = .loading
@@ -59,6 +67,27 @@ final class TemplatesHomeViewController: UIViewController {
         return stack
     }()
 
+    // MARK: - Init
+
+    init(
+        catalogRepository: TemplateCatalogProviding,
+        onOpenEditor: @escaping (EditorLaunchIntent) -> Void,
+        onOpenTemplateDetails: @escaping (TemplateID) -> Void,
+        onOpenCategory: @escaping (TemplateCategory) -> Void,
+        onOpenMyProjects: @escaping () -> Void
+    ) {
+        self.catalogRepository = catalogRepository
+        self.onOpenEditor = onOpenEditor
+        self.onOpenTemplateDetails = onOpenTemplateDetails
+        self.onOpenCategory = onOpenCategory
+        self.onOpenMyProjects = onOpenMyProjects
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -80,7 +109,7 @@ final class TemplatesHomeViewController: UIViewController {
             image: UIImage(systemName: "folder"),
             style: .plain,
             target: self,
-            action: #selector(openMyProjects)
+            action: #selector(openMyProjectsTapped)
         )
         view.backgroundColor = .systemBackground
 
@@ -166,7 +195,7 @@ final class TemplatesHomeViewController: UIViewController {
         updateUI()
 
         Task {
-            let result = await TemplateCatalog.shared.load()
+            let result = await catalogRepository.load()
             await MainActor.run {
                 switch result {
                 case .success(let snapshot):
@@ -175,7 +204,6 @@ final class TemplatesHomeViewController: UIViewController {
                         loadState = .empty
                     } else {
                         categories = cats
-                        // Build templates cache once
                         templatesByCategory = Dictionary(grouping: snapshot.templates, by: \.categoryId)
                             .mapValues { $0.sorted { $0.order < $1.order } }
                         loadState = .content(snapshot)
@@ -225,25 +253,21 @@ final class TemplatesHomeViewController: UIViewController {
 
     // MARK: - Navigation
 
-    @objc private func openMyProjects() {
-        let myProjectsVC = MyProjectsViewController()
-        navigationController?.pushViewController(myProjectsVC, animated: true)
+    @objc private func openMyProjectsTapped() {
+        onOpenMyProjects()
     }
 
     private func openTemplate(_ template: TemplateDescriptor) {
         switch template.openBehavior {
         case .previewFirst:
-            let detailsVC = TemplateDetailsViewController(templateId: template.id)
-            navigationController?.pushViewController(detailsVC, animated: true)
+            onOpenTemplateDetails(template.id)
         case .directToEditor:
-            let editorVC = PlayerViewController(entryContext: .newFromTemplate(templateId: template.id))
-            navigationController?.pushViewController(editorVC, animated: true)
+            onOpenEditor(.template(templateId: template.id))
         }
     }
 
     private func openSeeAll(for category: TemplateCategory) {
-        let categoryVC = CategoryTemplatesViewController(category: category)
-        navigationController?.pushViewController(categoryVC, animated: true)
+        onOpenCategory(category)
     }
 }
 

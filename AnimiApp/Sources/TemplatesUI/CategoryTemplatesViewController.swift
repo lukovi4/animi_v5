@@ -3,9 +3,15 @@ import UIKit
 /// "See all" screen showing all templates in a category as a 2-column grid.
 final class CategoryTemplatesViewController: UIViewController {
 
-    // MARK: - Properties
+    // MARK: - Dependencies
 
     private let category: TemplateCategory
+    private let catalogRepository: TemplateCatalogProviding
+    private let onOpenEditor: (EditorLaunchIntent) -> Void
+    private let onOpenTemplateDetails: (TemplateID) -> Void
+
+    // MARK: - State
+
     private var templates: [TemplateDescriptor] = []
     private var loadState: LoadState<[TemplateDescriptor]> = .loading
 
@@ -60,8 +66,16 @@ final class CategoryTemplatesViewController: UIViewController {
 
     // MARK: - Init
 
-    init(category: TemplateCategory) {
+    init(
+        category: TemplateCategory,
+        catalogRepository: TemplateCatalogProviding,
+        onOpenEditor: @escaping (EditorLaunchIntent) -> Void,
+        onOpenTemplateDetails: @escaping (TemplateID) -> Void
+    ) {
         self.category = category
+        self.catalogRepository = catalogRepository
+        self.onOpenEditor = onOpenEditor
+        self.onOpenTemplateDetails = onOpenTemplateDetails
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -157,11 +171,11 @@ final class CategoryTemplatesViewController: UIViewController {
         updateUI()
 
         Task {
-            let result = await TemplateCatalog.shared.load()
+            let result = await catalogRepository.load()
             await MainActor.run {
                 switch result {
                 case .success:
-                    let loaded = TemplateCatalog.shared.templates(for: category.id)
+                    let loaded = catalogRepository.templates(for: category.id)
                     if loaded.isEmpty {
                         loadState = .empty
                     } else {
@@ -216,11 +230,9 @@ final class CategoryTemplatesViewController: UIViewController {
     private func openTemplate(_ template: TemplateDescriptor) {
         switch template.openBehavior {
         case .previewFirst:
-            let detailsVC = TemplateDetailsViewController(templateId: template.id)
-            navigationController?.pushViewController(detailsVC, animated: true)
+            onOpenTemplateDetails(template.id)
         case .directToEditor:
-            let editorVC = PlayerViewController(entryContext: .newFromTemplate(templateId: template.id))
-            navigationController?.pushViewController(editorVC, animated: true)
+            onOpenEditor(.template(templateId: template.id))
         }
     }
 }

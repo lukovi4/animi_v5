@@ -3,6 +3,11 @@ import UIKit
 /// Displays a list of saved projects with preview, title, date, and delete.
 final class MyProjectsViewController: UIViewController {
 
+    // MARK: - Dependencies
+
+    private let catalogRepository: TemplateCatalogProviding
+    private let onOpenEditor: (EditorLaunchIntent) -> Void
+
     // MARK: - Section Model
 
     private struct Section {
@@ -45,6 +50,21 @@ final class MyProjectsViewController: UIViewController {
         return label
     }()
 
+    // MARK: - Init
+
+    init(
+        catalogRepository: TemplateCatalogProviding,
+        onOpenEditor: @escaping (EditorLaunchIntent) -> Void
+    ) {
+        self.catalogRepository = catalogRepository
+        self.onOpenEditor = onOpenEditor
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -60,7 +80,7 @@ final class MyProjectsViewController: UIViewController {
 
         // Ensure catalog is loaded before displaying (needed for template titles/previews)
         Task { @MainActor in
-            _ = await TemplateCatalog.shared.load()
+            _ = await catalogRepository.load()
             reloadData()
         }
     }
@@ -123,6 +143,7 @@ final class MyProjectsViewController: UIViewController {
     // MARK: - Data
 
     private func reloadData() {
+        // ProjectStore.shared allowed here for listing/delete until PR 4
         let allEntries = ProjectStore.shared.allSavedProjectEntries()
         sections = Self.groupByDate(allEntries)
 
@@ -134,7 +155,6 @@ final class MyProjectsViewController: UIViewController {
 
     private static func groupByDate(_ entries: [SavedProjectIndexEntry]) -> [Section] {
         let calendar = Calendar.current
-        let now = Date()
 
         var today: [SavedProjectIndexEntry] = []
         var yesterday: [SavedProjectIndexEntry] = []
@@ -166,6 +186,7 @@ final class MyProjectsViewController: UIViewController {
     private func deleteProject(at indexPath: IndexPath) {
         let entry = self.entry(at: indexPath)
         do {
+            // ProjectStore.shared allowed here for listing/delete until PR 4
             try ProjectStore.shared.deleteSavedProject(projectId: entry.projectId)
             reloadData()
         } catch {
@@ -195,7 +216,7 @@ extension MyProjectsViewController: UICollectionViewDataSource {
         ) as! ProjectPreviewCell
 
         let entry = self.entry(at: indexPath)
-        let template = TemplateCatalog.shared.template(by: entry.sourceTemplateId)
+        let template = catalogRepository.template(by: entry.sourceTemplateId)
         cell.configure(
             templateTitle: template?.title ?? entry.sourceTemplateId,
             previewURL: template?.previewURL,
@@ -239,13 +260,7 @@ extension MyProjectsViewController: UICollectionViewDelegate {
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         let entry = self.entry(at: indexPath)
-        let editorVC = PlayerViewController(
-            entryContext: .openSavedProject(
-                projectId: entry.projectId,
-                sourceTemplateId: entry.sourceTemplateId
-            )
-        )
-        navigationController?.pushViewController(editorVC, animated: true)
+        onOpenEditor(.savedProject(projectId: entry.projectId))
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {

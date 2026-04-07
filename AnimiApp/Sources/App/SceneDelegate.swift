@@ -7,6 +7,7 @@ extension Notification.Name {
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
+    private var compositionRoot: AppCompositionRoot?
 
     func scene(
         _ scene: UIScene,
@@ -15,44 +16,24 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
-        // PR3: Load background presets at app startup (fail-fast)
-        loadBackgroundPresets()
+        let root = AppCompositionRoot()
+        self.compositionRoot = root
+
+        let navigationController = root.bootstrap()
 
         let window = UIWindow(windowScene: windowScene)
-
-        let homeViewController = TemplatesHomeViewController()
-        let navigationController = UINavigationController(rootViewController: homeViewController)
-
-        // Auto-resume: if active draft exists, push editor immediately
-        if ProjectStore.shared.hasActiveDraft() {
-            let editorVC = PlayerViewController(entryContext: .resumeActiveDraft)
-            navigationController.pushViewController(editorVC, animated: false)
-        }
-
         window.rootViewController = navigationController
         window.makeKeyAndVisible()
-
         self.window = window
+
+        // After window is visible, check for recovery prompt.
+        // Root retains the launch router until the user makes a choice.
+        if let homeVC = navigationController.viewControllers.first {
+            root.handleLaunchRecovery(presenter: homeVC)
+        }
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
         NotificationCenter.default.post(name: .appDidEnterBackground, object: nil)
-    }
-
-    // MARK: - Background Presets
-
-    private func loadBackgroundPresets() {
-        do {
-            try BackgroundPresetLibrary.shared.loadFromBundle()
-            #if DEBUG
-            print("[SceneDelegate] Loaded \(BackgroundPresetLibrary.shared.count) background presets")
-            #endif
-        } catch {
-            #if DEBUG
-            assertionFailure("[SceneDelegate] Failed to load background presets: \(error)")
-            #else
-            print("[SceneDelegate] ERROR: Failed to load background presets: \(error)")
-            #endif
-        }
     }
 }

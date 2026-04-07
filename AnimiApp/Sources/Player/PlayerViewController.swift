@@ -47,7 +47,7 @@ final class PlayerViewController: UIViewController {
     /// Describes how the editor was entered.
     enum EntryContext {
         case newFromTemplate(templateId: String)
-        case openSavedProject(projectId: UUID, sourceTemplateId: String)
+        case openSavedProject(projectId: UUID)
         case resumeActiveDraft
     }
 
@@ -412,17 +412,17 @@ final class PlayerViewController: UIViewController {
             draft = newDraft
             log("[Editor] New from template: \(tplId), draft: \(newDraft.id)")
 
-        case .openSavedProject(let projectId, let sourceTemplateId):
-            templateId = sourceTemplateId
+        case .openSavedProject(let projectId):
             guard let record = ProjectStore.shared.loadSavedProject(projectId: projectId) else {
                 log("[Editor] ERROR: Cannot load saved project \(projectId)")
                 loadingState = .failed(message: "Project load failed")
                 updateLoadingStateUI()
                 return
             }
+            templateId = record.sourceTemplateId
             let slot = ActiveDraftSlot(
                 entryContext: .openSavedProject(projectId: projectId),
-                sourceTemplateId: sourceTemplateId,
+                sourceTemplateId: record.sourceTemplateId,
                 linkedSavedProjectId: projectId,
                 draft: record.draft
             )
