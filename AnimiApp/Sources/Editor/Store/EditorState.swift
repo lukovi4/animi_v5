@@ -154,52 +154,35 @@ public struct EditorState: Equatable, Sendable {
 
 // MARK: - Undo Snapshot
 
-/// Snapshot of editor state for undo/redo.
-/// Contains only the data that should be restored on undo.
+/// Content-only snapshot of editor state for undo/redo.
+/// Contains only content fields — interaction state (playhead, selection, UI mode)
+/// is preserved across undo/redo so the user isn't teleported.
 public struct EditorSnapshot: Equatable, Sendable {
 
     /// Canonical timeline (tracks + items + payloads).
     public let canonicalTimeline: CanonicalTimeline
 
-    /// Playhead position at snapshot time (compressed frame).
-    public let playheadCompressedFrame: Int
-
-    /// Selection at snapshot time.
-    public let selection: TimelineSelection
-
     /// Per-instance scene states at snapshot time.
     public let sceneInstanceStates: [UUID: SceneState]
 
-    /// Saved scene edit return position (compressed frame).
-    public let sceneEditReturnCompressedFrame: Int?
-
-    /// Timeline scene selection mode at snapshot time.
-    public let timelineSceneSelectionMode: TimelineSceneSelectionMode
+    /// Background override at snapshot time.
+    public let background: ProjectBackgroundOverride
 
     public init(
         canonicalTimeline: CanonicalTimeline,
-        playheadCompressedFrame: Int,
-        selection: TimelineSelection,
         sceneInstanceStates: [UUID: SceneState] = [:],
-        sceneEditReturnCompressedFrame: Int? = nil,
-        timelineSceneSelectionMode: TimelineSceneSelectionMode = .inactive
+        background: ProjectBackgroundOverride = .empty
     ) {
         self.canonicalTimeline = canonicalTimeline
-        self.playheadCompressedFrame = playheadCompressedFrame
-        self.selection = selection
         self.sceneInstanceStates = sceneInstanceStates
-        self.sceneEditReturnCompressedFrame = sceneEditReturnCompressedFrame
-        self.timelineSceneSelectionMode = timelineSceneSelectionMode
+        self.background = background
     }
 
-    /// Creates snapshot from current state.
+    /// Creates content-only snapshot from current state.
     public init(from state: EditorState) {
         self.canonicalTimeline = state.canonicalTimeline
-        self.playheadCompressedFrame = state.playheadCompressedFrame
-        self.selection = state.selection
         self.sceneInstanceStates = state.draft.sceneInstanceStates
-        self.sceneEditReturnCompressedFrame = state.sceneEditReturnCompressedFrame
-        self.timelineSceneSelectionMode = state.timelineSceneSelectionMode
+        self.background = state.draft.background
     }
 }
 
@@ -207,14 +190,11 @@ public struct EditorSnapshot: Equatable, Sendable {
 
 public extension EditorState {
 
-    /// Restores state from snapshot.
-    /// Preserves template configuration (FPS).
+    /// Restores content from snapshot.
+    /// Preserves template configuration (FPS) and interaction state (playhead, selection, UI mode).
     mutating func restore(from snapshot: EditorSnapshot) {
         draft.canonicalTimeline = snapshot.canonicalTimeline
         draft.sceneInstanceStates = snapshot.sceneInstanceStates
-        playheadCompressedFrame = snapshot.playheadCompressedFrame
-        selection = snapshot.selection
-        sceneEditReturnCompressedFrame = snapshot.sceneEditReturnCompressedFrame
-        timelineSceneSelectionMode = snapshot.timelineSceneSelectionMode
+        draft.background = snapshot.background
     }
 }

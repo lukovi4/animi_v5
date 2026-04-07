@@ -3,7 +3,7 @@ import TVECore
 
 /// Abstracts access to the background preset library for feature controllers.
 /// Feature code depends on this protocol, not on `BackgroundPresetLibrary.shared`.
-protocol BackgroundPresetProviding {
+public protocol BackgroundPresetProviding {
     func loadFromBundle() throws
     func preset(for presetId: String) -> BackgroundPreset?
     func presetOrFallback(for presetId: String) -> BackgroundPreset?

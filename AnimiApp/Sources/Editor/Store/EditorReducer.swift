@@ -218,6 +218,12 @@ public enum EditorReducer {
                 blockId: blockId
             )
 
+        // MARK: - Background
+
+        case .setBackground(let background):
+            newState.draft.background = background
+            return ReducerResult(state: newState, shouldPushSnapshot: true)
+
         // MARK: - Undo/Redo (handled by Store, not reducer)
 
         case .undo, .redo:

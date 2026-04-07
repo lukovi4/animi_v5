@@ -27,7 +27,7 @@ final class BackgroundEditorViewController: UIViewController {
 
     weak var delegate: BackgroundEditorDelegate?
 
-    private let presetLibrary: BackgroundPresetLibrary
+    private let presetLibrary: BackgroundPresetProviding
     private var templateBackground: Background?
     private var currentOverride: ProjectBackgroundOverride
     private var currentPresetId: String
@@ -87,7 +87,7 @@ final class BackgroundEditorViewController: UIViewController {
     // MARK: - Initialization
 
     init(
-        presetLibrary: BackgroundPresetLibrary,
+        presetLibrary: BackgroundPresetProviding,
         templateBackground: Background?,
         currentOverride: ProjectBackgroundOverride
     ) {

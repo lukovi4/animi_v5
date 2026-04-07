@@ -33,7 +33,7 @@ struct PresetsIndex: Codable {
 
 /// Singleton library for accessing background presets from the app bundle.
 /// Presets are stored as JSON files in Resources/BackgroundPresets/.
-public final class BackgroundPresetLibrary {
+public final class BackgroundPresetLibrary: BackgroundPresetProviding {
 
     // MARK: - Singleton
 

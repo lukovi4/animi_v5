@@ -124,14 +124,13 @@ public final class EditorStore {
                 // Save baseline snapshot before any mutations
                 pendingGestureSnapshot = EditorSnapshot(from: state)
             case .cancelled:
-                // Restore baseline and clear
+                // Restore content baseline and clear (interaction state preserved)
                 if let baseline = pendingGestureSnapshot {
                     state.restore(from: baseline)
                     pendingGestureSnapshot = nil
                     // P1 fix: Notify all observers after cancel restore
                     notifyTimelineChanged()
                     notifySelectionChanged()
-                    onPlayheadChanged?(state.playheadCompressedFrame)
                     notifyUndoRedoChanged()
                     #if DEBUG
                     print("[EditorStore] Gesture cancelled, restored baseline")
@@ -490,6 +489,7 @@ public final class EditorStore {
         case .setMediaPlacement(_, _, _, let phase): actionName = "setMediaPlacement(\(phase))"
         case .setMediaFitMode: actionName = "setMediaFitMode"
         case .resetMediaPlacement: actionName = "resetMediaPlacement"
+        case .setBackground: actionName = "setBackground"
         case .undo: actionName = "undo"
         case .redo: actionName = "redo"
         default: actionName = "other"

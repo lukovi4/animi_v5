@@ -3,20 +3,92 @@ import os.log
 
 private let logger = Logger(subsystem: "com.animi.app", category: "EditorSession")
 
-/// Thin session boundary that owns bootstrap, checkpoint, export-commit, and close decisions.
-/// The view controller becomes a consumer of session decisions rather than their source.
-///
-/// **PR 2 scope**: `currentDraft` and `isDirty` are passed as parameters, not owned.
-/// `EditorStore` ownership moves in PR 3.
+/// Session boundary that owns EditorStore, dirty state, checkpoint, export-commit, and close decisions.
+/// The view controller dispatches actions and wires callbacks, but does not own the store.
 @MainActor
 final class EditorSession {
 
     let intent: EditorLaunchIntent
-    private let deps: EditorSessionDependencies
+    let deps: EditorSessionDependencies
 
     private(set) var phase: EditorSessionPhase = .idle
     /// Set during bootstrap, updated by checkpoint/export-commit. Writable from tests via @testable.
     var activeDraftSlot: ActiveDraftSlot?
+
+    /// EditorStore — created during bootstrap, owned by session.
+    private var store: EditorStore?
+    /// Dual-baseline dirty tracking.
+    private var dirtyState: EditorSessionDirtyState?
+    /// Missing media summary — populated via `updateMissingMedia(for:failures:)`.
+    private(set) var missingMediaSummary: MissingMediaSummary?
+    /// Whether a missing-media notice is pending presentation to the user.
+    /// Set to true when first missing media is detected; cleared by controller ack.
+    private(set) var hasPendingMissingMediaNotice = false
+    /// Whether the missing-media notice has been presented and acknowledged by the controller.
+    private var missingMediaNoticeDelivered = false
+
+    // MARK: - Store Proxy API
+
+    /// Dispatches an action to the internal EditorStore.
+    func dispatch(_ action: EditorAction) { store?.dispatch(action) }
+
+    /// Read-only access to the current editor state.
+    var state: EditorState? { store?.state }
+
+    /// Wires all store callbacks through the session boundary.
+    func setStoreCallbacks(_ callbacks: EditorStoreCallbacks) {
+        guard let store else { return }
+        store.onPlayheadChanged = callbacks.onPlayheadChanged
+        store.onSelectionChanged = callbacks.onSelectionChanged
+        store.onTimelineChanged = callbacks.onTimelineChanged
+        store.onTimelinePreviewChanged = callbacks.onTimelinePreviewChanged
+        store.onUndoRedoChanged = callbacks.onUndoRedoChanged
+        store.onUIModeChanged = callbacks.onUIModeChanged
+        store.onSelectedBlockChanged = callbacks.onSelectedBlockChanged
+        store.onStateRestoredFromUndoRedo = callbacks.onStateRestoredFromUndoRedo
+        store.onSceneStateChanged = callbacks.onSceneStateChanged
+        store.onVideoSelectionChanged = callbacks.onVideoSelectionChanged
+        store.onMediaSlotChanged = callbacks.onMediaSlotChanged
+        store.onMediaPlacementChanged = callbacks.onMediaPlacementChanged
+        store.onMediaVisibilityChanged = callbacks.onMediaVisibilityChanged
+        store.onNotice = callbacks.onNotice
+    }
+
+    // MARK: - Missing Media
+
+    /// Replaces the set of failed slots for a specific scene instance.
+    /// Called after each applySceneInstanceState and after slot changes (rebind/clear).
+    /// Accumulates across scenes: only the reported instance's entries are replaced,
+    /// other instances' failures are preserved. Clears resolved slots automatically.
+    func updateMissingMedia(for sceneInstanceId: UUID, failures: Set<String>) {
+        var current = missingMediaSummary?.failedSlots ?? []
+        // Remove all entries for this scene instance (replace, not merge)
+        current = current.filter { $0.sceneInstanceId != sceneInstanceId }
+        // Add new failures for this instance
+        for blockId in failures {
+            current.insert(MissingMediaSlotKey(sceneInstanceId: sceneInstanceId, blockId: blockId))
+        }
+        if current.isEmpty {
+            missingMediaSummary = nil
+            hasPendingMissingMediaNotice = false
+        } else {
+            let summary = MissingMediaSummary(failedSlots: current)
+            missingMediaSummary = summary
+            if !missingMediaNoticeDelivered && !hasPendingMissingMediaNotice {
+                hasPendingMissingMediaNotice = true
+                onOutput?(.missingMediaDetected(summary))
+            }
+        }
+    }
+
+    /// Called by the controller after the missing-media notice has been shown to the user.
+    func markMissingMediaNoticePresented() {
+        hasPendingMissingMediaNotice = false
+        missingMediaNoticeDelivered = true
+    }
+
+    /// Background preset provider — exposed for controller use.
+    var backgroundPresetProvider: BackgroundPresetProviding { deps.backgroundPresetProvider }
 
     var onOutput: ((EditorSessionOutput) -> Void)?
 
@@ -171,6 +243,18 @@ final class EditorSession {
             return
         }
 
+        // Step 5: Create EditorStore
+        let fps = library.fps
+        let editorStore = EditorStore.create(
+            draft: draft,
+            templateFPS: fps,
+            defaultSceneSequence: defaultSceneSequence
+        )
+        self.store = editorStore
+        self.dirtyState = EditorSessionDirtyState(
+            baseline: EditorSessionSnapshot(from: editorStore.state)
+        )
+
         let editor = BootstrappedEditor(
             activeDraftSlot: slot,
             templateId: templateId,
@@ -185,19 +269,22 @@ final class EditorSession {
 
     // MARK: - Checkpoint
 
-    /// Saves current draft to the active slot if dirty.
-    /// Returns true if checkpoint was actually saved.
-    /// Extracted from PlayerViewController.saveDraftToActiveSlot() lines 2536–2549.
+    /// Saves current draft to the recovery slot if changed since last recovery write.
+    /// Self-contained — reads store state directly, no closure params needed.
     @discardableResult
-    func persistCheckpointIfNeeded(currentDraft: () -> ProjectDraft?, isDirty: Bool) -> Bool {
-        guard isDirty,
+    func persistCheckpointIfNeeded() -> Bool {
+        guard let store = store,
               var slot = activeDraftSlot,
-              let draft = currentDraft() else { return false }
-        slot.draft = draft
+              var dirtyState = dirtyState else { return false }
+        let current = EditorSessionSnapshot(from: store.state)
+        guard dirtyState.needsRecoveryWrite(current: current) else { return false }
+        slot.draft = store.currentDraft
         slot.draft.updatedAt = Date()
         do {
             try deps.saveActiveDraft(slot)
             activeDraftSlot = slot
+            dirtyState.didWriteRecovery(current: current)
+            self.dirtyState = dirtyState
             return true
         } catch {
             logger.error("[EditorSession] Checkpoint save error: \(error.localizedDescription)")
@@ -207,17 +294,17 @@ final class EditorSession {
 
     // MARK: - Export Commit
 
-    /// Materializes saved project after successful export.
-    /// Extracted from PlayerViewController.handleExportSuccess() lines 1041–1053.
-    func commitAfterExportSuccess(currentDraft: () -> ProjectDraft?) {
-        guard var slot = activeDraftSlot,
-              let draft = currentDraft() else { return }
-        slot.draft = draft
+    /// Materializes saved project after successful export and clears recovery slot.
+    func commitAfterExportSuccess() {
+        guard let store = store, var slot = activeDraftSlot else { return }
+        let current = EditorSessionSnapshot(from: store.state)
+        slot.draft = store.currentDraft
         slot.draft.updatedAt = Date()
         do {
             try deps.materializeSavedProject(&slot)
             activeDraftSlot = slot
-            try deps.saveActiveDraft(slot)
+            try deps.deleteActiveDraft()
+            dirtyState?.didMaterialize(current: current)
         } catch {
             logger.error("[EditorSession] Export commit error: \(error.localizedDescription)")
         }
@@ -226,30 +313,46 @@ final class EditorSession {
     // MARK: - Close
 
     /// Returns whether the UI should prompt the user or just pop.
-    ///
-    /// PR 2: Always returns `.needsUserDecision`. The current `draftIsDirty` flag
-    /// cannot distinguish explicit save from autosave checkpoint, so using it here
-    /// would let autosave silently suppress the close prompt.
-    /// PR 3 introduces the dual-baseline dirty model and enables `.safeToClose`.
-    func requestClose(isDirty: Bool) -> EditorCloseAction {
-        // Conservative: always prompt until PR 3 dual-baseline dirty model.
-        .needsUserDecision
+    /// Uses dual-baseline dirty model: clean = current matches materialized baseline.
+    func requestClose() -> EditorCloseAction {
+        guard let store = store, let dirtyState = dirtyState else { return .safeToClose }
+        let current = EditorSessionSnapshot(from: store.state)
+        return dirtyState.isDirtyForUser(current: current) ? .needsUserDecision : .safeToClose
     }
 
     /// Save + materialize + delete active draft (user chose "Save" in close alert).
-    /// Extracted from PlayerViewController.saveAndClose() lines 1001–1021.
-    func executeSaveAndClose(currentDraft: () -> ProjectDraft?) throws {
-        guard var slot = activeDraftSlot,
-              let draft = currentDraft() else { return }
-        slot.draft = draft
+    func executeSaveAndClose() throws {
+        guard let store = store, var slot = activeDraftSlot else { return }
+        slot.draft = store.currentDraft
         slot.draft.updatedAt = Date()
         try deps.materializeSavedProject(&slot)
         try deps.deleteActiveDraft()
     }
 
     /// Delete active draft without saving (user chose "Don't Save" in close alert).
-    /// Extracted from PlayerViewController.discardAndClose() lines 1023–1028.
     func executeDiscardAndClose() throws {
         try deps.deleteActiveDraft()
     }
+}
+
+// MARK: - EditorStoreCallbacks
+
+/// Callback struct that replaces direct store callback wiring.
+/// Constructed by the view controller and passed to `EditorSession.setStoreCallbacks(_:)`.
+@MainActor
+struct EditorStoreCallbacks {
+    var onPlayheadChanged: ((Int) -> Void)?
+    var onSelectionChanged: ((TimelineSelection?) -> Void)?
+    var onTimelineChanged: ((EditorState) -> Void)?
+    var onTimelinePreviewChanged: ((EditorState) -> Void)?
+    var onUndoRedoChanged: ((_ canUndo: Bool, _ canRedo: Bool) -> Void)?
+    var onUIModeChanged: ((EditorUIMode) -> Void)?
+    var onSelectedBlockChanged: ((String?) -> Void)?
+    var onStateRestoredFromUndoRedo: (() -> Void)?
+    var onSceneStateChanged: ((_ instanceId: UUID, _ sceneState: SceneState) -> Void)?
+    var onVideoSelectionChanged: ((_ instanceId: UUID, _ blockId: String, _ selection: PersistedVideoSelection) -> Void)?
+    var onMediaSlotChanged: ((_ instanceId: UUID, _ blockId: String, _ slot: SceneMediaSlot?) -> Void)?
+    var onMediaPlacementChanged: ((_ instanceId: UUID, _ blockId: String, _ placement: MediaPlacementState) -> Void)?
+    var onMediaVisibilityChanged: ((_ instanceId: UUID, _ blockId: String, _ visible: Bool) -> Void)?
+    var onNotice: ((EditorNotice) -> Void)?
 }

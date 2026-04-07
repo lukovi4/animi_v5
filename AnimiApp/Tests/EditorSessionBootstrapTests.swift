@@ -1,4 +1,5 @@
 import XCTest
+import TVECore
 @testable import AnimiApp
 
 @MainActor
@@ -19,9 +20,9 @@ final class EditorSessionBootstrapTests: XCTestCase {
             [SceneTypeDefault(sceneTypeId: "scene_1", baseDurationUs: 3_000_000)]
         },
         loadTemplateCatalog: @escaping () async -> Result<TemplateCatalogSnapshot, Error> = {
-            // Return a minimal success — the session only checks success/failure, not snapshot contents.
             .success(TemplateCatalogSnapshot(categories: [], templates: []))
-        }
+        },
+        backgroundPresetProvider: BackgroundPresetProviding = StubBackgroundPresetProvider()
     ) -> EditorSessionDependencies {
         EditorSessionDependencies(
             saveActiveDraft: saveActiveDraft,
@@ -31,7 +32,8 @@ final class EditorSessionBootstrapTests: XCTestCase {
             materializeSavedProject: materializeSavedProject,
             loadSceneLibrary: loadSceneLibrary,
             sceneTypeDefaults: sceneTypeDefaults,
-            loadTemplateCatalog: loadTemplateCatalog
+            loadTemplateCatalog: loadTemplateCatalog,
+            backgroundPresetProvider: backgroundPresetProvider
         )
     }
 
@@ -63,6 +65,22 @@ final class EditorSessionBootstrapTests: XCTestCase {
         )
     }
 
+    /// Bootstraps a session and returns it ready for lifecycle tests.
+    private func makeBootstrappedSession(
+        saveActiveDraft: @escaping (ActiveDraftSlot) throws -> Void = { _ in },
+        deleteActiveDraft: @escaping () throws -> Void = {},
+        materializeSavedProject: @escaping (inout ActiveDraftSlot) throws -> Void = { _ in }
+    ) async -> EditorSession {
+        let deps = makeDeps(
+            saveActiveDraft: saveActiveDraft,
+            deleteActiveDraft: deleteActiveDraft,
+            materializeSavedProject: materializeSavedProject
+        )
+        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
+        await session.bootstrap()
+        return session
+    }
+
     // MARK: - Bootstrap Tests
 
     func testBootstrapTemplate_createsSlotAndSucceeds() async {
@@ -88,6 +106,11 @@ final class EditorSessionBootstrapTests: XCTestCase {
         } else {
             XCTFail("Expected .bootstrapSucceeded output")
         }
+    }
+
+    func testBootstrapTemplate_createsEditorStore() async {
+        let session = await makeBootstrappedSession()
+        XCTAssertNotNil(session.state, "Store should be created during bootstrap (state accessible via proxy)")
     }
 
     func testBootstrapSavedProject_loadsRecordAndSucceeds() async {
@@ -162,109 +185,86 @@ final class EditorSessionBootstrapTests: XCTestCase {
         else { XCTFail("Expected .failed phase") }
     }
 
-    // MARK: - Checkpoint Tests
+    // MARK: - Checkpoint Tests (PR3: self-contained, no params)
 
-    func testPersistCheckpoint_savesWhenDirty() {
+    func testPersistCheckpoint_savesWhenDirty() async {
         var savedSlot: ActiveDraftSlot?
-        let deps = makeDeps(saveActiveDraft: { savedSlot = $0 })
-        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
-        // Manually set activeDraftSlot via bootstrap side-channel
-        let slot = Self.stubSlot()
-        session.activeDraftSlot = slot
+        let session = await makeBootstrappedSession(saveActiveDraft: { savedSlot = $0 })
 
-        let draft = Self.stubDraft()
-        let saved = session.persistCheckpointIfNeeded(
-            currentDraft: { draft },
-            isDirty: true
-        )
+        // Mutate the store to make it differ from baseline
+        session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
 
+        let saved = session.persistCheckpointIfNeeded()
         XCTAssertTrue(saved)
         XCTAssertNotNil(savedSlot)
     }
 
-    func testPersistCheckpoint_skipsWhenClean() {
+    func testPersistCheckpoint_skipsWhenClean() async {
         var saveCount = 0
-        let deps = makeDeps(saveActiveDraft: { _ in saveCount += 1 })
-        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
-        session.activeDraftSlot = Self.stubSlot()
+        let session = await makeBootstrappedSession(saveActiveDraft: { _ in saveCount += 1 })
 
-        let draft = Self.stubDraft()
-        let saved = session.persistCheckpointIfNeeded(
-            currentDraft: { draft },
-            isDirty: false
-        )
-
+        // Don't mutate — should be clean
+        let initialSaveCount = saveCount // bootstrap may have saved
+        let saved = session.persistCheckpointIfNeeded()
         XCTAssertFalse(saved)
-        XCTAssertEqual(saveCount, 0)
+        XCTAssertEqual(saveCount, initialSaveCount)
     }
 
     // MARK: - Export Commit Tests
 
-    func testCommitAfterExport_materializesAndSaves() {
-        var materializeCalled = false
-        var saveCalled = false
-        let deps = makeDeps(
-            saveActiveDraft: { _ in saveCalled = true },
-            materializeSavedProject: { _ in materializeCalled = true }
-        )
-        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
-        session.activeDraftSlot = Self.stubSlot()
-
-        let draft = Self.stubDraft()
-        session.commitAfterExportSuccess(currentDraft: { draft })
-
-        XCTAssertTrue(materializeCalled)
-        XCTAssertTrue(saveCalled)
-    }
-
-    // MARK: - Close Tests
-
-    /// PR 2 conservative contract: requestClose always returns .needsUserDecision,
-    /// regardless of isDirty. This ensures the VC always shows the save/discard prompt
-    /// until PR 3 introduces the dual-baseline dirty model.
-    func testRequestClose_dirtyReturnsNeedsDecision() {
-        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: makeDeps())
-        let action = session.requestClose(isDirty: true)
-        XCTAssertEqual(action, .needsUserDecision)
-    }
-
-    func testRequestClose_cleanStillReturnsNeedsDecision() {
-        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: makeDeps())
-        let action = session.requestClose(isDirty: false)
-        XCTAssertEqual(action, .needsUserDecision,
-            "PR 2 conservative: always prompt, even when isDirty is false")
-    }
-
-    /// After autosave checkpoint clears isDirty, requestClose must still return
-    /// .needsUserDecision — the session owns this decision, not the VC.
-    func testCheckpointThenClose_stillReturnsNeedsDecision() {
-        let deps = makeDeps()
-        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
-        session.activeDraftSlot = Self.stubSlot()
-
-        let draft = Self.stubDraft()
-        let saved = session.persistCheckpointIfNeeded(currentDraft: { draft }, isDirty: true)
-        XCTAssertTrue(saved, "Checkpoint should succeed")
-
-        // After checkpoint, VC sets draftIsDirty = false, then user closes.
-        // Session must still prompt — autosave != explicit save.
-        let action = session.requestClose(isDirty: false)
-        XCTAssertEqual(action, .needsUserDecision,
-            "Conservative close: autosave checkpoint must not suppress prompt")
-    }
-
-    func testExecuteSaveAndClose_materializesAndDeletesDraft() {
+    func testCommitAfterExport_materializesAndDeletesDraft() async {
         var materializeCalled = false
         var deleteCalled = false
-        let deps = makeDeps(
+        let session = await makeBootstrappedSession(
             deleteActiveDraft: { deleteCalled = true },
             materializeSavedProject: { _ in materializeCalled = true }
         )
-        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
-        session.activeDraftSlot = Self.stubSlot()
 
-        let draft = Self.stubDraft()
-        XCTAssertNoThrow(try session.executeSaveAndClose(currentDraft: { draft }))
+        session.commitAfterExportSuccess()
+
+        XCTAssertTrue(materializeCalled)
+        XCTAssertTrue(deleteCalled)
+    }
+
+    // MARK: - Close Tests (PR3: dual-baseline dirty model)
+
+    func testRequestClose_cleanSession_safeToClose() async {
+        let session = await makeBootstrappedSession()
+        // No mutations — should be clean
+        let action = session.requestClose()
+        XCTAssertEqual(action, .safeToClose)
+    }
+
+    func testRequestClose_dirtySession_needsUserDecision() async {
+        let session = await makeBootstrappedSession()
+        session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
+        let action = session.requestClose()
+        XCTAssertEqual(action, .needsUserDecision)
+    }
+
+    func testCheckpointThenClose_stillNeedsUserDecision() async {
+        let session = await makeBootstrappedSession()
+
+        // Mutate and checkpoint
+        session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
+        let saved = session.persistCheckpointIfNeeded()
+        XCTAssertTrue(saved, "Checkpoint should succeed")
+
+        // After checkpoint, session is still dirty for user (autosave != explicit save)
+        let action = session.requestClose()
+        XCTAssertEqual(action, .needsUserDecision,
+            "Autosave checkpoint must not suppress close prompt")
+    }
+
+    func testExecuteSaveAndClose_materializesAndDeletesDraft() async {
+        var materializeCalled = false
+        var deleteCalled = false
+        let session = await makeBootstrappedSession(
+            deleteActiveDraft: { deleteCalled = true },
+            materializeSavedProject: { _ in materializeCalled = true }
+        )
+
+        XCTAssertNoThrow(try session.executeSaveAndClose())
         XCTAssertTrue(materializeCalled)
         XCTAssertTrue(deleteCalled)
     }
@@ -277,5 +277,14 @@ final class EditorSessionBootstrapTests: XCTestCase {
         XCTAssertNoThrow(try session.executeDiscardAndClose())
         XCTAssertTrue(deleteCalled)
     }
+}
 
+// MARK: - Stub Background Preset Provider
+
+private struct StubBackgroundPresetProvider: BackgroundPresetProviding {
+    func loadFromBundle() throws {}
+    func preset(for presetId: String) -> BackgroundPreset? { nil }
+    func presetOrFallback(for presetId: String) -> BackgroundPreset? { nil }
+    var allPresets: [BackgroundPreset] { [] }
+    var count: Int { 0 }
 }

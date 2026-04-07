@@ -23,7 +23,7 @@ public enum EffectiveBackgroundBuilder {
     public static func build(
         templateBackground: Background?,
         projectOverride: ProjectBackgroundOverride?,
-        presetLibrary: BackgroundPresetLibrary
+        presetLibrary: BackgroundPresetProviding
     ) -> EffectiveBackgroundState? {
 
         // 1. Determine effective preset ID

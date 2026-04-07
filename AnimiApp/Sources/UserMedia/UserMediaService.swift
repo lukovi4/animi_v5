@@ -1378,6 +1378,10 @@ public final class UserMediaService {
         restoreFailedBlockIds.contains(blockId)
     }
 
+    /// Exposes the current set of block IDs that failed media restore.
+    /// Used by EditorSession to build cross-scene missing-media summary.
+    public var currentRestoreFailedBlockIds: Set<String> { restoreFailedBlockIds }
+
     /// Returns all block IDs that have video media (for render-tick updates).
     public var blockIdsWithVideo: [String] {
         mediaState.compactMap { (blockId, kind) in

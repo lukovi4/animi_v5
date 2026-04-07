@@ -45,7 +45,9 @@ final class PlayerViewController: UIViewController {
     // MARK: - Session
 
     private let session: EditorSession
-    private var activeDraftSlot: ActiveDraftSlot?
+    /// True when session emitted a missing-media notice that hasn't been presented yet.
+    /// At flush time we read the live `session.missingMediaSummary` to avoid stale counts.
+    private var hasDeferredMissingMediaNotice = false
 
     init(session: EditorSession) {
         self.session = session
@@ -66,7 +68,7 @@ final class PlayerViewController: UIViewController {
 
     @objc private func appDidEnterBackground() {
         if !userMadeExplicitCloseChoice {
-            saveDraftToActiveSlot()
+            session.persistCheckpointIfNeeded()
         }
     }
 
@@ -161,8 +163,7 @@ final class PlayerViewController: UIViewController {
     // MARK: - Editor (PR-19)
     private var scenePlayer: ScenePlayer?
 
-    // MARK: - PR2: EditorStore (centralized state management)
-    private var editorStore: EditorStore?
+    // MARK: - PR2: EditorStore (internalized in EditorSession, accessed via session proxy)
 
     // MARK: - Release v1: Scene Library + Playback Coordinator
     private var sceneLibrarySnapshot: SceneLibrarySnapshot?
@@ -206,7 +207,7 @@ final class PlayerViewController: UIViewController {
 
     /// Write-target for scene-edit persistence: delegates to the static resolver.
     private var sceneEditTargetInstanceId: UUID? {
-        guard let uiMode = editorStore?.state.uiMode else { return nil }
+        guard let uiMode = session.state?.uiMode else { return nil }
         return Self.resolveWriteTargetForSceneEdit(
             uiMode: uiMode,
             activeSceneInstanceId: activeSceneInstanceId
@@ -268,9 +269,6 @@ final class PlayerViewController: UIViewController {
     private var trimThumbnailProvider: VideoTrimThumbnailProvider?
 
     // MARK: - PR2: Visual Editor Timeline
-    private var currentProjectDraft: ProjectDraft?
-    /// Tracks whether draft has unsaved changes.
-    private var draftIsDirty = false
     /// Tracks whether user made explicit Save/Don't Save choice (prevents double-save in viewWillDisappear).
     private var userMadeExplicitCloseChoice = false
     /// Periodic autosave timer (crash recovery safety net).
@@ -289,7 +287,6 @@ final class PlayerViewController: UIViewController {
     private var backgroundTextureService: BackgroundTextureService?
     private var effectiveBackgroundState: EffectiveBackgroundState?
     private var currentProjectId: UUID?
-    private var projectBackgroundOverride: ProjectBackgroundOverride?
     private var currentTemplateId: String?
     private var pendingBackgroundRegionId: String?
     private weak var pendingBackgroundEditor: BackgroundEditorViewController?
@@ -369,7 +366,7 @@ final class PlayerViewController: UIViewController {
 
         // Autosave timer (crash recovery safety net, 30s interval)
         autosaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.saveDraftToActiveSlot()
+            self?.session.persistCheckpointIfNeeded()
         }
 
         // Wire session output and start bootstrap
@@ -386,9 +383,7 @@ final class PlayerViewController: UIViewController {
     private func handleSessionOutput(_ output: EditorSessionOutput) {
         switch output {
         case .bootstrapSucceeded(let editor):
-            activeDraftSlot = editor.activeDraftSlot
             currentTemplateId = editor.templateId
-            currentProjectDraft = editor.draft
             currentProjectId = editor.draft.id
             sceneLibrarySnapshot = editor.sceneLibrary
             defaultSceneSequence = editor.defaultSceneSequence
@@ -397,6 +392,13 @@ final class PlayerViewController: UIViewController {
         case .bootstrapFailed(let msg):
             loadingState = .failed(message: msg)
             updateLoadingStateUI()
+
+        case .missingMediaDetected:
+            if viewIfLoaded?.window != nil, loadingState == .ready {
+                flushMissingMediaNoticeIfNeeded()
+            } else {
+                hasDeferredMissingMediaNotice = true
+            }
         }
     }
 
@@ -475,11 +477,11 @@ final class PlayerViewController: UIViewController {
 
         // PR-F: Undo/Redo
         editorLayoutContainer.onUndo = { [weak self] in
-            self?.editorStore?.dispatch(.undo)
+            self?.session.dispatch(.undo)
         }
 
         editorLayoutContainer.onRedo = { [weak self] in
-            self?.editorStore?.dispatch(.redo)
+            self?.session.dispatch(.redo)
         }
 
         editorLayoutContainer.onPlayPause = { [weak self] in
@@ -497,13 +499,13 @@ final class PlayerViewController: UIViewController {
 
         // PR9: Scene context actions
         editorLayoutContainer.onDuplicateScene = { [weak self] sceneId in
-            self?.editorStore?.dispatch(.duplicateScene(sceneItemId: sceneId))
+            self?.session.dispatch(.duplicateScene(sceneItemId: sceneId))
         }
 
         editorLayoutContainer.onDeleteScene = { [weak self] sceneId in
             // Cancel all in-flight ingests for the scene being deleted
             self?.mediaIngestCoordinator.cancelAll(for: sceneId)
-            self?.editorStore?.dispatch(.deleteScene(sceneId: sceneId))
+            self?.session.dispatch(.deleteScene(sceneId: sceneId))
         }
 
         editorLayoutContainer.onAddScene = { [weak self] in
@@ -512,11 +514,11 @@ final class PlayerViewController: UIViewController {
 
         // PR-D: Scene Edit Mode callbacks
         editorLayoutContainer.onEditScene = { [weak self] sceneId in
-            self?.editorStore?.dispatch(.enterSceneEdit(sceneId: sceneId))
+            self?.session.dispatch(.enterSceneEdit(sceneId: sceneId))
         }
 
         editorLayoutContainer.onDone = { [weak self] in
-            self?.editorStore?.dispatch(.exitSceneEdit)
+            self?.session.dispatch(.exitSceneEdit)
         }
 
         // PR-E: SceneEditBar callbacks
@@ -529,7 +531,7 @@ final class PlayerViewController: UIViewController {
                   let instanceId = self.sceneEditTargetInstanceId else { return }
 
             // PR-F: Show confirmation only if scene has state to reset
-            let sceneState = self.editorStore?.state.draft.sceneInstanceStates[instanceId]
+            let sceneState = self.session.state?.draft.sceneInstanceStates[instanceId]
             guard sceneState != nil && sceneState != .empty else { return }
 
             let alert = UIAlertController(
@@ -543,7 +545,7 @@ final class PlayerViewController: UIViewController {
                 guard let self = self else { return }
                 // Cancel all in-flight ingests for this scene before resetting
                 self.mediaIngestCoordinator.cancelAll(for: instanceId)
-                self.editorStore?.dispatch(.resetSceneState(sceneInstanceId: instanceId))
+                self.session.dispatch(.resetSceneState(sceneInstanceId: instanceId))
                 self.reloadRuntimeState(for: instanceId)
                 self.refreshSceneEditBars()
             })
@@ -594,8 +596,8 @@ final class PlayerViewController: UIViewController {
             guard let self = self,
                   let instanceId = self.sceneEditTargetInstanceId else { return }
             // Toggle current state
-            let currentPresent = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.visibility ?? true
-            self.editorStore?.dispatch(.setBlockMediaPresent(
+            let currentPresent = self.session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.visibility ?? true
+            self.session.dispatch(.setBlockMediaPresent(
                 sceneInstanceId: instanceId,
                 blockId: blockId,
                 present: !currentPresent
@@ -617,7 +619,7 @@ final class PlayerViewController: UIViewController {
             // Clear runtime
             self.userMediaService?.clear(blockId: blockId)
             // Dispatch to store (removes slot)
-            self.editorStore?.dispatch(.setMediaSlot(
+            self.session.dispatch(.setMediaSlot(
                 sceneInstanceId: instanceId,
                 blockId: blockId,
                 slot: nil
@@ -629,7 +631,7 @@ final class PlayerViewController: UIViewController {
 
         editorLayoutContainer.onResetTransform = { [weak self] blockId in
             guard let self, let instanceId = self.sceneEditTargetInstanceId else { return }
-            self.editorStore?.dispatch(.resetMediaPlacement(sceneInstanceId: instanceId, blockId: blockId))
+            self.session.dispatch(.resetMediaPlacement(sceneInstanceId: instanceId, blockId: blockId))
             self.updateMediaBlockActionBarForSelectedBlock()
         }
     }
@@ -660,7 +662,7 @@ final class PlayerViewController: UIViewController {
             presentTransitionPicker(fromSceneId: fromId, toSceneId: toId, anchorRect: anchorRect)
 
         case .focusScene(let sceneId):
-            editorStore?.dispatch(.focusScene(sceneId: sceneId))
+            session.dispatch(.focusScene(sceneId: sceneId))
         }
     }
 
@@ -674,11 +676,6 @@ final class PlayerViewController: UIViewController {
     ///   - edge: Which edge is being trimmed
     ///   - phase: Gesture phase
     private func handleTrimScene(sceneId: UUID, newDurationUs: TimeUs, edge: TrimEdge, phase: InteractionPhase) {
-        guard let store = editorStore else {
-            log("[PR2] handleTrimScene: editorStore is nil")
-            return
-        }
-
         // Stop playback on trim start to avoid coordinator/UI desync during preview
         if phase == .began && isPlaying {
             stopPlayback()
@@ -686,7 +683,7 @@ final class PlayerViewController: UIViewController {
 
         // PR2: Dispatch trim action to store
         // PR3.1: All UI updates happen via handleStoreStateChanged callback
-        store.dispatch(.trimScene(sceneId: sceneId, phase: phase, newDurationUs: newDurationUs, edge: edge))
+        session.dispatch(.trimScene(sceneId: sceneId, phase: phase, newDurationUs: newDurationUs, edge: edge))
     }
 
     // MARK: - PR3: Reorder Scene Handling
@@ -703,14 +700,9 @@ final class PlayerViewController: UIViewController {
         guard phase == .ended else { return }
         guard toIndex >= 0 else { return } // -1 means cancelled
 
-        guard let store = editorStore else {
-            log("[PR3] handleReorderScene: editorStore is nil")
-            return
-        }
-
         // PR3.2: Convert insertion index to destination index
         // UI emits insertion index (0...count), reducer expects destination index (0...count-1)
-        let sceneItems = store.sceneItems
+        guard let sceneItems = session.state?.sceneItems else { return }
         guard let fromIndex = sceneItems.firstIndex(where: { $0.id == sceneId }) else {
             log("[PR3.2] handleReorderScene: scene not found")
             return
@@ -732,7 +724,7 @@ final class PlayerViewController: UIViewController {
 
         // PR3: Dispatch reorder action to store
         // PR3.1: All UI updates happen via handleStoreStateChanged callback
-        store.dispatch(.reorderScene(sceneId: sceneId, toIndex: destIndex))
+        session.dispatch(.reorderScene(sceneId: sceneId, toIndex: destIndex))
     }
 
     // MARK: - PR-G: Transition Picker
@@ -744,13 +736,13 @@ final class PlayerViewController: UIViewController {
     ///   - anchorRect: Rect for popover anchor (in TimelineView coordinates)
     private func presentTransitionPicker(fromSceneId: UUID, toSceneId: UUID, anchorRect: CGRect) {
         let key = SceneBoundaryKey(fromSceneId, toSceneId)
-        let current = editorStore?.state.canonicalTimeline.boundaryTransitions[key] ?? .none
+        let current = session.state?.canonicalTimeline.boundaryTransitions[key] ?? .none
 
         let handler = PlayerViewController.makeBoundaryTransitionDispatchHandler(
             fromSceneId: fromSceneId,
             toSceneId: toSceneId
         ) { [weak self] action in
-            self?.editorStore?.dispatch(action)
+            self?.session.dispatch(action)
         }
 
         let picker = PlayerViewController.makeTransitionPicker(
@@ -836,6 +828,27 @@ final class PlayerViewController: UIViewController {
         return alert
     }
 
+    /// Reads live session state and presents the missing-media notice if still relevant.
+    /// No-ops if notice was already delivered or failures have been resolved.
+    private func flushMissingMediaNoticeIfNeeded() {
+        guard hasDeferredMissingMediaNotice || session.hasPendingMissingMediaNotice else { return }
+        hasDeferredMissingMediaNotice = false
+        guard let summary = session.missingMediaSummary, summary.hasFailedMedia else { return }
+        let count = summary.failedSlots.count
+        let message = count == 1
+            ? "1 media file could not be restored. The affected slot will appear empty."
+            : "\(count) media files could not be restored. Affected slots will appear empty."
+        let alert = UIAlertController(
+            title: "Missing Media",
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true) { [weak self] in
+            self?.session.markMissingMediaNoticePresented()
+        }
+    }
+
     // MARK: - TT-10: Scene Edit Isolation
 
     /// Isolates timeline activity when entering scene edit mode.
@@ -853,7 +866,7 @@ final class PlayerViewController: UIViewController {
 
     private func handleEditorClose() {
         stopPlayback()
-        let action = session.requestClose(isDirty: draftIsDirty)
+        let action = session.requestClose()
         switch action {
         case .safeToClose:
             userMadeExplicitCloseChoice = true
@@ -882,9 +895,7 @@ final class PlayerViewController: UIViewController {
 
     private func saveAndClose() {
         do {
-            try session.executeSaveAndClose(
-                currentDraft: { [weak self] in self?.currentMergedDraft() }
-            )
+            try session.executeSaveAndClose()
         } catch {
             log("[Close] Save failed: \(error)")
             presentSaveError(error)
@@ -916,15 +927,12 @@ final class PlayerViewController: UIViewController {
 
     /// Materializes saved project after successful export.
     private func handleExportSuccess() {
-        session.commitAfterExportSuccess(
-            currentDraft: { [weak self] in self?.currentMergedDraft() }
-        )
-        activeDraftSlot = session.activeDraftSlot
+        session.commitAfterExportSuccess()
     }
 
     private func handleFullScreenPreview() {
         // PR-F: Fullscreen preview only allowed in timeline mode
-        let uiMode = editorStore?.state.uiMode ?? .timeline
+        let uiMode = session.state?.uiMode ?? .timeline
         guard case .timeline = uiMode else {
             assertionFailure("handleFullScreenPreview called outside timeline mode")
             return
@@ -935,7 +943,7 @@ final class PlayerViewController: UIViewController {
         fullScreenPreviewVC = fullScreenVC
 
         // Phase 2.1: Use compressed frame from store (not currentFrameIndex)
-        let compressedFrame = editorStore?.playheadCompressedFrame ?? 0
+        let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         fullScreenVC.configure(compressedFrame: compressedFrame, isPlaying: isPlaying)
 
         // Move metalView to fullscreen VC
@@ -955,7 +963,7 @@ final class PlayerViewController: UIViewController {
 
             self.dismiss(animated: true) {
                 // Phase 2.1: Dispatch compressed frame directly (no frameToUs conversion)
-                self.editorStore?.dispatch(.setPlayhead(compressedFrame: returnedCompressedFrame))
+                self.session.dispatch(.setPlayhead(compressedFrame: returnedCompressedFrame))
                 self.metalView.setNeedsDisplay()
             }
         }
@@ -995,17 +1003,17 @@ final class PlayerViewController: UIViewController {
         }
 
         // Dispatch to store - onPlayheadChanged callback handles coordinator + redraw + currentFrameIndex
-        editorStore?.dispatch(.setPlayhead(compressedFrame: compressedFrame))
+        session.dispatch(.setPlayhead(compressedFrame: compressedFrame))
     }
 
     private func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
         // In timeline mode, scene selection comes from playhead via focusScene.
         // Only allow .audio and .none through direct .select dispatch.
-        if editorStore?.state.uiMode == .timeline, case .scene = selection {
+        if session.state?.uiMode == .timeline, case .scene = selection {
             return
         }
         // PR3: Only dispatch to store. UI updates happen in handleStoreStateChanged.
-        editorStore?.dispatch(.select(selection: selection))
+        session.dispatch(.select(selection: selection))
     }
 
     /// Configures timeline after scene is loaded.
@@ -1014,101 +1022,45 @@ final class PlayerViewController: UIViewController {
     private func configureEditorTimeline() {
         let fps = sceneLibrarySnapshot?.fps ?? Int(sceneFPS)
 
-        // Step 1: Ensure we have a draft
-        guard let draft = currentProjectDraft else {
-            log("[Release v1] configureEditorTimeline: no draft available")
+        // Step 1: Get store from session (created during bootstrap)
+        guard let state = session.state else {
+            log("[Release v1] configureEditorTimeline: session state is nil")
             return
         }
 
-        // Step 2: Create EditorStore and dispatch loadProject
-        // Release v1: Reducer populates timeline from defaultSceneSequence if empty
-        let store = EditorStore()
-        store.dispatch(.loadProject(
-            draft: draft,
-            templateFPS: fps,
-            defaultSceneSequence: defaultSceneSequence
-        ))
-        self.editorStore = store
-
-        // Step 3: Wire split callbacks (Release v1)
-        // onPlayheadChanged: lightweight, frequent updates (scrubbing, playback tick)
-        store.onPlayheadChanged = { [weak self] compressedFrame in
-            self?.handlePlayheadChanged(compressedFrame)
-        }
-
-        // onSelectionChanged: lightweight updates (highlight, handles)
-        store.onSelectionChanged = { [weak self] selection in
-            self?.handleSelectionChanged(selection)
-        }
-
-        // onTimelineChanged: heavier updates (scene add/remove/trim commit)
-        store.onTimelineChanged = { [weak self] state in
-            self?.handleTimelineChanged(state)
-        }
-
-        // onTimelinePreviewChanged: lightweight updates (trim preview only)
-        store.onTimelinePreviewChanged = { [weak self] state in
-            self?.handleTimelinePreviewChanged(state)
-        }
-
-        store.onUndoRedoChanged = { [weak self] canUndo, canRedo in
-            self?.handleUndoRedoChanged(canUndo: canUndo, canRedo: canRedo)
-        }
-
-        // PR-D: Scene Edit Mode callbacks
-        store.onUIModeChanged = { [weak self] mode in
-            self?.handleUIModeChanged(mode)
-        }
-
-        store.onSelectedBlockChanged = { [weak self] blockId in
-            self?.handleSelectedBlockChanged(blockId)
-        }
-
-        store.onStateRestoredFromUndoRedo = { [weak self] in
-            self?.handleStateRestoredFromUndoRedo()
-        }
-
-        // PR-F: Scene state change callback for incremental engine sync
-        store.onSceneStateChanged = { [weak self] instanceId, sceneState in
-            self?.handleSceneStateChanged(instanceId: instanceId, sceneState: sceneState)
-        }
-
-        // Video selection committed callback
-        store.onVideoSelectionChanged = { [weak self] instanceId, blockId, selection in
-            self?.handleVideoSelectionChanged(instanceId: instanceId, blockId: blockId, selection: selection)
-        }
-
-        // PR2/PR4: Fast-path callbacks for media placement, visibility, and slot changes
-        store.onMediaPlacementChanged = { [weak self] instanceId, blockId, placement in
-            self?.handleMediaPlacementChanged(instanceId: instanceId, blockId: blockId, placement: placement)
-        }
-        store.onMediaVisibilityChanged = { [weak self] instanceId, blockId, visible in
-            self?.handleMediaVisibilityChanged(instanceId: instanceId, blockId: blockId, visible: visible)
-        }
-        store.onMediaSlotChanged = { [weak self] instanceId, blockId, slot in
-            self?.handleMediaSlotChanged(instanceId: instanceId, blockId: blockId, slot: slot)
-        }
-
-        // PR-G: Notice callback for user-facing feedback (e.g., transition reset alerts)
-        store.onNotice = { [weak self] notice in
-            self?.handleEditorNotice(notice)
-        }
+        // Step 2: Wire split callbacks via EditorStoreCallbacks (PR3-fix: internalized store)
+        var callbacks = EditorStoreCallbacks()
+        callbacks.onPlayheadChanged = { [weak self] cf in self?.handlePlayheadChanged(cf) }
+        callbacks.onSelectionChanged = { [weak self] sel in self?.handleSelectionChanged(sel) }
+        callbacks.onTimelineChanged = { [weak self] st in self?.handleTimelineChanged(st) }
+        callbacks.onTimelinePreviewChanged = { [weak self] st in self?.handleTimelinePreviewChanged(st) }
+        callbacks.onUndoRedoChanged = { [weak self] canUndo, canRedo in self?.handleUndoRedoChanged(canUndo: canUndo, canRedo: canRedo) }
+        callbacks.onUIModeChanged = { [weak self] mode in self?.handleUIModeChanged(mode) }
+        callbacks.onSelectedBlockChanged = { [weak self] blockId in self?.handleSelectedBlockChanged(blockId) }
+        callbacks.onStateRestoredFromUndoRedo = { [weak self] in self?.handleStateRestoredFromUndoRedo() }
+        callbacks.onSceneStateChanged = { [weak self] instanceId, sceneState in self?.handleSceneStateChanged(instanceId: instanceId, sceneState: sceneState) }
+        callbacks.onVideoSelectionChanged = { [weak self] instanceId, blockId, selection in self?.handleVideoSelectionChanged(instanceId: instanceId, blockId: blockId, selection: selection) }
+        callbacks.onMediaPlacementChanged = { [weak self] instanceId, blockId, placement in self?.handleMediaPlacementChanged(instanceId: instanceId, blockId: blockId, placement: placement) }
+        callbacks.onMediaVisibilityChanged = { [weak self] instanceId, blockId, visible in self?.handleMediaVisibilityChanged(instanceId: instanceId, blockId: blockId, visible: visible) }
+        callbacks.onMediaSlotChanged = { [weak self] instanceId, blockId, slot in self?.handleMediaSlotChanged(instanceId: instanceId, blockId: blockId, slot: slot) }
+        callbacks.onNotice = { [weak self] notice in self?.handleEditorNotice(notice) }
+        session.setStoreCallbacks(callbacks)
 
         // PR-D: Setup Scene Edit interaction controller
         let sceneEditCtrl = SceneEditInteractionController()
         sceneEditCtrl.overlayView = overlayView
         sceneEditCtrl.getScenePlayer = { [weak self] in self?.scenePlayer }
-        sceneEditCtrl.getUIMode = { [weak self] in self?.editorStore?.state.uiMode ?? .timeline }
-        sceneEditCtrl.getSelectedBlockId = { [weak self] in self?.editorStore?.state.selectedBlockId }
+        sceneEditCtrl.getUIMode = { [weak self] in self?.session.state?.uiMode ?? .timeline }
+        sceneEditCtrl.getSelectedBlockId = { [weak self] in self?.session.state?.selectedBlockId }
 
         sceneEditCtrl.onSelectBlock = { [weak self] blockId in
-            self?.editorStore?.dispatch(.selectBlock(blockId: blockId))
+            self?.session.dispatch(.selectBlock(blockId: blockId))
         }
 
         sceneEditCtrl.getBaselinePlacement = { [weak self] blockId in
             guard let self = self,
                   let instanceId = self.sceneEditTargetInstanceId,
-                  let slot = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else {
+                  let slot = self.session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else {
                 return .defaultCover
             }
             return slot.asset.placement
@@ -1134,7 +1086,7 @@ final class PlayerViewController: UIViewController {
             self.metalView.setNeedsDisplay()
 
             // Persist to store
-            self.editorStore?.dispatch(.setMediaPlacement(
+            self.session.dispatch(.setMediaPlacement(
                 sceneInstanceId: instanceId,
                 blockId: blockId,
                 placement: placement,
@@ -1143,7 +1095,7 @@ final class PlayerViewController: UIViewController {
 
             // Cancel: restore baseline visually
             if phase == .cancelled {
-                let restored = self.editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.asset.placement ?? .defaultCover
+                let restored = self.session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.asset.placement ?? .defaultCover
                 SceneRuntimeStateApplier.applyPlacementChange(
                     blockId: blockId,
                     placement: restored,
@@ -1162,13 +1114,11 @@ final class PlayerViewController: UIViewController {
 
         self.sceneEditController = sceneEditCtrl
 
-        // Step 4: Sync local state from store
-        currentProjectDraft = store.currentDraft
-        log("[Release v1] Timeline configured: \(store.sceneItems.count) scenes, duration=\(store.projectDurationUs)us")
+        log("[Release v1] Timeline configured: \(state.sceneItems.count) scenes, duration=\(state.projectDurationUs)us")
 
         // PR-E: Configure timeline UI with scenes from store (PR-G: includes boundaries)
-        let scenes = store.sceneDrafts
-        let boundaries = store.state.canonicalTimeline.toSceneBoundaryDrafts()
+        let scenes = state.canonicalTimeline.toSceneDrafts()
+        let boundaries = state.canonicalTimeline.toSceneBoundaryDrafts()
         editorLayoutContainer.configure(
             scenes: scenes,
             boundaries: boundaries,
@@ -1184,11 +1134,11 @@ final class PlayerViewController: UIViewController {
 
         // Step 8: PR9.1 - Initial apply SceneState for first scene
         // Without this, activeSceneInstanceId stays nil until first scrub/play
-        handlePlayheadChanged(store.playheadCompressedFrame)
+        handlePlayheadChanged(state.playheadCompressedFrame)
 
         // PR10: Editor boot invariant - verify wiring is complete
         #if DEBUG
-        let bootUIMode = store.state.uiMode
+        let bootUIMode = state.uiMode
         if activeSceneInstanceId == nil {
             assertionFailure("[PR10] configureEditorTimeline: activeSceneInstanceId is nil after initial apply")
         }
@@ -1212,7 +1162,7 @@ final class PlayerViewController: UIViewController {
     /// Sets up the TimelinePlaybackCoordinator for multi-scene playback.
     private func setupPlaybackCoordinator() {
         guard let library = sceneLibrarySnapshot,
-              let store = editorStore else { return }
+              let state = session.state else { return }
 
         let coordinator = TimelinePlaybackCoordinator()
         coordinator.configure(
@@ -1227,7 +1177,7 @@ final class PlayerViewController: UIViewController {
         )
 
         // Initialize timeline from store
-        coordinator.updateSceneTimeline(from: store.state)
+        coordinator.updateSceneTimeline(from: state)
 
         // P1 fix: Bootstrap with already-loaded first scene (prevents double load)
         // P0-2 fix: Use store.state to get the actual first scene (matches what was loaded)
@@ -1235,7 +1185,7 @@ final class PlayerViewController: UIViewController {
            let compiled = compiledScene,
            let provider = textureProvider as? ScenePackageTextureProvider,
            let resolver = currentResolver,
-           let firstSceneTypeId = store.state.canonicalTimeline.firstSceneTypeId {
+           let firstSceneTypeId = state.canonicalTimeline.firstSceneTypeId {
             coordinator.bootstrap(
                 sceneTypeId: firstSceneTypeId,
                 player: player,
@@ -1263,7 +1213,7 @@ final class PlayerViewController: UIViewController {
     private func setupTimelineCompositionEngine() {
         guard let device = metalView.device,
               let queue = commandQueue,
-              let store = editorStore,
+              let state = session.state,
               let library = sceneLibrarySnapshot else {
             return
         }
@@ -1295,9 +1245,9 @@ final class PlayerViewController: UIViewController {
             timelineCompositionEngine = engine
         }
 
-        // Update timeline from store
-        let timeline = store.state.canonicalTimeline
-        let sceneStates = store.state.draft.sceneInstanceStates
+        // Update timeline from state
+        let timeline = state.canonicalTimeline
+        let sceneStates = state.draft.sceneInstanceStates
         engine.setTimeline(timeline, sceneStates: sceneStates)
 
         // PR-G: Create transition compositor unconditionally
@@ -1315,7 +1265,7 @@ final class PlayerViewController: UIViewController {
         }
 
         // Phase 2.1: Wire mapper to timeline UI after engine setup
-        let mapper = store.state.makePlayheadMapper()
+        let mapper = state.makePlayheadMapper()
         editorLayoutContainer.setMapper(mapper)
     }
 
@@ -1435,7 +1385,7 @@ final class PlayerViewController: UIViewController {
     /// Fires on every instance change, even if sceneTypeId is the same.
     private func handleActiveSceneChanged(_ sceneInfo: TimelinePlaybackCoordinator.SceneTimeInfo) {
         // PR-G: In timeline mode, engine is source of truth - ignore coordinator callback
-        let uiMode = editorStore?.state.uiMode ?? .timeline
+        let uiMode = session.state?.uiMode ?? .timeline
         guard case .sceneEdit = uiMode else { return }
 
         let previousInstanceId = activeSceneInstanceId
@@ -1473,17 +1423,20 @@ final class PlayerViewController: UIViewController {
 
     /// Applies persisted SceneState to runtime for a scene instance.
     private func applySceneInstanceState(instanceId: UUID) {
-        guard let state = editorStore?.state.draft.sceneInstanceStates[instanceId],
+        guard let sceneState = session.state?.draft.sceneInstanceStates[instanceId],
               let player = scenePlayer,
               let service = userMediaService else {
             return
         }
 
         let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
-        let restoredCount = SceneRuntimeStateApplier.apply(state, deps: deps)
+        let restoredCount = SceneRuntimeStateApplier.apply(sceneState, deps: deps)
+
+        // Wire missing-media summary after restore
+        session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
 
         #if DEBUG
-        logger.debug("[PlayerVC] Applied state for instance \(instanceId): slots=\(state.mediaSlotsByBlockId?.count ?? 0), variants=\(state.variantOverrides.count), restored=\(restoredCount), toggles=\(state.layerToggles.count)")
+        logger.debug("[PlayerVC] Applied state for instance \(instanceId): slots=\(sceneState.mediaSlotsByBlockId?.count ?? 0), variants=\(sceneState.variantOverrides.count), restored=\(restoredCount), toggles=\(sceneState.layerToggles.count)")
         #endif
     }
 
@@ -1494,7 +1447,7 @@ final class PlayerViewController: UIViewController {
     /// PR-F: Routes to engine path for timeline mode, coordinator path for sceneEdit mode.
     /// Phase 2.1: Takes compressed frame directly from store.
     private func handlePlayheadChanged(_ compressedFrame: Int) {
-        let uiMode = editorStore?.state.uiMode ?? .timeline
+        let uiMode = session.state?.uiMode ?? .timeline
 
         #if DEBUG
         let signpostId = ScrubSignpost.beginHandlePlayheadChanged()
@@ -1532,7 +1485,7 @@ final class PlayerViewController: UIViewController {
         activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
 
         // Sync timeline scroll to follow playhead
-        if let mapper = editorStore?.state.makePlayheadMapper() {
+        if let mapper = session.state?.makePlayheadMapper() {
             editorLayoutContainer.setCurrentCompressedFrame(compressedFrame, mapper: mapper)
         }
 
@@ -1544,12 +1497,12 @@ final class PlayerViewController: UIViewController {
     /// PR-G: Refreshes current timeline frame after edits (variant/media/toggle/transform/transition).
     /// Unlike scrub, this doesn't invalidate generation - just re-resolves current position.
     private func refreshCurrentTimelineFrame() {
-        let uiMode = editorStore?.state.uiMode ?? .timeline
+        let uiMode = session.state?.uiMode ?? .timeline
         guard uiMode == .timeline else { return }
         guard timelineCompositionEngine != nil else { return }
 
         // Phase 2.1: Use compressed frame directly from store
-        let compressedFrame = editorStore?.playheadCompressedFrame ?? 0
+        let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: false)
     }
 
@@ -1646,7 +1599,7 @@ final class PlayerViewController: UIViewController {
         guard let coordinator = playbackCoordinator else { return }
 
         // Phase 2.1: Convert compressed frame to nominal timeUs for coordinator
-        let mapper = editorStore?.state.makePlayheadMapper() ?? TimelinePlayheadMapper.empty
+        let mapper = session.state?.makePlayheadMapper() ?? TimelinePlayheadMapper.empty
         let timeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
 
         // Try sync path first (same scene, no load needed)
@@ -1705,7 +1658,7 @@ final class PlayerViewController: UIViewController {
     /// Used for tap/drag selection updates.
     private func handleSelectionChanged(_ selection: TimelineSelection?) {
         let sel = selection ?? .none
-        let sceneCount = editorStore?.sceneItems.count ?? 1
+        let sceneCount = session.state?.sceneItems.count ?? 1
         editorLayoutContainer.setTimelineSelection(sel, sceneCount: sceneCount)
     }
 
@@ -1730,10 +1683,6 @@ final class PlayerViewController: UIViewController {
         let mapper = state.makePlayheadMapper()
         editorLayoutContainer.setMapper(mapper)
 
-        // Mark draft as dirty for persistence
-        currentProjectDraft = state.draft
-        draftIsDirty = true
-
         // PR-F: Refresh bottom bars if in Scene Edit mode
         refreshSceneEditBars()
 
@@ -1751,12 +1700,6 @@ final class PlayerViewController: UIViewController {
             // PR-G: Refresh current frame AFTER engine state is updated
             self.refreshCurrentTimelineFrame()
         }
-
-        // PR-G: Sync local draft cache to maintain consistency
-        currentProjectDraft = editorStore?.currentDraft
-
-        // Mark draft as dirty for persistence
-        draftIsDirty = true
 
         #if DEBUG
         logger.debug("[PR-F] Scene state changed: instanceId=\(instanceId)")
@@ -1778,9 +1721,6 @@ final class PlayerViewController: UIViewController {
         // Timeline path: engine fast-path (no full reload)
         timelineCompositionEngine?.applyPlacementChange(blockId: blockId, placement: placement, for: instanceId)
         refreshCurrentTimelineFrame()
-
-        currentProjectDraft = editorStore?.currentDraft
-        draftIsDirty = true
     }
 
     /// Fast-path: visibility toggled — apply to active scene without full reload.
@@ -1795,9 +1735,6 @@ final class PlayerViewController: UIViewController {
         // Timeline path: engine fast-path (no full reload)
         timelineCompositionEngine?.applyVisibilityChange(blockId: blockId, visible: visible, for: instanceId)
         refreshCurrentTimelineFrame()
-
-        currentProjectDraft = editorStore?.currentDraft
-        draftIsDirty = true
         refreshSceneEditBars()
     }
 
@@ -1811,18 +1748,18 @@ final class PlayerViewController: UIViewController {
             let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
             SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slot, deps: deps)
             metalView.setNeedsDisplay()
+            // Update missing-media summary after slot change (rebind/clear may resolve failures)
+            session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
         }
 
         // Timeline path: full state update for any scene
-        if let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId] {
+        if let sceneState = session.state?.draft.sceneInstanceStates[instanceId] {
             Task { @MainActor in
                 await timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId)
                 self.refreshCurrentTimelineFrame()
             }
         }
 
-        currentProjectDraft = editorStore?.currentDraft
-        draftIsDirty = true
         refreshSceneEditBars()
     }
 
@@ -1834,7 +1771,7 @@ final class PlayerViewController: UIViewController {
         // Find active instance and its placement
         let instanceId = sceneEditTargetInstanceId ?? activeSceneInstanceId
         guard let instanceId,
-              let slot = editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else { return }
+              let slot = session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else { return }
         let placement = slot.asset.placement
 
         // Re-resolve with actual media size now available
@@ -1859,7 +1796,7 @@ final class PlayerViewController: UIViewController {
 
         // NOTE: Intentionally NOT updating:
         // - playbackCoordinator (expensive O(n) rebuild)
-        // - currentProjectDraft / draftIsDirty (persistence only on commit)
+        // - persistence is handled by EditorSession (dirty tracking via dual-baseline)
     }
 
     /// Called when undo/redo availability changes.
@@ -1934,7 +1871,7 @@ final class PlayerViewController: UIViewController {
 
     /// Updates MediaBlockActionBar configuration for currently selected block (PR-E).
     private func updateMediaBlockActionBarForSelectedBlock() {
-        guard let blockId = editorStore?.state.selectedBlockId,
+        guard let blockId = session.state?.selectedBlockId,
               let player = scenePlayer,
               let instanceId = sceneEditTargetInstanceId else { return }
 
@@ -1944,7 +1881,7 @@ final class PlayerViewController: UIViewController {
         let hasVariants = variants.count > 1
 
         // Check if block has media assigned (unified slots)
-        let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId]
+        let sceneState = session.state?.draft.sceneInstanceStates[instanceId]
         let slot = sceneState?.mediaSlotsByBlockId?[blockId]
         var hasMedia = slot != nil
 
@@ -1956,7 +1893,8 @@ final class PlayerViewController: UIViewController {
         var canTrimVideo = userMediaService?.videoTrimContext(blockId: blockId) != nil
 
         // Phase 6: Restore-failed blocks treated as empty in scene-edit UI
-        if userMediaService?.didBlockFailRestore(blockId: blockId) == true {
+        if let instanceId = sceneEditTargetInstanceId,
+           session.missingMediaSummary?.isBlockFailed(sceneInstanceId: instanceId, blockId: blockId) == true {
             hasMedia = false
             mediaKind = nil
             canTrimVideo = false
@@ -1989,12 +1927,12 @@ final class PlayerViewController: UIViewController {
         guard let instanceId = sceneEditTargetInstanceId else { return }
 
         // 1. Update SceneEditBar reset button state
-        let sceneState = editorStore?.state.draft.sceneInstanceStates[instanceId]
+        let sceneState = session.state?.draft.sceneInstanceStates[instanceId]
         let canReset = sceneState != nil && sceneState != .empty
         editorLayoutContainer.configureSceneEditBar(canReset: canReset)
 
         // 2. Update MediaBlockActionBar if block is selected
-        if editorStore?.state.selectedBlockId != nil {
+        if session.state?.selectedBlockId != nil {
             updateMediaBlockActionBarForSelectedBlock()
         }
     }
@@ -2021,7 +1959,7 @@ final class PlayerViewController: UIViewController {
         sceneEditController?.updateOverlay()
 
         // Update action bar if this block is selected
-        if editorStore?.state.selectedBlockId == key.blockId {
+        if session.state?.selectedBlockId == key.blockId {
             updateMediaBlockActionBarForSelectedBlock()
         }
 
@@ -2055,7 +1993,7 @@ final class PlayerViewController: UIViewController {
               let context = ums.videoTrimContext(blockId: blockId) else { return }
 
         // Verify slot is actually video
-        guard let slot = editorStore?.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
+        guard let slot = session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
               slot.mediaRef.mediaKind == .video else { return }
 
         // Stop playback if playing
@@ -2207,7 +2145,7 @@ final class PlayerViewController: UIViewController {
             )
 
             // 3. Dispatch to store
-            editorStore?.dispatch(.setVideoSelection(
+            self.session.dispatch(.setVideoSelection(
                 sceneInstanceId: session.instanceId,
                 blockId: session.blockId,
                 selection: session.draftSelection
@@ -2251,7 +2189,7 @@ final class PlayerViewController: UIViewController {
         editorLayoutContainer.setVideoTrimMode(false)
 
         // Restore scene edit bottom bar state
-        let selectedBlockId = editorStore?.state.selectedBlockId
+        let selectedBlockId = session.state?.selectedBlockId
         editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: selectedBlockId)
         if selectedBlockId != nil {
             updateMediaBlockActionBarForSelectedBlock()
@@ -2262,10 +2200,6 @@ final class PlayerViewController: UIViewController {
     private func handleVideoSelectionChanged(instanceId: UUID, blockId: String, selection: PersistedVideoSelection) {
         // Fast-path engine update (non-throwing, best-effort)
         timelineCompositionEngine?.applyPersistedVideoSelection(selection, blockId: blockId, for: instanceId)
-
-        // Sync local draft cache
-        currentProjectDraft = editorStore?.currentDraft
-        draftIsDirty = true
 
         // Refresh bars (edit button state may have changed)
         refreshSceneEditBars()
@@ -2337,16 +2271,16 @@ final class PlayerViewController: UIViewController {
         refreshSceneEditBars()
 
         // PR-F: Sync TimelineCompositionEngine with restored state
-        if let store = editorStore, let engine = timelineCompositionEngine {
+        if let state = session.state, let engine = timelineCompositionEngine {
             engine.setTimeline(
-                store.state.canonicalTimeline,
-                sceneStates: store.state.draft.sceneInstanceStates
+                state.canonicalTimeline,
+                sceneStates: state.draft.sceneInstanceStates
             )
 
             // Re-apply state to loaded runtimes
             Task { @MainActor in
-                for (instanceId, state) in store.state.draft.sceneInstanceStates {
-                    await engine.updateSceneState(state, for: instanceId)
+                for (instanceId, sceneState) in state.draft.sceneInstanceStates {
+                    await engine.updateSceneState(sceneState, for: instanceId)
                 }
             }
         }
@@ -2363,6 +2297,11 @@ final class PlayerViewController: UIViewController {
         #if DEBUG
         perfLogger.start()
         #endif
+
+        // Flush deferred missing-media notice now that VC is visible
+        if loadingState == .ready {
+            flushMissingMediaNoticeIfNeeded()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -2375,7 +2314,7 @@ final class PlayerViewController: UIViewController {
 
         // Safety net: save to active slot when leaving editor without explicit choice
         if (isMovingFromParent || isBeingDismissed) && !userMadeExplicitCloseChoice {
-            saveDraftToActiveSlot()
+            session.persistCheckpointIfNeeded()
         }
     }
 
@@ -2391,29 +2330,6 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - Draft Persistence
 
-    /// Assembles the full current draft including background from authoritative source.
-    private func currentMergedDraft() -> ProjectDraft? {
-        guard var draft = editorStore?.currentDraft
-                ?? activeDraftSlot?.draft else { return nil }
-        if let bg = projectBackgroundOverride {
-            draft.background = bg
-        }
-        return draft
-    }
-
-    /// Saves current draft to the active draft slot (not to SavedProject).
-    /// Called on background, autosave timer, and viewWillDisappear safety net.
-    private func saveDraftToActiveSlot() {
-        let saved = session.persistCheckpointIfNeeded(
-            currentDraft: { [weak self] in self?.currentMergedDraft() },
-            isDirty: draftIsDirty
-        )
-        if saved {
-            activeDraftSlot = session.activeDraftSlot
-            draftIsDirty = false
-        }
-    }
-
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         // PR-E: Update Scene Edit mapper with current canvas/view sizes
@@ -2421,7 +2337,7 @@ final class PlayerViewController: UIViewController {
         sceneEditController?.mapper.viewSize = metalView.bounds.size
 
         // P1-2: Refresh Scene Edit overlay after layout change
-        if case .sceneEdit = editorStore?.state.uiMode {
+        if case .sceneEdit = session.state?.uiMode {
             sceneEditController?.updateOverlay()
         }
     }
@@ -2467,9 +2383,9 @@ final class PlayerViewController: UIViewController {
 
         let templateBackground = compiledScene?.runtime.scene.background
         let editor = BackgroundEditorViewController(
-            presetLibrary: BackgroundPresetLibrary.shared,
+            presetLibrary: session.backgroundPresetProvider,
             templateBackground: templateBackground,
-            currentOverride: projectBackgroundOverride ?? .empty
+            currentOverride: session.state?.draft.background ?? .empty
         )
         editor.delegate = self
 
@@ -2546,21 +2462,22 @@ final class PlayerViewController: UIViewController {
             return
         }
 
-        // 5. Commit to editor or directly to persisted override
+        // 5. Commit to editor or directly to store
         if let editor = pendingBackgroundEditor {
             editor.setImage(for: regionId, mediaRef: mediaRef)
         } else {
+            var bg = session.state?.draft.background ?? .empty
             let imageOverride = ImageOverride(mediaRef: mediaRef, transform: .identity)
-            projectBackgroundOverride?.regions[regionId] = RegionOverride(
+            bg.regions[regionId] = RegionOverride(
                 source: .image(imageOverride)
             )
+            session.dispatch(.setBackground(bg))
             let templateBackground = compiledScene?.runtime.scene.background
             effectiveBackgroundState = EffectiveBackgroundBuilder.build(
                 templateBackground: templateBackground,
-                projectOverride: projectBackgroundOverride ?? .empty,
-                presetLibrary: BackgroundPresetLibrary.shared
+                projectOverride: bg,
+                presetLibrary: session.backgroundPresetProvider
             )
-            draftIsDirty = true
         }
         pendingBackgroundEditor = nil
 
@@ -2670,7 +2587,7 @@ final class PlayerViewController: UIViewController {
     private func startExport() {
         // PR-G: Multi-scene timeline uses timeline export (regardless of transitions)
         // VideoExporter.exportTimeline handles both .single and .transition frames
-        if let store = editorStore, store.state.sceneItems.count > 1 {
+        if let state = session.state, state.sceneItems.count > 1 {
             guard let engine = timelineCompositionEngine else {
                 assertionFailure("Multi-scene timeline requires timelineCompositionEngine")
                 log("[Export] ERROR: Multi-scene timeline but engine is nil")
@@ -2753,10 +2670,10 @@ final class PlayerViewController: UIViewController {
                 // Run preflight to get budget (persisted-only: read from draft slots)
                 let instanceId = self.activeSceneInstanceId
                 let mediaSlots: [String: SceneMediaSlot] = instanceId.flatMap {
-                    self.editorStore?.state.draft.sceneInstanceStates[$0]?.mediaSlotsByBlockId
+                    self.session.state?.draft.sceneInstanceStates[$0]?.mediaSlotsByBlockId
                 } ?? [:]
                 let videoSlotCount = mediaSlots.values.filter { $0.mediaRef.mediaKind == .video }.count
-                let backgroundRegionCount = self.projectBackgroundOverride?.regions.count ?? 0
+                let backgroundRegionCount = self.session.state?.draft.background.regions.count ?? 0
                 let preflightResult = ExportPreflightPlanner.plan(
                     sceneCount: 1,
                     canvasSize: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
@@ -2836,7 +2753,7 @@ final class PlayerViewController: UIViewController {
 
                 // Build background snapshot (lightweight — no texture loading)
                 let bgSnapshot = ExportBackgroundSnapshot.build(
-                    from: self.projectBackgroundOverride,
+                    from: self.session.state?.draft.background,
                     effectiveState: self.effectiveBackgroundState
                 )
 
@@ -2962,12 +2879,12 @@ final class PlayerViewController: UIViewController {
 
             Task { @MainActor in
                 // Run preflight to get budget
-                let sceneCount = self.editorStore?.state.sceneItems.count ?? 1
-                let allStates = self.editorStore?.state.draft.sceneInstanceStates ?? [:]
+                let sceneCount = self.session.state?.sceneItems.count ?? 1
+                let allStates = self.session.state?.draft.sceneInstanceStates ?? [:]
                 let totalVideoSlots = allStates.values.reduce(0) { count, state in
                     count + (state.mediaSlotsByBlockId ?? [:]).values.filter { $0.mediaRef.mediaKind == .video }.count
                 }
-                let backgroundRegionCount = self.projectBackgroundOverride?.regions.count ?? 0
+                let backgroundRegionCount = self.session.state?.draft.background.regions.count ?? 0
                 let preflightResult = ExportPreflightPlanner.plan(
                     sceneCount: sceneCount,
                     canvasSize: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
@@ -3030,7 +2947,7 @@ final class PlayerViewController: UIViewController {
 
                 // Build lightweight background snapshot (textures loaded on exportQueue)
                 let bgSnapshot = ExportBackgroundSnapshot.build(
-                    from: self.projectBackgroundOverride,
+                    from: self.session.state?.draft.background,
                     effectiveState: self.effectiveBackgroundState
                 )
 
@@ -3162,30 +3079,30 @@ final class PlayerViewController: UIViewController {
 
     // PR-D: Tap handler for Scene Edit mode (on overlayView)
     @objc private func overlayViewTapped(_ recognizer: UITapGestureRecognizer) {
-        guard case .sceneEdit = editorStore?.state.uiMode else { return }
+        guard case .sceneEdit = session.state?.uiMode else { return }
         let point = recognizer.location(in: overlayView)
         sceneEditController?.handleTap(viewPoint: point)
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        guard case .sceneEdit = editorStore?.state.uiMode else { return }
+        guard case .sceneEdit = session.state?.uiMode else { return }
         sceneEditController?.handlePan(recognizer)
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
-        guard case .sceneEdit = editorStore?.state.uiMode else { return }
+        guard case .sceneEdit = session.state?.uiMode else { return }
         sceneEditController?.handlePinch(recognizer)
     }
 
     @objc private func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
-        guard case .sceneEdit = editorStore?.state.uiMode else { return }
+        guard case .sceneEdit = session.state?.uiMode else { return }
         sceneEditController?.handleRotation(recognizer)
     }
 
     // MARK: - User Media Actions (PR-32)
 
     @objc private func addPhotoTapped() {
-        guard editorStore?.state.selectedBlockId != nil else { return }
+        guard session.state?.selectedBlockId != nil else { return }
         presentPhotoPicker(for: .images)
     }
 
@@ -3198,7 +3115,7 @@ final class PlayerViewController: UIViewController {
     /// 4. If target scene was deleted, delete the persisted file (orphan cleanup).
     @MainActor
     private func handleIngestComplete(_ result: IngestResult) async {
-        let timeline = editorStore?.state.canonicalTimeline
+        let timeline = session.state?.canonicalTimeline
 
         // Guard: target scene must still exist in the timeline
         guard let sceneItem = timeline?.sceneItems.first(where: { $0.id == result.sceneInstanceId }) else {
@@ -3216,7 +3133,7 @@ final class PlayerViewController: UIViewController {
         )
 
         // Re-validate: scene may have been deleted during async defaultFit resolution
-        let currentTimeline = editorStore?.state.canonicalTimeline
+        let currentTimeline = session.state?.canonicalTimeline
         guard currentTimeline?.sceneItems.contains(where: { $0.id == result.sceneInstanceId }) == true else {
             try? FileManager.default.removeItem(at: result.persistedURL)
             log("[UserMedia] Scene \(result.sceneInstanceId) deleted during defaultFit resolution, cleaned up orphan")
@@ -3241,7 +3158,7 @@ final class PlayerViewController: UIViewController {
         }
 
         // Persist slot to store
-        editorStore?.dispatch(.setMediaSlot(
+        session.dispatch(.setMediaSlot(
             sceneInstanceId: result.sceneInstanceId,
             blockId: result.blockId,
             slot: slot
@@ -3350,7 +3267,7 @@ final class PlayerViewController: UIViewController {
         // 3. Persist to store
         assertSceneEditTargetMatchesRuntimeIfPossible()
         guard let instanceId = sceneEditTargetInstanceId else { return }
-        editorStore?.dispatch(.setBlockVariant(
+        session.dispatch(.setBlockVariant(
             sceneInstanceId: instanceId,
             blockId: blockId,
             variantId: variantId
@@ -3384,13 +3301,8 @@ final class PlayerViewController: UIViewController {
 
     /// Handles scene selection from catalog.
     private func handleAddScene(sceneTypeId: String, baseDurationUs: TimeUs) {
-        guard let store = editorStore else {
-            log("[SceneCatalog] handleAddScene: editorStore is nil")
-            return
-        }
-
         // Dispatch addScene action to store
-        store.dispatch(.addScene(sceneTypeId: sceneTypeId, durationUs: baseDurationUs))
+        session.dispatch(.addScene(sceneTypeId: sceneTypeId, durationUs: baseDurationUs))
         log("[SceneCatalog] Added scene: \(sceneTypeId) duration=\(baseDurationUs)us")
     }
 
@@ -3616,6 +3528,11 @@ final class PlayerViewController: UIViewController {
         loadingState = .ready
         updateLoadingStateUI()
 
+        // Flush deferred missing-media notice if VC is already visible
+        if viewIfLoaded?.window != nil {
+            flushMissingMediaNoticeIfNeeded()
+        }
+
         // Trigger first frame render
         metalView.setNeedsDisplay()
     }
@@ -3641,22 +3558,20 @@ final class PlayerViewController: UIViewController {
             commandQueue: queue
         )
 
-        // Load background from active draft slot
-        projectBackgroundOverride = activeDraftSlot?.draft.background
-
-        // Build effective state
+        // Build effective state from store (background is part of canonical draft)
+        let bgOverride = session.state?.draft.background
         let templateBackground = compiled.runtime.scene.background
         effectiveBackgroundState = EffectiveBackgroundBuilder.build(
             templateBackground: templateBackground,
-            projectOverride: projectBackgroundOverride,
-            presetLibrary: BackgroundPresetLibrary.shared
+            projectOverride: bgOverride,
+            presetLibrary: session.backgroundPresetProvider
         )
 
         if let state = effectiveBackgroundState {
             log("[Background] Loaded preset '\(state.preset.presetId)' with \(state.regionStates.count) regions")
 
             // Preload image textures asynchronously
-            if let override = projectBackgroundOverride {
+            if let override = bgOverride {
                 Task {
                     let loadedKeys = await backgroundTextureService?.preloadTextures(
                         from: override,
@@ -3677,7 +3592,7 @@ final class PlayerViewController: UIViewController {
 
     private func startPlayback() {
         // PR-F: Playback only allowed in timeline mode
-        let uiMode = editorStore?.state.uiMode ?? .timeline
+        let uiMode = session.state?.uiMode ?? .timeline
         guard EditorRenderContract.isPlaybackAllowed(in: uiMode) else {
             assertionFailure("startPlayback called outside timeline mode")
             return
@@ -3693,7 +3608,7 @@ final class PlayerViewController: UIViewController {
         }
 
         // Phase 2.1: Use compressed frame directly from store (no conversion needed)
-        let compressedFrame = editorStore?.playheadCompressedFrame ?? 0
+        let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         let fps = Float(sceneFPS)
 
         // PR-G: Prewarm scenes BEFORE starting display link
@@ -3752,21 +3667,21 @@ final class PlayerViewController: UIViewController {
 
     @objc private func displayLinkFired() {
         // Phase 2.1: Calculate next frame in compressed domain
-        guard let store = editorStore else { return }
+        guard let state = session.state else { return }
 
         // Increment by 1 frame in compressed domain
-        let currentFrame = store.playheadCompressedFrame
-        let maxFrame = store.state.compressedDurationFrames - 1
+        let currentFrame = state.playheadCompressedFrame
+        let maxFrame = state.compressedDurationFrames - 1
         let nextFrame = min(currentFrame + 1, maxFrame)
 
         // Dispatch to store - onPlayheadChanged callback handles coordinator + redraw + timeline scroll
-        store.dispatch(.setPlayhead(compressedFrame: nextFrame))
+        session.dispatch(.setPlayhead(compressedFrame: nextFrame))
 
         // Full screen preview (not driven by store callback)
         fullScreenPreviewVC?.setCurrentCompressedFrame(nextFrame)
 
         // PR-F: Video sync via engine in timeline mode, legacy path in sceneEdit mode
-        let uiMode = store.state.uiMode
+        let uiMode = state.uiMode
         switch uiMode {
         case .timeline:
             // Use engine-driven video sync (routes to per-instance UserMediaService)
@@ -3775,9 +3690,9 @@ final class PlayerViewController: UIViewController {
 
         case .sceneEdit:
             // Legacy path - use coordinator's local frame
-            let mapper = store.state.makePlayheadMapper()
+            let mapper = state.makePlayheadMapper()
             let nextTimeUs = mapper.nominalTimeUs(forCompressedFrame: nextFrame)
-            let fps = store.state.templateFPS
+            let fps = state.templateFPS
             let globalFrameIndex = Int(nextTimeUs * TimeUs(fps) / 1_000_000)
             let localFrame = playbackCoordinator?.currentLocalFrame ?? globalFrameIndex
             if let service = userMediaService,
@@ -3850,7 +3765,7 @@ extension PlayerViewController: MTKViewDelegate {
         guard loadingState == .ready else { return }
 
         // PR-F: Route to appropriate render path based on UI mode
-        let uiMode = editorStore?.state.uiMode ?? .timeline
+        let uiMode = session.state?.uiMode ?? .timeline
 
         switch uiMode {
         case .timeline:
@@ -4009,7 +3924,7 @@ extension PlayerViewController: MTKViewDelegate {
         let player = scenePlayer
         let frameIndex = currentFrameIndex
 
-        guard let uiMode = editorStore?.state.uiMode,
+        guard let uiMode = session.state?.uiMode,
               case .sceneEdit(let sceneEditTargetId) = uiMode else { return }
 
         // Render guard: don't draw until activation completes for the target scene
@@ -4185,8 +4100,8 @@ extension PlayerViewController: UIGestureRecognizerDelegate {
            gestureRecognizer is UIPinchGestureRecognizer ||
            gestureRecognizer is UIRotationGestureRecognizer {
             // Only enable if in Scene Edit mode AND block is selected
-            guard case .sceneEdit = editorStore?.state.uiMode else { return false }
-            return editorStore?.state.selectedBlockId != nil
+            guard case .sceneEdit = session.state?.uiMode else { return false }
+            return session.state?.selectedBlockId != nil
         }
         return true
     }
@@ -4287,9 +4202,6 @@ extension PlayerViewController: BackgroundEditorDelegate {
         backgroundImportGeneration &+= 1
         pendingBackgroundEditor = nil
 
-        // Mark dirty — will be persisted via saveDraftToActiveSlot/materialize
-        draftIsDirty = true
-
         // P0-2: Check if preset changed and cleanup old textures
         let presetChanged = lastBackgroundPresetId != nil && lastBackgroundPresetId != presetId
         if presetChanged, let oldPresetId = lastBackgroundPresetId {
@@ -4298,15 +4210,15 @@ extension PlayerViewController: BackgroundEditorDelegate {
         }
         lastBackgroundPresetId = presetId
 
-        // Update local state
-        projectBackgroundOverride = override
+        // Dispatch background change to store (pushes undo snapshot)
+        session.dispatch(.setBackground(override))
 
         // Rebuild effective state
         let templateBackground = compiledScene?.runtime.scene.background
         effectiveBackgroundState = EffectiveBackgroundBuilder.build(
             templateBackground: templateBackground,
             projectOverride: override,
-            presetLibrary: BackgroundPresetLibrary.shared
+            presetLibrary: session.backgroundPresetProvider
         )
 
         // P0-2: Preload textures for regions with image source
@@ -4314,7 +4226,7 @@ extension PlayerViewController: BackgroundEditorDelegate {
             Task { @MainActor in
                 for (regionId, regionState) in state.regionStates {
                     if case .image(let imageSource) = regionState.source,
-                       let mediaRef = self.projectBackgroundOverride?.regions[regionId]?.imageMediaRef {
+                       let mediaRef = self.session.state?.draft.background.regions[regionId]?.imageMediaRef {
                         do {
                             try await service.loadTexture(
                                 slotKey: imageSource.slotKey,

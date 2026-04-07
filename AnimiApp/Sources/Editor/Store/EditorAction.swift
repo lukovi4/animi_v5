@@ -175,6 +175,13 @@ public enum EditorAction: Sendable {
     /// Pushes undo snapshot.
     case resetMediaPlacement(sceneInstanceId: UUID, blockId: String)
 
+    // MARK: - Background
+
+    /// Sets the project background override.
+    /// Pushes undo snapshot.
+    /// - Parameter background: New background override
+    case setBackground(ProjectBackgroundOverride)
+
     // MARK: - Undo/Redo
 
     /// Undoes the last model-changing operation.

@@ -16,4 +16,7 @@ struct EditorSessionDependencies {
     var loadSceneLibrary: () async throws -> SceneLibrarySnapshot
     var sceneTypeDefaults: (_ templateId: String, _ library: SceneLibrarySnapshot) throws -> [SceneTypeDefault]
     var loadTemplateCatalog: () async -> Result<TemplateCatalogSnapshot, Error>
+
+    // Background
+    var backgroundPresetProvider: BackgroundPresetProviding
 }

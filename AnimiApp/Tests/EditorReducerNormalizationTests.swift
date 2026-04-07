@@ -282,28 +282,26 @@ final class EditorReducerNormalizationTests: XCTestCase {
         let validKey = SceneBoundaryKey(sceneA, sceneB)
         snapshotTimeline.boundaryTransitions[validKey] = SceneTransition.v1Preset(for: .fade)
 
+        // Set playhead beyond valid range before restore
         let compressedDuration = state.compressedDurationFrames
-        let tooHighPlayhead = compressedDuration + 55 // Way beyond valid range
+        let tooHighPlayhead = compressedDuration + 55
+        store.dispatch(.setPlayhead(compressedFrame: tooHighPlayhead))
 
         let snapshot = EditorSnapshot(
-            canonicalTimeline: snapshotTimeline,
-            playheadCompressedFrame: tooHighPlayhead,
-            selection: .none
+            canonicalTimeline: snapshotTimeline
         )
 
         // Track notices
         var receivedNotices: [EditorNotice] = []
         store.onNotice = { receivedNotices.append($0) }
 
-        // Restore
+        // Restore — content only; playhead is left at current position, then clamped by normalization
         let notices = store.restoreNormalizedSnapshot(snapshot)
 
-        // Playhead should be clamped to valid range
+        // Playhead should be clamped to valid range by normalization
         let maxValidFrame = max(0, store.state.compressedDurationFrames - 1)
         XCTAssertLessThanOrEqual(store.state.playheadCompressedFrame, maxValidFrame,
                                   "Playhead should be clamped to valid range after restore")
-        XCTAssertNotEqual(store.state.playheadCompressedFrame, tooHighPlayhead,
-                           "Playhead should not remain at invalid position")
 
         // Invalid boundary should be removed, valid one should remain
         XCTAssertNil(store.state.canonicalTimeline.boundaryTransitions[bogusKey],
@@ -331,9 +329,7 @@ final class EditorReducerNormalizationTests: XCTestCase {
         snapshotTimeline.boundaryTransitions[bogusKey] = SceneTransition.v1Preset(for: .fade)
 
         let snapshot = EditorSnapshot(
-            canonicalTimeline: snapshotTimeline,
-            playheadCompressedFrame: 0,
-            selection: .none
+            canonicalTimeline: snapshotTimeline
         )
 
         // When onNotice fires, state should already be normalized
