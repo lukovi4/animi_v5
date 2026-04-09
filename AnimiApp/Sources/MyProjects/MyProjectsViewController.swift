@@ -5,14 +5,14 @@ final class MyProjectsViewController: UIViewController {
 
     // MARK: - Dependencies
 
-    private let catalogRepository: TemplateCatalogProviding
+    private let savedProjectsService: SavedProjectsService
     private let onOpenEditor: (EditorLaunchIntent) -> Void
 
     // MARK: - Section Model
 
     private struct Section {
         let title: String
-        var entries: [SavedProjectIndexEntry]
+        var entries: [SavedProjectSummary]
     }
 
     // MARK: - State
@@ -53,10 +53,10 @@ final class MyProjectsViewController: UIViewController {
     // MARK: - Init
 
     init(
-        catalogRepository: TemplateCatalogProviding,
+        savedProjectsService: SavedProjectsService,
         onOpenEditor: @escaping (EditorLaunchIntent) -> Void
     ) {
-        self.catalogRepository = catalogRepository
+        self.savedProjectsService = savedProjectsService
         self.onOpenEditor = onOpenEditor
         super.init(nibName: nil, bundle: nil)
     }
@@ -78,10 +78,8 @@ final class MyProjectsViewController: UIViewController {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(false, animated: animated)
 
-        // Ensure catalog is loaded before displaying (needed for template titles/previews)
         Task { @MainActor in
-            _ = await catalogRepository.load()
-            reloadData()
+            await reloadData()
         }
     }
 
@@ -142,10 +140,9 @@ final class MyProjectsViewController: UIViewController {
 
     // MARK: - Data
 
-    private func reloadData() {
-        // ProjectStore.shared allowed here for listing/delete until PR 4
-        let allEntries = ProjectStore.shared.allSavedProjectEntries()
-        sections = Self.groupByDate(allEntries)
+    private func reloadData() async {
+        let summaries = await savedProjectsService.allSummaries()
+        sections = Self.groupByDate(summaries)
 
         let isEmpty = sections.allSatisfy { $0.entries.isEmpty }
         emptyLabel.isHidden = !isEmpty
@@ -153,12 +150,12 @@ final class MyProjectsViewController: UIViewController {
         collectionView.reloadData()
     }
 
-    private static func groupByDate(_ entries: [SavedProjectIndexEntry]) -> [Section] {
+    private static func groupByDate(_ entries: [SavedProjectSummary]) -> [Section] {
         let calendar = Calendar.current
 
-        var today: [SavedProjectIndexEntry] = []
-        var yesterday: [SavedProjectIndexEntry] = []
-        var earlier: [SavedProjectIndexEntry] = []
+        var today: [SavedProjectSummary] = []
+        var yesterday: [SavedProjectSummary] = []
+        var earlier: [SavedProjectSummary] = []
 
         let sorted = entries.sorted { $0.savedAt > $1.savedAt }
 
@@ -179,20 +176,21 @@ final class MyProjectsViewController: UIViewController {
         return result
     }
 
-    private func entry(at indexPath: IndexPath) -> SavedProjectIndexEntry {
+    private func entry(at indexPath: IndexPath) -> SavedProjectSummary {
         sections[indexPath.section].entries[indexPath.item]
     }
 
     private func deleteProject(at indexPath: IndexPath) {
         let entry = self.entry(at: indexPath)
-        do {
-            // ProjectStore.shared allowed here for listing/delete until PR 4
-            try ProjectStore.shared.deleteSavedProject(projectId: entry.projectId)
-            reloadData()
-        } catch {
-            #if DEBUG
-            print("[MyProjects] Delete failed: \(error)")
-            #endif
+        Task {
+            do {
+                try await savedProjectsService.deleteProject(projectId: entry.projectId)
+                await reloadData()
+            } catch {
+                #if DEBUG
+                print("[MyProjects] Delete failed: \(error)")
+                #endif
+            }
         }
     }
 }
@@ -215,13 +213,8 @@ extension MyProjectsViewController: UICollectionViewDataSource {
             for: indexPath
         ) as! ProjectPreviewCell
 
-        let entry = self.entry(at: indexPath)
-        let template = catalogRepository.template(by: entry.sourceTemplateId)
-        cell.configure(
-            templateTitle: template?.title ?? entry.sourceTemplateId,
-            previewURL: template?.previewURL,
-            savedAt: entry.savedAt
-        )
+        let summary = self.entry(at: indexPath)
+        cell.configure(summary: summary)
 
         cell.onDelete = { [weak self] in
             self?.confirmDelete(at: indexPath)

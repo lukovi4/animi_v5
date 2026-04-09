@@ -9,8 +9,8 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
 
     // MARK: - Constants
 
-    /// Current schema version (v8: strict video ingest pipeline).
-    public static let currentSchemaVersion: Int = 8
+    /// Current schema version (v9: ProjectOrigin replaces templateId).
+    public static let currentSchemaVersion: Int = 9
 
     /// Minimum scene duration in microseconds (0.1 seconds).
     public static let minSceneDurationUs: TimeUs = 100_000
@@ -25,8 +25,8 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
     /// Unique project identifier.
     public var id: UUID
 
-    /// Template identifier this project is based on.
-    public var templateId: String
+    /// How this project was created (template, blank, or duplicate).
+    public var origin: ProjectOrigin
 
     /// User-defined project name (nil until first Save/Export).
     public var name: String?
@@ -62,7 +62,7 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
     public init(
         schemaVersion: Int = ProjectDraft.currentSchemaVersion,
         id: UUID = UUID(),
-        templateId: String,
+        origin: ProjectOrigin,
         name: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -72,7 +72,7 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
-        self.templateId = templateId
+        self.origin = origin
         self.name = name
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -83,19 +83,19 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
 
     // MARK: - Factory
 
-    /// Creates an empty draft for a template.
+    /// Creates an empty draft for a given origin.
     /// Timeline will be populated from template defaults when loadProject is called.
     /// - Parameters:
-    ///   - templateId: Template identifier
+    ///   - origin: How this project was created
     ///   - projectId: Optional pre-generated project ID
     /// - Returns: New empty ProjectDraft
     public static func create(
-        for templateId: String,
+        origin: ProjectOrigin,
         projectId: UUID = UUID()
     ) -> ProjectDraft {
         ProjectDraft(
             id: projectId,
-            templateId: templateId,
+            origin: origin,
             canonicalTimeline: .empty(),
             sceneInstanceStates: [:]
         )

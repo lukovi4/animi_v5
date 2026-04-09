@@ -1,16 +1,16 @@
 import Foundation
 
 /// Whether the referenced media is a still image or a video.
-public enum MediaKind: String, Codable, Sendable {
+public enum MediaKind: String, Codable, Hashable, Sendable {
     case photo
     case video
 }
 
 /// Persistent reference to user media file.
 /// For v1: file copy approach (stored in Application Support).
-public struct MediaRef: Codable, Equatable, Sendable {
+public struct MediaRef: Codable, Hashable, Sendable {
     /// Type of media reference.
-    public enum Kind: String, Codable, Sendable {
+    public enum Kind: String, Codable, Hashable, Sendable {
         /// File stored in app sandbox (Application Support/AnimiProjects/Media/)
         case file
     }

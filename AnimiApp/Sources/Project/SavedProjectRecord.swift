@@ -6,7 +6,6 @@ import Foundation
 /// Identity: `id == draft.id` — no separate id field.
 struct SavedProjectRecord: Codable, Identifiable {
     var id: UUID { draft.id }
-    var sourceTemplateId: String
     var savedAt: Date
     var draft: ProjectDraft
 }

@@ -43,29 +43,6 @@ public struct PersistedVideoSelection: Codable, Equatable, Sendable {
         )
     }
 
-    // MARK: - Codable (legacy offset migration)
-
-    private enum CodingKeys: String, CodingKey {
-        case trimStart, trimEnd, offset, isMuted, volume
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        let legacyOffset = try c.decodeIfPresent(Double.self, forKey: .offset) ?? 0
-        self.trimStart = (try c.decodeIfPresent(Double.self, forKey: .trimStart) ?? 0) + legacyOffset
-        self.trimEnd = try c.decode(Double.self, forKey: .trimEnd) + legacyOffset
-        self.isMuted = try c.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
-        self.volume = try c.decodeIfPresent(Float.self, forKey: .volume) ?? 1.0
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(trimStart, forKey: .trimStart)
-        try c.encode(trimEnd, forKey: .trimEnd)
-        // offset intentionally omitted — migrated into trimStart/trimEnd
-        try c.encode(isMuted, forKey: .isMuted)
-        try c.encode(volume, forKey: .volume)
-    }
 }
 
 // MARK: - Scene State

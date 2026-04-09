@@ -4,7 +4,7 @@ import Foundation
 
 /// Describes how the editor was entered — determines save/discard behavior.
 enum EditorEntryContext: Codable, Equatable {
-    case newFromTemplate(templateId: String)
+    case newProject(origin: ProjectOrigin)
     case openSavedProject(projectId: UUID)
 }
 
@@ -14,7 +14,6 @@ enum EditorEntryContext: Codable, Equatable {
 /// Enables crash recovery and background-save lifecycle.
 struct ActiveDraftSlot: Codable {
     var entryContext: EditorEntryContext
-    var sourceTemplateId: String
     var linkedSavedProjectId: UUID?
     var draft: ProjectDraft
 }

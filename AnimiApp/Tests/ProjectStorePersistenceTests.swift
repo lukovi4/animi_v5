@@ -2,15 +2,32 @@ import XCTest
 import TVECore
 @testable import AnimiApp
 
-/// Disk-roundtrip tests for ProjectStore + SavedProjectRecord + ActiveDraftSlot (v8 schema).
+/// Disk-roundtrip tests for ProjectStore + SavedProjectRecord + ActiveDraftSlot (v9 schema).
 /// Validates current-schema persistence contract with SavedProjects API.
 final class ProjectStorePersistenceTests: XCTestCase {
+
+    private var store: ProjectStore!
+    private var tempDir: URL!
+
+    override func setUp() {
+        super.setUp()
+        tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        store = ProjectStore(rootDirectoryURL: tempDir)
+        try! store.ensureDirectoriesExist()
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: tempDir)
+        store = nil
+        tempDir = nil
+        super.tearDown()
+    }
 
     // MARK: - Helper
 
     /// Builds a maximally-populated ProjectDraft exercising all payload discriminators,
     /// background region types, scene instance state fields, and transition slots.
-    private func makeFullDraft(templateId: String, projectId: UUID) -> ProjectDraft {
+    private func makeFullDraft(origin: ProjectOrigin, projectId: UUID) -> ProjectDraft {
         // Fixed whole-second dates (ISO8601 safe)
         let created = Date(timeIntervalSince1970: 1705312800) // 2024-01-15T12:00:00Z
         let updated = Date(timeIntervalSince1970: 1705316400) // 2024-01-15T13:00:00Z
@@ -140,7 +157,7 @@ final class ProjectStorePersistenceTests: XCTestCase {
         return ProjectDraft(
             schemaVersion: ProjectDraft.currentSchemaVersion,
             id: projectId,
-            templateId: templateId,
+            origin: origin,
             name: "TT-11 Full Draft",
             createdAt: created,
             updatedAt: updated,
@@ -154,32 +171,26 @@ final class ProjectStorePersistenceTests: XCTestCase {
 
     /// Full draft save → load roundtrip through SavedProjectRecord.
     func testSavedProjectRecord_roundtrip_preservesCurrentSchemaDraft() throws {
-        let templateId = "tt11-\(UUID())"
-        let store = ProjectStore()
+        let origin = ProjectOrigin.template(templateId: "tt11-\(UUID())")
         let projectId = UUID()
-        let draft = makeFullDraft(templateId: templateId, projectId: projectId)
+        let draft = makeFullDraft(origin: origin, projectId: projectId)
 
         // Materialize via ActiveDraftSlot
-        var slot = ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: templateId),
-            sourceTemplateId: templateId,
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: origin),
             linkedSavedProjectId: nil,
             draft: draft
         )
-        try store.materializeSavedProject(from: &slot)
-
-        // Cleanup
-        defer { try? store.deleteSavedProject(projectId: projectId) }
+        let materializedSlot = try store.materializeSavedProject(slot)
 
         // Load
         let loaded = store.loadSavedProject(projectId: projectId)
         XCTAssertNotNil(loaded)
         XCTAssertEqual(loaded?.draft, draft)
-        XCTAssertEqual(loaded?.sourceTemplateId, templateId)
 
         // Identity invariant
         XCTAssertEqual(loaded?.id, draft.id)
-        XCTAssertEqual(slot.linkedSavedProjectId, projectId)
+        XCTAssertEqual(materializedSlot.linkedSavedProjectId, projectId)
 
         // Spot-checks for key fields
         let l = try XCTUnwrap(loaded)
@@ -207,61 +218,49 @@ final class ProjectStorePersistenceTests: XCTestCase {
 
     /// ActiveDraftSlot roundtrip.
     func testActiveDraftSlot_roundtrip() throws {
-        let templateId = "tt11-\(UUID())"
-        let store = ProjectStore()
+        let origin = ProjectOrigin.template(templateId: "tt11-\(UUID())")
         let projectId = UUID()
-        let draft = makeFullDraft(templateId: templateId, projectId: projectId)
+        let draft = makeFullDraft(origin: origin, projectId: projectId)
 
         let slot = ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: templateId),
-            sourceTemplateId: templateId,
+            entryContext: .newProject(origin: origin),
             linkedSavedProjectId: nil,
             draft: draft
         )
 
         try store.saveActiveDraft(slot)
-        defer { try? store.deleteActiveDraft() }
 
         XCTAssertTrue(store.hasActiveDraft())
 
         let loaded = store.loadActiveDraft()
         XCTAssertNotNil(loaded)
         XCTAssertEqual(loaded?.draft, draft)
-        XCTAssertEqual(loaded?.sourceTemplateId, templateId)
-        XCTAssertEqual(loaded?.entryContext, .newFromTemplate(templateId: templateId))
+        XCTAssertEqual(loaded?.entryContext, .newProject(origin: origin))
         XCTAssertNil(loaded?.linkedSavedProjectId)
     }
 
-    /// Multiple saved projects with same sourceTemplateId.
+    /// Multiple saved projects with same origin.
     func testMultipleSavedProjects_sameTemplate() throws {
-        let templateId = "tt11-\(UUID())"
-        let store = ProjectStore()
+        let origin = ProjectOrigin.template(templateId: "tt11-\(UUID())")
 
         let id1 = UUID()
         let id2 = UUID()
-        let draft1 = ProjectDraft.create(for: templateId, projectId: id1)
-        let draft2 = ProjectDraft.create(for: templateId, projectId: id2)
+        let draft1 = ProjectDraft.create(origin: origin, projectId: id1)
+        let draft2 = ProjectDraft.create(origin: origin, projectId: id2)
 
-        var slot1 = ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: templateId),
-            sourceTemplateId: templateId,
+        let slot1 = ActiveDraftSlot(
+            entryContext: .newProject(origin: origin),
             linkedSavedProjectId: nil,
             draft: draft1
         )
-        try store.materializeSavedProject(from: &slot1)
+        let _ = try store.materializeSavedProject(slot1)
 
-        var slot2 = ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: templateId),
-            sourceTemplateId: templateId,
+        let slot2 = ActiveDraftSlot(
+            entryContext: .newProject(origin: origin),
             linkedSavedProjectId: nil,
             draft: draft2
         )
-        try store.materializeSavedProject(from: &slot2)
-
-        defer {
-            try? store.deleteSavedProject(projectId: id1)
-            try? store.deleteSavedProject(projectId: id2)
-        }
+        let _ = try store.materializeSavedProject(slot2)
 
         let entries = store.allSavedProjectEntries()
         let projectIds = Set(entries.map(\.projectId))
@@ -271,38 +270,31 @@ final class ProjectStorePersistenceTests: XCTestCase {
 
     /// allSavedProjectEntries returns entries with projectId.
     func testAllSavedProjectEntries_containsProjectId() throws {
-        let templateId = "tt11-\(UUID())"
-        let store = ProjectStore()
+        let origin = ProjectOrigin.template(templateId: "tt11-\(UUID())")
         let projectId = UUID()
-        let draft = ProjectDraft.create(for: templateId, projectId: projectId)
+        let draft = ProjectDraft.create(origin: origin, projectId: projectId)
 
-        var slot = ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: templateId),
-            sourceTemplateId: templateId,
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: origin),
             linkedSavedProjectId: nil,
             draft: draft
         )
-        try store.materializeSavedProject(from: &slot)
-        defer { try? store.deleteSavedProject(projectId: projectId) }
+        let _ = try store.materializeSavedProject(slot)
 
         let entries = store.allSavedProjectEntries()
         let entry = entries.first { $0.projectId == projectId }
         XCTAssertNotNil(entry)
-        XCTAssertEqual(entry?.sourceTemplateId, templateId)
+        XCTAssertEqual(entry?.origin, origin)
     }
 
     /// hasActiveDraft is correct.
     func testHasActiveDraft_correctness() throws {
-        let store = ProjectStore()
-
-        // Ensure clean state
-        try? store.deleteActiveDraft()
         XCTAssertFalse(store.hasActiveDraft())
 
-        let draft = ProjectDraft.create(for: "test-template")
+        let origin = ProjectOrigin.template(templateId: "test-template")
+        let draft = ProjectDraft.create(origin: origin)
         let slot = ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: "test-template"),
-            sourceTemplateId: "test-template",
+            entryContext: .newProject(origin: origin),
             linkedSavedProjectId: nil,
             draft: draft
         )
@@ -313,154 +305,65 @@ final class ProjectStorePersistenceTests: XCTestCase {
         XCTAssertFalse(store.hasActiveDraft())
     }
 
-    // MARK: - Schema Purge Tests
+    /// Incompatible index.json (e.g., v8 format) is wiped, orphan project files deleted, returns empty.
+    func testLoadSavedIndex_incompatibleFormat_wipesAndReturnsEmpty() throws {
+        let persistence = FileProjectPersistenceStore(rootDirectoryURL: tempDir)
+        try persistence.ensureDirectoriesExist()
 
-    /// allSavedProjectEntries filters out incompatible (old schema) projects.
-    func testAllSavedProjectEntries_filtersIncompatibleProjects() throws {
-        let store = ProjectStore()
-        let fm = FileManager.default
-
-        // 1. Create a valid project via normal API
-        let validId = UUID()
-        let validDraft = ProjectDraft.create(for: "valid-template", projectId: validId)
-        var validSlot = ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: "valid-template"),
-            sourceTemplateId: "valid-template",
-            linkedSavedProjectId: nil,
-            draft: validDraft
-        )
-        try store.materializeSavedProject(from: &validSlot)
-
-        // 2. Inject an incompatible project directly on disk (schema version 1)
-        let invalidId = UUID()
-        let projectsDir = try store.projectsDirectoryURL()
-        let indexURL = projectsDir.appendingPathComponent("index.json")
-        let invalidProjectURL = projectsDir.appendingPathComponent("\(invalidId.uuidString).json")
-        let invalidJSON = """
+        // Write a v8-format index.json with sourceTemplateId (incompatible with v9 SavedProjectsIndex)
+        let indexURL = try persistence.projectsDirectoryURL()
+            .appendingPathComponent(FileProjectPersistenceStore.indexFileName)
+        let v8JSON = """
         {
-            "sourceTemplateId": "old-template",
-            "savedAt": "2024-01-01T00:00:00Z",
-            "draft": {
-                "schemaVersion": 1,
-                "id": "\(invalidId.uuidString)",
-                "templateId": "old-template",
-                "createdAt": "2024-01-01T00:00:00Z",
-                "updatedAt": "2024-01-01T00:00:00Z"
-            }
+            "sourceTemplateId": "old_template",
+            "entries": [{"id": "00000000-0000-0000-0000-000000000001"}]
         }
         """
-        try invalidJSON.data(using: .utf8)!.write(to: invalidProjectURL, options: .atomic)
+        try v8JSON.data(using: .utf8)!.write(to: indexURL, options: .atomic)
 
-        // Add entry to index
-        let currentIndexData = try Data(contentsOf: indexURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        var currentIndex = try decoder.decode(SavedProjectsIndex.self, from: currentIndexData)
-        currentIndex.projects[invalidId] = SavedProjectIndexEntry(
-            projectId: invalidId,
-            sourceTemplateId: "old-template",
-            savedAt: Date(timeIntervalSince1970: 1704067200)
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(currentIndex).write(to: indexURL, options: .atomic)
+        // Write a fake orphan project file
+        let orphanId = UUID()
+        let orphanURL = try persistence.projectsDirectoryURL()
+            .appendingPathComponent("\(orphanId.uuidString).json")
+        try "{}".data(using: .utf8)!.write(to: orphanURL, options: .atomic)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphanURL.path))
 
-        // Clear cache so store re-reads from disk
-        store.clearCache()
+        // Clear cache so loadSavedIndex reads from disk
+        persistence.clearCache()
 
-        defer {
-            try? store.deleteSavedProject(projectId: validId)
-            try? fm.removeItem(at: invalidProjectURL)
-        }
+        // Load should detect incompatible format, wipe, and return empty
+        let index = try persistence.loadSavedIndex()
+        XCTAssertTrue(index.projects.isEmpty, "Incompatible index should return empty")
+        XCTAssertTrue(persistence.didWipeIncompatibleData, "Flag should be set after wipe")
 
-        // 3. Verify: allSavedProjectEntries returns only the valid project
-        let entries = store.allSavedProjectEntries()
-        let entryIds = Set(entries.map(\.projectId))
+        // Index file should be deleted
+        XCTAssertFalse(FileManager.default.fileExists(atPath: indexURL.path),
+                       "Incompatible index file should be deleted")
 
-        XCTAssertTrue(entryIds.contains(validId), "Valid project should be in list")
-        XCTAssertFalse(entryIds.contains(invalidId), "Incompatible project should be filtered out")
-    }
-
-    /// Purge physically removes incompatible project file and index entry.
-    func testPurge_removesIncompatibleProjectFileAndIndexEntry() throws {
-        let store = ProjectStore()
-        let fm = FileManager.default
-
-        let invalidId = UUID()
-        let projectsDir = try store.projectsDirectoryURL()
-        try fm.createDirectory(at: projectsDir, withIntermediateDirectories: true)
-
-        let indexURL = projectsDir.appendingPathComponent("index.json")
-        let invalidProjectURL = projectsDir.appendingPathComponent("\(invalidId.uuidString).json")
-
-        // Write incompatible project file
-        let invalidJSON = """
-        {
-            "sourceTemplateId": "old-template",
-            "savedAt": "2024-01-01T00:00:00Z",
-            "draft": {
-                "schemaVersion": 1,
-                "id": "\(invalidId.uuidString)",
-                "templateId": "old-template",
-                "createdAt": "2024-01-01T00:00:00Z",
-                "updatedAt": "2024-01-01T00:00:00Z"
-            }
-        }
-        """
-        try invalidJSON.data(using: .utf8)!.write(to: invalidProjectURL, options: .atomic)
-
-        // Write index with just this entry
-        var index = SavedProjectsIndex()
-        index.projects[invalidId] = SavedProjectIndexEntry(
-            projectId: invalidId,
-            sourceTemplateId: "old-template",
-            savedAt: Date(timeIntervalSince1970: 1704067200)
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(index).write(to: indexURL, options: .atomic)
-
-        store.clearCache()
-
-        // Trigger listing (which runs purge internally)
-        let entries = store.allSavedProjectEntries()
-
-        // Verify: no entries returned
-        XCTAssertTrue(entries.isEmpty, "Incompatible project should not appear")
-
-        // Verify: project file physically removed
-        XCTAssertFalse(fm.fileExists(atPath: invalidProjectURL.path), "Incompatible project file should be deleted")
-
-        // Verify: index no longer contains the entry
-        store.clearCache()
-        let reloadedEntries = store.allSavedProjectEntries()
-        XCTAssertTrue(reloadedEntries.isEmpty, "Index should be clean after purge")
+        // Orphan project file should be deleted
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphanURL.path),
+                       "Orphan project file should be deleted by wipeOrphanProjectFiles")
     }
 
     /// Empty draft roundtrips correctly through SavedProjectRecord.
     func testSavedProjectRecord_emptyDraft_roundtrip() throws {
-        let templateId = "tt11-\(UUID())"
-        let store = ProjectStore()
+        let origin = ProjectOrigin.template(templateId: "tt11-\(UUID())")
         let projectId = UUID()
         // Use whole-second dates to survive ISO8601 roundtrip
         let now = Date(timeIntervalSince1970: 1705312800)
         let draft = ProjectDraft(
             id: projectId,
-            templateId: templateId,
+            origin: origin,
             createdAt: now,
             updatedAt: now
         )
 
-        var slot = ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: templateId),
-            sourceTemplateId: templateId,
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: origin),
             linkedSavedProjectId: nil,
             draft: draft
         )
-        try store.materializeSavedProject(from: &slot)
-        defer { try? store.deleteSavedProject(projectId: projectId) }
+        let _ = try store.materializeSavedProject(slot)
 
         let loaded = store.loadSavedProject(projectId: projectId)
         XCTAssertNotNil(loaded)

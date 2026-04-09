@@ -86,10 +86,10 @@ final class ProjectPreviewCell: UICollectionViewCell {
 
     // MARK: - Configure
 
-    func configure(templateTitle: String, previewURL: URL?, savedAt: Date) {
-        titleLabel.text = templateTitle
-        dateLabel.text = Self.dateFormatter.string(from: savedAt)
-        previewVideoView.configure(url: previewURL)
+    func configure(summary: SavedProjectSummary) {
+        titleLabel.text = summary.title
+        dateLabel.text = Self.dateFormatter.string(from: summary.savedAt)
+        previewVideoView.configure(url: summary.previewURL)
     }
 
     /// Call when cell becomes visible.
