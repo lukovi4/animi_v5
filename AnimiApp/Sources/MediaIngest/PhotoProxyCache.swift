@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 /// Disk cache for photo proxy images (downsampled for runtime preview).
 /// Derived artifact — not part of the schema. Regenerated on miss from master.
 ///
-/// - Key: `mediaRef.id` (relative path, unique per media file)
+/// - Key: opaque stable `String` per media file (current callers pass
+///   `slot.mediaRef.assetId.rawValue.uuidString`). PhotoProxyCache does
+///   not know about `MediaRef` internals — it only sees the key.
 /// - Profile: `2048px` long edge
 /// - Format: JPEG for opaque images, PNG for images with alpha
 /// - TTL: 7 days (matches `VideoPosterCache`); GC wired at app launch via `collectExpired()`
@@ -65,7 +67,8 @@ public final class PhotoProxyCache: @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - masterURL: Absolute URL of the master photo file
-    ///   - mediaRefId: The `mediaRef.id` for cache keying
+    ///   - mediaRefId: Opaque stable key for cache identity. Callers pass
+    ///     `slot.mediaRef.assetId.rawValue.uuidString`.
     /// - Returns: URL to the proxy file, or `nil` if generation fails
     public func proxyURL(masterURL: URL, mediaRefId: String) -> URL? {
         let key = cacheKey(for: mediaRefId)

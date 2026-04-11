@@ -153,9 +153,14 @@ public final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
         try media.absoluteURL(for: mediaRef, registry: registry)
     }
 
-    /// Legacy sync path resolver (tests + one AppCompositionRoot call site that
-    /// Phase D will delete). Equivalent to the deprecated protocol wrapper —
-    /// forces the legacy `mediaRef.storagePath` fallback via empty registry.
+    /// Deprecated single-argument resolver, retained as a test-convenience
+    /// wrapper. Equivalent to calling `absoluteURL(for:registry:)` with an
+    /// empty `ProjectAssetRegistry`, which forces the `mediaRef.storagePath`
+    /// fallback inside `FileProjectMediaStore` and bumps `legacyFallbackHits`.
+    ///
+    /// Not for production use — the runtime/composition/export boundary is
+    /// grep-enforced to pass an explicit registry at every call site
+    /// (`rg 'absoluteURL\(for: [^,)]+\)' AnimiApp/Sources` → 0 hits).
     @available(*, deprecated, message: "Pass a ProjectAssetRegistry snapshot explicitly")
     public func absoluteURL(for mediaRef: MediaRef) throws -> URL {
         try media.absoluteURL(for: mediaRef, registry: ProjectAssetRegistry())

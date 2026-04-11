@@ -1388,7 +1388,7 @@ PR5 shipped the canonical storage boundary and asset-identity cutover described 
 
 - `ProjectMediaLocator.absoluteURL(for: MediaRef, registry: ProjectAssetRegistry) async throws -> URL` is the canonical resolver. Registry is passed by value at every call site. No global, no `current registry` on the actor, no session seam exposed as a closure.
 - `FileProjectMediaStore.absoluteURL(for:registry:)` looks up `registry.descriptor(for: mediaRef.assetId)` first; on miss it falls back to `mediaRef.storagePath` and bumps an observable `legacyFallbackHits` counter. Tests assert this counter stays zero on happy-path production flows.
-- The deprecated single-argument `absoluteURL(for:)` survives as a protocol extension only to keep tests and one transitional bootstrap call compiling. Production runtime/composition/export must not call it. A grep acceptance (`rg 'absoluteURL\(for: [^,)]+\)' AnimiApp/Sources` → 0 hits) guards against regressions.
+- The deprecated single-argument `absoluteURL(for:)` survives in three places as a `@available(*, deprecated)` test-convenience shim: (a) `ProjectMediaLocator` protocol extension, (b) `FileProjectMediaStore` internal method, (c) `ProjectStore.absoluteURL(for:)` public method. All three are evidence-free at production call sites — the runtime/composition/export boundary passes an explicit registry at every resolution site, grep-enforced by `rg 'absoluteURL\(for: [^,)]+\)' AnimiApp/Sources` → 0 hits.
 
 ### 17.3. GC policy: referenced-primary, scan defense-in-depth
 
