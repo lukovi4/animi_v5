@@ -7,53 +7,39 @@ public enum MediaKind: String, Codable, Hashable, Sendable {
 }
 
 /// Persistent reference to user media file.
-/// For v1: file copy approach (stored in Application Support).
-public struct MediaRef: Codable, Hashable, Sendable {
-    /// Type of media reference.
-    public enum Kind: String, Codable, Hashable, Sendable {
-        /// File stored in app sandbox (Application Support/AnimiProjects/Media/)
-        case file
-    }
+/// Identity is by `assetId` (logical UUID), not by storage path.
+public struct MediaRef: Codable, Sendable {
+    /// Logical asset identity — decoupled from file path.
+    public var assetId: ProjectAssetID
 
-    /// Reference type
-    public var kind: Kind
-
-    /// Relative path within Application Support (e.g., "Media/Background/<uuid>.jpg")
-    public var id: String
-
-    /// Whether this is a photo or video. Backward-compatible: inferred from extension if absent.
+    /// Whether this is a photo or video.
     public var mediaKind: MediaKind
 
-    public init(kind: Kind, id: String, mediaKind: MediaKind = .photo) {
-        self.kind = kind
-        self.id = id
+    /// Relative path within Application Support (e.g., "Media/Background/<uuid>.jpg").
+    /// Internal storage detail — not used for identity.
+    public var storagePath: String
+
+    public init(storagePath: String, mediaKind: MediaKind = .photo, assetId: ProjectAssetID = .init()) {
+        self.assetId = assetId
         self.mediaKind = mediaKind
+        self.storagePath = storagePath
     }
 
     /// Creates a file-based media reference.
-    /// - Parameter relativePath: Path relative to AnimiProjects directory
-    public static func file(_ relativePath: String, mediaKind: MediaKind = .photo) -> MediaRef {
-        MediaRef(kind: .file, id: relativePath, mediaKind: mediaKind)
+    public static func file(
+        _ storagePath: String,
+        assetId: ProjectAssetID = .init(),
+        mediaKind: MediaKind = .photo
+    ) -> MediaRef {
+        MediaRef(storagePath: storagePath, mediaKind: mediaKind, assetId: assetId)
     }
 
-    // MARK: - Backward-Compatible Codable
+    // MARK: - Hashable / Equatable by assetId only
 
-    private enum CodingKeys: String, CodingKey {
-        case kind, id, mediaKind
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        kind = try container.decode(Kind.self, forKey: .kind)
-        id = try container.decode(String.self, forKey: .id)
-        mediaKind = try container.decodeIfPresent(MediaKind.self, forKey: .mediaKind)
-            ?? Self.inferMediaKind(from: id)
-    }
-
-    /// Infers media kind from file extension for backward compatibility.
-    private static func inferMediaKind(from id: String) -> MediaKind {
-        let ext = (id as NSString).pathExtension.lowercased()
-        let videoExts = ["mp4", "mov", "m4v"]
-        return videoExts.contains(ext) ? .video : .photo
-    }
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.assetId == rhs.assetId }
+    public func hash(into hasher: inout Hasher) { hasher.combine(assetId) }
 }
+
+// MARK: - Hashable conformance
+
+extension MediaRef: Hashable {}

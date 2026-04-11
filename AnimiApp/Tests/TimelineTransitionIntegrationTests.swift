@@ -42,7 +42,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
 
     /// Creates a draft with specified scene durations (in frames).
     private func makeDraft(sceneDurationFrames: [Int]) -> ProjectDraft {
-        var draft = ProjectDraft.create(for: "test-template")
+        var draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         draft.canonicalTimeline = makeTimeline(sceneDurationFrames: sceneDurationFrames)
         return draft
     }

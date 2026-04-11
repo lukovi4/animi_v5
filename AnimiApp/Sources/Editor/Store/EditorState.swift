@@ -144,7 +144,7 @@ public struct EditorState: Equatable, Sendable {
     /// Creates an empty state for initialization.
     public static func empty() -> EditorState {
         EditorState(
-            draft: ProjectDraft.create(for: ""),
+            draft: ProjectDraft.create(origin: .template(templateId: "")),
             playheadCompressedFrame: 0,
             selection: .none,
             templateFPS: 30

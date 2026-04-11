@@ -63,12 +63,19 @@ final class PlayerViewController: UIViewController {
         NotificationCenter.default.removeObserver(self, name: .appDidEnterBackground, object: nil)
         // Defense-in-depth: cancel ingest tasks even if viewWillDisappear was somehow skipped.
         // Uses nonisolated helper since deinit cannot call @MainActor methods.
-        mediaIngestCoordinator.cancelAllFromDeinit()
+        //
+        // IMPORTANT: Only cancel if the coordinator was already created. Touching
+        // the lazy accessor from deinit would trigger first-time initialization,
+        // which forms `[weak self]` closures against a deallocating instance and
+        // crashes with "Cannot form weak reference to instance ... is in the
+        // process of deallocation." Tests that construct a PVC and immediately
+        // let it deinit (e.g. `AppCompositionRootTests`) hit exactly this path.
+        _mediaIngestCoordinator?.cancelAllFromDeinit()
     }
 
     @objc private func appDidEnterBackground() {
         if !userMadeExplicitCloseChoice {
-            session.persistCheckpointIfNeeded()
+            Task { await session.persistCheckpointIfNeeded() }
         }
     }
 
@@ -245,7 +252,7 @@ final class PlayerViewController: UIViewController {
             self.activeSceneInstanceId = instanceId
             self.currentFrameIndex = localFrame
             self.resetRuntimeForSceneInstanceChange()
-            self.applySceneInstanceState(instanceId: instanceId)
+            await self.applySceneInstanceState(instanceId: instanceId)
 
             // Unblock render
             self.sceneEditReadyInstanceId = instanceId
@@ -307,8 +314,86 @@ final class PlayerViewController: UIViewController {
     private lazy var ingestStatusOverlayView = MediaIngestStatusOverlayView()
     private var ingestFailureAlertedKeys: Set<IngestSlotKey> = []
 
-    private lazy var mediaIngestCoordinator: MediaIngestCoordinator = {
-        let coordinator = MediaIngestCoordinator()
+    // MARK: - PR5 Phase E: Asset Registry Bookkeeping Helper
+
+    /// Unregisters an asset ID from the draft's registry ONLY if the fresh
+    /// draft no longer references it anywhere (scene slots + background
+    /// regions). Safe to call after any dispatch that may have removed or
+    /// replaced a reference — idempotent in the "still referenced" case.
+    ///
+    /// Reads a fresh `session.state?.draft` snapshot at call time — callers
+    /// must call this AFTER the dispatch that updated the draft, not before.
+    private func unregisterAssetIfUnreferenced(_ assetId: ProjectAssetID) {
+        guard let draft = session.state?.draft else { return }
+        let stillReferenced = draft.assetRegistry.assetIds(referencedBy: draft).contains(assetId)
+        if !stillReferenced {
+            session.unregisterAssetBookkeeping(assetId)
+        }
+    }
+
+    /// PR5 Phase G: returns a self-healed `ProjectAssetRegistry` snapshot for
+    /// the current draft. Use this whenever PVC is about to pass a registry
+    /// snapshot into downstream code (locator resolution, texture load, engine
+    /// setTimeline, export). Closes the undo-registry asymmetry gap: if a
+    /// prior `.unregisterAssetBookkeeping` removed a descriptor whose content
+    /// reference later came back via undo, the missing descriptor is
+    /// re-synthesized from the live `MediaRef` for the duration of this call.
+    ///
+    /// Does NOT write back to `session.state?.draft.assetRegistry`. Session
+    /// state remains unchanged; the healed snapshot is pure per-call.
+    private func selfHealedRegistry() -> ProjectAssetRegistry {
+        guard let draft = session.state?.draft else { return ProjectAssetRegistry() }
+        return draft.assetRegistry.selfHealed(for: draft)
+    }
+
+    /// PR5 Phase E: Tracks asset IDs registered during the background editor
+    /// session so we can sweep any intermediate imports that never made it
+    /// into the final dismissed override.
+    ///
+    /// Populated every time `saveAndSetBackgroundImage` persists + registers
+    /// a background image during an active editor session. Swept (and
+    /// cleared) inside `backgroundEditorWillDismiss` AFTER the final
+    /// `.setBackground` dispatch — each tracked asset that is not referenced
+    /// by the fresh draft is unregistered.
+    ///
+    /// Scenarios this handles:
+    /// 1. Import A into region, import B before Done → A is tracked + no
+    ///    longer referenced → unregistered; B survives because it's in the
+    ///    dismissed override.
+    /// 2. Import A, switch region source to color/gradient → A is tracked +
+    ///    no longer referenced → unregistered.
+    /// 3. Import A, change preset (which wipes overrides) → A is tracked +
+    ///    no longer referenced → unregistered.
+    private var backgroundEditorRegisteredAssetIds: Set<ProjectAssetID> = []
+
+    /// Explicit backing storage for `mediaIngestCoordinator`. The computed
+    /// accessor below lazily constructs and installs the coordinator on first
+    /// access. The backing storage is kept nil until then so that `deinit`
+    /// can check `_mediaIngestCoordinator != nil` without triggering a
+    /// dangerous first-time initialization during deallocation.
+    ///
+    /// PR5 Phase G: switched away from `private lazy var` because
+    /// Swift's lazy property initializer runs on first access — including
+    /// first access from `deinit`. The init block captures `[weak self]` to
+    /// set up ingest callbacks, and taking a weak reference to a
+    /// deallocating instance is a runtime crash ("Cannot form weak reference
+    /// to instance ... is in the process of deallocation"). Explicit backing
+    /// makes the "was it ever created?" check safe.
+    private var _mediaIngestCoordinator: MediaIngestCoordinator?
+
+    private var mediaIngestCoordinator: MediaIngestCoordinator {
+        if let coordinator = _mediaIngestCoordinator {
+            return coordinator
+        }
+        let assetStore = MediaAssetStore(mediaWriter: self.session.mediaWriter)
+        let coordinator = MediaIngestCoordinator(assetStore: assetStore)
+        // PR5 Phase E: Register the freshly ingested descriptor in the draft's
+        // asset registry BEFORE the reducer sees the slot dispatch. This
+        // ensures that downstream apply/restore paths resolve via the
+        // registry-backed locator without hitting the legacy fallback.
+        coordinator.onAssetPersisted = { [weak self] descriptor in
+            self?.session.registerAssetBookkeeping(descriptor)
+        }
         coordinator.onIngestComplete = { [weak self] result in
             guard let self else {
                 // VC deallocated — clean up orphaned persisted file immediately
@@ -322,8 +407,9 @@ final class PlayerViewController: UIViewController {
         coordinator.onStatusChanged = { [weak self] key, status in
             self?.handleIngestStatusChanged(key: key, status: status)
         }
+        _mediaIngestCoordinator = coordinator
         return coordinator
-    }()
+    }
 
     /// Pending picker request — captures (sceneInstanceId, blockId) at picker open time.
     /// Consumed in PHPickerDelegate. The sceneInstanceId is the source of truth for
@@ -366,7 +452,7 @@ final class PlayerViewController: UIViewController {
 
         // Autosave timer (crash recovery safety net, 30s interval)
         autosaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.session.persistCheckpointIfNeeded()
+            Task { [weak self] in await self?.session.persistCheckpointIfNeeded() }
         }
 
         // Wire session output and start bootstrap
@@ -546,8 +632,12 @@ final class PlayerViewController: UIViewController {
                 // Cancel all in-flight ingests for this scene before resetting
                 self.mediaIngestCoordinator.cancelAll(for: instanceId)
                 self.session.dispatch(.resetSceneState(sceneInstanceId: instanceId))
-                self.reloadRuntimeState(for: instanceId)
-                self.refreshSceneEditBars()
+                // Phase D: reloadRuntimeState is async — refresh bars after reload completes.
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.reloadRuntimeState(for: instanceId)
+                    self.refreshSceneEditBars()
+                }
             })
 
             self.present(alert, animated: true)
@@ -616,6 +706,11 @@ final class PlayerViewController: UIViewController {
             self.mediaIngestCoordinator.cancelIngest(
                 for: IngestSlotKey(sceneInstanceId: instanceId, blockId: blockId)
             )
+            // PR5 Phase E: Pre-capture the asset ID before dispatch so we can
+            // check if it is still referenced after the slot is cleared.
+            let oldAssetId = self.session.state?.draft
+                .sceneInstanceStates[instanceId]?
+                .mediaSlotsByBlockId?[blockId]?.mediaRef.assetId
             // Clear runtime
             self.userMediaService?.clear(blockId: blockId)
             // Dispatch to store (removes slot)
@@ -624,6 +719,11 @@ final class PlayerViewController: UIViewController {
                 blockId: blockId,
                 slot: nil
             ))
+            // PR5 Phase E: Post-dispatch bookkeeping — re-read the fresh draft
+            // and unregister the old asset ID only if nothing else references it.
+            if let oldAssetId {
+                self.unregisterAssetIfUnreferenced(oldAssetId)
+            }
             self.metalView.setNeedsDisplay()
             // Refresh MediaBlockActionBar
             self.updateMediaBlockActionBarForSelectedBlock()
@@ -894,25 +994,25 @@ final class PlayerViewController: UIViewController {
     }
 
     private func saveAndClose() {
-        do {
-            try session.executeSaveAndClose()
-        } catch {
-            log("[Close] Save failed: \(error)")
-            presentSaveError(error)
-            return
-        }
         userMadeExplicitCloseChoice = true
-        navigationController?.popViewController(animated: true)
+        Task {
+            do {
+                try await session.executeSaveAndClose()
+            } catch {
+                log("[Close] Save failed: \(error)")
+                presentSaveError(error)
+                return
+            }
+            navigationController?.popViewController(animated: true)
+        }
     }
 
     private func discardAndClose() {
-        do {
-            try session.executeDiscardAndClose()
-        } catch {
-            log("[Close] Discard error: \(error)")
-        }
         userMadeExplicitCloseChoice = true
-        navigationController?.popViewController(animated: true)
+        Task {
+            try? await session.executeDiscardAndClose()
+            navigationController?.popViewController(animated: true)
+        }
     }
 
     private func presentSaveError(_ error: Error) {
@@ -927,7 +1027,7 @@ final class PlayerViewController: UIViewController {
 
     /// Materializes saved project after successful export.
     private func handleExportSuccess() {
-        session.commitAfterExportSuccess()
+        Task { await session.commitAfterExportSuccess() }
     }
 
     private func handleFullScreenPreview() {
@@ -1072,7 +1172,8 @@ final class PlayerViewController: UIViewController {
                   let player = self.scenePlayer,
                   let ums = self.userMediaService else { return }
 
-            let deps = SceneRuntimeStateApplier.Dependencies(
+            // Placement is URL-free — fast path, no locator/registry needed.
+            let deps = SceneRuntimeStateApplier.FastPathDependencies(
                 scenePlayer: player,
                 userMediaService: ums
             )
@@ -1226,7 +1327,8 @@ final class PlayerViewController: UIViewController {
             engine = TimelineCompositionEngine(
                 device: device,
                 commandQueue: queue,
-                fps: library.fps
+                fps: library.fps,
+                mediaLocator: session.mediaLocator
             )
 
             // Configure scene URL provider (captures library by value - it's a struct)
@@ -1245,10 +1347,15 @@ final class PlayerViewController: UIViewController {
             timelineCompositionEngine = engine
         }
 
-        // Update timeline from state
+        // Update timeline from state. Self-healed registry ensures the
+        // engine caches a resolution-ready snapshot that covers undo paths.
         let timeline = state.canonicalTimeline
         let sceneStates = state.draft.sceneInstanceStates
-        engine.setTimeline(timeline, sceneStates: sceneStates)
+        engine.setTimeline(
+            timeline,
+            sceneStates: sceneStates,
+            assetRegistry: state.draft.assetRegistry.selfHealed(for: state.draft)
+        )
 
         // PR-G: Create transition compositor unconditionally
         // Compositor doesn't depend on timeline contents, only on device/pixelFormat
@@ -1370,10 +1477,18 @@ final class PlayerViewController: UIViewController {
         log("[Release v1] Coordinator loaded scene: \(loadedScene.sceneTypeId)")
 
         // PR9: Apply per-instance state after scene load
-        // Skip during scene-edit activation — activation method is the single owner
+        // Skip during scene-edit activation — activation method is the single owner.
+        // Phase D: async pre-resolve of media URLs — wrap in MainActor task and
+        // issue setNeedsDisplay after apply completes. The redraw path below
+        // (outside the branch) still fires synchronously so an empty scene
+        // redraws immediately.
         if sceneEditReadyInstanceId != nil, let instanceId = activeSceneInstanceId {
             resetRuntimeForSceneInstanceChange()
-            applySceneInstanceState(instanceId: instanceId)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.applySceneInstanceState(instanceId: instanceId)
+                self.metalView.setNeedsDisplay()
+            }
         }
 
         metalView.setNeedsDisplay()
@@ -1399,11 +1514,17 @@ final class PlayerViewController: UIViewController {
         if let coordinator = playbackCoordinator,
            coordinator.currentSceneTypeId == sceneInfo.sceneTypeId,
            scenePlayer != nil {
-            // Only reset/apply if instance actually changed
+            // Only reset/apply if instance actually changed.
+            // Phase D: async apply — setNeedsDisplay moves inside the task so
+            // the frame reflects the restored state, not the pre-apply state.
             if previousInstanceId != sceneInfo.sceneInstanceId {
                 resetRuntimeForSceneInstanceChange()
-                applySceneInstanceState(instanceId: sceneInfo.sceneInstanceId)
-                metalView.setNeedsDisplay()
+                let newInstanceId = sceneInfo.sceneInstanceId
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.applySceneInstanceState(instanceId: newInstanceId)
+                    self.metalView.setNeedsDisplay()
+                }
             }
         }
     }
@@ -1422,14 +1543,34 @@ final class PlayerViewController: UIViewController {
     }
 
     /// Applies persisted SceneState to runtime for a scene instance.
-    private func applySceneInstanceState(instanceId: UUID) {
+    ///
+    /// Phase D: async because media URLs are pre-resolved via the async
+    /// `ResolvedMediaMapBuilder`. Callers must `await` this and move any
+    /// post-apply work that depends on state being applied inside the same
+    /// `Task { @MainActor ... }` block.
+    private func applySceneInstanceState(instanceId: UUID) async {
         guard let sceneState = session.state?.draft.sceneInstanceStates[instanceId],
               let player = scenePlayer,
               let service = userMediaService else {
             return
         }
 
-        let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
+        // Pre-resolve media URLs via the registry-backed locator on the async
+        // path. Use a self-healed registry snapshot so undo-after-unregister
+        // scenarios still resolve through the registry (not the legacy
+        // storagePath fallback).
+        let registry = selfHealedRegistry()
+        let resolved = await ResolvedMediaMapBuilder.build(
+            slots: sceneState.mediaSlotsByBlockId,
+            locator: session.mediaLocator,
+            registry: registry
+        )
+
+        let deps = SceneRuntimeStateApplier.RestoreDependencies(
+            scenePlayer: player,
+            userMediaService: service,
+            resolvedMedia: resolved
+        )
         let restoredCount = SceneRuntimeStateApplier.apply(sceneState, deps: deps)
 
         // Wire missing-media summary after restore
@@ -1676,7 +1817,8 @@ final class PlayerViewController: UIViewController {
         // PR-F: Update TimelineCompositionEngine for timeline preview path
         timelineCompositionEngine?.setTimeline(
             state.canonicalTimeline,
-            sceneStates: state.draft.sceneInstanceStates
+            sceneStates: state.draft.sceneInstanceStates,
+            assetRegistry: state.draft.assetRegistry.selfHealed(for: state.draft)
         )
 
         // Phase 2.1: Update mapper in timeline UI after timeline changes
@@ -1710,10 +1852,10 @@ final class PlayerViewController: UIViewController {
 
     /// Fast-path: placement committed — apply to active scene without full reload.
     private func handleMediaPlacementChanged(instanceId: UUID, blockId: String, placement: MediaPlacementState) {
-        // Scene-edit path: apply directly to local player
+        // Scene-edit path: apply directly to local player (placement is URL-free)
         if let player = scenePlayer, let service = userMediaService,
            activeSceneInstanceId == instanceId || sceneEditTargetInstanceId == instanceId {
-            let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
+            let deps = SceneRuntimeStateApplier.FastPathDependencies(scenePlayer: player, userMediaService: service)
             SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
             metalView.setNeedsDisplay()
         }
@@ -1740,16 +1882,50 @@ final class PlayerViewController: UIViewController {
 
     /// Fast-path: slot changed (insert/replace/remove) — apply to active scene.
     /// Slot changes use full engine update (media needs restore).
+    ///
+    /// Phase D: for non-nil slot assignments the URL is resolved off the sync
+    /// path via `ResolvedMediaMapBuilder` using the current draft's registry.
+    /// Nil-slot (remove) is URL-free and applies synchronously.
     private func handleMediaSlotChanged(instanceId: UUID, blockId: String, slot: SceneMediaSlot?) {
         let isActiveScene = activeSceneInstanceId == instanceId || sceneEditTargetInstanceId == instanceId
 
         // Scene-edit path: apply directly (only for active scene)
         if isActiveScene, let player = scenePlayer, let service = userMediaService {
-            let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
-            SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slot, deps: deps)
-            metalView.setNeedsDisplay()
-            // Update missing-media summary after slot change (rebind/clear may resolve failures)
-            session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
+            if slot == nil {
+                // Remove is URL-free — sync fast path.
+                let deps = SceneRuntimeStateApplier.RestoreDependencies(
+                    scenePlayer: player,
+                    userMediaService: service,
+                    resolvedMedia: .empty
+                )
+                SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slot, deps: deps)
+                metalView.setNeedsDisplay()
+                session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
+            } else {
+                // Insert/replace: pre-resolve the new slot's media URL async, then
+                // apply on main actor with the resolved URL already in hand.
+                // Self-healed registry so undo paths resolve via registry.
+                let registry = selfHealedRegistry()
+                let slotForApply = slot
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let singleMap: [String: SceneMediaSlot] = [blockId: slotForApply!]
+                    let resolved = await ResolvedMediaMapBuilder.build(
+                        slots: singleMap,
+                        locator: self.session.mediaLocator,
+                        registry: registry
+                    )
+                    let deps = SceneRuntimeStateApplier.RestoreDependencies(
+                        scenePlayer: player,
+                        userMediaService: service,
+                        resolvedMedia: resolved
+                    )
+                    SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slotForApply, deps: deps)
+                    self.metalView.setNeedsDisplay()
+                    // Update missing-media summary after slot change (rebind/clear may resolve failures)
+                    self.session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
+                }
+            }
         }
 
         // Timeline path: full state update for any scene
@@ -1774,8 +1950,8 @@ final class PlayerViewController: UIViewController {
               let slot = session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else { return }
         let placement = slot.asset.placement
 
-        // Re-resolve with actual media size now available
-        let deps = SceneRuntimeStateApplier.Dependencies(scenePlayer: player, userMediaService: service)
+        // Re-resolve with actual media size now available — URL-free fast path.
+        let deps = SceneRuntimeStateApplier.FastPathDependencies(scenePlayer: player, userMediaService: service)
         SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
         metalView.setNeedsDisplay()
     }
@@ -2208,7 +2384,11 @@ final class PlayerViewController: UIViewController {
     /// Reloads runtime state for a given scene instance.
     /// PR-F: Single sync-point for runtime reload after undo/redo or Reset Scene.
     /// Order: resetForNewInstance -> clearAll -> applySceneInstanceState -> overlay/redraw -> video sync
-    private func reloadRuntimeState(for instanceId: UUID) {
+    ///
+    /// Phase D: async because `applySceneInstanceState` is async (pre-resolves
+    /// media URLs off the caller). Steps 5 and 6 run after the awaited apply
+    /// so overlay/redraw/video-still reflect restored state.
+    private func reloadRuntimeState(for instanceId: UUID) async {
         // 1. Reset ScenePlayer mutable state (transforms, variants, toggles, media presence)
         scenePlayer?.resetForNewInstance()
 
@@ -2219,7 +2399,7 @@ final class PlayerViewController: UIViewController {
         lastStillSyncFrame = -1
 
         // 4. Re-apply persisted state from store
-        applySceneInstanceState(instanceId: instanceId)
+        await applySceneInstanceState(instanceId: instanceId)
 
         // 5. Refresh overlay and redraw
         sceneEditController?.updateOverlay()
@@ -2258,27 +2438,42 @@ final class PlayerViewController: UIViewController {
     /// Handles state restoration after undo/redo.
     /// PR-D: Re-applies runtime state for active scene instance to sync with restored snapshot.
     /// PR-F: Also refreshes bottom bars and syncs TimelineCompositionEngine.
+    ///
+    /// Phase D: `reloadRuntimeState` is now async, so the sequence runs inside
+    /// a single MainActor Task to preserve ordering:
+    ///   1. cancel ingests (sync)
+    ///   2. await reload of active instance
+    ///   3. refresh bars
+    ///   4. sync engine timeline (with asset registry) and re-apply scene states
     private func handleStateRestoredFromUndoRedo() {
         // Conservatively cancel all in-flight ingests before reloading restored state.
         // Undo/redo may have reverted the scene structure, making ongoing ingests stale.
         mediaIngestCoordinator.cancelAll()
 
-        if let targetId = sceneEditTargetInstanceId {
-            reloadRuntimeState(for: targetId)
-        } else if let runtimeId = activeSceneInstanceId {
-            reloadRuntimeState(for: runtimeId)
-        }
-        refreshSceneEditBars()
+        let targetId = sceneEditTargetInstanceId
+        let runtimeId = activeSceneInstanceId
 
-        // PR-F: Sync TimelineCompositionEngine with restored state
-        if let state = session.state, let engine = timelineCompositionEngine {
-            engine.setTimeline(
-                state.canonicalTimeline,
-                sceneStates: state.draft.sceneInstanceStates
-            )
+        Task { @MainActor [weak self] in
+            guard let self else { return }
 
-            // Re-apply state to loaded runtimes
-            Task { @MainActor in
+            if let targetId = targetId {
+                await self.reloadRuntimeState(for: targetId)
+            } else if let runtimeId = runtimeId {
+                await self.reloadRuntimeState(for: runtimeId)
+            }
+            self.refreshSceneEditBars()
+
+            // PR-F: Sync TimelineCompositionEngine with restored state.
+            // Critically for this path: undo/redo is exactly where the
+            // registry can diverge from content, so use a self-healed snapshot.
+            if let state = self.session.state, let engine = self.timelineCompositionEngine {
+                engine.setTimeline(
+                    state.canonicalTimeline,
+                    sceneStates: state.draft.sceneInstanceStates,
+                    assetRegistry: state.draft.assetRegistry.selfHealed(for: state.draft)
+                )
+
+                // Re-apply state to loaded runtimes
                 for (instanceId, sceneState) in state.draft.sceneInstanceStates {
                     await engine.updateSceneState(sceneState, for: instanceId)
                 }
@@ -2314,7 +2509,7 @@ final class PlayerViewController: UIViewController {
 
         // Safety net: save to active slot when leaving editor without explicit choice
         if (isMovingFromParent || isBeingDismissed) && !userMadeExplicitCloseChoice {
-            session.persistCheckpointIfNeeded()
+            Task { await session.persistCheckpointIfNeeded() }
         }
     }
 
@@ -2393,6 +2588,12 @@ final class PlayerViewController: UIViewController {
         // Prevent interactive dismiss — override commit must go through Done button
         // (backgroundEditorWillDismiss) to guarantee consistent state.
         nav.isModalInPresentation = true
+
+        // PR5 Phase E: Reset the tracker for intermediate background imports.
+        // Any `registerAssetBookkeeping` calls made during this editor session
+        // get collected here and swept on dismiss if not referenced.
+        backgroundEditorRegisteredAssetIds.removeAll()
+
         present(nav, animated: true)
     }
 
@@ -2430,26 +2631,51 @@ final class PlayerViewController: UIViewController {
 
         // 1. Persist image (off-main-actor work)
         let (mediaRef, _) = try await service.persistImage(from: sourceFileURL)
-        log("[Background] Persisted image: \(mediaRef.id)")
+        log("[Background] Persisted image: \(mediaRef.storagePath)")
 
         // 2. Generation + preset guard after persist
         guard backgroundImportGeneration == capturedGeneration,
               effectiveBackgroundState?.preset.presetId == sessionPresetId else {
             log("[Background] Import generation stale after persist — cleaning up orphan")
-            try? service.deleteMediaFile(mediaRef)
+            try? await service.deleteMediaFile(mediaRef)
             return
         }
 
-        // 3. Load texture
+        // PR5 Phase E: Register the descriptor in the draft's registry BEFORE
+        // loading the texture. After this call, `session.state?.draft.assetRegistry`
+        // contains the fresh descriptor, so the `loadTexture` below resolves
+        // via the registry-backed locator without hitting the legacy fallback.
+        session.registerAssetBookkeeping(ProjectAssetDescriptor(
+            assetId: mediaRef.assetId,
+            mediaKind: mediaRef.mediaKind,
+            storagePath: mediaRef.storagePath
+        ))
+        // PR5 Phase E (blocker 2): if this import is happening inside an
+        // active background editor session, track the descriptor so that
+        // `backgroundEditorWillDismiss` can sweep any intermediate import
+        // that never made it into the final dismissed override.
+        if pendingBackgroundEditor != nil {
+            backgroundEditorRegisteredAssetIds.insert(mediaRef.assetId)
+        }
+
+        // 3. Load texture — re-read fresh registry snapshot that now
+        // contains the descriptor we just registered.
         let slotKey = EffectiveBackgroundBuilder.makeSlotKey(
             presetId: sessionPresetId,
             regionId: regionId
         )
 
         do {
-            try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef)
+            // Self-healed snapshot (covers the unlikely case where an undo
+            // removed the descriptor between register and loadTexture).
+            let freshRegistry = selfHealedRegistry()
+            try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef, assetRegistry: freshRegistry)
         } catch {
-            try? service.deleteMediaFile(mediaRef)
+            // Texture load failed — unregister the descriptor we just added
+            // and delete the orphan file. Bookkeeping-only, no dirty mutation.
+            session.unregisterAssetBookkeeping(mediaRef.assetId)
+            backgroundEditorRegisteredAssetIds.remove(mediaRef.assetId)
+            try? await service.deleteMediaFile(mediaRef)
             throw error
         }
 
@@ -2458,9 +2684,17 @@ final class PlayerViewController: UIViewController {
               effectiveBackgroundState?.preset.presetId == sessionPresetId else {
             log("[Background] Import generation stale after texture load — clearing stale texture")
             service.clearTexture(slotKey: slotKey)
-            try? service.deleteMediaFile(mediaRef)
+            // PR5 Phase E: unregister the descriptor we registered in step 2a
+            // before cleaning up the orphan file.
+            session.unregisterAssetBookkeeping(mediaRef.assetId)
+            backgroundEditorRegisteredAssetIds.remove(mediaRef.assetId)
+            try? await service.deleteMediaFile(mediaRef)
             return
         }
+
+        // PR5 Phase E: Pre-capture the old background asset ID for this
+        // region so we can unregister it after the new one replaces it.
+        let oldBgAssetId = session.state?.draft.background.regions[regionId]?.imageMediaRef?.assetId
 
         // 5. Commit to editor or directly to store
         if let editor = pendingBackgroundEditor {
@@ -2472,6 +2706,11 @@ final class PlayerViewController: UIViewController {
                 source: .image(imageOverride)
             )
             session.dispatch(.setBackground(bg))
+            // PR5 Phase E: Unregister the replaced background descriptor
+            // if no longer referenced.
+            if let oldBgAssetId, oldBgAssetId != mediaRef.assetId {
+                unregisterAssetIfUnreferenced(oldBgAssetId)
+            }
             let templateBackground = compiledScene?.runtime.scene.background
             effectiveBackgroundState = EffectiveBackgroundBuilder.build(
                 templateBackground: templateBackground,
@@ -2644,7 +2883,7 @@ final class PlayerViewController: UIViewController {
         progressVC.modalPresentationStyle = .overFullScreen
         progressVC.modalTransitionStyle = .crossDissolve
 
-        let exporter = VideoExporter()
+        let exporter = VideoExporter(mediaLocator: session.mediaLocator)
         let request = ActiveExportRequest(id: UUID(), exporter: exporter)
         activeExportRequest = request
         let requestId = request.id
@@ -2740,7 +2979,8 @@ final class PlayerViewController: UIViewController {
                     mediaSnapshot = try await ExportMediaSnapshot.build(
                         compiledScene: compiled,
                         mediaSlots: mediaSlots,
-                        projectStore: ProjectStore.shared,
+                        mediaLocator: self.session.mediaLocator,
+                        assetRegistry: self.selfHealedRegistry(),
                         runtime: runtime
                     )
                 } catch {
@@ -2764,7 +3004,7 @@ final class PlayerViewController: UIViewController {
                     return
                 }
 
-                exporter.exportVideo(
+                await exporter.exportVideo(
                     compiledScene: compiled,
                     scenePlayer: player,
                     device: device,
@@ -2776,6 +3016,7 @@ final class PlayerViewController: UIViewController {
                     budget: budget,
                     mediaSnapshot: mediaSnapshot,
                     backgroundSnapshot: bgSnapshot,
+                    assetRegistry: self.selfHealedRegistry(),
                     onFinishing: { [weak self, weak progressVC] in
                         guard let self, self.isActiveExportRequest(requestId) else { return }
                         progressVC?.updateState(.finishing)
@@ -2855,7 +3096,7 @@ final class PlayerViewController: UIViewController {
         progressVC.modalPresentationStyle = .overFullScreen
         progressVC.modalTransitionStyle = .crossDissolve
 
-        let exporter = VideoExporter()
+        let exporter = VideoExporter(mediaLocator: session.mediaLocator)
         let request = ActiveExportRequest(id: UUID(), exporter: exporter)
         activeExportRequest = request
         let requestId = request.id
@@ -2964,6 +3205,7 @@ final class PlayerViewController: UIViewController {
                     backgroundSnapshot: bgSnapshot,
                     settings: settings,
                     budget: budget,
+                    assetRegistry: self.selfHealedRegistry(),
                     onFinishing: { [weak self, weak progressVC] in
                         guard let self, self.isActiveExportRequest(requestId) else { return }
                         progressVC?.updateState(.finishing)
@@ -3119,7 +3361,11 @@ final class PlayerViewController: UIViewController {
 
         // Guard: target scene must still exist in the timeline
         guard let sceneItem = timeline?.sceneItems.first(where: { $0.id == result.sceneInstanceId }) else {
-            // Scene was deleted while ingest was in-flight — clean up persisted file
+            // Scene was deleted while ingest was in-flight — clean up persisted file.
+            // PR5 Phase E: `onAssetPersisted` already registered the descriptor
+            // BEFORE we got here. The slot was never dispatched, so the asset
+            // is not referenced by any content — safe to unregister directly.
+            session.unregisterAssetBookkeeping(result.mediaRef.assetId)
             try? FileManager.default.removeItem(at: result.persistedURL)
             log("[UserMedia] Ingest completed for deleted scene \(result.sceneInstanceId), cleaned up orphan")
             return
@@ -3135,6 +3381,8 @@ final class PlayerViewController: UIViewController {
         // Re-validate: scene may have been deleted during async defaultFit resolution
         let currentTimeline = session.state?.canonicalTimeline
         guard currentTimeline?.sceneItems.contains(where: { $0.id == result.sceneInstanceId }) == true else {
+            // PR5 Phase E: unregister pre-emptively registered descriptor.
+            session.unregisterAssetBookkeeping(result.mediaRef.assetId)
             try? FileManager.default.removeItem(at: result.persistedURL)
             log("[UserMedia] Scene \(result.sceneInstanceId) deleted during defaultFit resolution, cleaned up orphan")
             return
@@ -3150,12 +3398,21 @@ final class PlayerViewController: UIViewController {
         case .video:
             guard let videoWindow = result.videoWindow else {
                 assertionFailure("[UserMedia] Video ingest missing videoWindow")
+                // PR5 Phase E: unregister pre-emptively registered descriptor.
+                session.unregisterAssetBookkeeping(result.mediaRef.assetId)
                 try? FileManager.default.removeItem(at: result.persistedURL)
                 log("[UserMedia] Video ingest missing videoWindow, cleaned up orphan")
                 return
             }
             slot = .video(mediaRef: result.mediaRef, placement: placement, videoWindow: videoWindow)
         }
+
+        // PR5 Phase E: Pre-capture the currently bound asset ID (if any) so
+        // we can unregister it after the replace lands in the draft — only
+        // if the old ID is no longer referenced anywhere else.
+        let oldAssetId = session.state?.draft
+            .sceneInstanceStates[result.sceneInstanceId]?
+            .mediaSlotsByBlockId?[result.blockId]?.mediaRef.assetId
 
         // Persist slot to store
         session.dispatch(.setMediaSlot(
@@ -3164,7 +3421,13 @@ final class PlayerViewController: UIViewController {
             slot: slot
         ))
 
-        log("[UserMedia] Ingest complete for block '\(result.blockId)'@\(result.sceneInstanceId): \(result.mediaRef.id)")
+        // PR5 Phase E: Unregister the old descriptor if it was replaced and
+        // is no longer referenced anywhere in the draft.
+        if let oldAssetId, oldAssetId != result.mediaRef.assetId {
+            unregisterAssetIfUnreferenced(oldAssetId)
+        }
+
+        log("[UserMedia] Ingest complete for block '\(result.blockId)'@\(result.sceneInstanceId): \(result.mediaRef.storagePath)")
     }
 
     /// Resolves defaultFit from template metadata via scene-type resources cache.
@@ -3541,8 +3804,7 @@ final class PlayerViewController: UIViewController {
 
     /// Sets up background state from template and project override.
     private func setupBackgroundState(compiled: CompiledScene) {
-        guard currentTemplateId != nil,
-              let device = metalView.device,
+        guard let device = metalView.device,
               let queue = commandQueue else {
             log("[Background] Skipped: missing dependencies")
             return
@@ -3555,7 +3817,9 @@ final class PlayerViewController: UIViewController {
         backgroundTextureService = BackgroundTextureService(
             textureProvider: backgroundTextureProvider!,
             device: device,
-            commandQueue: queue
+            commandQueue: queue,
+            mediaLocator: session.mediaLocator,
+            mediaWriter: session.mediaWriter
         )
 
         // Build effective state from store (background is part of canonical draft)
@@ -3570,12 +3834,15 @@ final class PlayerViewController: UIViewController {
         if let state = effectiveBackgroundState {
             log("[Background] Loaded preset '\(state.preset.presetId)' with \(state.regionStates.count) regions")
 
-            // Preload image textures asynchronously
+            // Preload image textures asynchronously — value-pass the
+            // self-healed registry so undo paths still resolve via registry.
             if let override = bgOverride {
+                let registry = self.selfHealedRegistry()
                 Task {
                     let loadedKeys = await backgroundTextureService?.preloadTextures(
                         from: override,
-                        presetId: state.preset.presetId
+                        presetId: state.preset.presetId,
+                        assetRegistry: registry
                     )
                     if let keys = loadedKeys, !keys.isEmpty {
                         log("[Background] Preloaded \(keys.count) textures")
@@ -4210,8 +4477,31 @@ extension PlayerViewController: BackgroundEditorDelegate {
         }
         lastBackgroundPresetId = presetId
 
+        // PR5 Phase E: Pre-capture the pre-dispatch set of background image
+        // asset IDs so we can unregister any that disappear after dispatch.
+        let oldBgAssetIds: Set<ProjectAssetID> = Set(
+            (session.state?.draft.background.regions.values ?? [:].values)
+                .compactMap { $0.imageMediaRef?.assetId }
+        )
+
         // Dispatch background change to store (pushes undo snapshot)
         session.dispatch(.setBackground(override))
+
+        // PR5 Phase E: Post-dispatch bookkeeping — unregister any asset ID
+        // that was in the pre-dispatch set but is no longer referenced
+        // anywhere (background or scene slots) in the fresh draft.
+        for oldAssetId in oldBgAssetIds {
+            unregisterAssetIfUnreferenced(oldAssetId)
+        }
+
+        // PR5 Phase E (blocker 2): Sweep intermediate background imports
+        // that were registered during this editor session but never landed
+        // in the final dismissed override. Each tracked asset ID that is
+        // no longer referenced by the fresh draft is unregistered.
+        for trackedAssetId in backgroundEditorRegisteredAssetIds {
+            unregisterAssetIfUnreferenced(trackedAssetId)
+        }
+        backgroundEditorRegisteredAssetIds.removeAll()
 
         // Rebuild effective state
         let templateBackground = compiledScene?.runtime.scene.background
@@ -4221,8 +4511,11 @@ extension PlayerViewController: BackgroundEditorDelegate {
             presetLibrary: session.backgroundPresetProvider
         )
 
-        // P0-2: Preload textures for regions with image source
+        // P0-2: Preload textures for regions with image source.
+        // Self-healed snapshot so undo-after-unregister still resolves via
+        // the registry-backed locator.
         if let service = backgroundTextureService, let state = effectiveBackgroundState {
+            let registry = self.selfHealedRegistry()
             Task { @MainActor in
                 for (regionId, regionState) in state.regionStates {
                     if case .image(let imageSource) = regionState.source,
@@ -4230,7 +4523,8 @@ extension PlayerViewController: BackgroundEditorDelegate {
                         do {
                             try await service.loadTexture(
                                 slotKey: imageSource.slotKey,
-                                mediaRef: mediaRef
+                                mediaRef: mediaRef,
+                                assetRegistry: registry
                             )
                             self.log("[Background] Preloaded texture for \(regionId)")
                         } catch {

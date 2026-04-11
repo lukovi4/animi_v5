@@ -129,6 +129,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: maxDecoders,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -194,6 +195,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -259,6 +261,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 createdRuntimes.insert(instanceId)
@@ -326,6 +329,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 2,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -394,6 +398,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 createdRuntimeIds.append(instanceId)
@@ -462,6 +467,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -549,6 +555,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -646,6 +653,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -688,5 +696,13 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
 
         // Verify: Scene 0 runtime still exists
         XCTAssertNotNil(engine.runtime(for: ids[0]), "Scene 0 runtime should still exist (warm)")
+    }
+}
+
+// MARK: - Test Stubs
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/\(mediaRef.storagePath)")
     }
 }

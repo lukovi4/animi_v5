@@ -15,6 +15,12 @@ import PhotosUI
 @MainActor
 final class MediaIngestCoordinatorTests: XCTestCase {
 
+    // MARK: - Helpers
+
+    private func makeCoordinator() -> MediaIngestCoordinator {
+        MediaIngestCoordinator(assetStore: MediaAssetStore(mediaWriter: StubMediaWriter()))
+    }
+
     // MARK: - IngestSlotKey Identity
 
     /// Two keys with different sceneInstanceIds are distinct even with the same blockId.
@@ -54,7 +60,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// cancelIngest(for:) clears slotStatus and emits .idle via onStatusChanged.
     func test_cancelIngest_clearsStatus_andEmitsIdle() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
         let key = IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")
 
         // Simulate a processing state by starting a dummy ingest-like state
@@ -79,7 +85,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// cancelAll(for:) only clears status for the specified scene.
     func test_cancelAll_forScene_scopedCorrectly() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
         let sceneA = UUID()
         let sceneB = UUID()
 
@@ -99,7 +105,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// cancelAll() clears all status entries.
     func test_cancelAll_clearsEverything() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
 
         // cancelAll on empty: no crash
         coordinator.cancelAll()
@@ -109,7 +115,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// cancelAll() emits .idle for each previously tracked key.
     func test_cancelAll_emitsIdleForEachKey() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
 
         var emittedKeys: [IngestSlotKey] = []
         coordinator.onStatusChanged = { key, status in
@@ -146,7 +152,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// status(for:) returns .idle for unknown keys.
     func test_status_unknownKey_returnsIdle() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
         XCTAssertEqual(coordinator.status(for: IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")), .idle)
     }
 
@@ -154,7 +160,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// cancelAllFromDeinit does not crash when called on main thread.
     func test_cancelAllFromDeinit_doesNotCrash() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
         // Simulate what PVC deinit does
         coordinator.cancelAllFromDeinit()
         // No crash = pass
@@ -172,7 +178,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
     func test_saveMedia_returnsURL_thatPointsToPersistedFile() async throws {
         let store = ProjectStore()
         try store.ensureDirectoriesExist()
-        let assetStore = MediaAssetStore(projectStore: store)
+        let assetStore = MediaAssetStore(mediaWriter: StoreBackedWriter(store: store))
 
         // Create a temp source file
         let tempDir = FileManager.default.temporaryDirectory
@@ -182,7 +188,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
         // saveMedia now returns (MediaRef, URL) — the URL is the persisted file path
         let sceneId = UUID()
-        let (_, persistedURL) = try assetStore.saveMedia(
+        let (_, persistedURL) = try await assetStore.saveMedia(
             from: sourceURL,
             mediaKind: .video,
             sceneInstanceId: sceneId,
@@ -207,7 +213,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
     func test_saveMedia_returnedURL_matchesAbsoluteURLResolve() async throws {
         let store = ProjectStore()
         try store.ensureDirectoriesExist()
-        let assetStore = MediaAssetStore(projectStore: store)
+        let assetStore = MediaAssetStore(mediaWriter: StoreBackedWriter(store: store))
 
         let tempDir = FileManager.default.temporaryDirectory
         let sourceURL = tempDir.appendingPathComponent("test_match_\(UUID().uuidString).mov")
@@ -215,7 +221,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: sourceURL) }
 
         let sceneId = UUID()
-        let (mediaRef, persistedURL) = try assetStore.saveMedia(
+        let (mediaRef, persistedURL) = try await assetStore.saveMedia(
             from: sourceURL,
             mediaKind: .video,
             sceneInstanceId: sceneId,
@@ -224,7 +230,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: persistedURL) }
 
         // The two resolution paths must agree
-        let resolvedURL = try assetStore.absoluteURL(for: mediaRef)
+        let resolvedURL = try store.absoluteURL(for: mediaRef, registry: ProjectAssetRegistry())
         XCTAssertEqual(persistedURL, resolvedURL,
                        "saveMedia returned URL must match absoluteURL(for:) resolution")
     }
@@ -234,7 +240,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
     /// Two ingest operations for different scenes with the same blockId
     /// maintain independent status entries.
     func test_crossScene_independentStatusTracking() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
         let sceneA = UUID()
         let sceneB = UUID()
         let keyA = IngestSlotKey(sceneInstanceId: sceneA, blockId: "block_01")
@@ -253,7 +259,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// simulateIngestCompletion emits .processing → .ready → .idle via onStatusChanged.
     func test_simulateIngestCompletion_emitsProcessingReadyIdle() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
         let key = IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")
 
         var statusChanges: [(IngestSlotKey, IngestSlotStatus)] = []
@@ -274,7 +280,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// status(for:) returns .idle after simulateIngestCompletion (not stuck at .ready).
     func test_simulateIngestCompletion_statusReturnsIdleAfter() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
         let key = IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")
 
         let slot = SceneMediaSlot.photo(mediaRef: MediaRef.file("test.jpg"), placement: .default(fitMode: .cover))
@@ -286,7 +292,7 @@ final class MediaIngestCoordinatorTests: XCTestCase {
 
     /// simulateIngestCompletion fires onIngestComplete callback.
     func test_simulateIngestCompletion_firesOnIngestComplete() {
-        let coordinator = MediaIngestCoordinator()
+        let coordinator = makeCoordinator()
         let key = IngestSlotKey(sceneInstanceId: UUID(), blockId: "block_01")
 
         var receivedResult: IngestResult?
@@ -304,6 +310,33 @@ final class MediaIngestCoordinatorTests: XCTestCase {
     }
 }
 
+// MARK: - Private test doubles
+
+private struct StubMediaWriter: ProjectMediaWriteGateway {
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "Media/UserMedia/\(filename)", mediaKind: mediaKind), URL(fileURLWithPath: "/tmp/\(filename)"))
+    }
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {}
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
+}
+
+private struct StoreBackedWriter: ProjectMediaWriteGateway {
+    let store: ProjectStore
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        try store.saveBackgroundImage(from: preparedFileURL)
+    }
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        try store.saveUserMedia(from: fileURL, mediaKind: mediaKind, filename: filename)
+    }
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {
+        try store.deleteMediaFile(mediaRef)
+    }
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
+}
+
 // MARK: - EditorReducer Scene Existence + Routing Tests
 
 /// Tests that the full ingest routing chain handles scene lifecycle correctly.
@@ -315,7 +348,7 @@ final class ControllerIngestRoutingTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeDraft(sceneDurations: [TimeUs]) -> ProjectDraft {
-        var draft = ProjectDraft.create(for: "test-template")
+        var draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         var timeline = CanonicalTimeline.empty()
         var payloads: [UUID: TimelinePayload] = [:]
 
@@ -463,8 +496,8 @@ final class ControllerIngestRoutingTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["b1"]?.mediaRef,
-            MediaRef.file("new.jpg")
+            result.state.draft.sceneInstanceStates[sceneId]?.mediaSlotsByBlockId?["b1"]?.mediaRef.storagePath,
+            "new.jpg"
         )
     }
 }

@@ -32,6 +32,9 @@ jobs:
           cd AnimiApp
           xcodegen generate
 
+      - name: Verify Module Boundary
+        run: Scripts/verify_module_boundary.sh
+
       - name: Build TVECore
         run: |
           cd TVECore
@@ -55,17 +58,22 @@ jobs:
             --skip "testAnim1_frame0_opacityIsZero" \
             --skip "testAnim1_frame15_opacityIsMidpoint"
 
+      - name: Test AnimiApp
+        run: Scripts/run_animiapp_tests.sh
+
       - name: Download Metal Toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Build iOS App
         run: |
+          DESTINATION="$(Scripts/run_animiapp_tests.sh --print-destination)"
           xcodebuild build \
             -project AnimiApp/AnimiApp.xcodeproj \
             -scheme AnimiApp \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "$DESTINATION" \
             -configuration Debug \
             -derivedDataPath DerivedDataCI \
+            CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
 

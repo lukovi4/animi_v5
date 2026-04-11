@@ -23,7 +23,9 @@ final class BackgroundTextureServiceTests: XCTestCase {
         let service = BackgroundTextureService(
             textureProvider: provider,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: ProjectStore(),
+            mediaWriter: StubMediaWriter()
         )
 
         let (mediaRef, persistedURL) = try await service.persistImage(from: tempURL)
@@ -33,7 +35,7 @@ final class BackgroundTextureServiceTests: XCTestCase {
         // Extension is .jpg
         XCTAssertEqual(persistedURL.pathExtension, "jpg")
         // MediaRef path contains background directory
-        XCTAssertTrue(mediaRef.id.contains("Background"), "MediaRef path should include Background directory")
+        XCTAssertTrue(mediaRef.storagePath.contains("Background"), "MediaRef path should include Background directory")
         // MediaRef kind is photo
         XCTAssertEqual(mediaRef.mediaKind, .photo)
 
@@ -55,7 +57,9 @@ final class BackgroundTextureServiceTests: XCTestCase {
         let service = BackgroundTextureService(
             textureProvider: provider,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: ProjectStore(),
+            mediaWriter: StubMediaWriter()
         )
 
         let (_, persistedURL) = try await service.persistImage(from: tempURL)
@@ -89,14 +93,16 @@ final class BackgroundTextureServiceTests: XCTestCase {
         let service = BackgroundTextureService(
             textureProvider: provider,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: ProjectStore(),
+            mediaWriter: StubMediaWriter()
         )
 
         let (mediaRef, persistedURL) = try await service.persistImage(from: tempURL)
         defer { try? FileManager.default.removeItem(at: persistedURL) }
 
         let slotKey = "bg/test/region"
-        try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef)
+        try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef, assetRegistry: ProjectAssetRegistry())
 
         XCTAssertTrue(service.isLoaded(slotKey), "Slot key should be tracked after load")
         XCTAssertTrue(service.allLoadedSlotKeys.contains(slotKey))
@@ -113,7 +119,9 @@ final class BackgroundTextureServiceTests: XCTestCase {
         let service = BackgroundTextureService(
             textureProvider: provider,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: ProjectStore(),
+            mediaWriter: StubMediaWriter()
         )
 
         // Create a MediaRef pointing to a nonexistent file
@@ -121,7 +129,7 @@ final class BackgroundTextureServiceTests: XCTestCase {
         let slotKey = "bg/test/missing"
 
         // Should NOT throw — just log and return
-        try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef)
+        try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef, assetRegistry: ProjectAssetRegistry())
 
         XCTAssertFalse(service.isLoaded(slotKey), "Slot key should NOT be tracked for missing file")
         XCTAssertNil(provider.texture(for: slotKey), "No texture should be injected for missing file")
@@ -142,7 +150,9 @@ final class BackgroundTextureServiceTests: XCTestCase {
         let service = BackgroundTextureService(
             textureProvider: provider,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: ProjectStore(),
+            mediaWriter: StubMediaWriter()
         )
 
         // Persist a test image to get a valid MediaRef
@@ -158,7 +168,7 @@ final class BackgroundTextureServiceTests: XCTestCase {
             source: .solid(colorHex: "#FF0000")
         )
 
-        let loadedKeys = await service.preloadTextures(from: override, presetId: "test_preset")
+        let loadedKeys = await service.preloadTextures(from: override, presetId: "test_preset", assetRegistry: ProjectAssetRegistry())
 
         // Only the image region should have been loaded
         XCTAssertEqual(loadedKeys.count, 1, "Only image regions should be preloaded")
@@ -255,7 +265,7 @@ final class BackgroundTextureServiceTests: XCTestCase {
             XCTFail("Region override should be image after setImage")
             return
         }
-        XCTAssertEqual(imageOverride.mediaRef.id, mediaRef.id)
+        XCTAssertEqual(imageOverride.mediaRef.storagePath, mediaRef.storagePath)
     }
 
     // MARK: - Helpers
@@ -299,6 +309,23 @@ final class BackgroundTextureServiceTests: XCTestCase {
 }
 
 // MARK: - Test Helpers
+
+/// Minimal ProjectMediaWriteGateway stub that delegates to ProjectStore() for background tests.
+private struct StubMediaWriter: ProjectMediaWriteGateway {
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        try ProjectStore().saveBackgroundImage(from: preparedFileURL)
+    }
+
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        try ProjectStore().saveUserMedia(from: fileURL, mediaKind: mediaKind, filename: filename)
+    }
+
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {
+        try ProjectStore().deleteMediaFile(mediaRef)
+    }
+
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
+}
 
 /// Spy delegate for BackgroundEditorViewController tests.
 @MainActor

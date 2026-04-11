@@ -183,14 +183,16 @@ final class SceneTypeResourcesCacheProviderSplitTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         let runtimeB = SceneInstanceRuntime(
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // Base providers are the SAME object (shared via Resources)
@@ -220,14 +222,16 @@ final class SceneTypeResourcesCacheProviderSplitTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         let runtimeB = SceneInstanceRuntime(
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         let textureA = try XCTUnwrap(makeTexture(label: "media_A"))

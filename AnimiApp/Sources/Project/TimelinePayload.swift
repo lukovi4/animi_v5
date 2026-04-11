@@ -101,8 +101,8 @@ public enum AudioAssetRef: Codable, Equatable, Sendable {
     /// Bundled sound effect by ID.
     case bundled(id: String)
 
-    /// Imported audio file (relative path under project folder).
-    case imported(relativePath: String)
+    /// Imported audio file identified by logical asset ID.
+    case imported(assetId: ProjectAssetID)
 }
 
 // MARK: - Sticker Payload

@@ -362,7 +362,11 @@ public final class VideoExporter: @unchecked Sendable {
 
     // MARK: - Init
 
-    public init() {}
+    let mediaLocator: any ProjectMediaLocator
+
+    init(mediaLocator: any ProjectMediaLocator) {
+        self.mediaLocator = mediaLocator
+    }
 
     // MARK: - Export-Owned Render Context
 
@@ -459,6 +463,24 @@ public final class VideoExporter: @unchecked Sendable {
         try TransitionCompositor(device: device, colorPixelFormat: .bgra8Unorm)
     }
 
+    /// Pre-resolves background media URLs from an ExportBackgroundSnapshot via
+    /// the registry-backed media locator. Called in async context before
+    /// dispatching to the sync exportQueue. Registry snapshot is value-passed
+    /// by the caller — the exporter holds no current-project state.
+    private func resolveBackgroundURLs(
+        from snapshot: ExportBackgroundSnapshot?,
+        registry: ProjectAssetRegistry
+    ) async -> [MediaRef: URL] {
+        guard let snapshot else { return [:] }
+        var resolved: [MediaRef: URL] = [:]
+        for ref in snapshot.regionRefs {
+            if let url = try? await mediaLocator.absoluteURL(for: ref.mediaRef, registry: registry) {
+                resolved[ref.mediaRef] = url
+            }
+        }
+        return resolved
+    }
+
     // MARK: - Public API
 
     /// Exports a compiled scene to video.
@@ -487,10 +509,11 @@ public final class VideoExporter: @unchecked Sendable {
         budget: ExportResourceBudget = .default,
         mediaSnapshot: ExportMediaSnapshot? = nil,
         backgroundSnapshot: ExportBackgroundSnapshot? = nil,
+        assetRegistry: ProjectAssetRegistry = ProjectAssetRegistry(),
         onFinishing: (() -> Void)? = nil,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
-    ) {
+    ) async {
         let session = ExportSession(completion: completion)
         setActiveSession(session)
 
@@ -545,9 +568,12 @@ public final class VideoExporter: @unchecked Sendable {
             budget: budget
         )
 
+        // Pre-resolve background media URLs in async context before dispatching to sync queue
+        let resolvedBgURLs = await resolveBackgroundURLs(from: backgroundSnapshot, registry: assetRegistry)
+
         // Run export on background queue
         let allAssetIds = Set(compiledScene.mergedAssetIndex.basenameById.keys)
-        exportQueue.async { [self, workItem, session, allAssetIds] in
+        exportQueue.async { [self, workItem, session, allAssetIds, resolvedBgURLs] in
             // Warm all scene assets (unified API — same behavior as old preloadAll)
             workItem.textureProvider.warm(assetIds: allAssetIds, commandQueue: workItem.renderer.commandQueue)
 
@@ -577,12 +603,11 @@ public final class VideoExporter: @unchecked Sendable {
                 }
             }
 
-            // Load background textures on export queue
+            // Load background textures on export queue (URLs pre-resolved above)
             if let bgSnapshot = workItem.backgroundSnapshot {
                 let commandQueue = workItem.renderer.commandQueue
-                let projectStore = ProjectStore.shared
                 for ref in bgSnapshot.regionRefs {
-                    if let url = try? projectStore.absoluteURL(for: ref.mediaRef) {
+                    if let url = resolvedBgURLs[ref.mediaRef] {
                         if let texture = try? DownsampledImageLoader.loadTexture(
                             from: url,
                             device: commandQueue.device,
@@ -929,10 +954,15 @@ public final class VideoExporter: @unchecked Sendable {
         settings: TimelineExportSettings,
         budget: ExportResourceBudget = .default,
         renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
+        assetRegistry: ProjectAssetRegistry? = nil,
         onFinishing: (() -> Void)? = nil,
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
+        // If caller didn't pass an explicit registry, use the engine's
+        // `currentAssetRegistry` (value-passed at `setTimeline` time). This
+        // keeps the registry instance-scoped; no global seam.
+        let effectiveRegistry = assetRegistry ?? engine.currentAssetRegistry
         let exportSession = ExportSession(completion: completion)
         setActiveSession(exportSession)
 
@@ -1001,13 +1031,16 @@ public final class VideoExporter: @unchecked Sendable {
                 renderDiagnosticsSink: renderDiagnosticsSink
             )
 
-            self.exportQueue.async { [self, workItem, exportSession] in
+            // Pre-resolve background media URLs in async context before dispatching to sync queue
+            let resolvedBgURLs = await self.resolveBackgroundURLs(from: backgroundSnapshot, registry: effectiveRegistry)
+
+            self.exportQueue.async { [self, workItem, exportSession, resolvedBgURLs] in
                 // Load background textures on export queue (off MainActor)
                 let exportBackgroundProvider = ThreadSafeInMemoryTextureProvider()
                 if let bgSnapshot = workItem.backgroundSnapshot {
                     let commandQueue = workItem.renderer.commandQueue
                     for ref in bgSnapshot.regionRefs {
-                        if let url = try? ProjectStore.shared.absoluteURL(for: ref.mediaRef),
+                        if let url = resolvedBgURLs[ref.mediaRef],
                            let texture = try? DownsampledImageLoader.loadTexture(
                                from: url,
                                device: commandQueue.device,

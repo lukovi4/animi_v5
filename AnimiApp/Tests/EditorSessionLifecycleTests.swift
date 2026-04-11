@@ -8,9 +8,9 @@ final class EditorSessionLifecycleTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeDeps(
-        saveActiveDraft: @escaping (ActiveDraftSlot) throws -> Void = { _ in },
-        deleteActiveDraft: @escaping () throws -> Void = {},
-        materializeSavedProject: @escaping (inout ActiveDraftSlot) throws -> Void = { _ in }
+        saveActiveDraft: @escaping (ActiveDraftSlot) async throws -> Void = { _ in },
+        deleteActiveDraft: @escaping () async throws -> Void = {},
+        materializeSavedProject: @escaping (ActiveDraftSlot) async throws -> ActiveDraftSlot = { $0 }
     ) -> EditorSessionDependencies {
         EditorSessionDependencies(
             saveActiveDraft: saveActiveDraft,
@@ -18,6 +18,8 @@ final class EditorSessionLifecycleTests: XCTestCase {
             deleteActiveDraft: deleteActiveDraft,
             loadSavedProject: { _ in nil },
             materializeSavedProject: materializeSavedProject,
+            mediaLocator: StubMediaLocator(),
+            mediaWriter: StubMediaWriter(),
             loadSceneLibrary: { Self.stubSceneLibrary() },
             sceneTypeDefaults: { _, _ in
                 [SceneTypeDefault(sceneTypeId: "scene_1", baseDurationUs: 3_000_000)]
@@ -40,9 +42,9 @@ final class EditorSessionLifecycleTests: XCTestCase {
     }
 
     private func makeBootstrappedSession(
-        saveActiveDraft: @escaping (ActiveDraftSlot) throws -> Void = { _ in },
-        deleteActiveDraft: @escaping () throws -> Void = {},
-        materializeSavedProject: @escaping (inout ActiveDraftSlot) throws -> Void = { _ in }
+        saveActiveDraft: @escaping (ActiveDraftSlot) async throws -> Void = { _ in },
+        deleteActiveDraft: @escaping () async throws -> Void = {},
+        materializeSavedProject: @escaping (ActiveDraftSlot) async throws -> ActiveDraftSlot = { $0 }
     ) async -> EditorSession {
         let deps = makeDeps(
             saveActiveDraft: saveActiveDraft,
@@ -85,7 +87,7 @@ final class EditorSessionLifecycleTests: XCTestCase {
 
         // 3. Checkpoint (autosave)
         let initialSaves = saveCalls
-        let saved = session.persistCheckpointIfNeeded()
+        let saved = await session.persistCheckpointIfNeeded()
         XCTAssertTrue(saved)
         XCTAssertEqual(saveCalls, initialSaves + 1)
 
@@ -93,14 +95,30 @@ final class EditorSessionLifecycleTests: XCTestCase {
         XCTAssertEqual(session.requestClose(), .needsUserDecision)
 
         // 5. Save and close
-        XCTAssertNoThrow(try session.executeSaveAndClose())
+        try! await session.executeSaveAndClose()
     }
 
     func testBackgroundPresetProvider_exposedFromDeps() async {
         let session = await makeBootstrappedSession()
-        // Just verify it doesn't crash — the provider is accessible
         XCTAssertEqual(session.backgroundPresetProvider.count, 0)
     }
+}
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/stub")
+    }
+}
+
+private struct StubMediaWriter: ProjectMediaWriteGateway {
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {}
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
 }
 
 private struct StubPresetProvider: BackgroundPresetProviding {

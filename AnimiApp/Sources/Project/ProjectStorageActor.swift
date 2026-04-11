@@ -65,8 +65,16 @@ actor ProjectStorageActor: ProjectPersistenceGateway, ProjectMediaLocator, Proje
 
     // MARK: - ProjectMediaLocator
 
-    func absoluteURL(for mediaRef: MediaRef) throws -> URL {
-        try media.absoluteURL(for: mediaRef)
+    /// Canonical registry-backed resolver. Instance-scoped — the actor holds
+    /// NO current-project state; the caller passes the registry snapshot.
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) throws -> URL {
+        try media.absoluteURL(for: mediaRef, registry: registry)
+    }
+
+    /// Observable fallback counter (forwards the inner store's counter).
+    /// Tests assert this stays zero on happy-path production flows.
+    var legacyFallbackHits: Int {
+        media.legacyFallbackHits
     }
 
     // MARK: - ProjectMediaWriteGateway
@@ -75,8 +83,83 @@ actor ProjectStorageActor: ProjectPersistenceGateway, ProjectMediaLocator, Proje
         try media.saveBackgroundImage(from: preparedFileURL)
     }
 
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) throws -> (MediaRef, URL) {
+        try media.saveUserMedia(from: fileURL, mediaKind: mediaKind, filename: filename)
+    }
+
     func deleteMediaFile(_ mediaRef: MediaRef) throws {
         try media.deleteMediaFile(mediaRef)
+    }
+
+    // MARK: - Duplicate Assets (PR5 storage-level foundation)
+
+    /// Copies every asset referenced by `sourceDraft` to new files with fresh
+    /// `ProjectAssetID`s, rebinds every `MediaRef` in the returned draft, and
+    /// rebuilds the draft's `assetRegistry` to contain only the new descriptors.
+    ///
+    /// - The returned draft has a new `id` (UUID) distinct from the source.
+    /// - The returned draft shares zero asset IDs and zero storage paths with
+    ///   the source draft.
+    /// - Source files remain on disk untouched.
+    ///
+    /// No UI is wired in PR5; this is the storage-level foundation for the
+    /// PR7 "Duplicate project" action.
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) throws -> ProjectDraft {
+        let (newRegistry, idRewrite, pathRewrite) = try media.duplicateAssets(inDraft: sourceDraft)
+
+        // Rebind a local mutable copy of the source draft.
+        var newDraft = sourceDraft
+        newDraft.id = UUID()
+        newDraft.assetRegistry = newRegistry
+        newDraft.createdAt = Date()
+        newDraft.updatedAt = Date()
+
+        // Rewrite background regions.
+        var newRegions = newDraft.background.regions
+        for (regionId, region) in newDraft.background.regions {
+            guard case .image(var imageOverride) = region.source else { continue }
+            let oldRef = imageOverride.mediaRef
+            let newAssetId = idRewrite[oldRef.assetId] ?? oldRef.assetId
+            let newStoragePath = pathRewrite[oldRef.storagePath]
+                ?? newRegistry.storagePath(for: newAssetId)
+                ?? oldRef.storagePath
+            imageOverride.mediaRef = MediaRef(
+                storagePath: newStoragePath,
+                mediaKind: oldRef.mediaKind,
+                assetId: newAssetId
+            )
+            var newRegion = region
+            newRegion.source = .image(imageOverride)
+            newRegions[regionId] = newRegion
+        }
+        newDraft.background.regions = newRegions
+
+        // Rewrite scene instance slot media refs.
+        var newSceneStates = newDraft.sceneInstanceStates
+        for (instanceId, sceneState) in newDraft.sceneInstanceStates {
+            guard let slots = sceneState.mediaSlotsByBlockId else { continue }
+            var newSlots = slots
+            for (blockId, slot) in slots {
+                let oldRef = slot.mediaRef
+                let newAssetId = idRewrite[oldRef.assetId] ?? oldRef.assetId
+                let newStoragePath = pathRewrite[oldRef.storagePath]
+                    ?? newRegistry.storagePath(for: newAssetId)
+                    ?? oldRef.storagePath
+                var newSlot = slot
+                newSlot.mediaRef = MediaRef(
+                    storagePath: newStoragePath,
+                    mediaKind: oldRef.mediaKind,
+                    assetId: newAssetId
+                )
+                newSlots[blockId] = newSlot
+            }
+            var newState = sceneState
+            newState.mediaSlotsByBlockId = newSlots
+            newSceneStates[instanceId] = newState
+        }
+        newDraft.sceneInstanceStates = newSceneStates
+
+        return newDraft
     }
 
     // MARK: - GC Scheduling (actor-bound, replaces Task.detached)

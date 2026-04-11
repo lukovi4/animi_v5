@@ -89,6 +89,29 @@ public final class EditorStore {
         self.undoStack = UndoStack()
     }
 
+    // MARK: - Bookkeeping Mutation (non-dirtying)
+
+    /// Non-dirtying draft mutation for pure bookkeeping operations like
+    /// `ProjectAssetRegistry.register` / `unregister`.
+    ///
+    /// Contract:
+    /// - Mutates `state.draft` in place via the given closure.
+    /// - Does NOT push an undo snapshot.
+    /// - Does NOT emit any store callbacks (`onTimelineChanged`,
+    ///   `onSceneStateChanged`, `onMediaSlotChanged`, etc.).
+    /// - Does NOT mark the dirty baseline as mutated — the next semantic
+    ///   dispatch is what writes the draft (including the updated registry)
+    ///   to disk.
+    ///
+    /// Used exclusively by `EditorSession.registerAssetBookkeeping(_:)` /
+    /// `unregisterAssetBookkeeping(_:)`. Do not widen access — reducer-level
+    /// mutations must always go through `dispatch(_:)`.
+    internal func mutateCurrentDraftForBookkeeping(_ block: (inout ProjectDraft) -> Void) {
+        var draft = state.draft
+        block(&draft)
+        state.draft = draft
+    }
+
     // MARK: - Dispatch
 
     /// Dispatches an action to update state.

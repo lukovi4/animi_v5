@@ -135,7 +135,7 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         }
 
         // Create a test video file that ProjectStore can resolve
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         testMediaRelativePath = "Media/TestRestore/test_\(UUID().uuidString).mp4"
         testVideoURL = projectsDir.appendingPathComponent(testMediaRelativePath)
         try FileManager.default.createDirectory(
@@ -165,7 +165,19 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
 
     /// Builds a MediaRef that points to the test video via ProjectStore.
     private func makeVideoMediaRef() -> MediaRef {
-        MediaRef(kind: .file, id: testMediaRelativePath, mediaKind: .video)
+        MediaRef(storagePath: testMediaRelativePath, mediaKind: .video)
+    }
+
+    /// Builds a `ResolvedMediaMap` by path-resolving each slot's `mediaRef`
+    /// against the real projects directory. Replaces the old
+    /// `makeResolveURL` closure.
+    private func makeResolvedMap(for slots: [String: SceneMediaSlot]) -> ResolvedMediaMap {
+        let projectsDir = try! ProjectStore().projectsDirectoryURL()
+        var map: [ProjectAssetID: URL] = [:]
+        for (_, slot) in slots {
+            map[slot.mediaRef.assetId] = projectsDir.appendingPathComponent(slot.mediaRef.storagePath)
+        }
+        return ResolvedMediaMap(urlsByAssetId: map)
     }
 
     // MARK: - Integration Tests (real MediaRestoreCoordinator.restore() path)
@@ -185,7 +197,8 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
 
         MediaRestoreCoordinator.restore(
             slots: slots,
-            to: sut
+            to: sut,
+            resolved: makeResolvedMap(for: slots)
         )
 
         // Wait for async poster extraction to complete
@@ -212,7 +225,8 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
 
         MediaRestoreCoordinator.restore(
             slots: slots,
-            to: sut
+            to: sut,
+            resolved: makeResolvedMap(for: slots)
         )
 
         // Wait for any async processing
@@ -232,7 +246,8 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
 
         MediaRestoreCoordinator.restore(
             slots: slots,
-            to: sut
+            to: sut,
+            resolved: makeResolvedMap(for: slots)
         )
 
         // Wait for async poster extraction

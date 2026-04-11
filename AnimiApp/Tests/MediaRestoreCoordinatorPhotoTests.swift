@@ -73,7 +73,7 @@ final class MediaRestoreCoordinatorPhotoTests: XCTestCase {
         )
 
         // Create a test photo file that ProjectStore can resolve
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         testMediaRelativePath = "Media/TestRestore/test_photo_\(UUID().uuidString).jpg"
         testPhotoURL = projectsDir.appendingPathComponent(testMediaRelativePath)
         try FileManager.default.createDirectory(
@@ -101,7 +101,20 @@ final class MediaRestoreCoordinatorPhotoTests: XCTestCase {
     // MARK: - Helpers
 
     private func makePhotoMediaRef() -> MediaRef {
-        MediaRef(kind: .file, id: testMediaRelativePath, mediaKind: .photo)
+        MediaRef(storagePath: testMediaRelativePath, mediaKind: .photo)
+    }
+
+    /// Builds a `ResolvedMediaMap` by path-resolving each slot's `mediaRef`
+    /// against the real projects directory. Mirrors the old
+    /// `makeResolveURL` closure but produces the new pre-resolved map that
+    /// `MediaRestoreCoordinator.restore` now requires.
+    private func makeResolvedMap(for slots: [String: SceneMediaSlot]) -> ResolvedMediaMap {
+        let projectsDir = try! ProjectStore().projectsDirectoryURL()
+        var map: [ProjectAssetID: URL] = [:]
+        for (_, slot) in slots {
+            map[slot.mediaRef.assetId] = projectsDir.appendingPathComponent(slot.mediaRef.storagePath)
+        }
+        return ResolvedMediaMap(urlsByAssetId: map)
     }
 
     private func createTestJPEG(at url: URL, width: Int, height: Int) throws {
@@ -149,7 +162,7 @@ final class MediaRestoreCoordinatorPhotoTests: XCTestCase {
             "block_p1": .photo(mediaRef: makePhotoMediaRef(), placement: .default(fitMode: .cover))
         ]
 
-        let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut)
+        let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut, resolved: makeResolvedMap(for: slots))
         XCTAssertEqual(restored, 1, "Should accept photo restore")
 
         // Wait for async texture load
@@ -164,13 +177,13 @@ final class MediaRestoreCoordinatorPhotoTests: XCTestCase {
     func test_restorePhoto_missingFile_fails() async throws {
         // Create a media ref pointing to a non-existent file
         let missingPath = "Media/TestRestore/nonexistent_\(UUID().uuidString).jpg"
-        let missingRef = MediaRef(kind: .file, id: missingPath, mediaKind: .photo)
+        let missingRef = MediaRef(storagePath: missingPath, mediaKind: .photo)
 
         let slots: [String: SceneMediaSlot] = [
             "block_p1": .photo(mediaRef: missingRef, placement: .default(fitMode: .cover))
         ]
 
-        let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut)
+        let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut, resolved: makeResolvedMap(for: slots))
         XCTAssertEqual(restored, 0, "Should not accept restore of missing file")
         XCTAssertTrue(sut.hasFailedMedia, "Should have failed media for missing file")
     }
@@ -184,7 +197,7 @@ final class MediaRestoreCoordinatorPhotoTests: XCTestCase {
             "block_p1": .photo(mediaRef: makePhotoMediaRef(), placement: .default(fitMode: .cover))
         ]
 
-        let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut)
+        let restored = MediaRestoreCoordinator.restore(slots: slots, to: sut, resolved: makeResolvedMap(for: slots))
         // setPhoto accepts (file exists), but async load will fail
         XCTAssertEqual(restored, 1, "Should accept (file exists)")
 

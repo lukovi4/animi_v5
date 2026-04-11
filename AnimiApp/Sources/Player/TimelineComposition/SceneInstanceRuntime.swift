@@ -35,6 +35,21 @@ protocol SceneMediaSyncing: AnyObject {
 
 extension UserMediaService: SceneMediaSyncing {}
 
+// MARK: - Stub Media Locator (Test Default)
+
+/// Minimal no-op `ProjectMediaLocator` used as the default for test inits of
+/// `SceneInstanceRuntime`. Throws on resolution so any accidental production
+/// use is loud.
+struct StubProjectMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        throw NSError(
+            domain: "StubProjectMediaLocator",
+            code: 0,
+            userInfo: [NSLocalizedDescriptionKey: "StubProjectMediaLocator must not be used in production paths"]
+        )
+    }
+}
+
 // MARK: - Test Configuration (Internal)
 
 /// TT-02: Configuration for preparation timing, used by test seam.
@@ -96,6 +111,12 @@ public final class SceneInstanceRuntime {
     /// TT-02: Timing config for preparation loop. Production by default.
     private let timingConfig: PreparationTimingConfig
 
+    /// Registry-backed media locator. Used to pre-resolve `MediaRef` → `URL`
+    /// into a `ResolvedMediaMap` before entering the synchronous apply path.
+    /// The locator holds no current-project state; the registry snapshot is
+    /// passed per-call from `applyState(_:assetRegistry:)`.
+    private let mediaLocator: any ProjectMediaLocator
+
     /// Diagnostics sink for runtime events (test-only, nil in production).
     internal var runtimeDiagnosticsSink: RuntimeDiagnosticsSink?
 
@@ -144,13 +165,15 @@ public final class SceneInstanceRuntime {
         sceneInstanceId: UUID,
         resources: SceneTypeResourcesCache.Resources,
         device: MTLDevice,
-        commandQueue: MTLCommandQueue
+        commandQueue: MTLCommandQueue,
+        mediaLocator: any ProjectMediaLocator
     ) {
         self.sceneInstanceId = sceneInstanceId
         self.sceneTypeId = resources.sceneTypeId
         self.resources = resources
         self.injectedMediaSyncing = nil
         self.timingConfig = .production
+        self.mediaLocator = mediaLocator
 
         // Create per-instance overlay provider
         self.overlayTextureProvider = InMemoryTextureProvider()
@@ -194,13 +217,15 @@ public final class SceneInstanceRuntime {
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
         mediaSyncing: SceneMediaSyncing,
-        timingConfig: PreparationTimingConfig = .production
+        timingConfig: PreparationTimingConfig = .production,
+        mediaLocator: any ProjectMediaLocator = StubProjectMediaLocator()
     ) {
         self.sceneInstanceId = sceneInstanceId
         self.sceneTypeId = resources.sceneTypeId
         self.resources = resources
         self.injectedMediaSyncing = mediaSyncing
         self.timingConfig = timingConfig
+        self.mediaLocator = mediaLocator
 
         // Create per-instance overlay provider
         self.overlayTextureProvider = InMemoryTextureProvider()
@@ -238,10 +263,11 @@ public final class SceneInstanceRuntime {
     }
 
     /// Re-resolves placement for a block after its media finishes loading.
+    /// URL-free fast path — uses `FastPathDependencies`.
     private func handleMediaReady(blockId: String) {
         guard let placement = appliedState?.mediaSlotsByBlockId?[blockId]?.asset.placement else { return }
 
-        let deps = SceneRuntimeStateApplier.Dependencies(
+        let deps = SceneRuntimeStateApplier.FastPathDependencies(
             scenePlayer: scenePlayer,
             userMediaService: userMediaService
         )
@@ -285,15 +311,29 @@ public final class SceneInstanceRuntime {
 
     /// Applies scene state to this instance.
     /// For full reload, call resetState() first.
-    /// - Parameter state: Scene state with variants, transforms, toggles, media assignments.
-    public func applyState(_ state: SceneState) async {
+    ///
+    /// - Parameters:
+    ///   - state: Scene state with variants, transforms, toggles, media assignments.
+    ///   - assetRegistry: Registry snapshot used to pre-resolve `MediaRef` → `URL`
+    ///     via the injected `mediaLocator`. Passed explicitly by the caller; the
+    ///     runtime holds no current-project state. Defaults to an empty registry
+    ///     so tests that don't exercise media resolution can keep calling the
+    ///     one-argument form.
+    public func applyState(_ state: SceneState, assetRegistry: ProjectAssetRegistry = ProjectAssetRegistry()) async {
         appliedState = state
 
-        // PR4: Delegate to SceneRuntimeStateApplier (canonical apply order).
-        // Note: hydration is handled by engine before state reaches runtime.
-        let deps = SceneRuntimeStateApplier.Dependencies(
+        // Pre-resolve media URLs on the async path so the synchronous applier
+        // never has to touch a locator / file store.
+        let resolved = await ResolvedMediaMapBuilder.build(
+            slots: state.mediaSlotsByBlockId,
+            locator: mediaLocator,
+            registry: assetRegistry
+        )
+
+        let deps = SceneRuntimeStateApplier.RestoreDependencies(
             scenePlayer: scenePlayer,
-            userMediaService: userMediaService
+            userMediaService: userMediaService,
+            resolvedMedia: resolved
         )
         let restoredCount = SceneRuntimeStateApplier.apply(state, deps: deps)
         runtimeDiagnosticsSink?.receive(.mediaRestore(instanceId: sceneInstanceId, restoredCount: restoredCount))
@@ -306,9 +346,9 @@ public final class SceneInstanceRuntime {
     /// Reloads state from scratch (reset + apply).
     /// Use this after undo/redo or when state needs full refresh.
     /// TT-02: No auto-prepare — caller controls readiness via startPreparingForPresentation.
-    public func reloadState(_ state: SceneState) async {
+    public func reloadState(_ state: SceneState, assetRegistry: ProjectAssetRegistry = ProjectAssetRegistry()) async {
         resetState()  // Sets readinessState = .created, cancels preparationTask
-        await applyState(state)
+        await applyState(state, assetRegistry: assetRegistry)
         // NO auto-prepare
     }
 

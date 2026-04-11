@@ -5,12 +5,18 @@ import Foundation
 /// Dependencies are assembled by `AppCompositionRoot` from its already-owned repositories.
 @MainActor
 struct EditorSessionDependencies {
-    // Persistence
-    var saveActiveDraft: (ActiveDraftSlot) throws -> Void
-    var loadActiveDraft: () -> ActiveDraftSlot?
-    var deleteActiveDraft: () throws -> Void
-    var loadSavedProject: (UUID) -> SavedProjectRecord?
-    var materializeSavedProject: (_ slot: inout ActiveDraftSlot) throws -> Void
+    // Persistence (all async — go through actor)
+    var saveActiveDraft: (ActiveDraftSlot) async throws -> Void
+    var loadActiveDraft: () async -> ActiveDraftSlot?
+    var deleteActiveDraft: () async throws -> Void
+    var loadSavedProject: (UUID) async -> SavedProjectRecord?
+    var materializeSavedProject: (ActiveDraftSlot) async throws -> ActiveDraftSlot
+
+    // Media I/O gateways (injected from storageActor).
+    // `mediaLocator` is the canonical registry-backed resolver — pass a
+    // registry snapshot explicitly per call.
+    var mediaLocator: any ProjectMediaLocator
+    var mediaWriter: any ProjectMediaWriteGateway
 
     // Content
     var loadSceneLibrary: () async throws -> SceneLibrarySnapshot

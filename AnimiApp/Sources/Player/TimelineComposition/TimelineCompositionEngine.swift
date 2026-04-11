@@ -51,6 +51,13 @@ public final class TimelineCompositionEngine {
     /// Scene states by instance ID.
     public private(set) var sceneStates: [UUID: SceneState] = [:]
 
+    /// Current project asset registry snapshot.
+    /// Updated by `setTimeline(...)`; passed into `SceneInstanceRuntime.applyState`
+    /// so the runtime can pre-resolve `MediaRef` → `URL` via the injected locator.
+    /// Stored here to match how `sceneStates` are already held; the engine does
+    /// NOT subscribe to any global provider.
+    public private(set) var currentAssetRegistry: ProjectAssetRegistry = ProjectAssetRegistry()
+
     /// Loaded scene runtimes by instance ID.
     private var instanceRuntimes: [UUID: SceneInstanceRuntime] = [:]
 
@@ -72,6 +79,8 @@ public final class TimelineCompositionEngine {
     /// PlayerViewController wires this to `refreshCurrentTimelineFrame()`.
     public var onNeedsRedraw: (() -> Void)?
 
+    /// Media locator for resolving MediaRef → URL in export path.
+    private let mediaLocator: any ProjectMediaLocator
 
     // MARK: - Init
 
@@ -79,22 +88,28 @@ public final class TimelineCompositionEngine {
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
         fps: Int = 30,
-        maxActiveDecoders: Int = 3
+        maxActiveDecoders: Int = 3,
+        mediaLocator: any ProjectMediaLocator
     ) {
         self.device = device
         self.commandQueue = commandQueue
         self.fps = fps
+        self.mediaLocator = mediaLocator
         self.budgetCoordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: maxActiveDecoders)
         self.resourcesCache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
         self.runtimeDiagnosticsSink = nil
         self.renderDiagnosticsSink = nil
-        // TT-02: Production factory
+        // Production factory: constructs per-instance runtime sharing the
+        // injected registry-backed `mediaLocator`. No raw `FileProjectMediaStore`
+        // construction; no current-project state held by the engine.
+        let sharedLocator = mediaLocator
         self.runtimeFactory = { instanceId, resources, dev, queue in
             SceneInstanceRuntime(
                 sceneInstanceId: instanceId,
                 resources: resources,
                 device: dev,
-                commandQueue: queue
+                commandQueue: queue,
+                mediaLocator: sharedLocator
             )
         }
     }
@@ -105,6 +120,7 @@ public final class TimelineCompositionEngine {
         commandQueue: MTLCommandQueue,
         fps: Int = 30,
         maxActiveDecoders: Int = 3,
+        mediaLocator: any ProjectMediaLocator,
         resourcesCache: SceneTypeResourcesCache,
         runtimeFactory: @escaping (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime,
         runtimeDiagnosticsSink: RuntimeDiagnosticsSink? = nil,
@@ -113,6 +129,7 @@ public final class TimelineCompositionEngine {
         self.device = device
         self.commandQueue = commandQueue
         self.fps = fps
+        self.mediaLocator = mediaLocator
         self.budgetCoordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: maxActiveDecoders)
         self.resourcesCache = resourcesCache
         self.runtimeFactory = runtimeFactory
@@ -128,12 +145,24 @@ public final class TimelineCompositionEngine {
         self.templateCanvas = canvas
     }
 
-    /// Sets the timeline and scene states.
-    /// Call this when timeline changes (scene add/remove/reorder).
+    /// Sets the timeline, scene states, and asset registry snapshot.
+    /// Call this when timeline changes (scene add/remove/reorder) or when the
+    /// asset registry updates (new ingest, unregister, etc.).
+    ///
+    /// The engine threads `assetRegistry` into
+    /// `SceneInstanceRuntime.applyState(_:assetRegistry:)` so that the runtime
+    /// can pre-resolve media URLs without holding any current-project state.
+    ///
+    /// The parameter defaults to `.init()` (empty) so tests that don't exercise
+    /// media resolution can keep calling the two-argument form. Production
+    /// call sites in `PlayerViewController` must pass the current draft's
+    /// registry explicitly (`session.state?.draft.assetRegistry ?? .init()`).
+    ///
     /// PR-C: Scene states are expected to be already hydrated at project-load time.
     public func setTimeline(
         _ timeline: CanonicalTimeline,
-        sceneStates: [UUID: SceneState]
+        sceneStates: [UUID: SceneState],
+        assetRegistry: ProjectAssetRegistry = ProjectAssetRegistry()
     ) {
         let previousSceneIds = Set(self.timeline?.sceneItems.map(\.id) ?? [])
         let newSceneIds = Set(timeline.sceneItems.map(\.id))
@@ -141,6 +170,7 @@ public final class TimelineCompositionEngine {
         self.timeline = timeline
 
         self.sceneStates = sceneStates
+        self.currentAssetRegistry = assetRegistry
 
         // Rebuild transition math
         self.transitionMath = TimelineTransitionMath(
@@ -166,9 +196,9 @@ public final class TimelineCompositionEngine {
     public func updateSceneState(_ state: SceneState, for instanceId: UUID) async {
         sceneStates[instanceId] = state
 
-        // If runtime already loaded, re-apply state
+        // If runtime already loaded, re-apply state with current registry snapshot.
         if let runtime = instanceRuntimes[instanceId] {
-            await runtime.reloadState(state)
+            await runtime.reloadState(state, assetRegistry: currentAssetRegistry)
             #if DEBUG
             print("[TimelineCompositionEngine] Re-applied state to loaded runtime: \(instanceId)")
             #endif
@@ -235,7 +265,9 @@ public final class TimelineCompositionEngine {
                 runtimeState.mediaSlotsByBlockId = slots
                 runtime.appliedState = runtimeState
             }
-            let deps = SceneRuntimeStateApplier.Dependencies(
+            // Placement is URL-free — fast path uses FastPathDependencies and
+            // never touches the media locator or file store.
+            let deps = SceneRuntimeStateApplier.FastPathDependencies(
                 scenePlayer: runtime.scenePlayer,
                 userMediaService: runtime.userMediaService
             )
@@ -612,9 +644,9 @@ public final class TimelineCompositionEngine {
         // Video selection persistence is handled by MediaIngestCoordinator (slot includes videoWindow).
         // No runtime → persistence callback needed in the new architecture.
 
-        // Apply state if available
+        // Apply state if available, threading the current registry snapshot.
         if let state = sceneStates[instanceId] {
-            await runtime.applyState(state)
+            await runtime.applyState(state, assetRegistry: currentAssetRegistry)
         }
 
         // TT-02: NO readiness wait here - caller controls via policy
@@ -1173,7 +1205,8 @@ public final class TimelineCompositionEngine {
             let mediaSnapshot = try await ExportMediaSnapshot.build(
                 compiledScene: compiled,
                 mediaSlots: mediaSlots,
-                projectStore: ProjectStore.shared,
+                mediaLocator: self.mediaLocator,
+                assetRegistry: self.currentAssetRegistry,
                 runtime: compiled.runtime
             )
 

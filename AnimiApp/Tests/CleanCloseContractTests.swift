@@ -13,7 +13,9 @@ final class CleanCloseContractTests: XCTestCase {
             loadActiveDraft: { nil },
             deleteActiveDraft: {},
             loadSavedProject: { _ in nil },
-            materializeSavedProject: { _ in },
+            materializeSavedProject: { $0 },
+            mediaLocator: StubMediaLocator(),
+            mediaWriter: StubMediaWriter(),
             loadSceneLibrary: { Self.stubSceneLibrary() },
             sceneTypeDefaults: { _, _ in
                 [SceneTypeDefault(sceneTypeId: "scene_1", baseDurationUs: 3_000_000)]
@@ -90,7 +92,9 @@ final class CleanCloseContractTests: XCTestCase {
             loadActiveDraft: { nil },
             deleteActiveDraft: {},
             loadSavedProject: { _ in nil },
-            materializeSavedProject: { _ in },
+            materializeSavedProject: { $0 },
+            mediaLocator: StubMediaLocator(),
+            mediaWriter: StubMediaWriter(),
             loadSceneLibrary: { Self.stubSceneLibrary() },
             sceneTypeDefaults: { _, _ in [] },
             loadTemplateCatalog: { .success(TemplateCatalogSnapshot(categories: [], templates: [])) },
@@ -101,6 +105,25 @@ final class CleanCloseContractTests: XCTestCase {
         XCTAssertEqual(session.requestClose(), .safeToClose)
     }
 }
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/stub")
+    }
+}
+
+private struct StubMediaWriter: ProjectMediaWriteGateway {
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {}
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
+}
+
+extension EditorCloseAction: Equatable {}
 
 private struct StubPresetProvider: BackgroundPresetProviding {
     func loadFromBundle() throws {}

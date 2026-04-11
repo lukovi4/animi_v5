@@ -82,7 +82,7 @@ final class ExportMediaSnapshotTests: XCTestCase {
     func test_visibleVideo_nilVideoWindow_throwsMissingVideoWindow() async throws {
         let (compiled, runtime) = makeMinimalRuntime()
 
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
         let videoURL = projectsDir.appendingPathComponent(relativePath)
         try await createMinimalVideoFile(at: videoURL)
@@ -91,7 +91,7 @@ final class ExportMediaSnapshotTests: XCTestCase {
         let mediaSlots: [String: SceneMediaSlot] = [
             "block1": SceneMediaSlot(
                 asset: SceneMediaAsset(
-                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                     placement: .defaultCover,
                     videoWindow: nil
                 )
@@ -102,7 +102,8 @@ final class ExportMediaSnapshotTests: XCTestCase {
             _ = try await ExportMediaSnapshot.build(
                 compiledScene: compiled,
                 mediaSlots: mediaSlots,
-                projectStore: ProjectStore.shared,
+                mediaLocator: ProjectStore(),
+                assetRegistry: ProjectAssetRegistry(),
                 runtime: runtime
             )
             XCTFail("Expected missingVideoWindow error")
@@ -119,7 +120,7 @@ final class ExportMediaSnapshotTests: XCTestCase {
     func test_visibleVideo_windowExceedsDuration_throwsInvalidVideoSelection() async throws {
         let (compiled, runtime) = makeMinimalRuntime()
 
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
         let videoURL = projectsDir.appendingPathComponent(relativePath)
         // Create a short video (~2 frames at 30fps ≈ 0.067s)
@@ -129,7 +130,7 @@ final class ExportMediaSnapshotTests: XCTestCase {
         // Set trimEnd far past actual duration
         let mediaSlots: [String: SceneMediaSlot] = [
             "block1": .video(
-                mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                 placement: .defaultCover,
                 videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 999.0)
             )
@@ -139,7 +140,8 @@ final class ExportMediaSnapshotTests: XCTestCase {
             _ = try await ExportMediaSnapshot.build(
                 compiledScene: compiled,
                 mediaSlots: mediaSlots,
-                projectStore: ProjectStore.shared,
+                mediaLocator: ProjectStore(),
+                assetRegistry: ProjectAssetRegistry(),
                 runtime: runtime
             )
             XCTFail("Expected invalidVideoSelection error")
@@ -156,7 +158,7 @@ final class ExportMediaSnapshotTests: XCTestCase {
     func test_hiddenVideoSlot_notInVideoRefs() async throws {
         let (compiled, runtime) = makeMinimalRuntime()
 
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
         let videoURL = projectsDir.appendingPathComponent(relativePath)
         try await createMinimalVideoFile(at: videoURL)
@@ -164,7 +166,7 @@ final class ExportMediaSnapshotTests: XCTestCase {
 
         let mediaSlots: [String: SceneMediaSlot] = [
             "block1": .video(
-                mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                 visibility: false,
                 placement: .defaultCover,
                 videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
@@ -174,7 +176,8 @@ final class ExportMediaSnapshotTests: XCTestCase {
         let snapshot = try await ExportMediaSnapshot.build(
             compiledScene: compiled,
             mediaSlots: mediaSlots,
-            projectStore: ProjectStore.shared,
+            mediaLocator: ProjectStore(),
+            assetRegistry: ProjectAssetRegistry(),
             runtime: runtime
         )
 
@@ -187,7 +190,7 @@ final class ExportMediaSnapshotTests: XCTestCase {
     func test_corruptVideoFile_throwsInvalidVideoSelection() async throws {
         let (compiled, runtime) = makeMinimalRuntime()
 
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/corrupt_\(UUID().uuidString).mp4"
         let corruptURL = projectsDir.appendingPathComponent(relativePath)
 
@@ -201,7 +204,7 @@ final class ExportMediaSnapshotTests: XCTestCase {
 
         let mediaSlots: [String: SceneMediaSlot] = [
             "block1": .video(
-                mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                 placement: .defaultCover,
                 videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
             )
@@ -211,7 +214,8 @@ final class ExportMediaSnapshotTests: XCTestCase {
             _ = try await ExportMediaSnapshot.build(
                 compiledScene: compiled,
                 mediaSlots: mediaSlots,
-                projectStore: ProjectStore.shared,
+                mediaLocator: ProjectStore(),
+                assetRegistry: ProjectAssetRegistry(),
                 runtime: runtime
             )
             XCTFail("Expected invalidVideoSelection error for corrupt video")

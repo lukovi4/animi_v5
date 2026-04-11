@@ -92,12 +92,23 @@ public final class MediaIngestCoordinator {
     /// Called when ingest completes successfully. Wire to EditorStore dispatch + runtime bind.
     public var onIngestComplete: ((IngestResult) -> Void)?
 
+    /// PR5 Phase E: Called on success **before** `onIngestComplete`, with the
+    /// fresh asset descriptor. The session wires this to
+    /// `registerAssetBookkeeping(_:)` so the project asset registry is
+    /// populated before any downstream apply path reads it.
+    ///
+    /// Contract: bookkeeping is non-dirtying and runs strictly ahead of
+    /// `onIngestComplete`, so when the reducer sees the ingest result and
+    /// dispatches `.setMediaSlot(...)`, the `session.state.draft.assetRegistry`
+    /// already contains the new descriptor.
+    public var onAssetPersisted: ((ProjectAssetDescriptor) -> Void)?
+
     /// Called when ingest status changes. Wire to UI for progress indicators.
     public var onStatusChanged: ((IngestSlotKey, IngestSlotStatus) -> Void)?
 
     // MARK: - Init
 
-    public init(assetStore: MediaAssetStore = MediaAssetStore()) {
+    public init(assetStore: MediaAssetStore) {
         self.assetStore = assetStore
     }
 
@@ -247,7 +258,7 @@ public final class MediaIngestCoordinator {
         blockId: String
     ) async throws -> (MediaRef, URL) {
         // Save original file directly — runtime uses PhotoProxyCache for display proxies
-        let (mediaRef, absoluteURL) = try assetStore.saveMedia(
+        let (mediaRef, absoluteURL) = try await assetStore.saveMedia(
             from: tempPickerURL,
             mediaKind: .photo,
             sceneInstanceId: sceneInstanceId,
@@ -268,16 +279,24 @@ public final class MediaIngestCoordinator {
         sceneInstanceId: UUID,
         blockId: String
     ) async throws -> (MediaRef, URL) {
-        try await PickerAssetAdapter.withVideoFileRepresentation(
+        // Copy to temp location synchronously inside the file representation callback,
+        // then persist asynchronously via the media writer gateway.
+        let tempURL: URL = try await PickerAssetAdapter.withVideoFileRepresentation(
             from: result
         ) { sourceURL in
-            try assetStore.saveMedia(
-                from: sourceURL,
-                mediaKind: .video,
-                sceneInstanceId: sceneInstanceId,
-                blockId: blockId
-            )
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(sourceURL.pathExtension)
+            try FileManager.default.copyItem(at: sourceURL, to: tmp)
+            return tmp
         }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        return try await assetStore.saveMedia(
+            from: tempURL,
+            mediaKind: .video,
+            sceneInstanceId: sceneInstanceId,
+            blockId: blockId
+        )
     }
 
     // MARK: - Off-Main Video Validation
@@ -358,6 +377,18 @@ public final class MediaIngestCoordinator {
     ) {
         updateStatus(key: key, status: .ready)
         ingestTasks.removeValue(forKey: key)
+
+        // PR5 Phase E: Register the freshly persisted asset BEFORE emitting
+        // the ingest result. This guarantees that any downstream code (the
+        // reducer, the apply path, etc.) sees the descriptor in the draft's
+        // registry by the time it touches `mediaRef.assetId`.
+        let descriptor = ProjectAssetDescriptor(
+            assetId: mediaRef.assetId,
+            mediaKind: mediaRef.mediaKind,
+            storagePath: mediaRef.storagePath
+        )
+        onAssetPersisted?(descriptor)
+
         let result = IngestResult(
             key: key,
             mediaRef: mediaRef,

@@ -8,9 +8,9 @@ final class SaveExportCleanSessionTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeBootstrappedSession(
-        saveActiveDraft: @escaping (ActiveDraftSlot) throws -> Void = { _ in },
-        deleteActiveDraft: @escaping () throws -> Void = {},
-        materializeSavedProject: @escaping (inout ActiveDraftSlot) throws -> Void = { _ in }
+        saveActiveDraft: @escaping (ActiveDraftSlot) async throws -> Void = { _ in },
+        deleteActiveDraft: @escaping () async throws -> Void = {},
+        materializeSavedProject: @escaping (ActiveDraftSlot) async throws -> ActiveDraftSlot = { $0 }
     ) async -> EditorSession {
         let deps = EditorSessionDependencies(
             saveActiveDraft: saveActiveDraft,
@@ -18,6 +18,8 @@ final class SaveExportCleanSessionTests: XCTestCase {
             deleteActiveDraft: deleteActiveDraft,
             loadSavedProject: { _ in nil },
             materializeSavedProject: materializeSavedProject,
+            mediaLocator: StubMediaLocator(),
+            mediaWriter: StubMediaWriter(),
             loadSceneLibrary: { Self.stubSceneLibrary() },
             sceneTypeDefaults: { _, _ in
                 [SceneTypeDefault(sceneTypeId: "scene_1", baseDurationUs: 3_000_000)]
@@ -47,14 +49,11 @@ final class SaveExportCleanSessionTests: XCTestCase {
     func testExportCommit_clearsDirtyState() async {
         let session = await makeBootstrappedSession()
 
-        // Mutate
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
         XCTAssertEqual(session.requestClose(), .needsUserDecision)
 
-        // Export commit
-        session.commitAfterExportSuccess()
+        await session.commitAfterExportSuccess()
 
-        // Now clean
         XCTAssertEqual(session.requestClose(), .safeToClose,
             "Export commit should clear dirty state")
     }
@@ -66,7 +65,7 @@ final class SaveExportCleanSessionTests: XCTestCase {
         )
 
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
-        session.commitAfterExportSuccess()
+        await session.commitAfterExportSuccess()
 
         XCTAssertTrue(deleteCalled, "Export commit should delete recovery slot")
     }
@@ -74,12 +73,10 @@ final class SaveExportCleanSessionTests: XCTestCase {
     func testExportCommit_thenMutate_dirtyAgain() async {
         let session = await makeBootstrappedSession()
 
-        // Mutate, export
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
-        session.commitAfterExportSuccess()
+        await session.commitAfterExportSuccess()
         XCTAssertEqual(session.requestClose(), .safeToClose)
 
-        // Mutate again
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
         XCTAssertEqual(session.requestClose(), .needsUserDecision,
             "New mutation after export should be dirty")
@@ -87,18 +84,35 @@ final class SaveExportCleanSessionTests: XCTestCase {
 
     // MARK: - Save And Close
 
-    func testSaveAndClose_materializesAndDeletesDraft() async {
+    func testSaveAndClose_materializesAndDeletesDraft() async throws {
         var materializeCalled = false
         var deleteCalled = false
         let session = await makeBootstrappedSession(
             deleteActiveDraft: { deleteCalled = true },
-            materializeSavedProject: { _ in materializeCalled = true }
+            materializeSavedProject: { slot in materializeCalled = true; return slot }
         )
 
-        XCTAssertNoThrow(try session.executeSaveAndClose())
+        try await session.executeSaveAndClose()
         XCTAssertTrue(materializeCalled)
         XCTAssertTrue(deleteCalled)
     }
+}
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/stub")
+    }
+}
+
+private struct StubMediaWriter: ProjectMediaWriteGateway {
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {}
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
 }
 
 private struct StubPresetProvider: BackgroundPresetProviding {

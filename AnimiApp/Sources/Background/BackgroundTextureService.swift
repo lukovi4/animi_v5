@@ -35,7 +35,8 @@ public final class BackgroundTextureService {
     private let textureProvider: MutableTextureProvider
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
-    private let projectStore: ProjectStore
+    private let mediaLocator: any ProjectMediaLocator
+    private let mediaWriter: any ProjectMediaWriteGateway
 
     /// Tracks all currently loaded slot keys for cleanup.
     private var loadedSlotKeys: Set<String> = []
@@ -48,17 +49,20 @@ public final class BackgroundTextureService {
     ///   - textureProvider: Provider for texture injection
     ///   - device: Metal device for texture creation
     ///   - commandQueue: Command queue for texture operations
-    ///   - projectStore: Store for resolving MediaRef paths
+    ///   - mediaLocator: Locator for resolving MediaRef to absolute URLs
+    ///   - mediaWriter: Writer for persisting and deleting media files
     public init(
         textureProvider: MutableTextureProvider,
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
-        projectStore: ProjectStore = .shared
+        mediaLocator: any ProjectMediaLocator,
+        mediaWriter: any ProjectMediaWriteGateway
     ) {
         self.textureProvider = textureProvider
         self.device = device
         self.commandQueue = commandQueue
-        self.projectStore = projectStore
+        self.mediaLocator = mediaLocator
+        self.mediaWriter = mediaWriter
     }
 
     // MARK: - Texture Loading
@@ -69,10 +73,18 @@ public final class BackgroundTextureService {
     /// - Parameters:
     ///   - slotKey: Texture slot key (e.g., "bg/wave_split/top")
     ///   - mediaRef: Reference to the image file
+    ///   - assetRegistry: Project asset registry snapshot — the caller passes
+    ///     the current draft's registry so the locator can resolve via
+    ///     `assetId` → descriptor → `storagePath`. The service holds no
+    ///     current-project state.
     /// - Throws: BackgroundTextureError if loading fails (except missing file)
-    public func loadTexture(slotKey: String, mediaRef: MediaRef) async throws {
-        // Resolve absolute path
-        let fileURL = try projectStore.absoluteURL(for: mediaRef)
+    public func loadTexture(
+        slotKey: String,
+        mediaRef: MediaRef,
+        assetRegistry: ProjectAssetRegistry
+    ) async throws {
+        // Resolve absolute path via registry-backed locator
+        let fileURL = try await mediaLocator.absoluteURL(for: mediaRef, registry: assetRegistry)
 
         // PR4: Missing file -> log + return (not throw), renderer will skip draw
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
@@ -197,7 +209,7 @@ public final class BackgroundTextureService {
     public func persistImage(from sourceFileURL: URL) async throws -> (MediaRef, URL) {
         do {
             return try await Self.prepareAndPersistBackground(
-                sourceFileURL: sourceFileURL, projectStore: projectStore
+                sourceFileURL: sourceFileURL, mediaWriter: mediaWriter
             )
         } catch {
             throw BackgroundTextureError.imagePersistFailed(error)
@@ -206,10 +218,10 @@ public final class BackgroundTextureService {
 
     // MARK: - File Cleanup
 
-    /// Deletes a persisted media file via the service's own project store.
+    /// Deletes a persisted media file via the injected media writer.
     /// Use for orphan cleanup when texture load fails after successful persist.
-    public func deleteMediaFile(_ mediaRef: MediaRef) throws {
-        try projectStore.deleteMediaFile(mediaRef)
+    public func deleteMediaFile(_ mediaRef: MediaRef) async throws {
+        try await mediaWriter.deleteMediaFile(mediaRef)
     }
 
     // MARK: - Preload
@@ -219,10 +231,14 @@ public final class BackgroundTextureService {
     /// - Parameters:
     ///   - override: Project background override with MediaRefs
     ///   - presetId: Current preset ID for slot key generation
+    ///   - assetRegistry: Project asset registry snapshot — value-passed by
+    ///     the caller so each texture load resolves via the registry-backed
+    ///     locator.
     /// - Returns: Set of slot keys that were successfully loaded
     public func preloadTextures(
         from override: ProjectBackgroundOverride,
-        presetId: String
+        presetId: String,
+        assetRegistry: ProjectAssetRegistry
     ) async -> Set<String> {
         var loadedKeys: Set<String> = []
 
@@ -234,7 +250,11 @@ public final class BackgroundTextureService {
                 )
 
                 do {
-                    try await loadTexture(slotKey: slotKey, mediaRef: imageOverride.mediaRef)
+                    try await loadTexture(
+                        slotKey: slotKey,
+                        mediaRef: imageOverride.mediaRef,
+                        assetRegistry: assetRegistry
+                    )
                     loadedKeys.insert(slotKey)
                 } catch {
                     #if DEBUG
@@ -273,16 +293,15 @@ public final class BackgroundTextureService {
         )
     }
 
-    /// Off-MainActor prepare + persist via ImageFilePreparePipeline + ProjectStore.
-    /// Pattern: MediaIngestCoordinator.prepareAndPersistPhoto (line 216)
+    /// Off-MainActor prepare + persist via ImageFilePreparePipeline + media writer.
     private static nonisolated func prepareAndPersistBackground(
         sourceFileURL: URL,
-        projectStore: ProjectStore
+        mediaWriter: any ProjectMediaWriteGateway
     ) async throws -> (MediaRef, URL) {
         let preparedURL = try ImageFilePreparePipeline.prepareJPEG(
             fileURL: sourceFileURL, maxDimension: 2048, jpegQuality: 0.9
         )
         defer { try? FileManager.default.removeItem(at: preparedURL) }
-        return try projectStore.saveBackgroundImage(from: preparedURL)
+        return try await mediaWriter.saveBackgroundImage(from: preparedURL)
     }
 }

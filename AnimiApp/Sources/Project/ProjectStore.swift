@@ -58,9 +58,8 @@ struct SavedProjectIndexEntry: Codable {
 
 /// Thin shim over `FileProjectPersistenceStore` + `FileProjectMediaStore`.
 ///
-/// `.shared` remains only for export/player/media composition-engine-level code
-/// that is explicitly deferred to PR 5 (`TimelineCompositionEngine`, `VideoExporter`,
-/// `ExportMediaSnapshot`). All feature/session/routing code goes through `ProjectStorageActor`.
+/// All production code goes through `ProjectStorageActor` for isolation.
+/// This class remains for test convenience (instantiate with `rootDirectoryURL:`).
 ///
 /// File structure:
 /// ```
@@ -75,10 +74,6 @@ struct SavedProjectIndexEntry: Codable {
 ///         └── <uuid>.jpg
 /// ```
 public final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
-
-    // MARK: - Singleton (PR 5 will remove — only for export/player/media code)
-
-    public static let shared = ProjectStore()
 
     // MARK: - Backing Stores
 
@@ -152,8 +147,22 @@ public final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
         try media.saveBackgroundImage(from: preparedFileURL)
     }
 
+    /// Canonical registry-backed locator (Phase B). Instance-scoped —
+    /// the caller passes the registry snapshot explicitly.
+    public func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) throws -> URL {
+        try media.absoluteURL(for: mediaRef, registry: registry)
+    }
+
+    /// Legacy sync path resolver (tests + one AppCompositionRoot call site that
+    /// Phase D will delete). Equivalent to the deprecated protocol wrapper —
+    /// forces the legacy `mediaRef.storagePath` fallback via empty registry.
+    @available(*, deprecated, message: "Pass a ProjectAssetRegistry snapshot explicitly")
     public func absoluteURL(for mediaRef: MediaRef) throws -> URL {
-        try media.absoluteURL(for: mediaRef)
+        try media.absoluteURL(for: mediaRef, registry: ProjectAssetRegistry())
+    }
+
+    public func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) throws -> (MediaRef, URL) {
+        try media.saveUserMedia(from: fileURL, mediaKind: mediaKind, filename: filename)
     }
 
     public func deleteMediaFile(_ mediaRef: MediaRef) throws {

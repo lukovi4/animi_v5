@@ -10,7 +10,7 @@ final class EditorReducerNormalizationTests: XCTestCase {
 
     /// Creates a test draft with specified scene durations.
     private func makeDraft(sceneDurations: [TimeUs]) -> ProjectDraft {
-        var draft = ProjectDraft.create(for: "test-template")
+        var draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
 
         var timeline = CanonicalTimeline.empty()
         var payloads: [UUID: TimelinePayload] = [:]

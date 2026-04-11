@@ -22,7 +22,7 @@ final class EditorStoreTimelinePreviewTests: XCTestCase {
         let commitCount = Box(0)
 
         // Load project first
-        let draft = ProjectDraft.create(for: "test-template")
+        let draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         store.dispatch(.loadProject(
             draft: draft,
             templateFPS: 30,

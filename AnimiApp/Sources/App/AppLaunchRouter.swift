@@ -16,15 +16,15 @@ private let logger = Logger(subsystem: "com.animi.app", category: "AppLaunchRout
 /// `AppCompositionRoot` holds a strong reference and nils it out after the choice.
 final class AppLaunchRouter {
 
-    private let hasActiveDraft: () -> Bool
-    private let clearActiveDraft: () throws -> Void
+    private let hasActiveDraft: () async -> Bool
+    private let clearActiveDraft: () async throws -> Void
     private let recoveryPrompt: RecoveryPromptCoordinator
     private let onOpenEditor: (EditorLaunchIntent) -> Void
     private let onDismiss: () -> Void
 
     init(
-        hasActiveDraft: @escaping () -> Bool,
-        clearActiveDraft: @escaping () throws -> Void,
+        hasActiveDraft: @escaping () async -> Bool,
+        clearActiveDraft: @escaping () async throws -> Void,
         recoveryPrompt: RecoveryPromptCoordinator = RecoveryPromptCoordinator(),
         onOpenEditor: @escaping (EditorLaunchIntent) -> Void,
         onDismiss: @escaping () -> Void = {}
@@ -38,22 +38,26 @@ final class AppLaunchRouter {
 
     /// Call once after the window is visible and the home VC is on screen.
     func handleLaunch(presenter: UIViewController) {
-        guard hasActiveDraft() else {
-            onDismiss()
-            return
-        }
+        Task { @MainActor in
+            guard await hasActiveDraft() else {
+                onDismiss()
+                return
+            }
 
-        recoveryPrompt.present(over: presenter) { [self] choice in
-            switch choice {
-            case .continueDraft:
-                self.onOpenEditor(.resumeDraft)
-            case .startOver:
-                do {
-                    try self.clearActiveDraft()
-                } catch {
-                    logger.error("[AppLaunchRouter] Failed to clear active draft on Start Over: \(error.localizedDescription, privacy: .public)")
+            recoveryPrompt.present(over: presenter) { [self] choice in
+                switch choice {
+                case .continueDraft:
+                    self.onOpenEditor(.resumeDraft)
+                case .startOver:
+                    Task { @MainActor in
+                        do {
+                            try await self.clearActiveDraft()
+                        } catch {
+                            logger.error("[AppLaunchRouter] Failed to clear active draft on Start Over: \(error.localizedDescription, privacy: .public)")
+                        }
+                        self.onDismiss()
+                    }
                 }
-                self.onDismiss()
             }
         }
     }

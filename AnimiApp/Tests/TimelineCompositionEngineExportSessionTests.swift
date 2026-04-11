@@ -111,6 +111,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -124,7 +125,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         )
 
         engine.setTemplateCanvas(CanvasConfig(width: 1080, height: 1920))
-        engine.setTimeline(timeline, sceneStates: sceneStates)
+        engine.setTimeline(timeline, sceneStates: sceneStates, assetRegistry: ProjectAssetRegistry())
 
         return engine
     }
@@ -275,7 +276,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             throw XCTSkip("Metal device not available")
         }
 
-        let engine = TimelineCompositionEngine(device: device, commandQueue: commandQueue)
+        let engine = TimelineCompositionEngine(device: device, commandQueue: commandQueue, mediaLocator: StubMediaLocator())
 
         do {
             _ = try await engine.buildExportSession()
@@ -302,13 +303,14 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { id, res, dev, queue in
-                SceneInstanceRuntime(sceneInstanceId: id, resources: res, device: dev, commandQueue: queue)
+                SceneInstanceRuntime(sceneInstanceId: id, resources: res, device: dev, commandQueue: queue, mediaLocator: StubProjectMediaLocator())
             }
         )
         // Set timeline but NOT templateCanvas
-        engine.setTimeline(timeline, sceneStates: [:])
+        engine.setTimeline(timeline, sceneStates: [:], assetRegistry: ProjectAssetRegistry())
 
         do {
             _ = try await engine.buildExportSession()
@@ -406,7 +408,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         }
 
         // Create a real video file in ProjectStore's directory
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
         let videoURL = projectsDir.appendingPathComponent(relativePath)
         try await createMinimalVideoFile(at: videoURL)
@@ -425,7 +427,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let state = SceneState(
             mediaSlotsByBlockId: [
                 "block_v1": .video(
-                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                     placement: .defaultCover,
                     videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: durationSeconds)
                 )
@@ -465,7 +467,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             throw XCTSkip("Metal device not available")
         }
 
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
         let videoURL = projectsDir.appendingPathComponent(relativePath)
         try await createMinimalVideoFile(at: videoURL)
@@ -479,7 +481,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             mediaSlotsByBlockId: [
                 "block_v1": SceneMediaSlot(
                     asset: SceneMediaAsset(
-                        mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                        mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                         placement: .defaultCover,
                         videoWindow: nil
                     )
@@ -515,7 +517,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             throw XCTSkip("Metal device not available")
         }
 
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
         let videoURL = projectsDir.appendingPathComponent(relativePath)
         try await createMinimalVideoFile(at: videoURL, durationFrames: 2, fps: 30)
@@ -528,7 +530,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let state = SceneState(
             mediaSlotsByBlockId: [
                 "block_v1": .video(
-                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                     placement: .defaultCover,
                     videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 999.0)
                 )
@@ -563,7 +565,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             throw XCTSkip("Metal device not available")
         }
 
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/video_\(UUID().uuidString).mp4"
         let videoURL = projectsDir.appendingPathComponent(relativePath)
         try await createMinimalVideoFile(at: videoURL)
@@ -576,7 +578,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let state = SceneState(
             mediaSlotsByBlockId: [
                 "block_v1": .video(
-                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                     visibility: false,
                     placement: .defaultCover,
                     videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
@@ -609,7 +611,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             throw XCTSkip("Metal device not available")
         }
 
-        let projectsDir = try ProjectStore.shared.projectsDirectoryURL()
+        let projectsDir = try ProjectStore().projectsDirectoryURL()
         let relativePath = "Media/TestVideo/corrupt_\(UUID().uuidString).mp4"
         let corruptURL = projectsDir.appendingPathComponent(relativePath)
 
@@ -627,7 +629,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let state = SceneState(
             mediaSlotsByBlockId: [
                 "block_v1": .video(
-                    mediaRef: MediaRef(kind: .file, id: relativePath, mediaKind: .video),
+                    mediaRef: MediaRef(storagePath: relativePath, mediaKind: .video),
                     placement: .defaultCover,
                     videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0)
                 )
@@ -653,5 +655,15 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
                 XCTFail("Expected invalidVideoSelection, got \(error)")
             }
         }
+    }
+}
+
+// MARK: - Test Stubs
+
+/// Minimal ProjectMediaLocator stub for tests that don't exercise URL resolution.
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        // Delegate to ProjectStore for tests that create real video files
+        try ProjectStore().absoluteURL(for: mediaRef, registry: registry)
     }
 }

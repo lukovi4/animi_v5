@@ -13,7 +13,9 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
             loadActiveDraft: { nil },
             deleteActiveDraft: {},
             loadSavedProject: { _ in nil },
-            materializeSavedProject: { _ in },
+            materializeSavedProject: { $0 },
+            mediaLocator: StubMediaLocator(),
+            mediaWriter: StubMediaWriter(),
             loadSceneLibrary: {
                 SceneLibrarySnapshot(
                     fps: 30,
@@ -66,7 +68,6 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
         let sceneA = UUID()
         session.updateMissingMedia(for: sceneA, failures: ["block_1", "block_2"])
         XCTAssertEqual(session.missingMediaSummary?.failedSlots.count, 2)
-        // User fixes block_1
         session.updateMissingMedia(for: sceneA, failures: ["block_2"])
         XCTAssertEqual(session.missingMediaSummary?.failedSlots.count, 1)
         XCTAssertFalse(session.missingMediaSummary!.isBlockFailed(sceneInstanceId: sceneA, blockId: "block_1"))
@@ -77,7 +78,6 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
         let sceneA = UUID(), sceneB = UUID()
         session.updateMissingMedia(for: sceneA, failures: ["block_1"])
         session.updateMissingMedia(for: sceneB, failures: ["block_2"])
-        // Fix sceneA
         session.updateMissingMedia(for: sceneA, failures: [])
         XCTAssertEqual(session.missingMediaSummary?.failedSlots.count, 1)
         XCTAssertTrue(session.missingMediaSummary!.isBlockFailed(sceneInstanceId: sceneB, blockId: "block_2"))
@@ -116,7 +116,6 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
         XCTAssertTrue(session.hasPendingMissingMediaNotice)
         session.markMissingMediaNoticePresented()
         XCTAssertFalse(session.hasPendingMissingMediaNotice)
-        // New detection after ack — should not re-emit
         session.updateMissingMedia(for: UUID(), failures: ["b2"])
         XCTAssertEqual(emitCount, 1, "Should not re-emit after ack")
     }
@@ -130,10 +129,8 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
         let session = await makeBootstrappedSession()
         var lastEmittedSummary: MissingMediaSummary?
         session.onOutput = { if case .missingMediaDetected(let s) = $0 { lastEmittedSummary = s } }
-        // First detection — emits output with 1 slot
         session.updateMissingMedia(for: UUID(), failures: ["b1"])
         XCTAssertEqual(lastEmittedSummary?.failedSlots.count, 1)
-        // Second detection — no re-emission, but live summary has 2 slots
         session.updateMissingMedia(for: UUID(), failures: ["b2"])
         XCTAssertEqual(session.missingMediaSummary?.failedSlots.count, 2,
                         "Live summary must reflect all accumulated failures, not just the first emission")
@@ -145,7 +142,6 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
         session.onOutput = { _ in }
         session.updateMissingMedia(for: sceneA, failures: ["b1"])
         XCTAssertTrue(session.hasPendingMissingMediaNotice)
-        // All failures resolved before controller gets to present
         session.updateMissingMedia(for: sceneA, failures: [])
         XCTAssertFalse(session.hasPendingMissingMediaNotice,
                         "Pending notice must be cleared when all failures are resolved")
@@ -157,12 +153,9 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
         session.onOutput = { _ in }
         session.updateMissingMedia(for: UUID(), failures: ["b1"])
         XCTAssertTrue(session.hasPendingMissingMediaNotice)
-        // Before ack: pending remains true, delivered remains false
         XCTAssertNotNil(session.missingMediaSummary)
-        // Simulate controller ack after successful present
         session.markMissingMediaNoticePresented()
         XCTAssertFalse(session.hasPendingMissingMediaNotice)
-        // After ack: new detections should not re-emit
         var emitCount = 0
         session.onOutput = { if case .missingMediaDetected = $0 { emitCount += 1 } }
         session.updateMissingMedia(for: UUID(), failures: ["b2"])
@@ -173,8 +166,8 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
         let session = await makeBootstrappedSession()
         session.updateMissingMedia(for: UUID(), failures: ["block_x"])
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
-        session.persistCheckpointIfNeeded()
-        session.commitAfterExportSuccess()
+        await session.persistCheckpointIfNeeded()
+        await session.commitAfterExportSuccess()
         XCTAssertNotNil(session.missingMediaSummary)
     }
 
@@ -193,6 +186,23 @@ final class MissingMediaSessionNoticeTests: XCTestCase {
             XCTFail("Expected missingMediaDetected output")
         }
     }
+}
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/stub")
+    }
+}
+
+private struct StubMediaWriter: ProjectMediaWriteGateway {
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {}
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
 }
 
 private struct StubPresetProvider: BackgroundPresetProviding {

@@ -79,19 +79,22 @@ public struct ExportMediaSnapshot: Sendable {
     /// Builds an ExportMediaSnapshot from persisted SceneMediaSlots.
     ///
     /// Source of truth: `editorStore.state.draft.sceneInstanceStates[instanceId].mediaSlotsByBlockId`
-    /// resolved via `ProjectStore.absoluteURL(for:)`.
+    /// resolved via the injected registry-backed `ProjectMediaLocator`.
     ///
     /// - Parameters:
     ///   - compiledScene: Compiled scene with asset index
     ///   - mediaSlots: Unified media slots (blockId -> SceneMediaSlot) from EditorStore
-    ///   - projectStore: Project store for URL resolution
+    ///   - mediaLocator: Registry-backed locator for URL resolution
+    ///   - assetRegistry: Project's asset registry snapshot, passed explicitly so
+    ///     export resolves via `assetId` → descriptor → `storagePath`.
     ///   - runtime: Scene runtime for block/variant binding info
     /// - Returns: Snapshot with resolved user media references
     /// - Throws: `ExportMediaError` if a visible media slot has missing/invalid data
-    public static func build(
+    static func build(
         compiledScene: CompiledScene,
         mediaSlots: [String: SceneMediaSlot],
-        projectStore: ProjectStore,
+        mediaLocator: any ProjectMediaLocator,
+        assetRegistry: ProjectAssetRegistry,
         runtime: SceneRuntime
     ) async throws -> ExportMediaSnapshot {
         var imageRefs: [ImageRef] = []
@@ -114,7 +117,7 @@ public struct ExportMediaSnapshot: Sendable {
 
             switch slot.mediaRef.mediaKind {
             case .photo:
-                guard let url = try? projectStore.absoluteURL(for: slot.mediaRef),
+                guard let url = try? await mediaLocator.absoluteURL(for: slot.mediaRef, registry: assetRegistry),
                       FileManager.default.fileExists(atPath: url.path) else {
                     let assetId = bindingAssetIds.first ?? "unknown"
                     throw ExportMediaError.missingPersistedPhoto(blockId: blockId, assetId: assetId)
@@ -129,7 +132,7 @@ public struct ExportMediaSnapshot: Sendable {
                 guard let videoWindow = slot.videoWindow else {
                     throw ExportMediaError.missingVideoWindow(blockId: blockId)
                 }
-                guard let url = try? projectStore.absoluteURL(for: slot.mediaRef),
+                guard let url = try? await mediaLocator.absoluteURL(for: slot.mediaRef, registry: assetRegistry),
                       FileManager.default.fileExists(atPath: url.path) else {
                     throw ExportMediaError.missingPersistedVideo(blockId: blockId)
                 }

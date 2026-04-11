@@ -23,7 +23,7 @@ final class EditorReducerTests: XCTestCase {
 
     /// Creates a test draft with specified scene durations.
     private func makeDraft(sceneDurations: [TimeUs]) -> ProjectDraft {
-        var draft = ProjectDraft.create(for: "test-template")
+        var draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
 
         // Build canonical timeline with scenes
         var timeline = CanonicalTimeline.empty()
@@ -80,7 +80,7 @@ final class EditorReducerTests: XCTestCase {
     /// Test: loadProject populates empty timeline from defaultSceneSequence.
     func testLoadProject_populatesFromDefaults() {
         // Given: empty draft and template defaults with 3 scenes
-        let draft = ProjectDraft.create(for: "test-template")
+        let draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         let defaults = makeDefaultSceneSequence(durations: [2_000_000, 3_000_000, 5_000_000])
 
         // When: reduce with loadProject
@@ -122,7 +122,7 @@ final class EditorReducerTests: XCTestCase {
     /// Test: loadProject enforces min duration for scenes from template defaults.
     func testLoadProject_enforcesMinDuration() {
         // Given: template defaults with scenes below min duration
-        let draft = ProjectDraft.create(for: "test-template")
+        let draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         let defaults = [
             SceneTypeDefault(sceneTypeId: "s1", baseDurationUs: 50_000), // Below min
             SceneTypeDefault(sceneTypeId: "s2", baseDurationUs: 200_000)
@@ -732,7 +732,7 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneB]?.layerToggles["block1"]?["toggle1"], true)
 
         XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneA2]?.variantOverrides["block1"], "variant_a2")
-        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneA2]?.mediaSlotsByBlockId?["block1"]?.mediaRef, MediaRef.file("media_a2.jpg"))
+        XCTAssertEqual(result.state.draft.sceneInstanceStates[sceneA2]?.mediaSlotsByBlockId?["block1"]?.mediaRef.storagePath, "media_a2.jpg")
 
         // Then: payloadIds preserved
         let payloadIds = result.state.sceneItems.map { $0.payloadId }
@@ -1011,7 +1011,7 @@ final class EditorReducerTests: XCTestCase {
         XCTAssertEqual(decoded.sceneInstanceStates.count, 2)
         XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.variantOverrides["block1"], "variant_a")
         XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.layerToggles["block1"]?["toggle1"], true)
-        XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.mediaSlotsByBlockId?["block1"]?.mediaRef, MediaRef.file("Media/test.jpg"))
+        XCTAssertEqual(decoded.sceneInstanceStates[scene1Id]?.mediaSlotsByBlockId?["block1"]?.mediaRef.storagePath, "Media/test.jpg")
         XCTAssertEqual(decoded.sceneInstanceStates[scene2Id]?.variantOverrides["block2"], "variant_b")
 
         // Then: overlay track preserved
@@ -1310,7 +1310,7 @@ final class EditorReducerTests: XCTestCase {
         let decoded = try decoder.decode(SceneState.self, from: data)
 
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_1"]?.visibility, true)
-        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_1"]?.mediaRef, MediaRef.file("Media/test.jpg"))
+        XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_1"]?.mediaRef.storagePath, "Media/test.jpg")
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.visibility, false)
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.trimStart, 1.0)
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block_2"]?.videoWindow?.trimEnd, 5.0)

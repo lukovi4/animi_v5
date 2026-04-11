@@ -90,6 +90,41 @@ final class EditorSession {
     /// Background preset provider — exposed for controller use.
     var backgroundPresetProvider: BackgroundPresetProviding { deps.backgroundPresetProvider }
 
+    /// Media locator — exposed for downstream injection (BackgroundTextureService, TCE, export).
+    var mediaLocator: any ProjectMediaLocator { deps.mediaLocator }
+
+    /// Media writer — exposed for downstream injection (BackgroundTextureService, MediaAssetStore).
+    var mediaWriter: any ProjectMediaWriteGateway { deps.mediaWriter }
+
+    // MARK: - Asset Registry Bookkeeping (non-dirtying)
+
+    /// Registers a newly ingested asset descriptor in the current draft's
+    /// `ProjectAssetRegistry`. Pure bookkeeping — does NOT mark the session
+    /// dirty, does NOT push an undo snapshot, does NOT emit store callbacks.
+    ///
+    /// The registered descriptor rides the next semantic dispatch's persist
+    /// path: when the next `saveActiveDraft` is invoked from a dirtying edit,
+    /// the draft (including the updated registry) is written to disk.
+    ///
+    /// After this call, `state?.draft.assetRegistry` reflects the new descriptor
+    /// so callers can re-read a fresh registry snapshot for downstream
+    /// operations like `BackgroundTextureService.loadTexture(...)`.
+    func registerAssetBookkeeping(_ descriptor: ProjectAssetDescriptor) {
+        store?.mutateCurrentDraftForBookkeeping { draft in
+            draft.assetRegistry.register(descriptor)
+        }
+    }
+
+    /// Removes an asset descriptor from the current draft's registry.
+    /// Non-dirtying bookkeeping. Caller is responsible for verifying that
+    /// the asset is no longer referenced by any slot / background region
+    /// (via `assetRegistry.assetIds(referencedBy:)`) before calling this.
+    func unregisterAssetBookkeeping(_ assetId: ProjectAssetID) {
+        store?.mutateCurrentDraftForBookkeeping { draft in
+            draft.assetRegistry.unregister(assetId)
+        }
+    }
+
     var onOutput: ((EditorSessionOutput) -> Void)?
 
     init(intent: EditorLaunchIntent, dependencies: EditorSessionDependencies) {
@@ -100,50 +135,49 @@ final class EditorSession {
     // MARK: - Bootstrap
 
     /// Resolves intent → templateId + draft + ActiveDraftSlot, loads content, emits result.
-    /// Extracted from PlayerViewController.loadEditorContent() lines 391–529.
+    /// Origin-aware: handles template, saved, resume, and blank project intents.
     func bootstrap() async {
         phase = .bootstrapping
 
-        // Step 1: Resolve templateId and draft from intent
-        let templateId: String
+        // Step 1: Resolve draft and slot from intent
+        let resolvedTemplateId: String?
         let draft: ProjectDraft
         let slot: ActiveDraftSlot
 
         switch intent {
         case .template(let tplId):
-            templateId = tplId
-            let newDraft = ProjectDraft.create(for: tplId)
+            let origin = ProjectOrigin.template(templateId: tplId)
+            let newDraft = ProjectDraft.create(origin: origin)
             slot = ActiveDraftSlot(
-                entryContext: .newFromTemplate(templateId: tplId),
-                sourceTemplateId: tplId,
+                entryContext: .newProject(origin: origin),
                 linkedSavedProjectId: nil,
                 draft: newDraft
             )
             do {
-                try deps.saveActiveDraft(slot)
+                try await deps.saveActiveDraft(slot)
             } catch {
                 logger.error("[EditorSession] Failed to save active draft: \(error)")
             }
             draft = newDraft
+            resolvedTemplateId = tplId
             logger.info("[EditorSession] New from template: \(tplId), draft: \(newDraft.id)")
 
         case .savedProject(let projectId):
-            guard let record = deps.loadSavedProject(projectId) else {
+            guard let record = await deps.loadSavedProject(projectId) else {
                 let msg = "Project load failed"
                 logger.error("[EditorSession] Cannot load saved project \(projectId)")
                 phase = .failed(msg)
                 onOutput?(.bootstrapFailed(msg))
                 return
             }
-            templateId = record.sourceTemplateId
+            resolvedTemplateId = record.draft.origin.templateId
             slot = ActiveDraftSlot(
                 entryContext: .openSavedProject(projectId: projectId),
-                sourceTemplateId: record.sourceTemplateId,
                 linkedSavedProjectId: projectId,
                 draft: record.draft
             )
             do {
-                try deps.saveActiveDraft(slot)
+                try await deps.saveActiveDraft(slot)
             } catch {
                 logger.error("[EditorSession] Failed to save active draft: \(error)")
             }
@@ -151,7 +185,7 @@ final class EditorSession {
             logger.info("[EditorSession] Opened saved project: \(projectId)")
 
         case .resumeDraft:
-            guard let existingSlot = deps.loadActiveDraft() else {
+            guard let existingSlot = await deps.loadActiveDraft() else {
                 let msg = "No draft to resume"
                 logger.error("[EditorSession] No active draft to resume")
                 phase = .failed(msg)
@@ -159,9 +193,9 @@ final class EditorSession {
                 return
             }
             slot = existingSlot
-            templateId = existingSlot.sourceTemplateId
+            resolvedTemplateId = existingSlot.draft.origin.templateId
             draft = existingSlot.draft
-            logger.info("[EditorSession] Resumed active draft: \(draft.id), template: \(templateId)")
+            logger.info("[EditorSession] Resumed active draft: \(draft.id)")
 
         case .blankProject:
             let msg = "Blank project not yet supported"
@@ -186,44 +220,53 @@ final class EditorSession {
         }
 
         // Step 3: Load template catalog + resolve defaults
-        var defaultSceneSequence: [SceneTypeDefault]
+        var defaultSceneSequence: [SceneTypeDefault] = []
 
-        let catalogResult = await deps.loadTemplateCatalog()
-        switch catalogResult {
-        case .failure(let catalogError):
-            if draft.canonicalTimeline.sceneItems.isEmpty {
-                let msg = "Catalog load failed"
-                logger.error("[EditorSession] Catalog load failed and draft has no timeline: \(catalogError)")
-                phase = .failed(msg)
-                onOutput?(.bootstrapFailed(msg))
-                return
-            }
-            logger.warning("[EditorSession] Catalog load failed, using draft timeline: \(catalogError)")
-            defaultSceneSequence = []
-
-        case .success:
-            do {
-                defaultSceneSequence = try deps.sceneTypeDefaults(templateId, library)
-                logger.info("[EditorSession] Template loaded: \(defaultSceneSequence.count) scenes")
-            } catch {
-                if draft.canonicalTimeline.sceneItems.isEmpty {
-                    let msg: String
-                    if let catalogError = error as? TemplateCatalogError {
-                        switch catalogError {
-                        case .templateNotFound: msg = "Template not found"
-                        case .emptySceneList: msg = "Template has no scenes"
-                        case .sceneNotInLibrary: msg = "Template is unavailable"
+        if let templateId = resolvedTemplateId {
+            let catalogResult = await deps.loadTemplateCatalog()
+            switch catalogResult {
+            case .success:
+                do {
+                    defaultSceneSequence = try deps.sceneTypeDefaults(templateId, library)
+                    logger.info("[EditorSession] Template loaded: \(defaultSceneSequence.count) scenes")
+                } catch {
+                    if draft.canonicalTimeline.sceneItems.isEmpty {
+                        let msg: String
+                        if let catalogError = error as? TemplateCatalogError {
+                            switch catalogError {
+                            case .templateNotFound: msg = "Template not found"
+                            case .emptySceneList: msg = "Template has no scenes"
+                            case .sceneNotInLibrary: msg = "Template is unavailable"
+                            }
+                        } else {
+                            msg = "Template not found"
                         }
-                    } else {
-                        msg = "Template not found"
+                        logger.error("[EditorSession] Template not in catalog and draft has no timeline: \(error)")
+                        phase = .failed(msg)
+                        onOutput?(.bootstrapFailed(msg))
+                        return
                     }
-                    logger.error("[EditorSession] Template not in catalog and draft has no timeline: \(error)")
+                    logger.warning("[EditorSession] Template '\(templateId)' not in catalog, using draft timeline")
+                    defaultSceneSequence = []
+                }
+            case .failure(let catalogError):
+                if draft.canonicalTimeline.sceneItems.isEmpty {
+                    let msg = "Catalog load failed"
+                    logger.error("[EditorSession] Catalog load failed and draft has no timeline: \(catalogError)")
                     phase = .failed(msg)
                     onOutput?(.bootstrapFailed(msg))
                     return
                 }
-                logger.warning("[EditorSession] Template '\(templateId)' not in catalog, using draft timeline")
+                logger.warning("[EditorSession] Catalog load failed, using draft timeline: \(catalogError)")
                 defaultSceneSequence = []
+            }
+        } else {
+            // Non-template origin (blank/duplicate): no template defaults needed
+            // Draft must already have a populated timeline
+            if draft.canonicalTimeline.sceneItems.isEmpty {
+                phase = .failed("Empty project")
+                onOutput?(.bootstrapFailed("Empty project"))
+                return
             }
         }
 
@@ -257,7 +300,7 @@ final class EditorSession {
 
         let editor = BootstrappedEditor(
             activeDraftSlot: slot,
-            templateId: templateId,
+            templateId: resolvedTemplateId,
             draft: draft,
             sceneLibrary: library,
             defaultSceneSequence: defaultSceneSequence,
@@ -272,7 +315,7 @@ final class EditorSession {
     /// Saves current draft to the recovery slot if changed since last recovery write.
     /// Self-contained — reads store state directly, no closure params needed.
     @discardableResult
-    func persistCheckpointIfNeeded() -> Bool {
+    func persistCheckpointIfNeeded() async -> Bool {
         guard let store = store,
               var slot = activeDraftSlot,
               var dirtyState = dirtyState else { return false }
@@ -281,7 +324,7 @@ final class EditorSession {
         slot.draft = store.currentDraft
         slot.draft.updatedAt = Date()
         do {
-            try deps.saveActiveDraft(slot)
+            try await deps.saveActiveDraft(slot)
             activeDraftSlot = slot
             dirtyState.didWriteRecovery(current: current)
             self.dirtyState = dirtyState
@@ -295,15 +338,15 @@ final class EditorSession {
     // MARK: - Export Commit
 
     /// Materializes saved project after successful export and clears recovery slot.
-    func commitAfterExportSuccess() {
+    func commitAfterExportSuccess() async {
         guard let store = store, var slot = activeDraftSlot else { return }
         let current = EditorSessionSnapshot(from: store.state)
         slot.draft = store.currentDraft
         slot.draft.updatedAt = Date()
         do {
-            try deps.materializeSavedProject(&slot)
+            slot = try await deps.materializeSavedProject(slot)
             activeDraftSlot = slot
-            try deps.deleteActiveDraft()
+            try await deps.deleteActiveDraft()
             dirtyState?.didMaterialize(current: current)
         } catch {
             logger.error("[EditorSession] Export commit error: \(error.localizedDescription)")
@@ -321,17 +364,17 @@ final class EditorSession {
     }
 
     /// Save + materialize + delete active draft (user chose "Save" in close alert).
-    func executeSaveAndClose() throws {
+    func executeSaveAndClose() async throws {
         guard let store = store, var slot = activeDraftSlot else { return }
         slot.draft = store.currentDraft
         slot.draft.updatedAt = Date()
-        try deps.materializeSavedProject(&slot)
-        try deps.deleteActiveDraft()
+        slot = try await deps.materializeSavedProject(slot)
+        try await deps.deleteActiveDraft()
     }
 
     /// Delete active draft without saving (user chose "Don't Save" in close alert).
-    func executeDiscardAndClose() throws {
-        try deps.deleteActiveDraft()
+    func executeDiscardAndClose() async throws {
+        try await deps.deleteActiveDraft()
     }
 }
 

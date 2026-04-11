@@ -100,7 +100,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeDraft(sceneDurations: [TimeUs]) -> ProjectDraft {
-        var draft = ProjectDraft.create(for: "test-template")
+        var draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         var timeline = CanonicalTimeline.empty()
         var payloads: [UUID: TimelinePayload] = [:]
 

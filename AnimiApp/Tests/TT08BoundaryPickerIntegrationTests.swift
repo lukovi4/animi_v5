@@ -206,7 +206,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
     /// Tests the full path: reducer emits notice → store forwards → alert is correct.
     @MainActor func test_storeNoticeEmission_producesCorrectAlert() {
         // Given: 3 scenes with transition between 0-1
-        var draft = ProjectDraft.create(for: "test-template")
+        var draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         var timeline = CanonicalTimeline.empty()
         var payloads: [UUID: TimelinePayload] = [:]
 

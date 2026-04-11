@@ -19,6 +19,11 @@ final class AppLaunchRouterTests: XCTestCase {
         let presenter = UIViewController()
         router.handleLaunch(presenter: presenter)
 
+        // handleLaunch is now async internally — give it a tick
+        let exp = expectation(description: "async launch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
+        wait(for: [exp], timeout: 1)
+
         XCTAssertFalse(editorOpened, "Editor should not open when no draft exists")
         XCTAssertTrue(dismissed, "onDismiss should fire when no draft exists")
     }
@@ -39,6 +44,10 @@ final class AppLaunchRouterTests: XCTestCase {
 
         let presenter = UIViewController()
         router.handleLaunch(presenter: presenter)
+
+        let exp = expectation(description: "async launch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
+        wait(for: [exp], timeout: 1)
 
         guard let intent = receivedIntent else {
             XCTFail("Expected editor to be opened")
@@ -71,6 +80,11 @@ final class AppLaunchRouterTests: XCTestCase {
         let presenter = UIViewController()
         router.handleLaunch(presenter: presenter)
 
+        // Start Over path has nested Task for clearActiveDraft — needs more time
+        let exp = expectation(description: "async launch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exp.fulfill() }
+        wait(for: [exp], timeout: 2)
+
         XCTAssertTrue(draftCleared, "Active draft should be cleared on Start Over")
         XCTAssertFalse(editorOpened, "Editor should not open on Start Over")
         XCTAssertTrue(dismissed, "onDismiss should fire on Start Over")
@@ -78,9 +92,6 @@ final class AppLaunchRouterTests: XCTestCase {
 
     // MARK: - Async Lifetime Regression
 
-    /// Validates that the router works correctly when the prompt completion fires
-    /// asynchronously — i.e. after `handleLaunch` has returned. This is the real
-    /// shipped path where UIAlertController calls back on button tap.
     func testActiveDraft_asyncChoice_routerStaysAliveUntilChoice() {
         var receivedIntent: EditorLaunchIntent?
         let asyncPrompt = AsyncStubRecoveryPrompt()
@@ -96,11 +107,14 @@ final class AppLaunchRouterTests: XCTestCase {
         let presenter = UIViewController()
         router.handleLaunch(presenter: presenter)
 
-        // At this point handleLaunch has returned but no choice has been made.
+        // Wait for the async hasActiveDraft() to complete and prompt to be presented
+        let exp = expectation(description: "prompt presented")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
+        wait(for: [exp], timeout: 1)
+
         XCTAssertNil(receivedIntent, "No intent should fire before user chooses")
         XCTAssertNotNil(asyncPrompt.pendingCompletion, "Prompt should be waiting for user choice")
 
-        // Simulate user tapping "Continue" after a delay.
         asyncPrompt.pendingCompletion?(.continueDraft)
 
         guard let intent = receivedIntent else {
@@ -130,11 +144,19 @@ final class AppLaunchRouterTests: XCTestCase {
         let presenter = UIViewController()
         router.handleLaunch(presenter: presenter)
 
+        let exp1 = expectation(description: "prompt presented")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp1.fulfill() }
+        wait(for: [exp1], timeout: 1)
+
         XCTAssertFalse(draftCleared)
         XCTAssertFalse(dismissed)
 
-        // Simulate user tapping "Start Over" after a delay.
         asyncPrompt.pendingCompletion?(.startOver)
+
+        // Wait for nested async clearActiveDraft
+        let exp2 = expectation(description: "start over completed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exp2.fulfill() }
+        wait(for: [exp2], timeout: 2)
 
         XCTAssertTrue(draftCleared)
         XCTAssertTrue(dismissed)
@@ -142,14 +164,10 @@ final class AppLaunchRouterTests: XCTestCase {
 
     // MARK: - Caller-Release Regression
 
-    /// Models the real shipped path: the only strong reference to the router
-    /// is the one held by AppCompositionRoot. After handleLaunch returns,
-    /// the local scope releases — the router must survive via the external holder.
     func testActiveDraft_callerReleasesLocalRef_routerSurvivesViaExternalHolder() {
         var receivedIntent: EditorLaunchIntent?
         let asyncPrompt = AsyncStubRecoveryPrompt()
 
-        // Simulate AppCompositionRoot holding the router
         var externalHolder: AppLaunchRouter?
 
         do {
@@ -164,18 +182,19 @@ final class AppLaunchRouterTests: XCTestCase {
 
             let presenter = UIViewController()
             router.handleLaunch(presenter: presenter)
-            // `router` local goes out of scope here
         }
 
-        // The only reference left is externalHolder — same as AppCompositionRoot.launchRouter
+        let exp = expectation(description: "prompt presented")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exp.fulfill() }
+        wait(for: [exp], timeout: 1)
+
         XCTAssertNotNil(externalHolder, "External holder must keep router alive")
         XCTAssertNil(receivedIntent)
 
-        // User taps Continue after local scope is gone
         asyncPrompt.pendingCompletion?(.continueDraft)
 
         if case .resumeDraft = receivedIntent {
-            // Pass — the router was alive and delivered the intent
+            // Pass
         } else {
             XCTFail("Expected .resumeDraft after caller-release, got \(String(describing: receivedIntent))")
         }
@@ -184,8 +203,6 @@ final class AppLaunchRouterTests: XCTestCase {
 
 // MARK: - Async Stub
 
-/// Captures the completion instead of calling it immediately.
-/// Simulates the real UIAlertController path where the callback fires on user tap.
 private final class AsyncStubRecoveryPrompt: RecoveryPromptCoordinator {
     var pendingCompletion: ((UserChoice) -> Void)?
 

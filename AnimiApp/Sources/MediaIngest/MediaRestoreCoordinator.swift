@@ -19,29 +19,25 @@ public enum MediaRestoreCoordinator {
     /// - Parameters:
     ///   - slots: Media slots from SceneState (blockId -> SceneMediaSlot).
     ///   - service: UserMediaService to apply media to.
-    ///   - projectStore: Project store for URL resolution.
+    ///   - resolved: Pre-resolved map from asset identity to absolute URL.
+    ///               Built via `ResolvedMediaMapBuilder.build(slots:locator:)`
+    ///               on an async path before entering this sync apply.
     /// - Returns: Number of successfully accepted media items.
     @MainActor
     @discardableResult
     public static func restore(
         slots: [String: SceneMediaSlot]?,
         to service: UserMediaService,
-        projectStore: ProjectStore = .shared
+        resolved: ResolvedMediaMap
     ) -> Int {
         guard let slots else { return 0 }
 
         var restored = 0
 
         for (blockId, slot) in slots {
-            // Validate media ref kind
-            guard slot.mediaRef.kind == .file else {
-                service.markRestoreFailed(blockId: blockId, reason: "unsupported media kind: \(slot.mediaRef.kind)")
-                continue
-            }
-
-            // Resolve URL
-            guard let url = try? projectStore.absoluteURL(for: slot.mediaRef) else {
-                service.markRestoreFailed(blockId: blockId, reason: "failed to resolve URL for: \(slot.mediaRef.id)")
+            // Resolve URL from pre-built map
+            guard let url = resolved.url(for: slot.mediaRef) else {
+                service.markRestoreFailed(blockId: blockId, reason: "failed to resolve URL for asset: \(slot.mediaRef.assetId.rawValue)")
                 continue
             }
 
@@ -55,8 +51,7 @@ public enum MediaRestoreCoordinator {
 
             switch slot.mediaRef.mediaKind {
             case .photo:
-                // PR5: Pass mediaRef.id for proxy cache keying
-                let accepted = service.setPhoto(blockId: blockId, fileURL: url, presentOnReady: presentOnReady, mediaRefId: slot.mediaRef.id)
+                let accepted = service.setPhoto(blockId: blockId, fileURL: url, presentOnReady: presentOnReady, mediaRefId: slot.mediaRef.assetId.rawValue.uuidString)
                 if accepted { restored += 1 }
 
                 #if DEBUG

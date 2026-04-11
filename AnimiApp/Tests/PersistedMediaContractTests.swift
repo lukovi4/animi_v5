@@ -22,7 +22,7 @@ final class PersistedMediaContractTests: XCTestCase {
         var state = SceneState.empty
         state.mediaSlotsByBlockId = [
             "block1": .video(
-                mediaRef: MediaRef(kind: .file, id: "Media/video.mp4", mediaKind: .video),
+                mediaRef: MediaRef(storagePath: "Media/video.mp4", mediaKind: .video),
                 placement: .defaultCover,
                 videoWindow: PersistedVideoSelection(trimStart: 1.0, trimEnd: 8.0)
             )

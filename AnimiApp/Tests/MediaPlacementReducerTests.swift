@@ -11,7 +11,7 @@ final class MediaPlacementReducerTests: XCTestCase {
         fitMode: FitMode = .cover,
         placement: MediaPlacementState? = nil
     ) -> (EditorState, UUID, String) {
-        var draft = ProjectDraft.create(for: "test-template")
+        var draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         var timeline = CanonicalTimeline.empty()
         var payloads: [UUID: TimelinePayload] = [:]
         let payloadId = UUID()
@@ -40,7 +40,7 @@ final class MediaPlacementReducerTests: XCTestCase {
     }
 
     private func makeStateWithoutSlot() -> (EditorState, UUID, String) {
-        var draft = ProjectDraft.create(for: "test-template")
+        var draft = ProjectDraft.create(origin: .template(templateId: "test-template"))
         var timeline = CanonicalTimeline.empty()
         var payloads: [UUID: TimelinePayload] = [:]
         let payloadId = UUID()
@@ -236,7 +236,7 @@ final class MediaPlacementReducerTests: XCTestCase {
 
         XCTAssertTrue(result.shouldPushSnapshot)
         let updatedSlot = result.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]
-        XCTAssertEqual(updatedSlot?.mediaRef.id, "Media/UserMedia/replacement.jpg")
+        XCTAssertEqual(updatedSlot?.mediaRef.storagePath, "Media/UserMedia/replacement.jpg")
     }
 
     func test_replaceMedia_preservesHiddenVisibility() {
@@ -263,7 +263,7 @@ final class MediaPlacementReducerTests: XCTestCase {
         )
 
         let updatedSlot = replaceResult.state.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]
-        XCTAssertEqual(updatedSlot?.mediaRef.id, "Media/UserMedia/replacement.jpg")
+        XCTAssertEqual(updatedSlot?.mediaRef.storagePath, "Media/UserMedia/replacement.jpg")
         XCTAssertEqual(updatedSlot?.visibility, false, "Replace must preserve hidden visibility")
     }
 

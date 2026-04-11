@@ -119,6 +119,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -164,6 +165,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -216,6 +218,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -269,6 +272,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -321,6 +325,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -389,6 +394,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -431,13 +437,15 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
                     sceneInstanceId: instanceId,
                     resources: resources,
                     device: dev,
-                    commandQueue: queue
+                    commandQueue: queue,
+                    mediaLocator: StubProjectMediaLocator()
                 )
             }
         )
@@ -488,6 +496,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 // Deterministic spy assignment by instanceId
@@ -538,6 +547,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -603,6 +613,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 // Deterministic spy assignment by instanceId
@@ -661,6 +672,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 let spy = spyMap[instanceId] ?? SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
@@ -755,6 +767,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 let spy = spyMap[instanceId] ?? SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
@@ -836,6 +849,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 let spy = spyMap[instanceId] ?? SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
@@ -911,6 +925,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 let spy = spyMap[instanceId] ?? SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
@@ -978,6 +993,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 let spy = spyMap[instanceId] ?? SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
@@ -1038,6 +1054,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -1097,6 +1114,7 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -1295,5 +1313,13 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             framesPerScene: framesPerScene,
             transitionDuration: transitionDuration
         )
+    }
+}
+
+// MARK: - Test Stubs
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/\(mediaRef.storagePath)")
     }
 }

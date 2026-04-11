@@ -143,14 +143,29 @@ final class PhotoProxyCacheTests: XCTestCase {
 
     // MARK: - MediaAssetStore Extension Preservation
 
-    func test_mediaAssetStore_preservesOriginalExtension() throws {
+    func test_mediaAssetStore_preservesOriginalExtension() async throws {
         // Create a HEIC-like file (just using .heic extension for test)
         let sourceURL = createTestImage(width: 100, height: 100)
         let heicURL = tempDir.appendingPathComponent("test_photo.heic")
         try FileManager.default.copyItem(at: sourceURL, to: heicURL)
 
-        let store = MediaAssetStore(projectStore: .shared)
-        let (ref, destURL) = try store.saveMedia(
+        // Wrap a real ProjectStore as a ProjectMediaWriteGateway for test
+        struct StoreWriter: ProjectMediaWriteGateway {
+            let store: ProjectStore
+            func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+                try store.saveBackgroundImage(from: preparedFileURL)
+            }
+            func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+                try store.saveUserMedia(from: fileURL, mediaKind: mediaKind, filename: filename)
+            }
+            func deleteMediaFile(_ mediaRef: MediaRef) async throws {
+                try store.deleteMediaFile(mediaRef)
+            }
+            func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
+        }
+
+        let store = MediaAssetStore(mediaWriter: StoreWriter(store: ProjectStore()))
+        let (ref, destURL) = try await store.saveMedia(
             from: heicURL,
             mediaKind: .photo,
             sceneInstanceId: UUID(),
@@ -160,7 +175,7 @@ final class PhotoProxyCacheTests: XCTestCase {
 
         XCTAssertEqual(destURL.pathExtension, "heic", "Original extension must be preserved")
         XCTAssertEqual(ref.mediaKind, .photo)
-        XCTAssertTrue(ref.id.hasSuffix(".heic"))
+        XCTAssertTrue(ref.storagePath.hasSuffix(".heic"))
     }
 
     // MARK: - Master vs Proxy Contract

@@ -12,6 +12,7 @@ final class AppCompositionRoot {
     let templateCatalogRepository: TemplateCatalogRepository
     let sceneLibraryRepository: SceneLibraryRepository
     let backgroundPresetRepository: BackgroundPresetRepository
+    let storageActor: ProjectStorageActor
 
     private weak var navigationController: UINavigationController?
     private var launchRouter: AppLaunchRouter?
@@ -22,6 +23,7 @@ final class AppCompositionRoot {
         self.templateCatalogRepository = TemplateCatalogRepository()
         self.sceneLibraryRepository = SceneLibraryRepository()
         self.backgroundPresetRepository = BackgroundPresetRepository()
+        self.storageActor = ProjectStorageActor()
     }
 
     // MARK: - Bootstrap
@@ -41,8 +43,8 @@ final class AppCompositionRoot {
     /// The router is retained until the user makes a choice.
     func handleLaunchRecovery(presenter: UIViewController) {
         let router = AppLaunchRouter(
-            hasActiveDraft: { ProjectStore.shared.hasActiveDraft() },
-            clearActiveDraft: { try ProjectStore.shared.deleteActiveDraft() },
+            hasActiveDraft: { [storageActor] in await storageActor.hasActiveDraft() },
+            clearActiveDraft: { [storageActor] in try await storageActor.deleteActiveDraft() },
             onOpenEditor: { [weak self] intent in
                 self?.launchRouter = nil
                 self?.openEditor(intent)
@@ -61,11 +63,13 @@ final class AppCompositionRoot {
         if case .blankProject = intent { return }  // PR 7
 
         let deps = EditorSessionDependencies(
-            saveActiveDraft: { try ProjectStore.shared.saveActiveDraft($0) },
-            loadActiveDraft: { ProjectStore.shared.loadActiveDraft() },
-            deleteActiveDraft: { try ProjectStore.shared.deleteActiveDraft() },
-            loadSavedProject: { ProjectStore.shared.loadSavedProject(projectId: $0) },
-            materializeSavedProject: { try ProjectStore.shared.materializeSavedProject(from: &$0) },
+            saveActiveDraft: { [storageActor] in try await storageActor.saveActiveDraft($0) },
+            loadActiveDraft: { [storageActor] in await storageActor.loadActiveDraft() },
+            deleteActiveDraft: { [storageActor] in try await storageActor.deleteActiveDraft() },
+            loadSavedProject: { [storageActor] in await storageActor.loadSavedProject(projectId: $0) },
+            materializeSavedProject: { [storageActor] in try await storageActor.materializeSavedProject($0) },
+            mediaLocator: storageActor,
+            mediaWriter: storageActor,
             loadSceneLibrary: { [sceneLibraryRepository] in
                 try await sceneLibraryRepository.load()
             },
@@ -74,7 +78,8 @@ final class AppCompositionRoot {
             },
             loadTemplateCatalog: { [templateCatalogRepository] in
                 await templateCatalogRepository.load()
-            }
+            },
+            backgroundPresetProvider: backgroundPresetRepository
         )
         let session = EditorSession(intent: intent, dependencies: deps)
         let editorVC = PlayerViewController(session: session)
@@ -127,8 +132,9 @@ final class AppCompositionRoot {
     }
 
     private func openMyProjects() {
+        let service = SavedProjectsService(persistence: storageActor)
         let myProjectsVC = MyProjectsViewController(
-            catalogRepository: templateCatalogRepository,
+            savedProjectsService: service,
             onOpenEditor: { [weak self] intent in
                 self?.openEditor(intent)
             }

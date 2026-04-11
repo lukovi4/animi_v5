@@ -7,14 +7,12 @@ final class EditorSessionBootstrapTests: XCTestCase {
 
     // MARK: - Stub Helpers
 
-    /// Creates a minimal stub dependencies struct with all closures defaulting to no-ops or empty returns.
-    /// Override individual closures per test.
     private func makeDeps(
-        saveActiveDraft: @escaping (ActiveDraftSlot) throws -> Void = { _ in },
-        loadActiveDraft: @escaping () -> ActiveDraftSlot? = { nil },
-        deleteActiveDraft: @escaping () throws -> Void = {},
-        loadSavedProject: @escaping (UUID) -> SavedProjectRecord? = { _ in nil },
-        materializeSavedProject: @escaping (inout ActiveDraftSlot) throws -> Void = { _ in },
+        saveActiveDraft: @escaping (ActiveDraftSlot) async throws -> Void = { _ in },
+        loadActiveDraft: @escaping () async -> ActiveDraftSlot? = { nil },
+        deleteActiveDraft: @escaping () async throws -> Void = {},
+        loadSavedProject: @escaping (UUID) async -> SavedProjectRecord? = { _ in nil },
+        materializeSavedProject: @escaping (ActiveDraftSlot) async throws -> ActiveDraftSlot = { $0 },
         loadSceneLibrary: @escaping () async throws -> SceneLibrarySnapshot = { stubSceneLibrary() },
         sceneTypeDefaults: @escaping (String, SceneLibrarySnapshot) throws -> [SceneTypeDefault] = { _, _ in
             [SceneTypeDefault(sceneTypeId: "scene_1", baseDurationUs: 3_000_000)]
@@ -30,6 +28,8 @@ final class EditorSessionBootstrapTests: XCTestCase {
             deleteActiveDraft: deleteActiveDraft,
             loadSavedProject: loadSavedProject,
             materializeSavedProject: materializeSavedProject,
+            mediaLocator: StubMediaLocator(),
+            mediaWriter: StubMediaWriter(),
             loadSceneLibrary: loadSceneLibrary,
             sceneTypeDefaults: sceneTypeDefaults,
             loadTemplateCatalog: loadTemplateCatalog,
@@ -53,23 +53,21 @@ final class EditorSessionBootstrapTests: XCTestCase {
     }
 
     private static func stubDraft(templateId: String = "tpl_1") -> ProjectDraft {
-        ProjectDraft.create(for: templateId)
+        ProjectDraft.create(origin: .template(templateId: templateId))
     }
 
     private static func stubSlot(templateId: String = "tpl_1") -> ActiveDraftSlot {
         ActiveDraftSlot(
-            entryContext: .newFromTemplate(templateId: templateId),
-            sourceTemplateId: templateId,
+            entryContext: .newProject(origin: .template(templateId: templateId)),
             linkedSavedProjectId: nil,
             draft: stubDraft(templateId: templateId)
         )
     }
 
-    /// Bootstraps a session and returns it ready for lifecycle tests.
     private func makeBootstrappedSession(
-        saveActiveDraft: @escaping (ActiveDraftSlot) throws -> Void = { _ in },
-        deleteActiveDraft: @escaping () throws -> Void = {},
-        materializeSavedProject: @escaping (inout ActiveDraftSlot) throws -> Void = { _ in }
+        saveActiveDraft: @escaping (ActiveDraftSlot) async throws -> Void = { _ in },
+        deleteActiveDraft: @escaping () async throws -> Void = {},
+        materializeSavedProject: @escaping (ActiveDraftSlot) async throws -> ActiveDraftSlot = { $0 }
     ) async -> EditorSession {
         let deps = makeDeps(
             saveActiveDraft: saveActiveDraft,
@@ -94,7 +92,7 @@ final class EditorSessionBootstrapTests: XCTestCase {
         await session.bootstrap()
 
         XCTAssertNotNil(savedSlot)
-        XCTAssertEqual(savedSlot?.sourceTemplateId, "tpl_1")
+        XCTAssertEqual(savedSlot?.draft.origin, .template(templateId: "tpl_1"))
         if case .ready(let editor) = session.phase {
             XCTAssertEqual(editor.templateId, "tpl_1")
             XCTAssertEqual(editor.firstSceneTypeId, "scene_1")
@@ -117,7 +115,6 @@ final class EditorSessionBootstrapTests: XCTestCase {
         let projectId = UUID()
         let draft = Self.stubDraft(templateId: "tpl_saved")
         let record = SavedProjectRecord(
-            sourceTemplateId: "tpl_saved",
             savedAt: Date(),
             draft: draft
         )
@@ -185,16 +182,76 @@ final class EditorSessionBootstrapTests: XCTestCase {
         else { XCTFail("Expected .failed phase") }
     }
 
-    // MARK: - Checkpoint Tests (PR3: self-contained, no params)
+    // MARK: - Non-Template Origin Tests
+
+    func testBootstrapSavedProject_blankOrigin_nonEmptyTimeline_succeeds() async {
+        let projectId = UUID()
+        var timeline = CanonicalTimeline.empty()
+        let pid = UUID()
+        timeline.payloads[pid] = .scene(ScenePayload(sceneTypeId: "scene_1"))
+        timeline.tracks[0].items.append(TimelineItem(payloadId: pid, kind: .scene, startUs: nil, durationUs: 2_000_000))
+
+        let draft = ProjectDraft(
+            id: projectId,
+            origin: .blank(starterSceneTypeId: "scene_1"),
+            canonicalTimeline: timeline
+        )
+        let record = SavedProjectRecord(savedAt: Date(), draft: draft)
+        var sceneTypeDefaultsCalled = false
+        let deps = makeDeps(
+            loadSavedProject: { id in id == projectId ? record : nil },
+            sceneTypeDefaults: { _, _ in
+                sceneTypeDefaultsCalled = true
+                return []
+            }
+        )
+        let session = EditorSession(intent: .savedProject(projectId: projectId), dependencies: deps)
+        await session.bootstrap()
+
+        if case .ready(let editor) = session.phase {
+            XCTAssertNil(editor.templateId, "Blank origin should have nil templateId")
+        } else {
+            XCTFail("Expected .ready phase, got \(session.phase)")
+        }
+        XCTAssertFalse(sceneTypeDefaultsCalled, "sceneTypeDefaults should not be called for non-template origin")
+    }
+
+    func testBootstrapResumeDraft_duplicateOrigin_succeeds() async {
+        let sourceId = UUID()
+        var timeline = CanonicalTimeline.empty()
+        let pid = UUID()
+        timeline.payloads[pid] = .scene(ScenePayload(sceneTypeId: "scene_1"))
+        timeline.tracks[0].items.append(TimelineItem(payloadId: pid, kind: .scene, startUs: nil, durationUs: 2_000_000))
+
+        let draft = ProjectDraft(
+            origin: .duplicate(sourceProjectId: sourceId),
+            canonicalTimeline: timeline
+        )
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: .duplicate(sourceProjectId: sourceId)),
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        let deps = makeDeps(loadActiveDraft: { slot })
+        let session = EditorSession(intent: .resumeDraft, dependencies: deps)
+        await session.bootstrap()
+
+        if case .ready(let editor) = session.phase {
+            XCTAssertNil(editor.templateId, "Duplicate origin should have nil templateId")
+        } else {
+            XCTFail("Expected .ready phase, got \(session.phase)")
+        }
+    }
+
+    // MARK: - Checkpoint Tests (async)
 
     func testPersistCheckpoint_savesWhenDirty() async {
         var savedSlot: ActiveDraftSlot?
         let session = await makeBootstrappedSession(saveActiveDraft: { savedSlot = $0 })
 
-        // Mutate the store to make it differ from baseline
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
 
-        let saved = session.persistCheckpointIfNeeded()
+        let saved = await session.persistCheckpointIfNeeded()
         XCTAssertTrue(saved)
         XCTAssertNotNil(savedSlot)
     }
@@ -203,34 +260,32 @@ final class EditorSessionBootstrapTests: XCTestCase {
         var saveCount = 0
         let session = await makeBootstrappedSession(saveActiveDraft: { _ in saveCount += 1 })
 
-        // Don't mutate — should be clean
-        let initialSaveCount = saveCount // bootstrap may have saved
-        let saved = session.persistCheckpointIfNeeded()
+        let initialSaveCount = saveCount
+        let saved = await session.persistCheckpointIfNeeded()
         XCTAssertFalse(saved)
         XCTAssertEqual(saveCount, initialSaveCount)
     }
 
-    // MARK: - Export Commit Tests
+    // MARK: - Export Commit Tests (async)
 
     func testCommitAfterExport_materializesAndDeletesDraft() async {
         var materializeCalled = false
         var deleteCalled = false
         let session = await makeBootstrappedSession(
             deleteActiveDraft: { deleteCalled = true },
-            materializeSavedProject: { _ in materializeCalled = true }
+            materializeSavedProject: { slot in materializeCalled = true; return slot }
         )
 
-        session.commitAfterExportSuccess()
+        await session.commitAfterExportSuccess()
 
         XCTAssertTrue(materializeCalled)
         XCTAssertTrue(deleteCalled)
     }
 
-    // MARK: - Close Tests (PR3: dual-baseline dirty model)
+    // MARK: - Close Tests (async)
 
     func testRequestClose_cleanSession_safeToClose() async {
         let session = await makeBootstrappedSession()
-        // No mutations — should be clean
         let action = session.requestClose()
         XCTAssertEqual(action, .safeToClose)
     }
@@ -245,38 +300,55 @@ final class EditorSessionBootstrapTests: XCTestCase {
     func testCheckpointThenClose_stillNeedsUserDecision() async {
         let session = await makeBootstrappedSession()
 
-        // Mutate and checkpoint
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
-        let saved = session.persistCheckpointIfNeeded()
+        let saved = await session.persistCheckpointIfNeeded()
         XCTAssertTrue(saved, "Checkpoint should succeed")
 
-        // After checkpoint, session is still dirty for user (autosave != explicit save)
         let action = session.requestClose()
         XCTAssertEqual(action, .needsUserDecision,
             "Autosave checkpoint must not suppress close prompt")
     }
 
-    func testExecuteSaveAndClose_materializesAndDeletesDraft() async {
+    func testExecuteSaveAndClose_materializesAndDeletesDraft() async throws {
         var materializeCalled = false
         var deleteCalled = false
         let session = await makeBootstrappedSession(
             deleteActiveDraft: { deleteCalled = true },
-            materializeSavedProject: { _ in materializeCalled = true }
+            materializeSavedProject: { slot in materializeCalled = true; return slot }
         )
 
-        XCTAssertNoThrow(try session.executeSaveAndClose())
+        try await session.executeSaveAndClose()
         XCTAssertTrue(materializeCalled)
         XCTAssertTrue(deleteCalled)
     }
 
-    func testExecuteDiscardAndClose_deletesDraft() {
+    func testExecuteDiscardAndClose_deletesDraft() async throws {
         var deleteCalled = false
         let deps = makeDeps(deleteActiveDraft: { deleteCalled = true })
         let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
 
-        XCTAssertNoThrow(try session.executeDiscardAndClose())
+        try await session.executeDiscardAndClose()
         XCTAssertTrue(deleteCalled)
     }
+}
+
+// MARK: - Stub Media Helpers
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/stub")
+    }
+}
+
+private struct StubMediaWriter: ProjectMediaWriteGateway {
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {}
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
 }
 
 // MARK: - Stub Background Preset Provider

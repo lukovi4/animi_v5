@@ -3,6 +3,12 @@ import AVFoundation
 import CoreMedia
 @testable import AnimiApp
 
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/stub")
+    }
+}
+
 final class VideoExportSessionTests: XCTestCase {
 
     // MARK: - Helpers
@@ -290,7 +296,7 @@ final class VideoExportSessionTests: XCTestCase {
     /// The exporter has no activeSession yet, so cancel() is a no-op on the exporter.
     /// Controller must guard with isExporting before calling exportVideo().
     func test_cancelBeforeExportVideo_exporterCancelIsNoOp() {
-        let exporter = VideoExporter()
+        let exporter = VideoExporter(mediaLocator: StubMediaLocator())
 
         // Cancel before any export session exists — should not crash, is a no-op
         exporter.cancel()

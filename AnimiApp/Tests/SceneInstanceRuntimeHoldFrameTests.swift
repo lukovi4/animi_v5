@@ -155,7 +155,8 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // When: Request render context for frame 350 (beyond duration)
@@ -180,7 +181,8 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // When: Request render context for frame 299 (last valid frame)
@@ -205,7 +207,8 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // When: Request render context for frame 50 (within bounds)
@@ -232,7 +235,8 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // When: Get render commands for frame 299 and frame 350
@@ -378,7 +382,8 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // When: Request render context for negative frame
@@ -402,7 +407,8 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // When: Request render context for any frame
@@ -431,7 +437,8 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // When: Request render context for frame 300 (exactly at duration, which is exclusive)
@@ -462,7 +469,8 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             sceneInstanceId: UUID(),
             resources: resources,
             device: device,
-            commandQueue: commandQueue
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
         )
 
         // When: Get render context for timeline frame 350

@@ -100,8 +100,10 @@ public enum SceneRuntimeStateApplier {
         let actualQuadAABBCanvas: RectD?
     }
 
-    /// Dependencies needed for a full state apply.
-    public struct Dependencies: Sendable {
+    /// Dependencies for URL-free fast-path operations (placement / visibility /
+    /// video selection / media-ready). These paths do not touch the file system
+    /// and therefore do not need a `ProjectMediaLocator`.
+    public struct FastPathDependencies: Sendable {
         public let scenePlayer: ScenePlayer
         public let userMediaService: UserMediaService
 
@@ -111,19 +113,38 @@ public enum SceneRuntimeStateApplier {
         }
     }
 
+    /// Dependencies for full-apply / slot-change paths that need to restore
+    /// media from disk. The URLs must be pre-resolved into a `ResolvedMediaMap`
+    /// on an async path before entering the synchronous apply.
+    public struct RestoreDependencies: Sendable {
+        public let scenePlayer: ScenePlayer
+        public let userMediaService: UserMediaService
+        public let resolvedMedia: ResolvedMediaMap
+
+        public init(
+            scenePlayer: ScenePlayer,
+            userMediaService: UserMediaService,
+            resolvedMedia: ResolvedMediaMap
+        ) {
+            self.scenePlayer = scenePlayer
+            self.userMediaService = userMediaService
+            self.resolvedMedia = resolvedMedia
+        }
+    }
+
     // MARK: - Full Apply
 
     /// Applies full `SceneState` to runtime in canonical order.
     ///
     /// - Parameters:
     ///   - state: The scene state to apply.
-    ///   - deps: Runtime dependencies.
+    ///   - deps: Restore dependencies (includes pre-resolved media URLs).
     /// - Returns: Count of restored media items.
     @MainActor
     @discardableResult
     public static func apply(
         _ state: SceneState,
-        deps: Dependencies
+        deps: RestoreDependencies
     ) -> Int {
         apply(
             state,
@@ -131,7 +152,7 @@ public enum SceneRuntimeStateApplier {
             userMediaService: deps.userMediaService,
             restore: { slots, svc in
                 guard let svc else { return 0 }
-                return MediaRestoreCoordinator.restore(slots: slots, to: svc)
+                return MediaRestoreCoordinator.restore(slots: slots, to: svc, resolved: deps.resolvedMedia)
             }
         )
     }
@@ -172,7 +193,7 @@ public enum SceneRuntimeStateApplier {
     public static func applyPlacementChange(
         blockId: String,
         placement: MediaPlacementState,
-        deps: Dependencies
+        deps: FastPathDependencies
     ) {
         applyPlacementChange(
             blockId: blockId,
@@ -247,7 +268,7 @@ public enum SceneRuntimeStateApplier {
     public static func applySlotChange(
         blockId: String,
         slot: SceneMediaSlot?,
-        deps: Dependencies
+        deps: RestoreDependencies
     ) -> Int {
         applySlotChange(
             blockId: blockId,
@@ -256,7 +277,7 @@ public enum SceneRuntimeStateApplier {
             userMediaService: deps.userMediaService,
             restore: { slots, svc in
                 guard let svc else { return 0 }
-                return MediaRestoreCoordinator.restore(slots: slots, to: svc)
+                return MediaRestoreCoordinator.restore(slots: slots, to: svc, resolved: deps.resolvedMedia)
             }
         )
     }

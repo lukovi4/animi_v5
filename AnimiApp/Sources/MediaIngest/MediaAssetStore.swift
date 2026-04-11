@@ -7,10 +7,10 @@ import Foundation
 /// For video: this is the single durable copy from the PHPicker file representation (no temp copy).
 public final class MediaAssetStore {
 
-    private let projectStore: ProjectStore
+    private let mediaWriter: any ProjectMediaWriteGateway
 
-    public init(projectStore: ProjectStore = .shared) {
-        self.projectStore = projectStore
+    public init(mediaWriter: any ProjectMediaWriteGateway) {
+        self.mediaWriter = mediaWriter
     }
 
     // MARK: - Save API
@@ -30,32 +30,11 @@ public final class MediaAssetStore {
         mediaKind: MediaKind,
         sceneInstanceId: UUID,
         blockId: String
-    ) throws -> (MediaRef, URL) {
-        try projectStore.ensureDirectoriesExist()
-
+    ) async throws -> (MediaRef, URL) {
         let uuid = UUID().uuidString
-        // PR5: Preserve original extension for both photo and video.
-        // Photos were previously forced to .jpg; now we keep the original (HEIC, PNG, etc.)
-        // to preserve master quality for export.
         let ext = fileURL.pathExtension.lowercased()
-
         let filename = "\(sceneInstanceId.uuidString)_\(blockId)_\(uuid).\(ext)"
-        let relativePath = "Media/UserMedia/\(filename)"
 
-        let mediaDir = try projectStore.userMediaDirectoryURL()
-        let destURL = mediaDir.appendingPathComponent(filename)
-
-        if FileManager.default.fileExists(atPath: destURL.path) {
-            try FileManager.default.removeItem(at: destURL)
-        }
-
-        try FileManager.default.copyItem(at: fileURL, to: destURL)
-
-        return (MediaRef.file(relativePath, mediaKind: mediaKind), destURL)
-    }
-
-    /// Returns the absolute URL for a media reference.
-    public func absoluteURL(for mediaRef: MediaRef) throws -> URL {
-        try projectStore.absoluteURL(for: mediaRef)
+        return try await mediaWriter.saveUserMedia(from: fileURL, mediaKind: mediaKind, filename: filename)
     }
 }

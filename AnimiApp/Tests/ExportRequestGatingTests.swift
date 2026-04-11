@@ -1,6 +1,12 @@
 import XCTest
 @testable import AnimiApp
 
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/stub")
+    }
+}
+
 /// Tests production request-gating helpers on PlayerViewController.ActiveExportRequest
 /// and the isActiveExportRequest / clearExportRequestIfCurrent methods.
 final class ExportRequestGatingTests: XCTestCase {
@@ -8,13 +14,13 @@ final class ExportRequestGatingTests: XCTestCase {
     // MARK: - ActiveExportRequest.isActive
 
     func test_isActive_matchingId() {
-        let exporter = VideoExporter()
+        let exporter = VideoExporter(mediaLocator: StubMediaLocator())
         let request = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporter)
         XCTAssertTrue(request.isActive(for: request.id))
     }
 
     func test_isActive_nonMatchingId() {
-        let exporter = VideoExporter()
+        let exporter = VideoExporter(mediaLocator: StubMediaLocator())
         let request = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporter)
         XCTAssertFalse(request.isActive(for: UUID()))
     }
@@ -23,12 +29,12 @@ final class ExportRequestGatingTests: XCTestCase {
 
     /// Simulate: cancel A, start B, A's stale completion arrives — gated by isActive
     func test_cancelA_startB_staleCompletionIgnored() {
-        let exporterA = VideoExporter()
+        let exporterA = VideoExporter(mediaLocator: StubMediaLocator())
         let requestA = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporterA)
         let requestAId = requestA.id
 
         // Start request B
-        let exporterB = VideoExporter()
+        let exporterB = VideoExporter(mediaLocator: StubMediaLocator())
         let requestB = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporterB)
 
         // Simulate activeExportRequest = requestB (A was cancelled, B is active)
@@ -52,11 +58,11 @@ final class ExportRequestGatingTests: XCTestCase {
 
     /// Rapid cancel+restart: A's cancel closure only clears if it matches current
     func test_cancelClosure_onlyClears_matchingRequest() {
-        let exporterA = VideoExporter()
+        let exporterA = VideoExporter(mediaLocator: StubMediaLocator())
         let requestA = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporterA)
         let requestAId = requestA.id
 
-        let exporterB = VideoExporter()
+        let exporterB = VideoExporter(mediaLocator: StubMediaLocator())
         let requestB = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporterB)
 
         // activeExportRequest is now B
@@ -77,11 +83,11 @@ final class ExportRequestGatingTests: XCTestCase {
     /// Production contract: progress closure gates by requestId.
     /// If active request changed, stale progress must be dropped.
     func test_staleProgress_gatedByRequestId() {
-        let exporterA = VideoExporter()
+        let exporterA = VideoExporter(mediaLocator: StubMediaLocator())
         let requestA = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporterA)
         let requestAId = requestA.id
 
-        let exporterB = VideoExporter()
+        let exporterB = VideoExporter(mediaLocator: StubMediaLocator())
         let requestB = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporterB)
 
         // Active request is now B
@@ -98,11 +104,11 @@ final class ExportRequestGatingTests: XCTestCase {
 
     /// Production contract: onFinishing closure gates by requestId.
     func test_staleFinishing_gatedByRequestId() {
-        let exporterA = VideoExporter()
+        let exporterA = VideoExporter(mediaLocator: StubMediaLocator())
         let requestA = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporterA)
         let requestAId = requestA.id
 
-        let exporterB = VideoExporter()
+        let exporterB = VideoExporter(mediaLocator: StubMediaLocator())
         let requestB = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: exporterB)
 
         let activeRequest: PlayerViewController.ActiveExportRequest? = requestB
@@ -136,7 +142,7 @@ final class ExportRequestGatingTests: XCTestCase {
 
         XCTAssertFalse(isExporting)
 
-        activeRequest = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: VideoExporter())
+        activeRequest = PlayerViewController.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
         XCTAssertTrue(isExporting)
 
         activeRequest = nil

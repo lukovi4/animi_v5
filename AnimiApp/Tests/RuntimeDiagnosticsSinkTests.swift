@@ -137,6 +137,7 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: maxActiveDecoders,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -210,6 +211,7 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -391,6 +393,7 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -752,6 +755,7 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
             commandQueue: commandQueue,
             fps: 30,
             maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
                 SceneInstanceRuntime(
@@ -775,5 +779,13 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
         engine.stopPlayback()
 
         // If we got here, nil sink safety is confirmed
+    }
+}
+
+// MARK: - Test Stubs
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/\(mediaRef.storagePath)")
     }
 }

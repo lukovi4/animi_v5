@@ -8,14 +8,16 @@ final class DirtyBaselineContractTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeBootstrappedSession(
-        saveActiveDraft: @escaping (ActiveDraftSlot) throws -> Void = { _ in }
+        saveActiveDraft: @escaping (ActiveDraftSlot) async throws -> Void = { _ in }
     ) async -> EditorSession {
         let deps = EditorSessionDependencies(
             saveActiveDraft: saveActiveDraft,
             loadActiveDraft: { nil },
             deleteActiveDraft: {},
             loadSavedProject: { _ in nil },
-            materializeSavedProject: { _ in },
+            materializeSavedProject: { $0 },
+            mediaLocator: StubMediaLocator(),
+            mediaWriter: StubMediaWriter(),
             loadSceneLibrary: { Self.stubSceneLibrary() },
             sceneTypeDefaults: { _, _ in
                 [SceneTypeDefault(sceneTypeId: "scene_1", baseDurationUs: 3_000_000)]
@@ -45,15 +47,12 @@ final class DirtyBaselineContractTests: XCTestCase {
     func testAutosave_doesNotClearUserDirty() async {
         let session = await makeBootstrappedSession()
 
-        // Mutate
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
         XCTAssertEqual(session.requestClose(), .needsUserDecision)
 
-        // Autosave (checkpoint)
-        let saved = session.persistCheckpointIfNeeded()
+        let saved = await session.persistCheckpointIfNeeded()
         XCTAssertTrue(saved)
 
-        // Still dirty for user — autosave advances recovery baseline, not materialized baseline
         XCTAssertEqual(session.requestClose(), .needsUserDecision,
             "Autosave must not clear user-facing dirty state")
     }
@@ -62,16 +61,15 @@ final class DirtyBaselineContractTests: XCTestCase {
         var saveCount = 0
         let session = await makeBootstrappedSession(saveActiveDraft: { _ in saveCount += 1 })
 
-        // Mutate
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
 
         let beforeCount = saveCount
-        // First checkpoint
-        XCTAssertTrue(session.persistCheckpointIfNeeded())
+        let checkpointResult = await session.persistCheckpointIfNeeded()
+        XCTAssertTrue(checkpointResult)
         XCTAssertEqual(saveCount, beforeCount + 1)
 
-        // Second checkpoint (no changes since last) — should skip
-        XCTAssertFalse(session.persistCheckpointIfNeeded())
+        let noWriteResult = await session.persistCheckpointIfNeeded()
+        XCTAssertFalse(noWriteResult)
         XCTAssertEqual(saveCount, beforeCount + 1, "No redundant recovery write expected")
     }
 
@@ -79,43 +77,37 @@ final class DirtyBaselineContractTests: XCTestCase {
         var saveCount = 0
         let session = await makeBootstrappedSession(saveActiveDraft: { _ in saveCount += 1 })
 
-        // First mutate + checkpoint
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
         let before = saveCount
-        XCTAssertTrue(session.persistCheckpointIfNeeded())
+        let checkpointResult = await session.persistCheckpointIfNeeded()
+        XCTAssertTrue(checkpointResult)
 
-        // Second mutate + checkpoint
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
-        XCTAssertTrue(session.persistCheckpointIfNeeded())
+        let checkpointResult2 = await session.persistCheckpointIfNeeded()
+        XCTAssertTrue(checkpointResult2)
         XCTAssertEqual(saveCount, before + 2, "Each new mutation should trigger a new recovery write")
     }
 
     func testExportCommit_resetsBothBaselines() async {
         let session = await makeBootstrappedSession()
 
-        // Mutate
         session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
 
-        // Checkpoint (advances recovery only)
-        session.persistCheckpointIfNeeded()
+        await session.persistCheckpointIfNeeded()
         XCTAssertEqual(session.requestClose(), .needsUserDecision)
 
-        // Export commit (advances both baselines)
-        session.commitAfterExportSuccess()
+        await session.commitAfterExportSuccess()
         XCTAssertEqual(session.requestClose(), .safeToClose,
             "Export should reset both baselines")
 
-        // No redundant recovery write needed now
-        XCTAssertFalse(session.persistCheckpointIfNeeded(),
+        let noWrite = await session.persistCheckpointIfNeeded()
+        XCTAssertFalse(noWrite,
             "Recovery baseline should match current after export")
     }
 
     func testDirtyState_structuralEquality() {
-        // Verify EditorSessionSnapshot uses structural equality
-        let draft1 = ProjectDraft.create(for: "tpl_1")
-        let draft2 = ProjectDraft.create(for: "tpl_1")
+        let draft1 = ProjectDraft.create(origin: .template(templateId: "tpl_1"))
 
-        // Same content, different instances — but different IDs from create()
         let state1 = EditorState(draft: draft1, templateFPS: 30)
         let state2 = EditorState(draft: draft1, templateFPS: 30)
 
@@ -125,16 +117,31 @@ final class DirtyBaselineContractTests: XCTestCase {
         XCTAssertEqual(snap1, snap2,
             "Snapshots from identical state should be equal")
 
-        // Different state
         var modified = state1
         modified.draft.canonicalTimeline = .empty()
         let snap3 = EditorSessionSnapshot(from: modified)
 
-        // Only equal if draft1's canonical timeline was already empty
         if draft1.canonicalTimeline != .empty() {
             XCTAssertNotEqual(snap1, snap3)
         }
     }
+}
+
+private struct StubMediaLocator: ProjectMediaLocator {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/stub")
+    }
+}
+
+private struct StubMediaWriter: ProjectMediaWriteGateway {
+    func saveBackgroundImage(from preparedFileURL: URL) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) async throws -> (MediaRef, URL) {
+        (MediaRef(storagePath: "stub.jpg"), URL(fileURLWithPath: "/tmp/stub"))
+    }
+    func deleteMediaFile(_ mediaRef: MediaRef) async throws {}
+    func duplicateAssets(inDraft sourceDraft: ProjectDraft) async throws -> ProjectDraft { sourceDraft }
 }
 
 private struct StubPresetProvider: BackgroundPresetProviding {

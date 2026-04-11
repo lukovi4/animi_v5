@@ -9,8 +9,8 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
 
     // MARK: - Constants
 
-    /// Current schema version (v9: ProjectOrigin replaces templateId).
-    public static let currentSchemaVersion: Int = 9
+    /// Current schema version (v10: ProjectAssetID replaces path-as-identity).
+    public static let currentSchemaVersion: Int = 10
 
     /// Minimum scene duration in microseconds (0.1 seconds).
     public static let minSceneDurationUs: TimeUs = 100_000
@@ -57,6 +57,11 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
     /// Value: SceneState for that instance.
     public var sceneInstanceStates: [UUID: SceneState]
 
+    // MARK: - Asset Registry
+
+    /// Registry of all media assets in this project, keyed by logical `ProjectAssetID`.
+    public var assetRegistry: ProjectAssetRegistry
+
     // MARK: - Initialization
 
     public init(
@@ -68,7 +73,8 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
         updatedAt: Date = Date(),
         background: ProjectBackgroundOverride = .empty,
         canonicalTimeline: CanonicalTimeline = .empty(),
-        sceneInstanceStates: [UUID: SceneState] = [:]
+        sceneInstanceStates: [UUID: SceneState] = [:],
+        assetRegistry: ProjectAssetRegistry = .init()
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -79,6 +85,7 @@ public struct ProjectDraft: Codable, Equatable, Sendable {
         self.background = background
         self.canonicalTimeline = canonicalTimeline
         self.sceneInstanceStates = sceneInstanceStates
+        self.assetRegistry = assetRegistry
     }
 
     // MARK: - Factory

@@ -24,7 +24,7 @@ final class SceneMediaSlotCodableTests: XCTestCase {
         let decoded = try decoder.decode(SceneMediaSlot.self, from: data)
 
         XCTAssertEqual(decoded.visibility, true)
-        XCTAssertEqual(decoded.mediaRef.id, "Media/UserMedia/abc.jpg")
+        XCTAssertEqual(decoded.mediaRef.storagePath, "Media/UserMedia/abc.jpg")
         XCTAssertEqual(decoded.mediaRef.mediaKind, .photo)
         XCTAssertNil(decoded.videoWindow)
         XCTAssertTrue(decoded.placement.isDefault)

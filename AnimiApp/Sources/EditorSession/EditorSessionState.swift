@@ -24,7 +24,7 @@ enum EditorSessionPhase: Equatable {
 /// Snapshot of all data resolved during bootstrap, consumed by the view controller.
 struct BootstrappedEditor: Equatable {
     let activeDraftSlot: ActiveDraftSlot
-    let templateId: String
+    let templateId: String?   // nil for blank/duplicate origins
     let draft: ProjectDraft
     let sceneLibrary: SceneLibrarySnapshot
     let defaultSceneSequence: [SceneTypeDefault]
