@@ -1,6 +1,6 @@
 import Foundation
 import Metal
-import TVECore
+@preconcurrency import TVECore
 
 // MARK: - Scene URL Provider
 

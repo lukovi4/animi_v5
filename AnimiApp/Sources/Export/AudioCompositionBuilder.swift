@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import TVECore
 
 // MARK: - Audio Build Error
@@ -31,7 +31,7 @@ extension AudioBuildError: LocalizedError {
 // MARK: - Built Audio Pipeline
 
 /// Result of audio composition building.
-public struct BuiltAudioPipeline: Sendable {
+public struct BuiltAudioPipeline {
     /// The composed audio timeline
     public let composition: AVMutableComposition
 
@@ -103,8 +103,6 @@ public final class AudioCompositionBuilder {
         } else {
             projectDuration = Double(runtime.durationFrames) / Double(fps)
         }
-        let projectDurationTime = CMTime(seconds: projectDuration, preferredTimescale: Self.timescale)
-
         // 1. Add music track (if configured)
         if let musicConfig = config.music {
             let params = try insertAudioTrack(

@@ -1,4 +1,8 @@
 #!/bin/bash
+# AnimiApp test runner.
+# Always uses a fresh DerivedData path to avoid stale-bundle failures
+# (e.g. manifestNotFound for Templates/Catalog/manifest.json).
+# Override with ANIMIAPP_DERIVED_DATA_PATH to pin a specific path.
 
 set -euo pipefail
 
@@ -7,7 +11,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_PATH="$REPO_ROOT/AnimiApp/AnimiApp.xcodeproj"
 SCHEME="AnimiApp"
 TMP_ROOT="${TMPDIR:-/tmp}"
-DERIVED_DATA_PATH="${ANIMIAPP_DERIVED_DATA_PATH:-${TMP_ROOT%/}/AnimiAppTestsDerivedData}"
+
+# Fresh unique DerivedData per run unless explicitly overridden
+if [[ -n "${ANIMIAPP_DERIVED_DATA_PATH:-}" ]]; then
+    DERIVED_DATA_PATH="$ANIMIAPP_DERIVED_DATA_PATH"
+else
+    DERIVED_DATA_PATH="$(mktemp -d "${TMP_ROOT%/}/AnimiAppTests.XXXXXX")"
+fi
+
 FALLBACK_SIMULATOR_NAME="${ANIMIAPP_SIMULATOR_NAME:-iPhone 16}"
 FALLBACK_SIMULATOR_OS="${ANIMIAPP_SIMULATOR_OS:-latest}"
 FALLBACK_SIMULATOR_ARCH="${ANIMIAPP_SIMULATOR_ARCH:-$(uname -m)}"

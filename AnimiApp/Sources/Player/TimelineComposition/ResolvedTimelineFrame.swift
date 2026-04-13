@@ -1,5 +1,5 @@
 import Foundation
-import TVECore
+@preconcurrency import TVECore
 
 // MARK: - Resolved Timeline Frame
 

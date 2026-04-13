@@ -24,7 +24,7 @@ public enum BackgroundTextureError: Error, LocalizedError {
 /// - Load images from MediaRef (file in app sandbox) via DownsampledImageLoader
 /// - Inject textures into MutableTextureProvider
 /// - Track loaded slot keys for cleanup on preset change
-/// - Persist background images via ImageFilePreparePipeline + ProjectStore
+/// - Persist background images via ImageFilePreparePipeline + injected media writer
 ///
 /// Model A contract: All state access on @MainActor.
 @MainActor

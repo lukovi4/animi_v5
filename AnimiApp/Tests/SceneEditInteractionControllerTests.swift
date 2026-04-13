@@ -66,7 +66,7 @@ final class SceneEditInteractionControllerTests: XCTestCase {
         controller.getUIMode = { [someId] in .sceneEdit(sceneInstanceId: someId) }
         controller.getSelectedBlockId = { "block1" }
         controller.getBaselinePlacement = { [baselinePlacement] _ in baselinePlacement }
-        controller.getScenePlayer = { nil } // nil player → isTransformAllowed returns true
+        controller.getOverlayProvider = { nil } // nil player → isTransformAllowed returns true
         controller.onPlacementChanged = { [weak self] blockId, placement, phase in
             self?.events.append((blockId, placement, phase))
         }

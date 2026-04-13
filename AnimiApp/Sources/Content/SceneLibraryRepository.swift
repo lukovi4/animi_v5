@@ -16,8 +16,12 @@ final class SceneLibraryRepository: SceneLibraryProviding {
 
     private let library: SceneLibrary
 
-    init(library: SceneLibrary = .shared) {
+    init(library: SceneLibrary) {
         self.library = library
+    }
+
+    convenience init() {
+        self.init(library: .shared)
     }
 
     func load() async throws -> SceneLibrarySnapshot {

@@ -7,6 +7,7 @@ final class TemplateDetailsViewController: UIViewController {
 
     private let templateId: TemplateID
     private let catalogRepository: TemplateCatalogProviding
+    private let previewService: ProjectPreviewService
     private let onOpenEditor: (EditorLaunchIntent) -> Void
 
     // MARK: - State
@@ -65,10 +66,12 @@ final class TemplateDetailsViewController: UIViewController {
     init(
         templateId: TemplateID,
         catalogRepository: TemplateCatalogProviding,
+        previewService: ProjectPreviewService,
         onOpenEditor: @escaping (EditorLaunchIntent) -> Void
     ) {
         self.templateId = templateId
         self.catalogRepository = catalogRepository
+        self.previewService = previewService
         self.onOpenEditor = onOpenEditor
         super.init(nibName: nil, bundle: nil)
     }
@@ -156,7 +159,12 @@ final class TemplateDetailsViewController: UIViewController {
                     if let loaded = catalogRepository.template(by: templateId) {
                         template = loaded
                         loadState = .content(loaded)
-                        previewVideoView.configure(url: loaded.previewURL)
+                        switch previewService.resolveTemplatePreview(templateId: templateId) {
+                        case .videoReady(let url):
+                            previewVideoView.configure(url: url)
+                        case .notAvailable:
+                            previewVideoView.configure(url: nil)
+                        }
                         previewVideoView.play()
                     } else {
                         loadState = .error("Template not found")

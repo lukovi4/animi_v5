@@ -20,8 +20,12 @@ final class TemplateCatalogRepository: TemplateCatalogProviding {
 
     private let catalog: TemplateCatalog
 
-    init(catalog: TemplateCatalog = .shared) {
+    init(catalog: TemplateCatalog) {
         self.catalog = catalog
+    }
+
+    convenience init() {
+        self.init(catalog: .shared)
     }
 
     func load() async -> Result<TemplateCatalogSnapshot, Error> {

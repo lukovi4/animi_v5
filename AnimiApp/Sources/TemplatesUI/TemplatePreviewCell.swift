@@ -45,9 +45,16 @@ final class TemplatePreviewCell: UICollectionViewCell {
     // MARK: - Configuration
 
     /// Configures the cell with a template descriptor.
+    /// Prefer `configure(templateId:previewURL:)` which uses `ProjectPreviewService` for resolution.
     func configure(with template: TemplateDescriptor) {
         templateId = template.id
         previewVideoView.configure(url: template.previewURL)
+    }
+
+    /// Configures the cell with a pre-resolved preview URL from `ProjectPreviewService`.
+    func configure(templateId: TemplateID, previewURL: URL?) {
+        self.templateId = templateId
+        previewVideoView.configure(url: previewURL)
     }
 
     // MARK: - Reuse

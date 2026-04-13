@@ -7,6 +7,7 @@ final class CategoryTemplatesViewController: UIViewController {
 
     private let category: TemplateCategory
     private let catalogRepository: TemplateCatalogProviding
+    private let previewService: ProjectPreviewService
     private let onOpenEditor: (EditorLaunchIntent) -> Void
     private let onOpenTemplateDetails: (TemplateID) -> Void
 
@@ -69,11 +70,13 @@ final class CategoryTemplatesViewController: UIViewController {
     init(
         category: TemplateCategory,
         catalogRepository: TemplateCatalogProviding,
+        previewService: ProjectPreviewService,
         onOpenEditor: @escaping (EditorLaunchIntent) -> Void,
         onOpenTemplateDetails: @escaping (TemplateID) -> Void
     ) {
         self.category = category
         self.catalogRepository = catalogRepository
+        self.previewService = previewService
         self.onOpenEditor = onOpenEditor
         self.onOpenTemplateDetails = onOpenTemplateDetails
         super.init(nibName: nil, bundle: nil)
@@ -248,7 +251,14 @@ extension CategoryTemplatesViewController: UICollectionViewDataSource {
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TemplatePreviewCell.reuseIdentifier, for: indexPath) as! TemplatePreviewCell
         if indexPath.item < templates.count {
-            cell.configure(with: templates[indexPath.item])
+            let template = templates[indexPath.item]
+            let url: URL? = {
+                switch previewService.resolveTemplatePreview(templateId: template.id) {
+                case .videoReady(let u): return u
+                case .notAvailable: return nil
+                }
+            }()
+            cell.configure(templateId: template.id, previewURL: url)
         }
         return cell
     }

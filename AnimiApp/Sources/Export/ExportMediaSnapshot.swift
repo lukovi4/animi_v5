@@ -30,7 +30,7 @@ public enum ExportMediaError: Error, LocalizedError {
 /// Lightweight export-safe descriptor for **user media only**.
 ///
 /// Contains URLs and metadata — NO live MTLTextures.
-/// Built from persisted `mediaAssignments` (EditorStore) + `ProjectStore`.
+/// Built from persisted scene media slots plus an injected registry-backed media locator.
 ///
 /// Background media is handled separately via `ExportBackgroundSnapshot`.
 public struct ExportMediaSnapshot: Sendable {

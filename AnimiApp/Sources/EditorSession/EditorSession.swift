@@ -125,6 +125,15 @@ final class EditorSession {
         }
     }
 
+    /// Unregisters an asset only if it is no longer referenced anywhere in the current draft.
+    func unregisterAssetIfUnreferenced(_ assetId: ProjectAssetID) {
+        guard let draft = state?.draft else { return }
+        let stillReferenced = draft.assetRegistry.assetIds(referencedBy: draft).contains(assetId)
+        if !stillReferenced {
+            unregisterAssetBookkeeping(assetId)
+        }
+    }
+
     var onOutput: ((EditorSessionOutput) -> Void)?
 
     init(intent: EditorLaunchIntent, dependencies: EditorSessionDependencies) {

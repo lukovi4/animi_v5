@@ -6,6 +6,7 @@ final class TemplatesHomeViewController: UIViewController {
     // MARK: - Dependencies
 
     private let catalogRepository: TemplateCatalogProviding
+    private let previewService: ProjectPreviewService
     private let onOpenEditor: (EditorLaunchIntent) -> Void
     private let onOpenTemplateDetails: (TemplateID) -> Void
     private let onOpenCategory: (TemplateCategory) -> Void
@@ -71,12 +72,14 @@ final class TemplatesHomeViewController: UIViewController {
 
     init(
         catalogRepository: TemplateCatalogProviding,
+        previewService: ProjectPreviewService,
         onOpenEditor: @escaping (EditorLaunchIntent) -> Void,
         onOpenTemplateDetails: @escaping (TemplateID) -> Void,
         onOpenCategory: @escaping (TemplateCategory) -> Void,
         onOpenMyProjects: @escaping () -> Void
     ) {
         self.catalogRepository = catalogRepository
+        self.previewService = previewService
         self.onOpenEditor = onOpenEditor
         self.onOpenTemplateDetails = onOpenTemplateDetails
         self.onOpenCategory = onOpenCategory
@@ -288,7 +291,14 @@ extension TemplatesHomeViewController: UICollectionViewDataSource {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TemplatePreviewCell.reuseIdentifier, for: indexPath) as! TemplatePreviewCell
         let categoryId = categories[indexPath.section].id
         if let templates = templatesByCategory[categoryId], indexPath.item < templates.count {
-            cell.configure(with: templates[indexPath.item])
+            let template = templates[indexPath.item]
+            let url: URL? = {
+                switch previewService.resolveTemplatePreview(templateId: template.id) {
+                case .videoReady(let u): return u
+                case .notAvailable: return nil
+                }
+            }()
+            cell.configure(templateId: template.id, previewURL: url)
         }
         return cell
     }

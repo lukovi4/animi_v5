@@ -13,6 +13,7 @@ final class AppCompositionRoot {
     let sceneLibraryRepository: SceneLibraryRepository
     let backgroundPresetRepository: BackgroundPresetRepository
     let storageActor: ProjectStorageActor
+    let previewService: ProjectPreviewService
 
     private weak var navigationController: UINavigationController?
     private var launchRouter: AppLaunchRouter?
@@ -24,6 +25,7 @@ final class AppCompositionRoot {
         self.sceneLibraryRepository = SceneLibraryRepository()
         self.backgroundPresetRepository = BackgroundPresetRepository()
         self.storageActor = ProjectStorageActor()
+        self.previewService = ProjectPreviewService(catalogProvider: templateCatalogRepository)
     }
 
     // MARK: - Bootstrap
@@ -91,6 +93,7 @@ final class AppCompositionRoot {
     private func makeHomeViewController() -> TemplatesHomeViewController {
         TemplatesHomeViewController(
             catalogRepository: templateCatalogRepository,
+            previewService: previewService,
             onOpenEditor: { [weak self] intent in
                 self?.openEditor(intent)
             },
@@ -110,6 +113,7 @@ final class AppCompositionRoot {
         let detailsVC = TemplateDetailsViewController(
             templateId: templateId,
             catalogRepository: templateCatalogRepository,
+            previewService: previewService,
             onOpenEditor: { [weak self] intent in
                 self?.openEditor(intent)
             }
@@ -121,6 +125,7 @@ final class AppCompositionRoot {
         let categoryVC = CategoryTemplatesViewController(
             category: category,
             catalogRepository: templateCatalogRepository,
+            previewService: previewService,
             onOpenEditor: { [weak self] intent in
                 self?.openEditor(intent)
             },

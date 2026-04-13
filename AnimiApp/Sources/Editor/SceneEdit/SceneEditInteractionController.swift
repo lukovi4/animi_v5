@@ -13,7 +13,7 @@ enum TransformType {
 }
 
 /// Controller for Scene Edit mode interactions: hit testing, selection, and gestures.
-/// Manages coordinate mapping and communicates with ScenePlayer for overlays and transforms.
+/// Manages coordinate mapping and communicates with overlay provider for overlays and transforms.
 @MainActor
 final class SceneEditInteractionController {
 
@@ -34,8 +34,8 @@ final class SceneEditInteractionController {
     /// Whether to show ingest status in the overlay.
     var showsIngestStatusOverlay: Bool = true
 
-    /// Closure to get current ScenePlayer instance.
-    var getScenePlayer: (() -> ScenePlayer?)?
+    /// Closure to get sealed overlay/hit-test provider.
+    var getOverlayProvider: (() -> SceneEditOverlayProviding?)?
 
     /// Closure to get current UI mode from EditorStore.
     var getUIMode: (() -> EditorUIMode)?
@@ -72,12 +72,12 @@ final class SceneEditInteractionController {
     /// - Parameter viewPoint: Tap location in view coordinates.
     func handleTap(viewPoint: CGPoint) {
         guard case .sceneEdit = getUIMode?() else { return }
-        guard let player = getScenePlayer?() else { return }
+        guard let player = getOverlayProvider?() else { return }
 
         let canvasPoint = mapper.viewToCanvas(viewPoint)
         let hit = player.hitTest(
             point: Vec2D(x: Double(canvasPoint.x), y: Double(canvasPoint.y)),
-            frame: ScenePlayer.editFrameIndex,
+            frame: SceneRenderPlan.editFrameIndex,
             mode: .edit
         )
         onSelectBlock?(hit)
@@ -93,13 +93,13 @@ final class SceneEditInteractionController {
             ingestStatusOverlayView?.update(overlays: [], statusesByBlockId: [:], showsStatus: false)
             return
         }
-        guard let player = getScenePlayer?() else {
+        guard let player = getOverlayProvider?() else {
             overlayView?.update(overlays: [], selectedBlockId: nil)
             ingestStatusOverlayView?.update(overlays: [], statusesByBlockId: [:], showsStatus: false)
             return
         }
 
-        let overlays = player.overlays(frame: ScenePlayer.editFrameIndex, mode: .edit)
+        let overlays = player.overlays(frame: SceneRenderPlan.editFrameIndex, mode: .edit)
         let canvasToView = mapper.canvasToViewTransform()
         overlayView?.canvasToView = canvasToView
         overlayView?.update(overlays: overlays, selectedBlockId: getSelectedBlockId?())
@@ -136,7 +136,7 @@ final class SceneEditInteractionController {
 
             // Convert canvas delta to binding-local delta via inverse edit binding matrix
             let bindingLocalDelta: (x: Double, y: Double)
-            if let player = getScenePlayer?(),
+            if let player = getOverlayProvider?(),
                let bindingToCanvas = player.editBindingToCanvasMatrix(blockId: blockId),
                let inverseBTC = bindingToCanvas.inverse {
                 // Transform delta vector (not point): apply inverse matrix to direction only
@@ -272,7 +272,7 @@ final class SceneEditInteractionController {
     /// Checks if a transform type is allowed for the given block.
     /// - Note: `nil` from `userTransformsAllowed` means all transforms are allowed (backward compatible).
     private func isTransformAllowed(blockId: String, type: TransformType) -> Bool {
-        guard let player = getScenePlayer?(),
+        guard let player = getOverlayProvider?(),
               let allowed = player.userTransformsAllowed(blockId: blockId) else {
             return true // nil = all allowed
         }

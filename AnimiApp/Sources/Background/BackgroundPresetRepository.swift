@@ -16,8 +16,12 @@ final class BackgroundPresetRepository: BackgroundPresetProviding {
 
     private let library: BackgroundPresetLibrary
 
-    init(library: BackgroundPresetLibrary = .shared) {
+    init(library: BackgroundPresetLibrary) {
         self.library = library
+    }
+
+    convenience init() {
+        self.init(library: .shared)
     }
 
     func loadFromBundle() throws {

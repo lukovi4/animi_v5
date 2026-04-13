@@ -27,6 +27,7 @@ extension ScenePlayer: ScenePlayerApplying {}
 // MARK: - MediaInputProvider
 
 /// Provides default fit mode for a block. Used for placement resolution.
+@MainActor
 public protocol MediaInputProvider {
     /// Returns the `defaultFit` for the given block, or `nil` if unknown.
     func defaultFit(forBlockId blockId: String) -> FitMode?
