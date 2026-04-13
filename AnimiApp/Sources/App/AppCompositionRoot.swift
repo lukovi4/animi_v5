@@ -62,7 +62,6 @@ final class AppCompositionRoot {
     // MARK: - Editor Routing
 
     func openEditor(_ intent: EditorLaunchIntent) {
-        if case .blankProject = intent { return }  // PR 7
 
         let deps = EditorSessionDependencies(
             saveActiveDraft: { [storageActor] in try await storageActor.saveActiveDraft($0) },
@@ -137,7 +136,14 @@ final class AppCompositionRoot {
     }
 
     private func openMyProjects() {
-        let service = SavedProjectsService(persistence: storageActor)
+        let duplication = ProjectDuplicationUseCase(
+            persistence: storageActor,
+            mediaWriter: storageActor
+        )
+        let service = SavedProjectsService(
+            persistence: storageActor,
+            duplication: duplication
+        )
         let myProjectsVC = MyProjectsViewController(
             savedProjectsService: service,
             onOpenEditor: { [weak self] intent in

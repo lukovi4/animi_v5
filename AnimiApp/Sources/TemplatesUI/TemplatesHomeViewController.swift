@@ -108,6 +108,12 @@ final class TemplatesHomeViewController: UIViewController {
 
     private func setupUI() {
         title = "Templates"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "plus.rectangle"),
+            style: .plain,
+            target: self,
+            action: #selector(createBlankProjectTapped)
+        )
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "folder"),
             style: .plain,
@@ -255,6 +261,10 @@ final class TemplatesHomeViewController: UIViewController {
     }
 
     // MARK: - Navigation
+
+    @objc private func createBlankProjectTapped() {
+        onOpenEditor(.blankProject)
+    }
 
     @objc private func openMyProjectsTapped() {
         onOpenMyProjects()

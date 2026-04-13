@@ -9,25 +9,36 @@
       "id": "example_4blocks",
       "order": 0,
       "title": "4 Blocks Demo",
-      "baseDurationUs": 10000000
+      "baseDurationUs": 10000000,
+      "usage": "catalog"
     },
     {
       "id": "polaroid_shared_demo",
       "order": 1,
       "title": "Polaroid Classic",
-      "baseDurationUs": 10000000
+      "baseDurationUs": 10000000,
+      "usage": "catalog"
     },
     {
       "id": "polaroid_2",
       "order": 2,
       "title": "Polaroid Style 2",
-      "baseDurationUs": 5000000
+      "baseDurationUs": 5000000,
+      "usage": "catalog"
     },
     {
       "id": "full_image",
       "order": 3,
       "title": "Full Image",
-      "baseDurationUs": 5000000
+      "baseDurationUs": 5000000,
+      "usage": "catalog"
+    },
+    {
+      "id": "blank_starter",
+      "order": 100,
+      "title": "Blank Starter",
+      "baseDurationUs": 5000000,
+      "usage": "starterOnly"
     }
   ]
 }

@@ -207,10 +207,42 @@ final class EditorSession {
             logger.info("[EditorSession] Resumed active draft: \(draft.id)")
 
         case .blankProject:
-            let msg = "Blank project not yet supported"
-            phase = .failed(msg)
-            onOutput?(.bootstrapFailed(msg))
-            return
+            // Load scene library early to resolve starter scene duration
+            let earlyLibrary: SceneLibrarySnapshot
+            do {
+                earlyLibrary = try await deps.loadSceneLibrary()
+            } catch {
+                let msg = "Scene library load failed"
+                logger.error("[EditorSession] Failed to load SceneLibrary for blank project: \(error)")
+                phase = .failed(msg)
+                onOutput?(.bootstrapFailed(msg))
+                return
+            }
+
+            let blankDraft: ProjectDraft
+            do {
+                blankDraft = try BlankProjectFactory.makeDraft(library: earlyLibrary)
+            } catch {
+                let msg = "Starter scene not available"
+                logger.error("[EditorSession] Blank project factory failed: \(error)")
+                phase = .failed(msg)
+                onOutput?(.bootstrapFailed(msg))
+                return
+            }
+
+            slot = ActiveDraftSlot(
+                entryContext: .newProject(origin: blankDraft.origin),
+                linkedSavedProjectId: nil,
+                draft: blankDraft
+            )
+            do {
+                try await deps.saveActiveDraft(slot)
+            } catch {
+                logger.error("[EditorSession] Failed to save active draft: \(error)")
+            }
+            draft = blankDraft
+            resolvedTemplateId = nil
+            logger.info("[EditorSession] New blank project, draft: \(blankDraft.id)")
         }
 
         activeDraftSlot = slot

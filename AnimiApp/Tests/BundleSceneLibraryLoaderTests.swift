@@ -52,6 +52,21 @@ final class BundleSceneLibraryLoaderTests: XCTestCase {
         }
     }
 
+    /// blank_starter is loadable by id but excluded from catalog scenes.
+    func test_blankStarterIsLoadableButHiddenFromCatalog() throws {
+        let loader = BundleSceneLibraryLoader()
+        let snapshot = try loader.load()
+
+        XCTAssertNotNil(
+            snapshot.scene(byId: "blank_starter"),
+            "blank_starter should be loadable by id"
+        )
+        XCTAssertTrue(
+            snapshot.catalogScenes.allSatisfy { $0.id != "blank_starter" },
+            "blank_starter should not appear in catalogScenes"
+        )
+    }
+
     // MARK: - Probe Injection Tests
 
     /// Scene with valid folder + passing probe survives.

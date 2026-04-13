@@ -25,7 +25,8 @@
 - закрыт `PR 4` `Storage Core, ProjectOrigin And Metadata V2`;
 - закрыт `PR 5` `Asset Identity Cutover And Runtime Storage Boundary`;
 - закрыт `PR 6` `EditorRuntime Extraction And Render Contract`;
-- следующий незакрытый шаг: `PR 7` `Blank Project, Duplicate Project And My Projects`;
+- закрыт `PR 7` `Blank Project, Duplicate Project And My Projects`;
+- следующий незакрытый шаг: `PR 8` `Audio V1: Single Project-Level Music Track`;
 - рабочая epic-ветка для rollout-а: `codex/epic-q-editor-app-layer-refactor`.
 
 Что уже сделано в `PR 0`:
@@ -1022,7 +1023,7 @@ PR6 delivered the canonical runtime/render/export boundary.
 - canonical final validation state on the current tree is green:
   - `Scripts/verify_module_boundary.sh` — PASS
   - `cd TVECore && swift test` — PASS
-  - `Scripts/run_animiapp_tests.sh` — **963 tests, 0 failures**
+  - `Scripts/run_animiapp_tests.sh` — **981 tests, 0 failures**
   - `make build` — PASS
 
 ## 11. PR 7. Blank Project, Duplicate Project And My Projects
@@ -1100,6 +1101,28 @@ PR6 delivered the canonical runtime/render/export boundary.
 - `SceneLibraryCatalogVisibilityTests`;
 - обновленные `BundleSceneLibraryLoaderTests` для `blank_starter`;
 - missing-media coverage для saved/duplicate open flows.
+
+### 11.8. Final status
+
+PR7 delivered the canonical blank-project / duplicate-project product flows.
+
+- `EditorLaunchIntent.blankProject` is now shipped end-to-end: `TemplatesHomeViewController` opens it, `EditorSession` bootstraps it, and `BlankProjectFactory` materializes a persisted non-empty draft with starter scene `blank_starter`.
+- `blank_starter` is now part of the shipped scene library as `starterOnly`; it remains loadable by id but is excluded from the normal scene catalog UI through `SceneLibrarySnapshot.catalogScenes`.
+- `My Projects` now has a shipped duplicate action surface: `ProjectPreviewCell` exposes duplicate/delete actions, `MyProjectsViewController` wires duplicate through `SavedProjectsService`, and `ProjectDuplicationUseCase` materializes duplicates via the storage/persistence gateways.
+- saved-project cards no longer depend on template preview as a correctness contract; `previewURL: nil` is a first-class supported state.
+- duplicate flow is missing-media-safe: `FileProjectMediaStore.duplicateAssets(inDraft:)` now mints fresh broken descriptors for missing source files, so duplication still succeeds and the duplicated saved project activates the existing missing-media notice/export-gate contracts on reopen.
+- PR7-specific coverage is now present:
+  - `BlankProjectFlowTests`
+  - `ProjectDuplicationUseCaseTests`
+  - `DuplicateProjectMissingMediaFlowTests`
+  - updated `AppCompositionRootTests`
+  - updated `BundleSceneLibraryLoaderTests`
+  - updated `SceneCatalogTests`
+- canonical final validation state on the current tree is green:
+  - `Scripts/verify_module_boundary.sh` — PASS
+  - `cd TVECore && swift test` — PASS
+  - `Scripts/run_animiapp_tests.sh` — **981 tests, 0 failures**
+  - `make build` — PASS
 
 ## 12. PR 8. Audio V1: Single Project-Level Music Track
 
@@ -1425,7 +1448,7 @@ The plan flagged an open risk around undo/registry symmetry: if a slot-unregiste
 
 1. `Scripts/verify_module_boundary.sh` — **PASS** (exit 0).
 2. `cd TVECore && rm -rf .build && swift test` — **939 tests, 86 skipped (Metal), 0 failures**.
-3. `Scripts/run_animiapp_tests.sh` — **963 tests, 0 failures, 0 unexpected, `** TEST SUCCEEDED **`**.
+3. `Scripts/run_animiapp_tests.sh` — **981 tests, 0 failures, 0 unexpected, `** TEST SUCCEEDED **`**.
 4. `make build` — **`** BUILD SUCCEEDED **`**, exit 0.
 
 ### Grep contracts

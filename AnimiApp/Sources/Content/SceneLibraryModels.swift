@@ -22,6 +22,14 @@ public struct CanvasConfig: Codable, Equatable, Sendable {
 
 // MARK: - Scene Type Descriptor
 
+/// Where a scene is allowed to appear.
+public enum SceneUsage: String, Codable, Equatable, Sendable {
+    /// Shown in the scene catalog picker inside the editor.
+    case catalog
+    /// Only used as a starter scene for blank projects; hidden from catalog UI.
+    case starterOnly
+}
+
 /// Describes a single scene type in the library.
 public struct SceneTypeDescriptor: Codable, Equatable, Sendable, Identifiable {
     /// Unique scene type identifier.
@@ -32,12 +40,14 @@ public struct SceneTypeDescriptor: Codable, Equatable, Sendable, Identifiable {
     public let title: String
     /// Base duration from AE in microseconds.
     public let baseDurationUs: TimeUs
+    /// Where this scene is allowed to appear. Defaults to `.catalog`.
+    public let usage: SceneUsage
 
     /// Resolved URL for the scene folder (set by loader using convention: Scenes/<id>).
     public var folderURL: URL?
 
     enum CodingKeys: String, CodingKey {
-        case id, order, title, baseDurationUs
+        case id, order, title, baseDurationUs, usage
     }
 
     public init(
@@ -45,13 +55,33 @@ public struct SceneTypeDescriptor: Codable, Equatable, Sendable, Identifiable {
         order: Int,
         title: String,
         baseDurationUs: TimeUs,
+        usage: SceneUsage = .catalog,
         folderURL: URL? = nil
     ) {
         self.id = id
         self.order = order
         self.title = title
         self.baseDurationUs = baseDurationUs
+        self.usage = usage
         self.folderURL = folderURL
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(SceneTypeID.self, forKey: .id)
+        order = try container.decode(Int.self, forKey: .order)
+        title = try container.decode(String.self, forKey: .title)
+        baseDurationUs = try container.decode(TimeUs.self, forKey: .baseDurationUs)
+        usage = try container.decodeIfPresent(SceneUsage.self, forKey: .usage) ?? .catalog
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(order, forKey: .order)
+        try container.encode(title, forKey: .title)
+        try container.encode(baseDurationUs, forKey: .baseDurationUs)
+        try container.encode(usage, forKey: .usage)
     }
 }
 
@@ -105,6 +135,11 @@ public struct SceneLibrarySnapshot: Sendable {
     /// Returns all scenes sorted by order.
     public var scenesInOrder: [SceneTypeDescriptor] {
         orderedIds.compactMap { scenesById[$0] }
+    }
+
+    /// Returns only catalog-visible scenes sorted by order.
+    public var catalogScenes: [SceneTypeDescriptor] {
+        scenesInOrder.filter { $0.usage == .catalog }
     }
 }
 

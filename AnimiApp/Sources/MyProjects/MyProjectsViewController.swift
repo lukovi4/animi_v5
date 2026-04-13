@@ -10,7 +10,7 @@ final class MyProjectsViewController: UIViewController {
 
     // MARK: - Section Model
 
-    private struct Section {
+    internal struct Section {
         let title: String
         var entries: [SavedProjectSummary]
     }
@@ -150,16 +150,20 @@ final class MyProjectsViewController: UIViewController {
         collectionView.reloadData()
     }
 
-    private static func groupByDate(_ entries: [SavedProjectSummary]) -> [Section] {
+    internal static func groupByDate(_ entries: [SavedProjectSummary]) -> [Section] {
         let calendar = Calendar.current
 
         var today: [SavedProjectSummary] = []
         var yesterday: [SavedProjectSummary] = []
         var earlier: [SavedProjectSummary] = []
 
-        let sorted = entries.sorted { $0.savedAt > $1.savedAt }
+        // entries is already canonically sorted by the persistence layer
+        // (savedAt desc, projectId.uuidString desc tie-breaker in
+        // FileProjectPersistenceStore.allSavedProjectSummaries). Re-sorting
+        // here would drop the tie-breaker and make equal-timestamp ordering
+        // non-deterministic.
 
-        for entry in sorted {
+        for entry in entries {
             if calendar.isDateInToday(entry.savedAt) {
                 today.append(entry)
             } else if calendar.isDateInYesterday(entry.savedAt) {
@@ -193,6 +197,20 @@ final class MyProjectsViewController: UIViewController {
             }
         }
     }
+
+    private func duplicateProject(at indexPath: IndexPath) {
+        let entry = self.entry(at: indexPath)
+        Task {
+            do {
+                _ = try await savedProjectsService.duplicateProject(projectId: entry.projectId)
+                await reloadData()
+            } catch {
+                #if DEBUG
+                print("[MyProjects] Duplicate failed: \(error)")
+                #endif
+            }
+        }
+    }
 }
 
 // MARK: - UICollectionViewDataSource
@@ -215,6 +233,10 @@ extension MyProjectsViewController: UICollectionViewDataSource {
 
         let summary = self.entry(at: indexPath)
         cell.configure(summary: summary)
+
+        cell.onDuplicate = { [weak self] in
+            self?.duplicateProject(at: indexPath)
+        }
 
         cell.onDelete = { [weak self] in
             self?.confirmDelete(at: indexPath)

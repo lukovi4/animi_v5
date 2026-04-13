@@ -15,9 +15,9 @@ final class SceneCatalogViewController: UITableViewController {
 
     // MARK: - Initialization
 
-    /// Creates a catalog with scenes from the library snapshot.
+    /// Creates a catalog with catalog-visible scenes from the library snapshot.
     init(sceneLibrary: SceneLibrarySnapshot) {
-        scenes = sceneLibrary.scenesInOrder
+        scenes = sceneLibrary.catalogScenes
         super.init(style: .plain)
     }
 

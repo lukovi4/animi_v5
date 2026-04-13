@@ -1397,7 +1397,8 @@ PR5 shipped the canonical storage boundary and asset-identity cutover described 
 ### 17.4. Duplicate-project foundation (storage-level, no UI)
 
 - `ProjectMediaWriteGateway.duplicateAssets(inDraft:) async throws -> ProjectDraft` lives on `ProjectStorageActor` + `FileProjectMediaStore`. It walks `assetRegistry.assetIds(referencedBy:)`, copies each file to a fresh UUID-named destination in the same directory class, mints a new `ProjectAssetID` per copy, rewrites every `MediaRef` in scene slots + background regions, and returns a new draft with a fresh `id`, fresh registry containing only the new descriptors, and fresh timestamps.
-- Storage-level proof: `DuplicateProjectAssetIndependenceTests` verifies new draft shares zero `assetId`s + zero `storagePath`s with source, source files survive, and deleting source does not affect duplicate. PR 7 will wire this into a user-facing "Duplicate project" action.
+- Storage-level proof: `DuplicateProjectAssetIndependenceTests` verifies new draft shares zero `assetId`s + zero `storagePath`s with source, source files survive, and deleting source does not affect duplicate. PR 7 wires this into the shipped user-facing duplicate action in `My Projects` via `ProjectDuplicationUseCase` + `SavedProjectsService`.
+- Missing-media-safe duplicate semantics are also shipped: if a referenced source file is already gone, `FileProjectMediaStore.duplicateAssets(inDraft:)` now mints a fresh broken descriptor/path without copying the missing file, so duplication still succeeds and the duplicated project re-enters the existing missing-media notice/export-gate contracts on reopen. `DuplicateProjectMissingMediaFlowTests` covers the real end-to-end chain (source save → delete file → duplicate → reopen duplicate → missing-media notice contract).
 
 ### 17.5. Registry bookkeeping is non-dirtying
 
@@ -1442,7 +1443,7 @@ Whenever production code calls `session.registerAssetBookkeeping(...)` and then 
 
 1. `Scripts/verify_module_boundary.sh` — PASS.
 2. `cd TVECore && rm -rf .build && swift test` — 939 tests, 86 skipped (Metal shader unavailable in SPM test env, normal), 0 failures.
-3. `Scripts/run_animiapp_tests.sh` — **963 tests, 0 failures, 0 unexpected, `** TEST SUCCEEDED **`**.
+3. `Scripts/run_animiapp_tests.sh` — **981 tests, 0 failures, 0 unexpected, `** TEST SUCCEEDED **`**.
 4. `make build` — `** BUILD SUCCEEDED **`, exit 0.
 
 ### 17.10. Grep acceptance contracts (all green)

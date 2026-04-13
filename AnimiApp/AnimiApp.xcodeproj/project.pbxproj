@@ -180,6 +180,11 @@
 		B319D3EED1F23C34885E8646 /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B68FDC0B5B9E176AEECBF7BF /* ProjectStore.swift */; };
 		B32E00282D93D218EFFDE577 /* EditorReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F5EF817846AED742165D197 /* EditorReducer.swift */; };
 		A1B2C3D4E5F600010000A001 /* MyProjectsViewControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600010000A002 /* MyProjectsViewControllerTests.swift */; };
+		A1B2C3D4E5F6000200000B02 /* BlankProjectFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000200000B01 /* BlankProjectFactory.swift */; };
+		A1B2C3D4E5F6000200000B04 /* BlankProjectFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000200000B03 /* BlankProjectFlowTests.swift */; };
+		A1B2C3D4E5F6000300000002 /* DuplicateProjectMissingMediaFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000300000001 /* DuplicateProjectMissingMediaFlowTests.swift */; };
+		A1B2C3D4E5F6000200000D02 /* ProjectDuplicationUseCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000200000D01 /* ProjectDuplicationUseCase.swift */; };
+		A1B2C3D4E5F6000200000D04 /* ProjectDuplicationUseCaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000200000D03 /* ProjectDuplicationUseCaseTests.swift */; };
 		B33F634846D638576ECEA9A5 /* SavedProjectsListingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 174AB39FCEE432398499BCA6 /* SavedProjectsListingTests.swift */; };
 		B3797DBA5A2809079BD00023 /* TimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F2AE9AABEA22194B49C3A4 /* TimelineView.swift */; };
 		B7108258565751B74A2BBFED /* UserMediaServiceTrimPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 835BF5FDBC125EB99E6131AE /* UserMediaServiceTrimPreviewTests.swift */; };
@@ -316,6 +321,11 @@
 		173D7F30D8FABC0547EB1C4A /* RenderDiagnosticEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderDiagnosticEvent.swift; sourceTree = "<group>"; };
 		174AB39FCEE432398499BCA6 /* SavedProjectsListingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectsListingTests.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F600010000A002 /* MyProjectsViewControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyProjectsViewControllerTests.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000200000B01 /* BlankProjectFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlankProjectFactory.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000200000B03 /* BlankProjectFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlankProjectFlowTests.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000300000001 /* DuplicateProjectMissingMediaFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateProjectMissingMediaFlowTests.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000200000D01 /* ProjectDuplicationUseCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDuplicationUseCase.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6000200000D03 /* ProjectDuplicationUseCaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDuplicationUseCaseTests.swift; sourceTree = "<group>"; };
 		1791A771F04B240E98E5F3B8 /* MediaIngestStatusOverlayViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaIngestStatusOverlayViewTests.swift; sourceTree = "<group>"; };
 		17978D254FF4A01AF6C27265 /* EditorStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorStore.swift; sourceTree = "<group>"; };
 		18A2B083177B5FEF1FD7C1A9 /* ActiveDraftSlot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActiveDraftSlot.swift; sourceTree = "<group>"; };
@@ -620,12 +630,14 @@
 				674596031572692DF249640B /* AudioWriterPumpTests.swift */,
 				4618A8F93722163D18372FD4 /* BackgroundPresetRepositoryTests.swift */,
 				8D8FD07F0B8C742066EB95E2 /* BackgroundTextureServiceTests.swift */,
+				A1B2C3D4E5F6000200000B03 /* BlankProjectFlowTests.swift */,
 				21D30F4AD7074A5CDEBC16BE /* BundleSceneLibraryLoaderTests.swift */,
 				E0B1C77A6A4639DCEC207A62 /* CleanCloseContractTests.swift */,
 				7B169B8585E0E44F93C9E2A9 /* DefaultFitResolverTests.swift */,
 				05FBD6A707419BB273A2B011 /* DirtyBaselineContractTests.swift */,
 				1F9CDE81C26B36887FEDB85F /* DownsampledImageLoaderTests.swift */,
 				1FD6907C682EA28442C969D4 /* DuplicateProjectAssetIndependenceTests.swift */,
+				A1B2C3D4E5F6000300000001 /* DuplicateProjectMissingMediaFlowTests.swift */,
 				1D2F81B686E29455B8A0D22E /* EditorReducerNormalizationTests.swift */,
 				3CE2CD88AC9A98A104AADE80 /* EditorReducerPlayheadSelectionTests.swift */,
 				064CBB435BB4FBAAE4B4C93C /* EditorReducerSceneExistenceTests.swift */,
@@ -667,6 +679,7 @@
 				A117EBC6ED71883406F5D1DC /* PlacementGestureSessionTests.swift */,
 				7FD120F907B45561729230A9 /* ProjectAssetIdentityContractTests.swift */,
 				267B987C8CDEBE00ED08B699 /* ProjectOriginMetadataTests.swift */,
+				A1B2C3D4E5F6000200000D03 /* ProjectDuplicationUseCaseTests.swift */,
 				535F90814124A67DFF4EABED /* ProjectPersistenceGatewayTests.swift */,
 				859663180197988322C50AF2 /* ProjectPreviewServiceTests.swift */,
 				F65D289FDE2F35791BF6D9E7 /* ProjectStorePersistenceTests.swift */,
@@ -759,6 +772,7 @@
 			children = (
 				18A2B083177B5FEF1FD7C1A9 /* ActiveDraftSlot.swift */,
 				3364EA3951160DA864738903 /* CanonicalTimeline.swift */,
+				A1B2C3D4E5F6000200000B01 /* BlankProjectFactory.swift */,
 				CA08D7E49AF2FAED41B3739D /* EditorConfig.swift */,
 				529DE8D8DEB4F9B6781AFD1D /* FileProjectMediaStore.swift */,
 				CB75BB3737337DA25F538879 /* FileProjectPersistenceStore.swift */,
@@ -771,6 +785,7 @@
 				C3956C0C33E296EB09CB95D5 /* ProjectAssetRegistry.swift */,
 				55C76845C9F4E045E5E4913B /* ProjectBackgroundOverride.swift */,
 				24544FC9E0EAD15CABC4A7B4 /* ProjectDraft.swift */,
+				A1B2C3D4E5F6000200000D01 /* ProjectDuplicationUseCase.swift */,
 				CC4826CF7241D11F4CAC41B8 /* ProjectMediaLocator.swift */,
 				9A2DA0A608D4AF29DC10AEB6 /* ProjectMediaWriteGateway.swift */,
 				209BCAB68281911CA5160D19 /* ProjectOrigin.swift */,
@@ -1151,12 +1166,14 @@
 				58EE44C0463EA2560509056E /* AudioWriterPumpTests.swift in Sources */,
 				DCD914DD7CE7B5C8C6931752 /* BackgroundPresetRepositoryTests.swift in Sources */,
 				CC62193D7045BFAB9A361E4F /* BackgroundTextureServiceTests.swift in Sources */,
+				A1B2C3D4E5F6000200000B04 /* BlankProjectFlowTests.swift in Sources */,
 				8D66A21A911EFD2B21F5F885 /* BundleSceneLibraryLoaderTests.swift in Sources */,
 				FC10142F0C5845B28B5DD3B0 /* CleanCloseContractTests.swift in Sources */,
 				25DF7040C60D978493B4B0D5 /* DefaultFitResolverTests.swift in Sources */,
 				A457671448B69B80333F1C26 /* DirtyBaselineContractTests.swift in Sources */,
 				902EAF22F2E3D1840F714372 /* DownsampledImageLoaderTests.swift in Sources */,
 				CBDAB0AC854788754D4AA6D4 /* DuplicateProjectAssetIndependenceTests.swift in Sources */,
+				A1B2C3D4E5F6000300000002 /* DuplicateProjectMissingMediaFlowTests.swift in Sources */,
 				E6323309E0940448959313A1 /* EditorReducerNormalizationTests.swift in Sources */,
 				013731CC3FC39787721CDE70 /* EditorReducerPlayheadSelectionTests.swift in Sources */,
 				6F6C7BC3A1A405611CE4333D /* EditorReducerSceneExistenceTests.swift in Sources */,
@@ -1195,6 +1212,7 @@
 				0CC3A4613EB147956A9A7C03 /* PlacementGestureSessionTests.swift in Sources */,
 				BF8A9480C3F4C72C5A316C2A /* ProjectAssetIdentityContractTests.swift in Sources */,
 				4C5AF29C856F7CD896C356F2 /* ProjectOriginMetadataTests.swift in Sources */,
+				A1B2C3D4E5F6000200000D04 /* ProjectDuplicationUseCaseTests.swift in Sources */,
 				89353CAA1F47910AA9FF930F /* ProjectPersistenceGatewayTests.swift in Sources */,
 				7C606C76A7E05CA2D3A8F3F5 /* ProjectStorePersistenceTests.swift in Sources */,
 				4B95A9FE763517616F13700A /* RecoveryPromptFlowTests.swift in Sources */,
@@ -1262,6 +1280,7 @@
 				85DF4E86681E99E8A748BF67 /* BackgroundPresetLibrary.swift in Sources */,
 				E0E39A389B094C86CDBA584D /* BackgroundPresetRepository.swift in Sources */,
 				E25698A846DA76F3CA4038B4 /* BackgroundTextureService.swift in Sources */,
+				A1B2C3D4E5F6000200000B02 /* BlankProjectFactory.swift in Sources */,
 				283620DB39148AB24A06ECC1 /* BundleSceneLibraryLoader.swift in Sources */,
 				498C37DBB763362200900A78 /* BundleTemplateCatalogLoader.swift in Sources */,
 				EA5DFD8E85E8165771D4BFF3 /* CanonicalTimeline.swift in Sources */,
@@ -1332,6 +1351,7 @@
 				301E51B5DE1CB6C639DD1744 /* ProjectAssetRegistry.swift in Sources */,
 				0F9C3ED0FBF09B219D543DC9 /* ProjectBackgroundOverride.swift in Sources */,
 				921C1521C032FB6559CA59C4 /* ProjectDraft.swift in Sources */,
+				A1B2C3D4E5F6000200000D02 /* ProjectDuplicationUseCase.swift in Sources */,
 				3D49FE7693511F6B21A15A0A /* ProjectMediaLocator.swift in Sources */,
 				C78C50C8B454C688D6DD516C /* ProjectMediaWriteGateway.swift in Sources */,
 				D4FDC26B9AFFE8D8D7DDFFF2 /* ProjectOrigin.swift in Sources */,

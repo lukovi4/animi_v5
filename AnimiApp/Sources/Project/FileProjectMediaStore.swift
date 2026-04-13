@@ -163,14 +163,23 @@ final class FileProjectMediaStore: @unchecked Sendable {
                 destDirURL = try userMediaDirectoryURL()
                 destSubdir = "\(FileProjectPersistenceStore.mediaDirectoryName)/\(FileProjectPersistenceStore.userMediaDirectoryName)"
             }
-            try fileManager.createDirectory(at: destDirURL, withIntermediateDirectories: true)
 
             let ext = (sourceRelativePath as NSString).pathExtension
             let newFilename = ext.isEmpty ? UUID().uuidString : "\(UUID().uuidString).\(ext)"
             let newRelativePath = "\(destSubdir)/\(newFilename)"
-            let newDestURL = destDirURL.appendingPathComponent(newFilename)
 
-            try fileManager.copyItem(at: sourceURL, to: newDestURL)
+            // Variant B: mint independent descriptor even if source file is missing.
+            // Missing files are not copied; the new draft gets a fresh broken ref
+            // that the existing missing-media notice path detects at bootstrap.
+            if fileManager.fileExists(atPath: sourceURL.path) {
+                try fileManager.createDirectory(at: destDirURL, withIntermediateDirectories: true)
+                let newDestURL = destDirURL.appendingPathComponent(newFilename)
+                try fileManager.copyItem(at: sourceURL, to: newDestURL)
+            } else {
+                #if DEBUG
+                print("[FileProjectMediaStore] duplicateAssets: source missing for asset \(oldAssetId.rawValue) at \(sourceRelativePath), minting broken duplicate descriptor")
+                #endif
+            }
 
             let newAssetId = ProjectAssetID()
             let newDescriptor = ProjectAssetDescriptor(

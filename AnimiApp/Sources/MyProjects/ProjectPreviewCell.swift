@@ -25,6 +25,13 @@ final class ProjectPreviewCell: UICollectionViewCell {
         return label
     }()
 
+    private let duplicateButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: "doc.on.doc"), for: .normal)
+        button.tintColor = .systemBlue
+        return button
+    }()
+
     private let deleteButton: UIButton = {
         let button = UIButton(type: .system)
         button.setImage(UIImage(systemName: "trash"), for: .normal)
@@ -32,6 +39,7 @@ final class ProjectPreviewCell: UICollectionViewCell {
         return button
     }()
 
+    var onDuplicate: (() -> Void)?
     var onDelete: (() -> Void)?
 
     // MARK: - Init
@@ -51,11 +59,13 @@ final class ProjectPreviewCell: UICollectionViewCell {
         previewVideoView.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         dateLabel.translatesAutoresizingMaskIntoConstraints = false
+        duplicateButton.translatesAutoresizingMaskIntoConstraints = false
         deleteButton.translatesAutoresizingMaskIntoConstraints = false
 
         contentView.addSubview(previewVideoView)
         contentView.addSubview(titleLabel)
         contentView.addSubview(dateLabel)
+        contentView.addSubview(duplicateButton)
         contentView.addSubview(deleteButton)
 
         previewVideoView.layer.cornerRadius = 8
@@ -68,12 +78,17 @@ final class ProjectPreviewCell: UICollectionViewCell {
 
             titleLabel.topAnchor.constraint(equalTo: previewVideoView.bottomAnchor, constant: 6),
             titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            titleLabel.trailingAnchor.constraint(equalTo: deleteButton.leadingAnchor, constant: -4),
+            titleLabel.trailingAnchor.constraint(equalTo: duplicateButton.leadingAnchor, constant: -4),
 
             dateLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
             dateLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            dateLabel.trailingAnchor.constraint(equalTo: deleteButton.leadingAnchor, constant: -4),
+            dateLabel.trailingAnchor.constraint(equalTo: duplicateButton.leadingAnchor, constant: -4),
             dateLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor),
+
+            duplicateButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            duplicateButton.trailingAnchor.constraint(equalTo: deleteButton.leadingAnchor),
+            duplicateButton.widthAnchor.constraint(equalToConstant: 32),
+            duplicateButton.heightAnchor.constraint(equalToConstant: 32),
 
             deleteButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             deleteButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -81,6 +96,7 @@ final class ProjectPreviewCell: UICollectionViewCell {
             deleteButton.heightAnchor.constraint(equalToConstant: 32)
         ])
 
+        duplicateButton.addTarget(self, action: #selector(duplicateTapped), for: .touchUpInside)
         deleteButton.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
     }
 
@@ -109,10 +125,15 @@ final class ProjectPreviewCell: UICollectionViewCell {
         previewVideoView.prepareForReuse()
         titleLabel.text = nil
         dateLabel.text = nil
+        onDuplicate = nil
         onDelete = nil
     }
 
     // MARK: - Actions
+
+    @objc private func duplicateTapped() {
+        onDuplicate?()
+    }
 
     @objc private func deleteTapped() {
         onDelete?()

@@ -32,6 +32,33 @@ final class SceneCatalogTests: XCTestCase {
         XCTAssertEqual(vc.tableView.numberOfRows(inSection: 0), 3)
     }
 
+    func testCatalogExcludesStarterOnlyScenes() {
+        let catalogScene = SceneTypeDescriptor(
+            id: "scene_catalog",
+            order: 0,
+            title: "Catalog Scene",
+            baseDurationUs: 5_000_000,
+            usage: .catalog
+        )
+        let starterScene = SceneTypeDescriptor(
+            id: "blank_starter",
+            order: 100,
+            title: "Blank Starter",
+            baseDurationUs: 5_000_000,
+            usage: .starterOnly
+        )
+        let snapshot = SceneLibrarySnapshot(
+            fps: 30,
+            canvas: CanvasConfig(width: 1080, height: 1920),
+            scenes: [catalogScene, starterScene]
+        )
+        let vc = SceneCatalogViewController(sceneLibrary: snapshot)
+        vc.loadViewIfNeeded()
+
+        XCTAssertEqual(vc.tableView.numberOfRows(inSection: 0), 1,
+                       "starterOnly scenes should be excluded from catalog")
+    }
+
     // MARK: - 2. Selection calls back with correct parameters
 
     func testSelectionCallbackReceivesCorrectParameters() {

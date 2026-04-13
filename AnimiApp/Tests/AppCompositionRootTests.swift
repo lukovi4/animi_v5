@@ -69,14 +69,19 @@ final class AppCompositionRootTests: XCTestCase {
         XCTAssertTrue(nav.viewControllers.last is PlayerViewController)
     }
 
-    func testOpenEditorBlankProject_isNoOp() {
+    func testOpenEditorBlankProject_pushesPlayerViewController() {
         let root = AppCompositionRoot()
         let nav = root.bootstrap()
 
-        root.openEditor(.blankProject)
+        let window = UIWindow()
+        window.rootViewController = nav
+        window.makeKeyAndVisible()
 
-        // blankProject is a no-op until PR 7
-        XCTAssertEqual(nav.viewControllers.count, 1)
+        root.openEditor(.blankProject)
+        waitForPushToCommit()
+
+        XCTAssertEqual(nav.viewControllers.count, 2)
+        XCTAssertTrue(nav.viewControllers.last is PlayerViewController)
     }
 
     func testOpenEditorSavedProject_pushesPlayerViewController() {
