@@ -1410,10 +1410,10 @@ PR5 shipped the canonical storage boundary and asset-identity cutover described 
 
 - `MediaIngestCoordinator.onAssetPersisted: ((ProjectAssetDescriptor) -> Void)?` fires strictly before `onIngestComplete`, so the registry contains the new descriptor by the time any reducer dispatch sees the `MediaRef`.
 - `PlayerViewController` wires this to `session.registerAssetBookkeeping(_:)` in the coordinator's `onAssetPersisted`.
-- Background image save path calls `session.registerAssetBookkeeping(_:)` immediately after `persistImage(...)` and before `loadTexture(...)`; the subsequent `loadTexture` call re-reads a fresh registry snapshot (see §17.8) so the registry-backed locator resolves via the new descriptor.
+- Background image import path now goes through `EditorRuntime.importBackgroundImage(...)`: it calls `session.registerAssetBookkeeping(_:)` immediately after `persistImage(...)` and before `loadTexture(...)`; the subsequent `loadTexture` call re-reads a fresh registry snapshot (see §17.8) so the registry-backed locator resolves via the new descriptor.
 - Slot removal, slot replacement (via `handleIngestComplete`), background editor dismiss, and background image replace all call `unregisterAssetIfUnreferenced(_:)` after their semantic dispatch — unregister only fires if the fresh draft no longer references the old `assetId`. Shared-reference safety is preserved by the `assetIds(referencedBy:)` walker.
 - Ingest abort branches (scene deleted, race with `resolveDefaultFitAsync`, video without `videoWindow`) unregister the pre-registered descriptor directly before deleting the orphan file.
-- Background editor intermediate imports are tracked in `PlayerViewController.backgroundEditorRegisteredAssetIds` during the editor session and swept via `unregisterAssetIfUnreferenced` after `backgroundEditorWillDismiss` dispatches the final override.
+- Background image import is now runtime-owned: `EditorRuntime.importBackgroundImage(...)` registers bookkeeping immediately after persist and before texture load, then commits either directly to store or to the active background editor session. Intermediate background imports are tracked on `EditorRuntime.backgroundEditorTrackedAssetIds` and swept inside `EditorRuntime.commitBackgroundEditorDismiss(...)` after the final override lands.
 
 ### 17.7. Chosen resolution for undo-registry symmetry: self-healing registry
 
@@ -1424,7 +1424,7 @@ Registry bookkeeping lives outside the undo snapshot by design (so `register` is
 The resolution chosen for PR5 is **self-healing at resolution time**:
 
 - `ProjectAssetRegistry.selfHealed(for draft: ProjectDraft) -> ProjectAssetRegistry` is a pure value-returning walker. It scans `assetIds(referencedBy: draft)`; for any referenced `assetId` that has no descriptor in the receiver, it synthesizes a descriptor from the live `MediaRef` (`assetId`, `mediaKind`, `storagePath`) and returns a healed copy. Does NOT mutate the receiver.
-- `PlayerViewController` calls `selfHealedRegistry()` (a one-line wrapper around the healer) at every point where it would otherwise pass `session.state?.draft.assetRegistry` into downstream code: `ResolvedMediaMapBuilder.build`, `service.loadTexture`, `preloadTextures`, `engine.setTimeline`, `ExportMediaSnapshot.build`, `exporter.exportVideo`, `exporter.exportTimeline`. Background preload and undo-sync paths explicitly use the healed snapshot.
+- `EditorRuntime` calls its private `selfHealedRegistry()` wrapper (a one-line wrapper around the healer) at every production runtime/export/background point where it would otherwise pass `session.state?.draft.assetRegistry` into downstream code: scene apply/restore fast-paths, texture load/preload, `engine.setTimeline`, `ExportMediaSnapshot.build`, `exporter.exportVideo`, and `exporter.exportTimeline`. Background preload and undo-sync paths explicitly use the healed snapshot.
 - Production runtime and export paths therefore always see a resolution-ready registry, including after undo.
 - Tests (`test_selfHealed_*` in `ProjectAssetIdentityContractTests`) cover: empty-draft no-op, all-present no-op, slot missing descriptor synthesis, background region missing descriptor synthesis, receiver-is-pure invariant, and the critical "self-healed registry resolves without bumping `legacyFallbackHits`" assertion.
 
@@ -1436,13 +1436,13 @@ The resolution chosen for PR5 is **self-healing at resolution time**:
 
 ### 17.8. Fresh-registry re-read policy
 
-Whenever PVC calls `session.registerAssetBookkeeping(...)` and then immediately uses the registry for a downstream operation (texture load after background import), it **re-reads** `session.state?.draft.assetRegistry` via `selfHealedRegistry()` rather than reusing a snapshot captured before the register. `register` is synchronous, so the fresh read observes the new descriptor. This is the canonical pattern for "ingest now, resolve now".
+Whenever production code calls `session.registerAssetBookkeeping(...)` and then immediately uses the registry for a downstream operation (for example texture load after background import), it **re-reads** `session.state?.draft.assetRegistry` via a fresh `selfHealedRegistry()` snapshot rather than reusing a registry value captured before the register. `register` is synchronous, so the fresh read observes the new descriptor. This is the canonical pattern for "ingest now, resolve now".
 
 ### 17.9. Validation gates (all green on fresh clean DerivedData)
 
 1. `Scripts/verify_module_boundary.sh` — PASS.
 2. `cd TVECore && rm -rf .build && swift test` — 939 tests, 86 skipped (Metal shader unavailable in SPM test env, normal), 0 failures.
-3. `Scripts/run_animiapp_tests.sh` on fresh `/tmp/…` DerivedData — **899 tests, 0 failures, 0 unexpected, `** TEST SUCCEEDED **`**.
+3. `Scripts/run_animiapp_tests.sh` — **963 tests, 0 failures, 0 unexpected, `** TEST SUCCEEDED **`**.
 4. `make build` — `** BUILD SUCCEEDED **`, exit 0.
 
 ### 17.10. Grep acceptance contracts (all green)
@@ -1457,4 +1457,3 @@ grep -rn 'ProjectStore\.shared' AnimiApp                    # expect 0
 ```
 
 All pass.
-

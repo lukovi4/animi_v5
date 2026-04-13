@@ -16,14 +16,16 @@
 
 Этот раздел фиксирует фактический progress rollout-а и не меняет authoritative scope или порядок PR-ов ниже.
 
-Текущий статус на 2026-04-09:
+Текущий статус на 2026-04-13:
 
 - закрыт `PR 0` `Validation And Guardrails`;
 - закрыт `PR 1` `AppCompositionRoot, Launch Routing And Recovery Prompt`;
 - закрыт `PR 2` `Thin EditorSession Boundary`;
 - закрыт `PR 3` `Session Lifecycle Move, State Normalization And Close Contract`;
 - закрыт `PR 4` `Storage Core, ProjectOrigin And Metadata V2`;
-- следующий незакрытый шаг: `PR 5` `Asset Identity Cutover And Runtime Storage Boundary`;
+- закрыт `PR 5` `Asset Identity Cutover And Runtime Storage Boundary`;
+- закрыт `PR 6` `EditorRuntime Extraction And Render Contract`;
+- следующий незакрытый шаг: `PR 7` `Blank Project, Duplicate Project And My Projects`;
 - рабочая epic-ветка для rollout-а: `codex/epic-q-editor-app-layer-refactor`.
 
 Что уже сделано в `PR 0`:
@@ -913,6 +915,27 @@
 
 ## 10. PR 6. EditorRuntime Extraction And Render Contract
 
+### 10.0. Execution status
+
+Шаг закрыт.
+
+Фактически выполнено:
+
+1. Введен `EditorRuntime` как production owner runtime/playback/render/export/background state.
+2. `PlayerViewController` доведен до thin UI shell-а: layout/lifecycle/input forwarding/UI presentation остались в controller, runtime execution graph вынесен в `EditorRuntime`.
+3. Initial scene boot/setup вынесен из controller: `EditorRuntime.loadInitialScene(...)` владеет scene/player/provider preload pipeline, а `configureAndBoot(...)` владеет single-call runtime boot sequence.
+4. `draw(in:)` перестал выбирать runtime branch через `uiMode`; controller читает `runtime.currentRenderSource`, а timeline render path идет через sealed runtime execution API.
+5. Scene-edit / timeline coordination, render-source switching, playback control, media restore fast-paths и background runtime state переведены под owner-а `EditorRuntime`.
+6. Export orchestration переведена в runtime: `ActiveExportRequest`, preflight recommendation/choice loop, missing-media hard gate, terminal cleanup, progress/completion outputs и delivery flow больше не являются controller-owned logic.
+7. Background editor session state вынесен из controller в runtime: tracked assets, active-session flag, preset tracking, import bookkeeping, dismiss sweep и effective-background rebuild теперь живут в `EditorRuntime`.
+8. Введен и провязан `ProjectPreviewService` как shared preview seam для template flows; future saved-project preview seam закреплен архитектурно.
+9. Закрыты required PR6 tests: `EditorRuntimeContractTests`, `RenderSourceSelectionTests`, `SceneEditTimelineHandoffTests`, `MissingMediaExportGateTests`, `ProjectPreviewServiceTests`, плюс migrated export/runtime flow coverage.
+10. Подтвержден green validation loop для текущего финального дерева:
+   - `Scripts/verify_module_boundary.sh`
+   - `cd TVECore && swift test`
+   - `Scripts/run_animiapp_tests.sh`
+   - `make build`
+
 ### 10.1. Цель
 
 Выделить `EditorRuntime` как owner runtime/playback/render/export execution graph и очистить controller до UI shell-а.
@@ -985,6 +1008,22 @@
 - обновленные `EditorRenderContractTests`;
 - обновленные `TimelineEngineLifecycleTests`;
 - обновленные export/runtime flow tests.
+
+### 10.8. Final status
+
+PR6 delivered the canonical runtime/render/export boundary.
+
+- `EditorRuntime` now owns the runtime/playback/render/export/background execution graph.
+- `PlayerViewController` no longer reads raw runtime internals or owns direct runtime mutations.
+- `draw(in:)` no longer branches by `uiMode`; render path is driven by `runtime.currentRenderSource`.
+- initial scene boot/setup and background editor session orchestration are runtime-owned, not controller-owned.
+- missing-media export gate lives on the runtime/export path and hard-stops export before execution.
+- `ProjectPreviewService` is wired as the shared preview seam for template screens.
+- canonical final validation state on the current tree is green:
+  - `Scripts/verify_module_boundary.sh` — PASS
+  - `cd TVECore && swift test` — PASS
+  - `Scripts/run_animiapp_tests.sh` — **963 tests, 0 failures**
+  - `make build` — PASS
 
 ## 11. PR 7. Blank Project, Duplicate Project And My Projects
 
@@ -1360,7 +1399,7 @@ PR5 shipped the canonical storage boundary and asset-identity cutover. All plan 
 - **Write gateway**: `ProjectMediaWriteGateway.duplicateAssets(inDraft:)` is the storage-level foundation for PR7's duplicate-project action. Proven independent by `DuplicateProjectAssetIndependenceTests`.
 - **GC policy**: referenced-primary (via `storagePaths(referencedBy:)`) + raw-scan defense-in-depth. Registered-but-unreferenced descriptors are GC-eligible — registry does NOT pin files.
 - **Session bookkeeping**: non-dirtying `registerAssetBookkeeping` / `unregisterAssetBookkeeping` via internal `EditorStore.mutateCurrentDraftForBookkeeping` seam. Registry mutations never push undo snapshots, never emit store callbacks, never mark the dirty baseline. `EditorSessionSnapshot` deliberately excludes `assetRegistry`.
-- **Production wiring**: `MediaIngestCoordinator.onAssetPersisted` callback fires strictly before `onIngestComplete`, wired by `PlayerViewController` to `session.registerAssetBookkeeping`. Background save path calls register right after persist. Slot removal, slot replacement, background editor dismiss, and background image replace all call `unregisterAssetIfUnreferenced` post-dispatch with shared-reference safety. Ingest abort branches directly unregister before deleting orphan files. Background editor intermediate imports are tracked and swept on dismiss.
+- **Production wiring**: `MediaIngestCoordinator.onAssetPersisted` callback fires strictly before `onIngestComplete`, wired by `PlayerViewController` to `session.registerAssetBookkeeping`. Background import path is now runtime-owned: `EditorRuntime.importBackgroundImage(...)` registers bookkeeping immediately after persist, loads texture against a fresh self-healed registry snapshot, and either commits directly to store or defers the editor-local image update during an active background-editor session. Slot removal, slot replacement, background editor dismiss, and background image replace all call `unregisterAssetIfUnreferenced` post-dispatch with shared-reference safety. Ingest abort branches directly unregister before deleting orphan files. Intermediate background imports are tracked on `EditorRuntime.backgroundEditorTrackedAssetIds` and swept inside `EditorRuntime.commitBackgroundEditorDismiss(...)`.
 - **Runtime storage boundary**: `SceneInstanceRuntime` holds a `ProjectMediaLocator` (not a `resolveURL` closure) and its `applyState(_:assetRegistry:)` takes an explicit registry snapshot. `TimelineCompositionEngine` stores `currentAssetRegistry` (matches how `sceneStates` is held), set via `setTimeline(_:sceneStates:assetRegistry:)`. No raw `FileProjectMediaStore()` construction anywhere in runtime/composition/export.
 - **Async apply migration**: `PlayerViewController.applySceneInstanceState(instanceId:)` and `reloadRuntimeState(for:)` are now `async`. Every call site is wrapped in `Task { @MainActor }` with post-apply side effects (`setNeedsDisplay`, `refreshSceneEditBars`, engine sync) moved inside the awaited body to preserve ordering. Ingest abort and handleStateRestoredFromUndoRedo both converted.
 
@@ -1369,7 +1408,7 @@ PR5 shipped the canonical storage boundary and asset-identity cutover. All plan 
 The plan flagged an open risk around undo/registry symmetry: if a slot-unregister runs and is followed by undo, the draft's content references an `assetId` that no longer has a registry descriptor. The chosen resolution is **self-healing at resolution time**, not widening the undo snapshot and not making `register` dirtying.
 
 - `ProjectAssetRegistry.selfHealed(for: ProjectDraft) -> ProjectAssetRegistry` — pure value-returning walker. For any `assetId` that content references but registry does not contain, synthesizes a descriptor from the live `MediaRef` (assetId / mediaKind / storagePath) and returns a healed copy. Does not mutate the receiver. Does not write back to session state.
-- `PlayerViewController.selfHealedRegistry()` — wrapper that reads `session.state?.draft` and returns `draft.assetRegistry.selfHealed(for: draft)`. Called at every production point where PVC passes a registry into downstream code: `ResolvedMediaMapBuilder.build`, `service.loadTexture`, `preloadTextures`, `engine.setTimeline` (all 3 call sites), `ExportMediaSnapshot.build`, `exporter.exportVideo`, `exporter.exportTimeline`, and both background preload loops.
+- `EditorRuntime.selfHealedRegistry()` — wrapper that reads `session.state?.draft` and returns `draft.assetRegistry.selfHealed(for: draft)`. Called at every production runtime/export/background point where the tree passes a registry into downstream code: scene apply/restore fast-paths, timeline engine sync, texture load/preload, `ExportMediaSnapshot.build`, `exporter.exportVideo`, and `exporter.exportTimeline`.
 - `handleStateRestoredFromUndoRedo` specifically uses the self-healed snapshot when re-syncing the engine after undo — this is the exact undo-symmetry scenario that motivated the design.
 - Tests in `ProjectAssetIdentityContractTests.test_selfHealed_*` cover: empty draft, all present, missing slot descriptor synthesis, missing background descriptor synthesis, receiver purity, and the "self-healed registry does NOT bump legacyFallbackHits" assertion.
 
@@ -1386,7 +1425,7 @@ The plan flagged an open risk around undo/registry symmetry: if a slot-unregiste
 
 1. `Scripts/verify_module_boundary.sh` — **PASS** (exit 0).
 2. `cd TVECore && rm -rf .build && swift test` — **939 tests, 86 skipped (Metal), 0 failures**.
-3. `Scripts/run_animiapp_tests.sh` (ANIMIAPP_DERIVED_DATA_PATH on fresh /tmp/…) — **899 tests, 0 failures, 0 unexpected, `** TEST SUCCEEDED **`**.
+3. `Scripts/run_animiapp_tests.sh` — **963 tests, 0 failures, 0 unexpected, `** TEST SUCCEEDED **`**.
 4. `make build` — **`** BUILD SUCCEEDED **`**, exit 0.
 
 ### Grep contracts
