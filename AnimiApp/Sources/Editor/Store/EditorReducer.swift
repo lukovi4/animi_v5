@@ -78,7 +78,7 @@ public enum EditorReducer {
             newState.selection = selection
             // Mode management: clearing selection or selecting non-scene deactivates follow mode
             switch selection {
-            case .none, .audio, .text:
+            case .none, .audio, .text, .sticker:
                 newState.timelineSceneSelectionMode = .inactive
             case .scene:
                 break // guarded as no-op above for timeline mode
@@ -264,8 +264,14 @@ public enum EditorReducer {
         case .updateTextPayload(let itemId, let payload):
             return updateTextPayload(state: newState, itemId: itemId, payload: payload)
 
-        case .dragTextPosition(let itemId, let centerX, let centerY, let phase):
-            return dragTextPosition(state: newState, itemId: itemId, centerX: centerX, centerY: centerY, phase: phase)
+        case .dragOverlayPosition(let itemId, let centerX, let centerY, let phase):
+            return dragOverlayPosition(state: newState, itemId: itemId, centerX: centerX, centerY: centerY, phase: phase)
+
+        case .addStickerOverlay(let stickerId, let startUs, let durationUs):
+            return addStickerOverlay(state: newState, stickerId: stickerId, startUs: startUs, durationUs: durationUs)
+
+        case .updateStickerPayload(let itemId, let payload):
+            return updateStickerPayload(state: newState, itemId: itemId, payload: payload)
 
         // MARK: - Future Actions (not implemented yet)
 
@@ -870,6 +876,8 @@ private extension EditorReducer {
             newState.selection = .none
         case .audio(let selectedId) where selectedId == itemId:
             newState.selection = .none
+        case .sticker(let selectedId) where selectedId == itemId:
+            newState.selection = .none
         default:
             break
         }
@@ -976,8 +984,8 @@ private extension EditorReducer {
         return ReducerResult(state: newState, shouldPushSnapshot: true)
     }
 
-    /// Drags text position on canvas. Gesture-aware.
-    static func dragTextPosition(
+    /// Drags overlay position on canvas (text or sticker). Gesture-aware.
+    static func dragOverlayPosition(
         state: EditorState,
         itemId: UUID,
         centerX: CGFloat,
@@ -988,14 +996,25 @@ private extension EditorReducer {
 
         guard let overlayTrack = newState.canonicalTimeline.overlayTrack,
               let item = overlayTrack.items.first(where: { $0.id == itemId }),
-              case .text(var textPayload) = newState.canonicalTimeline.payloads[item.payloadId] else {
+              let payload = newState.canonicalTimeline.payloads[item.payloadId] else {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
 
-        // Clamp to [0, 1]
-        textPayload.centerX = max(0, min(1, centerX))
-        textPayload.centerY = max(0, min(1, centerY))
-        newState.canonicalTimeline.payloads[item.payloadId] = .text(textPayload)
+        let clampedX = max(0, min(1, centerX))
+        let clampedY = max(0, min(1, centerY))
+
+        switch payload {
+        case .text(var textPayload):
+            textPayload.centerX = clampedX
+            textPayload.centerY = clampedY
+            newState.canonicalTimeline.payloads[item.payloadId] = .text(textPayload)
+        case .sticker(var stickerPayload):
+            stickerPayload.centerX = clampedX
+            stickerPayload.centerY = clampedY
+            newState.canonicalTimeline.payloads[item.payloadId] = .sticker(stickerPayload)
+        default:
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
 
         switch phase {
         case .began, .changed:
@@ -1005,6 +1024,81 @@ private extension EditorReducer {
         case .cancelled:
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
+    }
+}
+
+// MARK: - Sticker Overlay Actions (PR10)
+
+private extension EditorReducer {
+
+    /// Atomically adds a sticker overlay: creates overlay track if needed,
+    /// creates payload + item, selects it. One dispatch → one undo snapshot.
+    static func addStickerOverlay(
+        state: EditorState,
+        stickerId: String,
+        startUs: TimeUs,
+        durationUs: TimeUs
+    ) -> ReducerResult {
+        var newState = state
+
+        // Find or create overlay track
+        var overlayTrackIndex = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .overlay })
+        if overlayTrackIndex == nil {
+            let newTrack = Track(kind: .overlay)
+            newState.canonicalTimeline.tracks.append(newTrack)
+            overlayTrackIndex = newState.canonicalTimeline.tracks.count - 1
+        }
+
+        guard let trackIdx = overlayTrackIndex else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Create payload with positioning defaults
+        let payloadId = UUID()
+        let payload = StickerPayload(stickerId: stickerId)
+        newState.canonicalTimeline.payloads[payloadId] = .sticker(payload)
+
+        // Clamp to fit within project, guaranteeing minimum visible duration
+        let minStickerDurationUs: TimeUs = 500_000 // 0.5s, matches trim minimum
+        let maxStart = max(0, newState.projectDurationUs - minStickerDurationUs)
+        let clampedStart = max(0, min(startUs, maxStart))
+        let remaining = max(minStickerDurationUs, newState.projectDurationUs - clampedStart)
+        let clampedDuration = max(minStickerDurationUs, min(durationUs, remaining))
+
+        // Create item
+        let newItem = TimelineItem(
+            id: UUID(),
+            payloadId: payloadId,
+            kind: .sticker,
+            startUs: clampedStart,
+            durationUs: clampedDuration
+        )
+
+        newState.canonicalTimeline.tracks[trackIdx].items.append(newItem)
+
+        // Select the new item
+        newState.selection = .sticker(itemId: newItem.id)
+        newState.timelineSceneSelectionMode = .inactive
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Updates sticker payload (position).
+    static func updateStickerPayload(
+        state: EditorState,
+        itemId: UUID,
+        payload: StickerPayload
+    ) -> ReducerResult {
+        var newState = state
+
+        guard let overlayTrack = newState.canonicalTimeline.overlayTrack,
+              let item = overlayTrack.items.first(where: { $0.id == itemId }) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        newState.canonicalTimeline.payloads[item.payloadId] = .sticker(payload)
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
     }
 }
 

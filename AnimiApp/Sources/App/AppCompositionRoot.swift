@@ -12,6 +12,7 @@ final class AppCompositionRoot {
     let templateCatalogRepository: TemplateCatalogRepository
     let sceneLibraryRepository: SceneLibraryRepository
     let backgroundPresetRepository: BackgroundPresetRepository
+    let stickerRepository: StickerRepository
     let storageActor: ProjectStorageActor
     let previewService: ProjectPreviewService
 
@@ -24,6 +25,7 @@ final class AppCompositionRoot {
         self.templateCatalogRepository = TemplateCatalogRepository()
         self.sceneLibraryRepository = SceneLibraryRepository()
         self.backgroundPresetRepository = BackgroundPresetRepository()
+        self.stickerRepository = StickerRepository()
         self.storageActor = ProjectStorageActor()
         self.previewService = ProjectPreviewService(catalogProvider: templateCatalogRepository)
     }
@@ -34,6 +36,7 @@ final class AppCompositionRoot {
     /// Returns the navigation controller to set as `window.rootViewController`.
     func bootstrap() -> UINavigationController {
         loadBackgroundPresets()
+        loadStickers()
 
         let homeVC = makeHomeViewController()
         let nav = UINavigationController(rootViewController: homeVC)
@@ -80,7 +83,8 @@ final class AppCompositionRoot {
             loadTemplateCatalog: { [templateCatalogRepository] in
                 await templateCatalogRepository.load()
             },
-            backgroundPresetProvider: backgroundPresetRepository
+            backgroundPresetProvider: backgroundPresetRepository,
+            stickerProvider: stickerRepository
         )
         let session = EditorSession(intent: intent, dependencies: deps)
         let editorVC = PlayerViewController(session: session)
@@ -154,6 +158,21 @@ final class AppCompositionRoot {
     }
 
     // MARK: - Private
+
+    private func loadStickers() {
+        do {
+            try stickerRepository.loadFromBundle()
+            #if DEBUG
+            print("[AppCompositionRoot] Loaded \(stickerRepository.count) stickers")
+            #endif
+        } catch {
+            #if DEBUG
+            assertionFailure("[AppCompositionRoot] Failed to load stickers: \(error)")
+            #else
+            print("[AppCompositionRoot] ERROR: Failed to load stickers: \(error)")
+            #endif
+        }
+    }
 
     private func loadBackgroundPresets() {
         do {

@@ -20,19 +20,23 @@ struct TimelineRenderSourcePayload {
     let diagnosticFrameTag: Int?
     /// PR9: Text overlays to render on top of the scene.
     let textOverlays: [ResolvedTextOverlay]
+    /// PR10: Sticker overlays to render on top of the scene (below text).
+    let stickerOverlays: [ResolvedStickerOverlay]
 
     init(
         resolvedFrame: ResolvedTimelineFrame,
         backgroundState: EffectiveBackgroundState?,
         backgroundTextureProvider: (any TextureProvider)?,
         diagnosticFrameTag: Int?,
-        textOverlays: [ResolvedTextOverlay] = []
+        textOverlays: [ResolvedTextOverlay] = [],
+        stickerOverlays: [ResolvedStickerOverlay] = []
     ) {
         self.resolvedFrame = resolvedFrame
         self.backgroundState = backgroundState
         self.backgroundTextureProvider = backgroundTextureProvider
         self.diagnosticFrameTag = diagnosticFrameTag
         self.textOverlays = textOverlays
+        self.stickerOverlays = stickerOverlays
     }
 }
 

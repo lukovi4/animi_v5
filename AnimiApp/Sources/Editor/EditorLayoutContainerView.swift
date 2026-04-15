@@ -90,6 +90,16 @@ final class EditorLayoutContainerView: UIView {
     /// Called when Delete Text is tapped in ContextBar. Parameter: text item ID.
     var onDeleteText: ((UUID) -> Void)?
 
+    // PR10: Sticker overlay callbacks
+    /// Called when Sticker button is tapped in GlobalActionBar
+    var onSticker: (() -> Void)?
+
+    /// Called when Change Sticker is tapped in ContextBar. Parameter: sticker item ID.
+    var onChangeSticker: ((UUID) -> Void)?
+
+    /// Called when Delete Sticker is tapped in ContextBar. Parameter: sticker item ID.
+    var onDeleteSticker: ((UUID) -> Void)?
+
     // PR-E: SceneEditBar callbacks
     /// Called when Background button is tapped
     var onBackground: (() -> Void)?
@@ -417,6 +427,17 @@ final class EditorLayoutContainerView: UIView {
             self?.onDeleteText?(itemId)
         }
 
+        // PR10: Sticker callbacks
+        globalActionBar.onSticker = { [weak self] in
+            self?.onSticker?()
+        }
+        contextBar.onChangeSticker = { [weak self] itemId in
+            self?.onChangeSticker?(itemId)
+        }
+        contextBar.onDeleteSticker = { [weak self] itemId in
+            self?.onDeleteSticker?(itemId)
+        }
+
         // PR-C: Edit scene
         contextBar.onEditScene = { [weak self] sceneId in
             self?.onEditScene?(sceneId)
@@ -544,9 +565,9 @@ final class EditorLayoutContainerView: UIView {
         ])
     }
 
-    /// Adds TextPositionOverlayView to previewContainer (PR9).
+    /// Adds OverlayPositionDragView to previewContainer (PR9).
     /// Inserted above EditorOverlayView, below menuStrip.
-    func embedTextPositionOverlay(_ overlay: UIView) {
+    func embedOverlayPositionDrag(_ overlay: UIView) {
         overlay.translatesAutoresizingMaskIntoConstraints = false
         previewContainer.insertSubview(overlay, belowSubview: menuStrip)
         NSLayoutConstraint.activate([
@@ -813,7 +834,7 @@ final class EditorLayoutContainerView: UIView {
         case .none:
             globalActionBar.isHidden = false
             contextBar.isHidden = true
-        case .scene, .audio, .text:
+        case .scene, .audio, .text, .sticker:
             globalActionBar.isHidden = true
             contextBar.isHidden = false
         }

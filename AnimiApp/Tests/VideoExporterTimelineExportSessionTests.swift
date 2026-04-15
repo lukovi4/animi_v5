@@ -153,7 +153,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             fps: 30,
             scenesByInstanceId: snapshots,
             audioSceneData: audioData,
-            textOverlayItems: []
+            textOverlayItems: [],
+            stickerOverlayItems: []
         )
 
         return (session, instanceIds)
@@ -485,7 +486,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             fps: 30,
             scenesByInstanceId: snapshots,
             audioSceneData: audioData,
-            textOverlayItems: [(item: textItem, payload: textPayload)]
+            textOverlayItems: [(item: textItem, payload: textPayload)],
+            stickerOverlayItems: []
         )
 
         // Create export runtime (same as VideoExporter does)
@@ -547,5 +549,92 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         )
 
         XCTAssertTrue(requestOutside.textOverlays.isEmpty, "Render request must be empty when text not visible")
+    }
+
+    // MARK: - PR10: Sticker Overlay Export Path
+
+    /// Visible sticker overlay produces non-empty stickerOverlays in TimelineRenderRequest;
+    /// invisible sticker overlay produces empty stickerOverlays.
+    @MainActor
+    func testVisibleStickerOverlay_reachesRenderRequest() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        // Build session with 1 scene (90 frames = 3s) + sticker overlay (0-2s)
+        let (baseSession, _) = makeSession(device: device, commandQueue: commandQueue, sceneCount: 1, framesPerScene: 90)
+
+        // Re-build session with sticker overlay items injected
+        let stickerPayload = StickerPayload(stickerId: "star", centerX: 0.35, centerY: 0.65)
+        let stickerItem = TimelineItem(
+            payloadId: UUID(), kind: .sticker, startUs: 0, durationUs: 2_000_000
+        )
+        let stickerImageURL = URL(fileURLWithPath: "/tmp/sticker_star.png")
+
+        let session = TimelineCompositionEngine.TimelineExportSession(
+            transitionMath: baseSession.transitionMath,
+            canvasSize: baseSession.canvasSize,
+            fps: baseSession.fps,
+            scenesByInstanceId: baseSession.scenesByInstanceId,
+            audioSceneData: baseSession.audioSceneData,
+            textOverlayItems: [],
+            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: stickerImageURL)]
+        )
+
+        let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
+        let exportRuntime = try TimelineExportRuntime(
+            session: session, textureCache: textureCache, coordinatorFactory: noCoordinators
+        )
+
+        let textureDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: 1080, height: 1920, mipmapped: false
+        )
+        let dummyTexture = device.makeTexture(descriptor: textureDesc)!
+
+        // Frame 15 (t=0.5s): sticker IS visible
+        let frameInside = 15
+        let stickerOverlaysInside = exportRuntime.resolveStickerOverlays(at: frameInside)
+
+        let requestInside = TimelineRenderRequest(
+            resolved: try exportRuntime.resolveFrame(frameInside),
+            targetTexture: dummyTexture,
+            drawableScale: 1.0,
+            timelineCanvasSize: SizeD(width: 1080, height: 1920),
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: nil,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            diagnosticFrameTag: frameInside,
+            stickerOverlays: stickerOverlaysInside
+        )
+
+        XCTAssertEqual(requestInside.stickerOverlays.count, 1, "Render request must contain visible sticker overlay")
+        XCTAssertEqual(requestInside.stickerOverlays.first?.stickerId, "star")
+        XCTAssertEqual(requestInside.stickerOverlays.first?.imageURL, URL(fileURLWithPath: "/tmp/sticker_star.png"))
+        XCTAssertEqual(requestInside.stickerOverlays.first?.centerX, 0.35)
+        XCTAssertEqual(requestInside.stickerOverlays.first?.centerY, 0.65)
+
+        // Frame 75 (t=2.5s): sticker is NOT visible
+        let frameOutside = 75
+        let stickerOverlaysOutside = exportRuntime.resolveStickerOverlays(at: frameOutside)
+
+        let requestOutside = TimelineRenderRequest(
+            resolved: try exportRuntime.resolveFrame(frameOutside),
+            targetTexture: dummyTexture,
+            drawableScale: 1.0,
+            timelineCanvasSize: SizeD(width: 1080, height: 1920),
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: nil,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            diagnosticFrameTag: frameOutside,
+            stickerOverlays: stickerOverlaysOutside
+        )
+
+        XCTAssertTrue(requestOutside.stickerOverlays.isEmpty, "Render request must be empty when sticker not visible")
     }
 }

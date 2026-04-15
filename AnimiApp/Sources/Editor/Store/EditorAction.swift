@@ -231,9 +231,18 @@ public enum EditorAction: Sendable {
     /// Updates text payload content/style/position. Pushes undo snapshot.
     case updateTextPayload(itemId: UUID, payload: TextPayload)
 
-    /// Drags text position on canvas. Gesture-aware.
+    /// Drags overlay position on canvas (text or sticker). Gesture-aware.
     /// Only `.ended` pushes undo snapshot.
-    case dragTextPosition(itemId: UUID, centerX: CGFloat, centerY: CGFloat, phase: InteractionPhase)
+    case dragOverlayPosition(itemId: UUID, centerX: CGFloat, centerY: CGFloat, phase: InteractionPhase)
+
+    // MARK: - Sticker Overlay Actions (PR10)
+
+    /// Atomically adds a sticker overlay: creates overlay track if needed,
+    /// creates payload + item, selects it. Pushes undo snapshot.
+    case addStickerOverlay(stickerId: String, startUs: TimeUs, durationUs: TimeUs)
+
+    /// Updates sticker payload (position). Pushes undo snapshot.
+    case updateStickerPayload(itemId: UUID, payload: StickerPayload)
 
     // MARK: - Future Actions (API reserved, not implemented yet)
 

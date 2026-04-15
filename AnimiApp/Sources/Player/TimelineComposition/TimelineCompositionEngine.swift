@@ -82,6 +82,9 @@ public final class TimelineCompositionEngine {
     /// Media locator for resolving MediaRef → URL in export path.
     private let mediaLocator: any ProjectMediaLocator
 
+    /// PR10: Sticker provider for resolving sticker images. Set after init via setStickerProvider().
+    private(set) var stickerProvider: StickerProviding?
+
     // MARK: - Init
 
     public init(
@@ -143,6 +146,11 @@ public final class TimelineCompositionEngine {
     /// Must be called before timeline export.
     public func setTemplateCanvas(_ canvas: CanvasConfig) {
         self.templateCanvas = canvas
+    }
+
+    /// PR10: Sets the sticker provider for sticker overlay resolution.
+    public func setStickerProvider(_ provider: StickerProviding) {
+        self.stickerProvider = provider
     }
 
     /// Sets the timeline, scene states, and asset registry snapshot.
@@ -1170,6 +1178,47 @@ public final class TimelineCompositionEngine {
         return result
     }
 
+    // MARK: - Sticker Overlay Resolution (PR10)
+
+    /// Resolves sticker overlays visible at a given compressed frame.
+    /// Used by preview path. Requires stickerProvider for URL resolution.
+    public func resolveStickerOverlays(at compressedFrame: Int, stickerProvider: StickerProviding) -> [ResolvedStickerOverlay] {
+        guard let math = transitionMath, let timeline = timeline else { return [] }
+
+        guard let mapping = math.frameMapping(for: compressedFrame) else { return [] }
+        let sceneStartUs = math.sceneItems.prefix(mapping.sceneIndex).reduce(TimeUs(0)) { sum, item in
+            sum + item.durationUs
+        }
+        let localTimeUs = frameToUs(mapping.localFrame, fps: math.fps)
+        let timeUs = sceneStartUs + localTimeUs
+
+        return Self.resolveStickerOverlaysFromTimeline(timeline, at: timeUs, stickerProvider: stickerProvider)
+    }
+
+    /// Resolves sticker overlays from timeline at a given timeUs. Shared logic for preview + export.
+    internal static func resolveStickerOverlaysFromTimeline(_ timeline: CanonicalTimeline, at timeUs: TimeUs, stickerProvider: StickerProviding) -> [ResolvedStickerOverlay] {
+        guard let overlayTrack = timeline.overlayTrack else { return [] }
+
+        var result: [ResolvedStickerOverlay] = []
+        for item in overlayTrack.items where item.kind == .sticker {
+            let itemStart = item.startUs ?? 0
+            let itemEnd = itemStart + item.durationUs
+            guard timeUs >= itemStart && timeUs < itemEnd else { continue }
+
+            guard let payload = timeline.payloads[item.payloadId],
+                  case .sticker(let stickerPayload) = payload,
+                  let imageURL = stickerProvider.resourceURL(for: stickerPayload.stickerId) else { continue }
+
+            result.append(ResolvedStickerOverlay(
+                stickerId: stickerPayload.stickerId,
+                imageURL: imageURL,
+                centerX: stickerPayload.centerX,
+                centerY: stickerPayload.centerY
+            ))
+        }
+        return result
+    }
+
     /// Compatibility helper — timeline export after TT-05 uses session.audioSceneData instead.
     // MARK: - TT-05 Export Session
 
@@ -1207,6 +1256,8 @@ public final class TimelineCompositionEngine {
         let audioSceneData: [SceneAudioExportData]
         /// PR9: Snapshotted text overlay items for export (not queried from live state).
         let textOverlayItems: [(item: TimelineItem, payload: TextPayload)]
+        /// PR10: Snapshotted sticker overlay items for export (pre-resolved URLs).
+        let stickerOverlayItems: [(item: TimelineItem, payload: StickerPayload, imageURL: URL)]
     }
 
     /// TT-05: Builds an immutable export session from current engine state.
@@ -1313,13 +1364,24 @@ public final class TimelineCompositionEngine {
                 return (item: item, payload: textPayload)
             }
 
+        // PR10: Snapshot sticker overlay items for export (pre-resolve URLs via stickerProvider)
+        let stickerOverlayItems: [(item: TimelineItem, payload: StickerPayload, imageURL: URL)] =
+            (timeline.overlayTrack?.items ?? []).compactMap { item in
+                guard item.kind == .sticker,
+                      let payload = timeline.payloads[item.payloadId],
+                      case .sticker(let stickerPayload) = payload,
+                      let imageURL = self.stickerProvider?.resourceURL(for: stickerPayload.stickerId) else { return nil }
+                return (item: item, payload: stickerPayload, imageURL: imageURL)
+            }
+
         return TimelineExportSession(
             transitionMath: math,
             canvasSize: canvasSize,
             fps: fps,
             scenesByInstanceId: scenesByInstanceId,
             audioSceneData: audioSceneData,
-            textOverlayItems: textOverlayItems
+            textOverlayItems: textOverlayItems,
+            stickerOverlayItems: stickerOverlayItems
         )
     }
 

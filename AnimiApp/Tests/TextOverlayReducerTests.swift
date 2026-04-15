@@ -260,11 +260,11 @@ final class TextOverlayReducerTests: XCTestCase {
         let itemId = state.canonicalTimeline.textItems.first!.id
 
         // .began — no snapshot
-        let beganResult = EditorReducer.reduce(state: state, action: .dragTextPosition(itemId: itemId, centerX: 0.5, centerY: 0.5, phase: .began))
+        let beganResult = EditorReducer.reduce(state: state, action: .dragOverlayPosition(itemId: itemId, centerX: 0.5, centerY: 0.5, phase: .began))
         XCTAssertFalse(beganResult.shouldPushSnapshot)
 
         // .ended — pushes snapshot
-        let endedResult = EditorReducer.reduce(state: state, action: .dragTextPosition(itemId: itemId, centerX: 0.3, centerY: 0.7, phase: .ended))
+        let endedResult = EditorReducer.reduce(state: state, action: .dragOverlayPosition(itemId: itemId, centerX: 0.3, centerY: 0.7, phase: .ended))
         XCTAssertTrue(endedResult.shouldPushSnapshot)
 
         let payload = endedResult.state.canonicalTimeline.textPayload(for: itemId)
@@ -278,7 +278,7 @@ final class TextOverlayReducerTests: XCTestCase {
 
         let itemId = state.canonicalTimeline.textItems.first!.id
 
-        let result = EditorReducer.reduce(state: state, action: .dragTextPosition(itemId: itemId, centerX: -0.5, centerY: 1.5, phase: .ended))
+        let result = EditorReducer.reduce(state: state, action: .dragOverlayPosition(itemId: itemId, centerX: -0.5, centerY: 1.5, phase: .ended))
 
         let payload = result.state.canonicalTimeline.textPayload(for: itemId)
         XCTAssertEqual(payload?.centerX, 0)

@@ -141,7 +141,7 @@ public final class EditorStore {
             gesturePhase = phase
         case .trimItem(_, _, let phase):
             gesturePhase = phase
-        case .dragTextPosition(_, _, _, let phase):
+        case .dragOverlayPosition(_, _, _, let phase):
             gesturePhase = phase
         default:
             gesturePhase = nil
@@ -188,7 +188,7 @@ public final class EditorStore {
             isGestureEnded = true
         case .trimItem(_, _, .ended):
             isGestureEnded = true
-        case .dragTextPosition(_, _, _, .ended):
+        case .dragOverlayPosition(_, _, _, .ended):
             isGestureEnded = true
         default:
             isGestureEnded = false

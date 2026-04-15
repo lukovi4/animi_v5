@@ -90,6 +90,9 @@ final class EditorSession {
     /// Background preset provider — exposed for controller use.
     var backgroundPresetProvider: BackgroundPresetProviding { deps.backgroundPresetProvider }
 
+    /// Sticker provider — exposed for controller use (PR10).
+    var stickerProvider: StickerProviding { deps.stickerProvider }
+
     /// Media locator — exposed for downstream injection (BackgroundTextureService, TCE, export).
     var mediaLocator: any ProjectMediaLocator { deps.mediaLocator }
 

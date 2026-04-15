@@ -321,6 +321,19 @@ public extension CanonicalTimeline {
               case .text(let textPayload) = payload else { return nil }
         return textPayload
     }
+
+    /// Returns all sticker items from the overlay track (PR10).
+    var stickerItems: [TimelineItem] {
+        overlayTrack?.items.filter { $0.kind == .sticker } ?? []
+    }
+
+    /// Returns the StickerPayload for a given item ID, if it exists in the overlay track (PR10).
+    func stickerPayload(for itemId: UUID) -> StickerPayload? {
+        guard let item = overlayTrack?.items.first(where: { $0.id == itemId }),
+              let payload = payloads[item.payloadId],
+              case .sticker(let stickerPayload) = payload else { return nil }
+        return stickerPayload
+    }
 }
 
 // MARK: - SceneDraft Adapter (PR1 UI Compatibility)

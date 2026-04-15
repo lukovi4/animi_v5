@@ -25,4 +25,16 @@ struct EditorSessionDependencies {
 
     // Background
     var backgroundPresetProvider: BackgroundPresetProviding
+
+    // Stickers (PR10)
+    var stickerProvider: StickerProviding = NullStickerProvider()
+}
+
+/// No-op sticker provider for tests and default fallback.
+struct NullStickerProvider: StickerProviding {
+    func loadFromBundle() throws {}
+    func descriptor(for stickerId: String) -> StickerDescriptor? { nil }
+    func resourceURL(for stickerId: String) -> URL? { nil }
+    var allDescriptors: [StickerDescriptor] { [] }
+    var count: Int { 0 }
 }

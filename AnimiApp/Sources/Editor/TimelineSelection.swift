@@ -18,6 +18,9 @@ public enum TimelineSelection: Equatable, Sendable {
     /// Text overlay item selected by item ID - show ContextBar with text actions (PR9)
     case text(itemId: UUID)
 
+    /// Sticker overlay item selected by item ID - show ContextBar with sticker actions (PR10)
+    case sticker(itemId: UUID)
+
     /// Returns true if any scene is selected (regardless of ID)
     var isSceneSelected: Bool {
         if case .scene = self { return true }
@@ -33,6 +36,12 @@ public enum TimelineSelection: Equatable, Sendable {
     /// Returns true if a text overlay item is selected (PR9)
     var isTextSelected: Bool {
         if case .text = self { return true }
+        return false
+    }
+
+    /// Returns true if a sticker overlay item is selected (PR10)
+    var isStickerSelected: Bool {
+        if case .sticker = self { return true }
         return false
     }
 }

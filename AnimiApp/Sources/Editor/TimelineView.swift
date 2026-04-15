@@ -263,8 +263,12 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     private func wireOverlayTrackCallbacks() {
-        overlayTrack.onSelectItem = { [weak self] itemId in
-            self?.emitEvent(.selection(.text(itemId: itemId)))
+        overlayTrack.onSelectItem = { [weak self] itemId, kind in
+            switch kind {
+            case .text:    self?.emitEvent(.selection(.text(itemId: itemId)))
+            case .sticker: self?.emitEvent(.selection(.sticker(itemId: itemId)))
+            default: break
+            }
         }
         overlayTrack.onMoveItem = { [weak self] itemId, newStartUs, phase in
             self?.emitEvent(.moveOverlayItem(itemId: itemId, newStartUs: newStartUs, phase: phase))
@@ -504,6 +508,11 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(false)
             overlayTrack.setSelectedItem(itemId)
+        case .sticker(let itemId):
+            selectedSceneId = nil
+            sceneTrack.setSelectedScene(nil)
+            audioTrack.setSelected(false)
+            overlayTrack.setSelectedItem(itemId)
         case .none:
             selectedSceneId = nil
             sceneTrack.setSelectedScene(nil)
@@ -512,8 +521,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
     }
 
-    /// PR9: Updates overlay items for the overlay track.
-    func setOverlayItems(_ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)], selectedItemId: UUID?) {
+    /// PR9+PR10: Updates overlay items for the overlay track (text + sticker).
+    func setOverlayItems(_ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)], selectedItemId: UUID?) {
         let snapshot = OverlayTrackSnapshot(items: items, selectedItemId: selectedItemId)
         overlayTrack.applySnapshot(snapshot)
         overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: leftPaddingPx)

@@ -1221,6 +1221,7 @@ public final class VideoExporter: @unchecked Sendable {
                 do {
                     let resolved = try exportRuntime.resolveFrame(frameIndex)
                     let textOverlays = exportRuntime.resolveTextOverlays(at: frameIndex)
+                    let stickerOverlays = exportRuntime.resolveStickerOverlays(at: frameIndex)
 
                     let request = TimelineRenderRequest(
                         resolved: resolved,
@@ -1233,7 +1234,8 @@ public final class VideoExporter: @unchecked Sendable {
                         presentationDrawable: nil,
                         waitUntilCompleted: true,
                         diagnosticFrameTag: frameIndex,
-                        textOverlays: textOverlays
+                        textOverlays: textOverlays,
+                        stickerOverlays: stickerOverlays
                     )
                     do {
                         try TimelineRenderExecutor.render(

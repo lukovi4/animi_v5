@@ -4,7 +4,7 @@ import UIKit
 
 /// Data snapshot for overlay track items.
 struct OverlayTrackSnapshot {
-    let items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)]
+    let items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)]
     let selectedItemId: UUID?
 }
 
@@ -16,8 +16,8 @@ final class OverlayTrackView: UIView {
 
     // MARK: - Callbacks
 
-    /// Called when an overlay item is tapped.
-    var onSelectItem: ((UUID) -> Void)?
+    /// Called when an overlay item is tapped. Carries explicit ItemKind from snapshot.
+    var onSelectItem: ((UUID, ItemKind) -> Void)?
 
     /// Called when an overlay item is dragged to move.
     var onMoveItem: ((UUID, TimeUs, InteractionPhase) -> Void)?
@@ -27,7 +27,7 @@ final class OverlayTrackView: UIView {
 
     // MARK: - State
 
-    private var currentItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)] = []
+    private var currentItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)] = []
     private var selectedItemId: UUID?
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
     private var leftPadding: CGFloat = 0
@@ -72,11 +72,11 @@ final class OverlayTrackView: UIView {
         // Create or update clips
         for item in snapshot.items {
             if let existing = clipViews[item.id] {
-                existing.configure(label: item.label, isSelected: item.id == snapshot.selectedItemId)
+                existing.configure(label: item.label, isSelected: item.id == snapshot.selectedItemId, itemKind: item.itemKind)
             } else {
                 let clip = OverlayClipView()
-                clip.configure(label: item.label, isSelected: item.id == snapshot.selectedItemId)
-                clip.onTap = { [weak self] in self?.onSelectItem?(item.id) }
+                clip.configure(label: item.label, isSelected: item.id == snapshot.selectedItemId, itemKind: item.itemKind)
+                clip.onTap = { [weak self] in self?.onSelectItem?(item.id, item.itemKind) }
                 clip.onMove = { [weak self] newStartUs, phase in
                     self?.onMoveItem?(item.id, newStartUs, phase)
                 }
@@ -196,8 +196,16 @@ private final class OverlayClipView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(label: String, isSelected: Bool) {
+    func configure(label: String, isSelected: Bool, itemKind: ItemKind) {
         textLabel.text = label
+        switch itemKind {
+        case .sticker:
+            iconLabel.text = "\u{1F600}" // face emoji as placeholder, or use SF Symbol approach
+            backgroundColor = .systemPurple
+        default:
+            iconLabel.text = "Aa"
+            backgroundColor = .systemTeal
+        }
         setSelected(isSelected)
     }
 

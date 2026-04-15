@@ -418,6 +418,7 @@ final class EditorRuntime {
             }
 
             engine.setTemplateCanvas(library.canvas)
+            engine.setStickerProvider(session.stickerProvider)
 
             engine.onNeedsRedraw = { [weak self] in
                 self?.refreshCurrentTimelineFrame()
@@ -681,13 +682,22 @@ final class EditorRuntime {
                 // PR9: Resolve text overlays for this frame
                 let textOverlays = self.timelineCompositionEngine?.resolveTextOverlays(at: compressedFrame) ?? []
 
+                // PR10: Resolve sticker overlays for this frame
+                let stickerOverlays: [ResolvedStickerOverlay]
+                if let engine = self.timelineCompositionEngine, let provider = engine.stickerProvider {
+                    stickerOverlays = engine.resolveStickerOverlays(at: compressedFrame, stickerProvider: provider)
+                } else {
+                    stickerOverlays = []
+                }
+
                 // Update render source
                 self.currentRenderSource = .timeline(TimelineRenderSourcePayload(
                     resolvedFrame: resolved,
                     backgroundState: self.effectiveBackgroundState,
                     backgroundTextureProvider: self.backgroundTextureProvider,
                     diagnosticFrameTag: compressedFrame,
-                    textOverlays: textOverlays
+                    textOverlays: textOverlays,
+                    stickerOverlays: stickerOverlays
                 ))
                 self.onOutput?(.renderSourceUpdated)
 

@@ -222,6 +222,132 @@ final class ProjectDuplicatePayloadRoundTripTests: XCTestCase {
         XCTAssertEqual(payload?.centerY, 0.8)
     }
 
+    // MARK: - PR10: StickerPayload Codable Round-Trip
+
+    func testStickerPayload_encodeDecode_preservesAllFields() throws {
+        let original = StickerPayload(
+            stickerId: "emoji_star",
+            centerX: 0.15,
+            centerY: 0.85
+        )
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(StickerPayload.self, from: data)
+
+        XCTAssertEqual(decoded.stickerId, "emoji_star")
+        XCTAssertEqual(decoded.centerX, 0.15)
+        XCTAssertEqual(decoded.centerY, 0.85)
+    }
+
+    func testTimelinePayloadSticker_encodeDecode() throws {
+        let payload = TimelinePayload.sticker(StickerPayload(
+            stickerId: "fire",
+            centerX: 0.4,
+            centerY: 0.6
+        ))
+
+        let data = try JSONEncoder().encode(payload)
+        let decoded = try JSONDecoder().decode(TimelinePayload.self, from: data)
+
+        XCTAssertEqual(decoded, payload)
+        if case .sticker(let sp) = decoded {
+            XCTAssertEqual(sp.stickerId, "fire")
+            XCTAssertEqual(sp.centerX, 0.4)
+            XCTAssertEqual(sp.centerY, 0.6)
+        } else {
+            XCTFail("Expected .sticker payload")
+        }
+    }
+
+    func testCanonicalTimeline_withStickerOverlay_roundTrips() throws {
+        var timeline = CanonicalTimeline.empty()
+
+        // Add scene
+        let scenePid = UUID()
+        timeline.payloads[scenePid] = .scene(ScenePayload(sceneTypeId: "s0"))
+        timeline.tracks[0].items.append(TimelineItem(
+            payloadId: scenePid, kind: .scene, startUs: nil, durationUs: 3_000_000
+        ))
+
+        // Add sticker overlay
+        let stickerPid = UUID()
+        timeline.payloads[stickerPid] = .sticker(StickerPayload(
+            stickerId: "heart",
+            centerX: 0.3,
+            centerY: 0.7
+        ))
+        var overlayTrack = Track(kind: .overlay)
+        overlayTrack.items.append(TimelineItem(
+            payloadId: stickerPid, kind: .sticker, startUs: 500_000, durationUs: 1_500_000
+        ))
+        timeline.tracks.append(overlayTrack)
+
+        // Encode/decode
+        let data = try JSONEncoder().encode(timeline)
+        let decoded = try JSONDecoder().decode(CanonicalTimeline.self, from: data)
+
+        XCTAssertNotNil(decoded.overlayTrack)
+        XCTAssertEqual(decoded.stickerItems.count, 1)
+        XCTAssertEqual(decoded.stickerItems.first?.startUs, 500_000)
+        XCTAssertEqual(decoded.stickerItems.first?.durationUs, 1_500_000)
+
+        let stickerItem = decoded.stickerItems.first!
+        let payload = decoded.stickerPayload(for: stickerItem.id)
+        XCTAssertNotNil(payload)
+        XCTAssertEqual(payload?.stickerId, "heart")
+        XCTAssertEqual(payload?.centerX, 0.3)
+        XCTAssertEqual(payload?.centerY, 0.7)
+    }
+
+    // MARK: - PR10: Draft Persistence Round-Trip with Sticker Overlay
+
+    func testDraftPersistence_withStickerOverlay_roundTrips() async throws {
+        var draft = ProjectDraft.create(origin: .template(templateId: "tpl_sticker"))
+
+        var timeline = draft.canonicalTimeline
+
+        // Add sticker overlay track
+        let stickerPid = UUID()
+        timeline.payloads[stickerPid] = .sticker(StickerPayload(
+            stickerId: "sparkles",
+            centerX: 0.6,
+            centerY: 0.4
+        ))
+        var overlayTrack = Track(kind: .overlay)
+        overlayTrack.items.append(TimelineItem(
+            payloadId: stickerPid, kind: .sticker, startUs: 200_000, durationUs: 1_800_000
+        ))
+        timeline.tracks.append(overlayTrack)
+        draft.canonicalTimeline = timeline
+
+        // Save
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: draft.origin),
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        let materialized = try await persistence.materializeSavedProject(slot)
+        let savedId = materialized.draft.id
+
+        // Load
+        let loaded = await persistence.loadSavedProject(projectId: savedId)
+        XCTAssertNotNil(loaded)
+
+        let loadedTimeline = loaded!.draft.canonicalTimeline
+        XCTAssertNotNil(loadedTimeline.overlayTrack)
+        XCTAssertEqual(loadedTimeline.stickerItems.count, 1)
+
+        let loadedItem = loadedTimeline.stickerItems.first!
+        XCTAssertEqual(loadedItem.startUs, 200_000)
+        XCTAssertEqual(loadedItem.durationUs, 1_800_000)
+
+        let loadedPayload = loadedTimeline.stickerPayload(for: loadedItem.id)
+        XCTAssertNotNil(loadedPayload)
+        XCTAssertEqual(loadedPayload?.stickerId, "sparkles")
+        XCTAssertEqual(loadedPayload?.centerX, 0.6)
+        XCTAssertEqual(loadedPayload?.centerY, 0.4)
+    }
+
     // MARK: - Draft Persistence Round-Trip with Music
 
     func testDraftPersistence_withMusic_roundTrips() async throws {

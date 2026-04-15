@@ -69,7 +69,7 @@ final class ProjectStorePersistenceTests: XCTestCase {
 
         // Overlay track (1 sticker + 1 text)
         let stickerPayloadId = UUID()
-        payloads[stickerPayloadId] = .sticker(StickerPayload(stickerId: "emoji_heart"))
+        payloads[stickerPayloadId] = .sticker(StickerPayload(stickerId: "emoji_heart", centerX: 0.25, centerY: 0.85))
         let textPayloadId = UUID()
         payloads[textPayloadId] = .text(TextPayload(
             text: "Hello TT-11",
@@ -217,6 +217,17 @@ final class ProjectStorePersistenceTests: XCTestCase {
             }
         })
         XCTAssertEqual(payloadTypes, ["scene", "audio", "sticker", "text"])
+
+        // PR10: Verify sticker payload fields persisted
+        let stickerItem = l.draft.canonicalTimeline.stickerItems.first
+        XCTAssertNotNil(stickerItem, "Sticker item should be present after roundtrip")
+        let stickerPayload = l.draft.canonicalTimeline.stickerPayload(for: stickerItem!.id)
+        XCTAssertNotNil(stickerPayload)
+        XCTAssertEqual(stickerPayload?.stickerId, "emoji_heart")
+        XCTAssertEqual(stickerPayload?.centerX, 0.25)
+        XCTAssertEqual(stickerPayload?.centerY, 0.85)
+        XCTAssertEqual(stickerItem?.startUs, 500_000)
+        XCTAssertEqual(stickerItem?.durationUs, 1_000_000)
     }
 
     /// ActiveDraftSlot roundtrip.

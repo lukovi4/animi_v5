@@ -126,13 +126,21 @@ public enum AudioAssetRef: Codable, Equatable, Sendable {
 // MARK: - Sticker Payload
 
 /// Payload for sticker overlay items.
-/// Placeholder in PR1 (Core). Implemented in PR6 (Stickers V1).
+/// PR10: Shipped with positioning (centerX/centerY) and required stickerId.
 public struct StickerPayload: Codable, Equatable, Sendable {
-    /// Bundled sticker ID (V1: bundled pack only).
-    public var stickerId: String?
+    /// Bundled sticker ID (must resolve to a catalog entry).
+    public var stickerId: String
 
-    public init(stickerId: String? = nil) {
+    /// Canvas-normalized X position (0..1, default 0.5 = center).
+    public var centerX: CGFloat
+
+    /// Canvas-normalized Y position (0..1, default 0.5 = center).
+    public var centerY: CGFloat
+
+    public init(stickerId: String, centerX: CGFloat = 0.5, centerY: CGFloat = 0.5) {
         self.stickerId = stickerId
+        self.centerX = centerX
+        self.centerY = centerY
     }
 }
 

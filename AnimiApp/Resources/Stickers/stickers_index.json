@@ -1,0 +1,8 @@
+[
+    { "id": "star", "displayName": "Star", "filename": "sticker_star.png" },
+    { "id": "heart", "displayName": "Heart", "filename": "sticker_heart.png" },
+    { "id": "fire", "displayName": "Fire", "filename": "sticker_fire.png" },
+    { "id": "thumbsup", "displayName": "Thumbs Up", "filename": "sticker_thumbsup.png" },
+    { "id": "sparkles", "displayName": "Sparkles", "filename": "sticker_sparkles.png" },
+    { "id": "rainbow", "displayName": "Rainbow", "filename": "sticker_rainbow.png" }
+]

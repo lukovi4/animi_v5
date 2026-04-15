@@ -81,6 +81,33 @@ internal final class TimelineExportRuntime {
         return try resolveFrameLegacy(compressedFrame)
     }
 
+    /// PR10: Resolves sticker overlays for a given compressed frame from snapshotted session data.
+    func resolveStickerOverlays(at compressedFrame: Int) -> [ResolvedStickerOverlay] {
+        let math = session.transitionMath
+
+        guard let mapping = math.frameMapping(for: compressedFrame) else { return [] }
+        let sceneStartUs = math.sceneItems.prefix(mapping.sceneIndex).reduce(TimeUs(0)) { sum, item in
+            sum + item.durationUs
+        }
+        let localTimeUs = frameToUs(mapping.localFrame, fps: math.fps)
+        let timeUs = sceneStartUs + localTimeUs
+
+        var result: [ResolvedStickerOverlay] = []
+        for (item, payload, imageURL) in session.stickerOverlayItems {
+            let itemStart = item.startUs ?? 0
+            let itemEnd = itemStart + item.durationUs
+            guard timeUs >= itemStart && timeUs < itemEnd else { continue }
+
+            result.append(ResolvedStickerOverlay(
+                stickerId: payload.stickerId,
+                imageURL: imageURL,
+                centerX: payload.centerX,
+                centerY: payload.centerY
+            ))
+        }
+        return result
+    }
+
     /// PR9: Resolves text overlays for a given compressed frame from snapshotted session data.
     func resolveTextOverlays(at compressedFrame: Int) -> [ResolvedTextOverlay] {
         let math = session.transitionMath

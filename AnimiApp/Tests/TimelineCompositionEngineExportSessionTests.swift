@@ -515,6 +515,103 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         XCTAssertTrue(afterText.isEmpty, "Text should not be visible after endUs")
     }
 
+    // MARK: - PR10: Sticker Overlay Export Session
+
+    /// buildExportSession() snapshots sticker overlay items with pre-resolved URLs.
+    @MainActor
+    func testBuildExportSession_snapshotsStickerOverlayItems() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        var (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 90)
+
+        // Add sticker overlay track
+        let stickerPid = UUID()
+        timeline.payloads[stickerPid] = .sticker(StickerPayload(
+            stickerId: "star",
+            centerX: 0.4,
+            centerY: 0.6
+        ))
+        var overlayTrack = Track(kind: .overlay)
+        overlayTrack.items.append(TimelineItem(
+            payloadId: stickerPid, kind: .sticker, startUs: 0, durationUs: 2_000_000
+        ))
+        timeline.tracks.append(overlayTrack)
+
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+        // Inject a test sticker provider so URLs resolve
+        engine.setStickerProvider(ExportTestStickerProvider())
+
+        let session = try await engine.buildExportSession()
+
+        XCTAssertEqual(session.stickerOverlayItems.count, 1, "Export session should snapshot sticker overlay items")
+        XCTAssertEqual(session.stickerOverlayItems.first?.payload.stickerId, "star")
+        XCTAssertEqual(session.stickerOverlayItems.first?.payload.centerX, 0.4)
+        XCTAssertEqual(session.stickerOverlayItems.first?.payload.centerY, 0.6)
+        XCTAssertEqual(session.stickerOverlayItems.first?.item.durationUs, 2_000_000)
+        XCTAssertNotNil(session.stickerOverlayItems.first?.imageURL, "Image URL should be pre-resolved")
+    }
+
+    /// Sticker overlay items are empty when no stickers on overlay track.
+    @MainActor
+    func testBuildExportSession_noStickers_emptySnapshot() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+        let session = try await engine.buildExportSession()
+
+        XCTAssertTrue(session.stickerOverlayItems.isEmpty, "Export session should have no sticker overlays when none exist")
+    }
+
+    /// resolveStickerOverlays returns overlays visible at a given frame, empty for non-visible.
+    @MainActor
+    func testResolveStickerOverlays_visibleAndNonVisible() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        var (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 90)
+
+        // Sticker starts at 1s, lasts 1s (frames 30-59 at 30fps)
+        let stickerPid = UUID()
+        timeline.payloads[stickerPid] = .sticker(StickerPayload(
+            stickerId: "heart",
+            centerX: 0.5,
+            centerY: 0.5
+        ))
+        var overlayTrack = Track(kind: .overlay)
+        overlayTrack.items.append(TimelineItem(
+            payloadId: stickerPid, kind: .sticker, startUs: 1_000_000, durationUs: 1_000_000
+        ))
+        timeline.tracks.append(overlayTrack)
+
+        let provider = ExportTestStickerProvider()
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+        engine.setStickerProvider(provider)
+
+        // Frame 0 (t=0): sticker not visible
+        let beforeSticker = engine.resolveStickerOverlays(at: 0, stickerProvider: provider)
+        XCTAssertTrue(beforeSticker.isEmpty, "Sticker should not be visible before startUs")
+
+        // Frame 30 (t=1s): sticker visible
+        let duringSticker = engine.resolveStickerOverlays(at: 30, stickerProvider: provider)
+        XCTAssertEqual(duringSticker.count, 1, "Sticker should be visible during its time range")
+        XCTAssertEqual(duringSticker.first?.stickerId, "heart")
+        XCTAssertEqual(duringSticker.first?.centerX, 0.5)
+        XCTAssertNotNil(duringSticker.first?.imageURL)
+
+        // Frame 60 (t=2s): sticker no longer visible
+        let afterSticker = engine.resolveStickerOverlays(at: 60, stickerProvider: provider)
+        XCTAssertTrue(afterSticker.isEmpty, "Sticker should not be visible after endUs")
+    }
+
     // MARK: - Legacy Cold Export
 
     /// Creates a minimal valid .mp4 file so AVURLAsset.duration returns > 0.
@@ -831,4 +928,17 @@ private struct StubMediaLocator: ProjectMediaLocator {
         // Delegate to ProjectStore for tests that create real video files
         try ProjectStore().absoluteURL(for: mediaRef, registry: registry)
     }
+}
+
+/// PR10: Test sticker provider that returns dummy URLs for any sticker ID.
+private final class ExportTestStickerProvider: StickerProviding {
+    func loadFromBundle() throws {}
+    func descriptor(for stickerId: String) -> StickerDescriptor? {
+        StickerDescriptor(id: stickerId, displayName: stickerId, filename: "\(stickerId).png")
+    }
+    func resourceURL(for stickerId: String) -> URL? {
+        URL(fileURLWithPath: "/tmp/sticker_\(stickerId).png")
+    }
+    var allDescriptors: [StickerDescriptor] { [] }
+    var count: Int { 0 }
 }

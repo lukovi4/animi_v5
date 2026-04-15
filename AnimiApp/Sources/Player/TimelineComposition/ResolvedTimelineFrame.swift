@@ -108,6 +108,24 @@ public struct ResolvedTextOverlay: Sendable {
     }
 }
 
+// MARK: - Resolved Sticker Overlay (PR10)
+
+/// Resolved sticker overlay for rendering.
+/// Used by both preview and export render paths.
+public struct ResolvedStickerOverlay: Sendable {
+    public let stickerId: String
+    public let imageURL: URL
+    public let centerX: CGFloat
+    public let centerY: CGFloat
+
+    public init(stickerId: String, imageURL: URL, centerX: CGFloat, centerY: CGFloat) {
+        self.stickerId = stickerId
+        self.imageURL = imageURL
+        self.centerX = centerX
+        self.centerY = centerY
+    }
+}
+
 // MARK: - TT-02: Timeline Resolution Policy
 
 /// TT-02: Policy for resolving timeline frames.

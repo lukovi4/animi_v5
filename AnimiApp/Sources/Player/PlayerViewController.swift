@@ -177,7 +177,7 @@ final class PlayerViewController: UIViewController {
 
     // MARK: - User Media (PR-32)
     private lazy var overlayView = EditorOverlayView()
-    private lazy var textPositionOverlay = TextPositionOverlayView()
+    private lazy var overlayPositionDrag = OverlayPositionDragView()
 
     // MARK: - Scene Edit Mode (PR-D)
     private var sceneEditController: SceneEditInteractionController?
@@ -366,7 +366,7 @@ final class PlayerViewController: UIViewController {
         editorLayoutContainer.embedOverlayView(overlayView)
 
         // PR9: Embed text position overlay for canvas drag
-        editorLayoutContainer.embedTextPositionOverlay(textPositionOverlay)
+        editorLayoutContainer.embedOverlayPositionDrag(overlayPositionDrag)
 
         // Phase 6: Embed ingest status overlay (above outline overlay, below menuStrip)
         editorLayoutContainer.embedStatusOverlayView(ingestStatusOverlayView)
@@ -483,9 +483,20 @@ final class PlayerViewController: UIViewController {
             self?.session.dispatch(.deleteItem(itemId: itemId))
         }
 
-        // PR9: Text position overlay drag callback
-        textPositionOverlay.onDragPosition = { [weak self] itemId, centerX, centerY, phase in
-            self?.session.dispatch(.dragTextPosition(itemId: itemId, centerX: centerX, centerY: centerY, phase: phase))
+        // PR10: Sticker overlay callbacks
+        editorLayoutContainer.onSticker = { [weak self] in
+            self?.presentStickerPicker(changingItemId: nil)
+        }
+        editorLayoutContainer.onChangeSticker = { [weak self] itemId in
+            self?.presentStickerPicker(changingItemId: itemId)
+        }
+        editorLayoutContainer.onDeleteSticker = { [weak self] itemId in
+            self?.session.dispatch(.deleteItem(itemId: itemId))
+        }
+
+        // PR9+PR10: Overlay position drag callback (text + sticker)
+        overlayPositionDrag.onDragPosition = { [weak self] itemId, centerX, centerY, phase in
+            self?.session.dispatch(.dragOverlayPosition(itemId: itemId, centerX: centerX, centerY: centerY, phase: phase))
         }
 
         // PR-D: Scene Edit Mode callbacks
@@ -1235,24 +1246,37 @@ final class PlayerViewController: UIViewController {
         let sel = selection ?? .none
         let sceneCount = session.state?.sceneItems.count ?? 1
         editorLayoutContainer.setTimelineSelection(sel, sceneCount: sceneCount)
-        updateTextPositionOverlay(selection: sel)
+        updateOverlayPositionDrag(selection: sel)
     }
 
-    /// PR9: Updates text position overlay visibility and state based on selection.
-    private func updateTextPositionOverlay(selection: TimelineSelection) {
+    /// PR9+PR10: Updates overlay position drag visibility and state based on selection.
+    private func updateOverlayPositionDrag(selection: TimelineSelection) {
         guard session.state?.uiMode == .timeline else {
-            textPositionOverlay.clearSelection()
-            textPositionOverlay.isHidden = true
+            overlayPositionDrag.clearSelection()
+            overlayPositionDrag.isHidden = true
             return
         }
 
-        if case .text(let itemId) = selection,
-           let payload = session.state?.canonicalTimeline.textPayload(for: itemId) {
-            textPositionOverlay.isHidden = false
-            textPositionOverlay.setSelectedTextItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
-        } else {
-            textPositionOverlay.clearSelection()
-            textPositionOverlay.isHidden = true
+        switch selection {
+        case .text(let itemId):
+            if let payload = session.state?.canonicalTimeline.textPayload(for: itemId) {
+                overlayPositionDrag.isHidden = false
+                overlayPositionDrag.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
+            } else {
+                overlayPositionDrag.clearSelection()
+                overlayPositionDrag.isHidden = true
+            }
+        case .sticker(let itemId):
+            if let payload = session.state?.canonicalTimeline.stickerPayload(for: itemId) {
+                overlayPositionDrag.isHidden = false
+                overlayPositionDrag.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
+            } else {
+                overlayPositionDrag.clearSelection()
+                overlayPositionDrag.isHidden = true
+            }
+        default:
+            overlayPositionDrag.clearSelection()
+            overlayPositionDrag.isHidden = true
         }
     }
 
@@ -1274,7 +1298,7 @@ final class PlayerViewController: UIViewController {
         updateOverlayTrack(state: state)
 
         // PR9: Refresh text position overlay after timeline structure change
-        updateTextPositionOverlay(selection: state.selection)
+        updateOverlayPositionDrag(selection: state.selection)
 
         // Update coordinator timeline (legacy path for Scene Edit)
         runtime?.syncCoordinatorTimeline(from: state)
@@ -1290,18 +1314,32 @@ final class PlayerViewController: UIViewController {
         runtime?.refreshCurrentTimelineFrame()
     }
 
-    /// PR9: Updates the overlay track in the timeline UI from current state.
+    /// PR9+PR10: Updates the overlay track in the timeline UI from current state.
     private func updateOverlayTrack(state: EditorState) {
-        let items = state.canonicalTimeline.textItems.compactMap { item -> (id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)? in
-            guard let payload = state.canonicalTimeline.textPayload(for: item.id) else { return nil }
-            let label = payload.text.isEmpty ? "Text" : String(payload.text.prefix(20))
-            return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label)
-        }
-        let selectedTextId: UUID? = {
-            if case .text(let itemId) = state.selection { return itemId }
-            return nil
+        // Collect text items
+        let textItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)] =
+            state.canonicalTimeline.textItems.compactMap { item in
+                guard let payload = state.canonicalTimeline.textPayload(for: item.id) else { return nil }
+                let label = payload.text.isEmpty ? "Text" : String(payload.text.prefix(20))
+                return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label, itemKind: .text)
+            }
+        // Collect sticker items
+        let stickerItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)] =
+            state.canonicalTimeline.stickerItems.compactMap { item in
+                guard let payload = state.canonicalTimeline.stickerPayload(for: item.id) else { return nil }
+                let label = payload.stickerId
+                return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label, itemKind: .sticker)
+            }
+        // Merge and sort by startUs
+        let allItems = (textItems + stickerItems).sorted { $0.startUs < $1.startUs }
+        let selectedOverlayId: UUID? = {
+            switch state.selection {
+            case .text(let itemId): return itemId
+            case .sticker(let itemId): return itemId
+            default: return nil
+            }
         }()
-        editorLayoutContainer.timelineView.setOverlayItems(items, selectedItemId: selectedTextId)
+        editorLayoutContainer.timelineView.setOverlayItems(allItems, selectedItemId: selectedOverlayId)
     }
 
     /// PR-F: Called when scene state changes (but not timeline structure).
@@ -1707,8 +1745,8 @@ final class PlayerViewController: UIViewController {
         var textMapper = EditorCanvasMapper()
         textMapper.canvasSize = canvasSize
         textMapper.viewSize = viewSize
-        textPositionOverlay.canvasSize = CGSize(width: canvasSize.width, height: canvasSize.height)
-        textPositionOverlay.canvasToView = textMapper.canvasToViewTransform()
+        overlayPositionDrag.canvasSize = CGSize(width: canvasSize.width, height: canvasSize.height)
+        overlayPositionDrag.canvasToView = textMapper.canvasToViewTransform()
 
         // P1-2: Refresh Scene Edit overlay after layout change
         if case .sceneEdit = session.state?.uiMode {
@@ -2170,6 +2208,32 @@ final class PlayerViewController: UIViewController {
         present(nav, animated: true)
     }
 
+    /// PR10: Presents the sticker picker. If changingItemId is set, replaces the sticker on that item.
+    private func presentStickerPicker(changingItemId: UUID?) {
+        let picker = StickerPickerViewController(stickerProvider: session.stickerProvider)
+        picker.onStickerSelected = { [weak self] stickerId in
+            guard let self = self else { return }
+            if let itemId = changingItemId {
+                // Change existing sticker
+                var payload = self.session.state?.canonicalTimeline.stickerPayload(for: itemId) ?? StickerPayload(stickerId: stickerId)
+                payload.stickerId = stickerId
+                self.session.dispatch(.updateStickerPayload(itemId: itemId, payload: payload))
+            } else {
+                // Add new sticker at playhead
+                let playheadFrame = self.session.state?.playheadCompressedFrame ?? 0
+                let mapper = self.session.state?.makePlayheadMapper()
+                let startUs = mapper?.nominalTimeUs(forCompressedFrame: playheadFrame) ?? 0
+                let defaultDuration: TimeUs = 3_000_000 // 3 seconds
+                self.session.dispatch(.addStickerOverlay(
+                    stickerId: stickerId,
+                    startUs: startUs,
+                    durationUs: defaultDuration
+                ))
+            }
+        }
+        present(picker, animated: true)
+    }
+
     /// Presents a document picker for importing audio files.
     private func presentMusicPicker() {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.audio])
@@ -2509,7 +2573,8 @@ extension PlayerViewController: MTKViewDelegate {
             presentationDrawable: drawable,
             waitUntilCompleted: false,
             diagnosticFrameTag: payload.diagnosticFrameTag,
-            textOverlays: payload.textOverlays
+            textOverlays: payload.textOverlays,
+            stickerOverlays: payload.stickerOverlays
         )
 
         do {
@@ -2579,7 +2644,8 @@ extension PlayerViewController: MTKViewDelegate {
             presentationDrawable: drawable,
             waitUntilCompleted: false,
             diagnosticFrameTag: payload.diagnosticFrameTag,
-            textOverlays: payload.textOverlays
+            textOverlays: payload.textOverlays,
+            stickerOverlays: payload.stickerOverlays
         )
 
         do {

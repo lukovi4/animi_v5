@@ -27,6 +27,8 @@ internal struct TimelineRenderRequest {
     let diagnosticFrameTag: Int?
     /// PR9: Text overlays to render on top of the scene.
     let textOverlays: [ResolvedTextOverlay]
+    /// PR10: Sticker overlays to render on top of the scene (below text).
+    let stickerOverlays: [ResolvedStickerOverlay]
 
     init(
         resolved: ResolvedTimelineFrame,
@@ -39,7 +41,8 @@ internal struct TimelineRenderRequest {
         presentationDrawable: MTLDrawable?,
         waitUntilCompleted: Bool,
         diagnosticFrameTag: Int? = nil,
-        textOverlays: [ResolvedTextOverlay] = []
+        textOverlays: [ResolvedTextOverlay] = [],
+        stickerOverlays: [ResolvedStickerOverlay] = []
     ) {
         self.resolved = resolved
         self.targetTexture = targetTexture
@@ -52,6 +55,7 @@ internal struct TimelineRenderRequest {
         self.waitUntilCompleted = waitUntilCompleted
         self.diagnosticFrameTag = diagnosticFrameTag
         self.textOverlays = textOverlays
+        self.stickerOverlays = stickerOverlays
     }
 }
 
@@ -172,7 +176,12 @@ internal enum TimelineRenderExecutor {
             initialLoadAction: .load
         )
 
-        // Pass 3: Text overlays (PR9)
+        // Pass 3: Sticker overlays (PR10, rendered below text)
+        if !request.stickerOverlays.isEmpty {
+            renderStickerOverlays(request.stickerOverlays, target: target, commandBuffer: commandBuffer, renderer: renderer)
+        }
+
+        // Pass 4: Text overlays (PR9, rendered above stickers)
         if !request.textOverlays.isEmpty {
             renderTextOverlays(request.textOverlays, target: target, commandBuffer: commandBuffer, renderer: renderer)
         }
@@ -318,7 +327,17 @@ internal enum TimelineRenderExecutor {
             commandBuffer: commandBuffer
         )
 
-        // Pass 3: Text overlays (PR9)
+        // Pass 3: Sticker overlays (PR10, rendered below text)
+        if !request.stickerOverlays.isEmpty {
+            let stickerTarget = RenderTarget(
+                texture: request.targetTexture,
+                drawableScale: request.drawableScale,
+                animSize: request.timelineCanvasSize
+            )
+            renderStickerOverlays(request.stickerOverlays, target: stickerTarget, commandBuffer: commandBuffer, renderer: renderer)
+        }
+
+        // Pass 4: Text overlays (PR9, rendered above stickers)
         if !request.textOverlays.isEmpty {
             let finalTarget = RenderTarget(
                 texture: request.targetTexture,
@@ -440,6 +459,93 @@ internal enum TimelineRenderExecutor {
             let y = CGFloat(overlay.centerY) * CGFloat(pixelHeight) - textSize.height / 2
 
             nsString.draw(at: CGPoint(x: x, y: y), withAttributes: attributes)
+        }
+
+        // Write back to texture
+        target.texture.replace(
+            region: MTLRegionMake2D(0, 0, pixelWidth, pixelHeight),
+            mipmapLevel: 0,
+            withBytes: pixelBuffer,
+            bytesPerRow: bytesPerRow
+        )
+    }
+
+    // MARK: - Sticker Overlay Rendering (PR10)
+
+    /// Per-imageURL CGImage cache to avoid per-frame disk I/O.
+    private static var stickerImageCache: [URL: CGImage] = [:]
+
+    /// CPU-rasterizes sticker overlays via Core Graphics directly onto the target pixel buffer.
+    /// Same CPU rasterization pattern as renderTextOverlays.
+    /// Sticker render size: 15% of canvas pixel width, aspect-fit.
+    private static func renderStickerOverlays(
+        _ overlays: [ResolvedStickerOverlay],
+        target: RenderTarget,
+        commandBuffer: MTLCommandBuffer,
+        renderer: MetalRenderer
+    ) {
+        let pixelWidth = target.texture.width
+        let pixelHeight = target.texture.height
+
+        guard pixelWidth > 0, pixelHeight > 0 else { return }
+
+        let bytesPerRow = pixelWidth * 4
+        let dataSize = bytesPerRow * pixelHeight
+
+        // Read current texture content
+        var pixelBuffer = [UInt8](repeating: 0, count: dataSize)
+        target.texture.getBytes(
+            &pixelBuffer,
+            bytesPerRow: bytesPerRow,
+            from: MTLRegionMake2D(0, 0, pixelWidth, pixelHeight),
+            mipmapLevel: 0
+        )
+
+        // Create CGContext from existing pixels
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let cgContext = CGContext(
+            data: &pixelBuffer,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+
+        // Flip coordinates (CG origin is bottom-left, Metal is top-left)
+        cgContext.translateBy(x: 0, y: CGFloat(pixelHeight))
+        cgContext.scaleBy(x: 1, y: -1)
+
+        for overlay in overlays {
+            // Load or cache CGImage from URL
+            let cgImage: CGImage
+            if let cached = stickerImageCache[overlay.imageURL] {
+                cgImage = cached
+            } else {
+                guard let source = CGImageSourceCreateWithURL(overlay.imageURL as CFURL, nil),
+                      let loaded = CGImageSourceCreateImageAtIndex(source, 0, nil) else { continue }
+                stickerImageCache[overlay.imageURL] = loaded
+                cgImage = loaded
+            }
+
+            // Render size: 15% of canvas pixel width, aspect-fit
+            let targetWidth = CGFloat(pixelWidth) * 0.15
+            let imageAspect = CGFloat(cgImage.width) / max(1, CGFloat(cgImage.height))
+            let drawWidth: CGFloat
+            let drawHeight: CGFloat
+            if imageAspect >= 1.0 {
+                drawWidth = targetWidth
+                drawHeight = targetWidth / imageAspect
+            } else {
+                drawHeight = targetWidth
+                drawWidth = targetWidth * imageAspect
+            }
+
+            let x = CGFloat(overlay.centerX) * CGFloat(pixelWidth) - drawWidth / 2
+            let y = CGFloat(overlay.centerY) * CGFloat(pixelHeight) - drawHeight / 2
+
+            cgContext.draw(cgImage, in: CGRect(x: x, y: y, width: drawWidth, height: drawHeight))
         }
 
         // Write back to texture

@@ -32,6 +32,12 @@ final class ContextBar: UIView {
     /// Called when Delete Text is tapped (PR9). Parameter: text item ID.
     var onDeleteText: ((UUID) -> Void)?
 
+    /// Called when Change Sticker is tapped (PR10). Parameter: sticker item ID.
+    var onChangeSticker: ((UUID) -> Void)?
+
+    /// Called when Delete Sticker is tapped (PR10). Parameter: sticker item ID.
+    var onDeleteSticker: ((UUID) -> Void)?
+
     // MARK: - State
 
     /// Currently selected scene ID (for button actions).
@@ -42,6 +48,9 @@ final class ContextBar: UIView {
 
     /// Currently selected text item ID (for text actions, PR9).
     private var selectedTextItemId: UUID?
+
+    /// Currently selected sticker item ID (for sticker actions, PR10).
+    private var selectedStickerItemId: UUID?
 
     /// Whether delete is allowed (false if only one scene remains).
     private var canDelete: Bool = true
@@ -192,6 +201,45 @@ final class ContextBar: UIView {
         return button
     }()
 
+    // PR10: Sticker action buttons
+    private lazy var stickerStackView: UIStackView = {
+        let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.distribution = .fillEqually
+        stack.alignment = .center
+        stack.spacing = 16
+        return stack
+    }()
+
+    private lazy var changeStickerButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "arrow.triangle.2.circlepath")
+        config.title = "Change"
+        config.imagePlacement = .top
+        config.imagePadding = 4
+        config.baseForegroundColor = .label
+
+        let button = UIButton(configuration: config)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(changeStickerTapped), for: .touchUpInside)
+        return button
+    }()
+
+    private lazy var deleteStickerButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "trash")
+        config.title = "Remove"
+        config.imagePlacement = .top
+        config.imagePadding = 4
+        config.baseForegroundColor = .systemRed
+
+        let button = UIButton(configuration: config)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(deleteStickerTapped), for: .touchUpInside)
+        return button
+    }()
+
     private lazy var placeholderLabel: UILabel = {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -222,6 +270,7 @@ final class ContextBar: UIView {
         addSubview(stackView)
         addSubview(audioStackView)
         addSubview(textStackView)
+        addSubview(stickerStackView)
         addSubview(placeholderLabel)
 
         stackView.addArrangedSubview(duplicateButton)
@@ -235,10 +284,14 @@ final class ContextBar: UIView {
         textStackView.addArrangedSubview(editTextButton)
         textStackView.addArrangedSubview(deleteTextButton)
 
+        stickerStackView.addArrangedSubview(changeStickerButton)
+        stickerStackView.addArrangedSubview(deleteStickerButton)
+
         // Initially hidden until item is selected
         stackView.isHidden = true
         audioStackView.isHidden = true
         textStackView.isHidden = true
+        stickerStackView.isHidden = true
         placeholderLabel.isHidden = false
     }
 
@@ -252,6 +305,9 @@ final class ContextBar: UIView {
 
             textStackView.centerXAnchor.constraint(equalTo: centerXAnchor),
             textStackView.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            stickerStackView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stickerStackView.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             placeholderLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             placeholderLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -270,9 +326,11 @@ final class ContextBar: UIView {
             selectedSceneId = nil
             selectedAudioItemId = nil
             selectedTextItemId = nil
+            selectedStickerItemId = nil
             stackView.isHidden = true
             audioStackView.isHidden = true
             textStackView.isHidden = true
+            stickerStackView.isHidden = true
             placeholderLabel.isHidden = false
             placeholderLabel.text = "Select a scene"
 
@@ -280,10 +338,12 @@ final class ContextBar: UIView {
             selectedSceneId = sceneId
             selectedAudioItemId = nil
             selectedTextItemId = nil
+            selectedStickerItemId = nil
             canDelete = sceneCount > 1
             stackView.isHidden = false
             audioStackView.isHidden = true
             textStackView.isHidden = true
+            stickerStackView.isHidden = true
             placeholderLabel.isHidden = true
 
             // Update delete button state
@@ -294,18 +354,33 @@ final class ContextBar: UIView {
             selectedSceneId = nil
             selectedAudioItemId = itemId
             selectedTextItemId = nil
+            selectedStickerItemId = nil
             stackView.isHidden = true
             audioStackView.isHidden = false
             textStackView.isHidden = true
+            stickerStackView.isHidden = true
             placeholderLabel.isHidden = true
 
         case .text(let itemId):
             selectedSceneId = nil
             selectedAudioItemId = nil
             selectedTextItemId = itemId
+            selectedStickerItemId = nil
             stackView.isHidden = true
             audioStackView.isHidden = true
             textStackView.isHidden = false
+            stickerStackView.isHidden = true
+            placeholderLabel.isHidden = true
+
+        case .sticker(let itemId):
+            selectedSceneId = nil
+            selectedAudioItemId = nil
+            selectedTextItemId = nil
+            selectedStickerItemId = itemId
+            stackView.isHidden = true
+            audioStackView.isHidden = true
+            textStackView.isHidden = true
+            stickerStackView.isHidden = false
             placeholderLabel.isHidden = true
         }
     }
@@ -349,5 +424,15 @@ final class ContextBar: UIView {
     @objc private func deleteTextTapped() {
         guard let itemId = selectedTextItemId else { return }
         onDeleteText?(itemId)
+    }
+
+    @objc private func changeStickerTapped() {
+        guard let itemId = selectedStickerItemId else { return }
+        onChangeSticker?(itemId)
+    }
+
+    @objc private func deleteStickerTapped() {
+        guard let itemId = selectedStickerItemId else { return }
+        onDeleteSticker?(itemId)
     }
 }

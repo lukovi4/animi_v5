@@ -60,8 +60,8 @@ final class TextOverlayIntegrationTests: XCTestCase {
         XCTAssertEqual(store.state.canonicalTimeline.textItems.first?.startUs, 2_000_000)
 
         // 4. Drag position on canvas
-        store.dispatch(.dragTextPosition(itemId: itemId, centerX: 0.3, centerY: 0.8, phase: .began))
-        store.dispatch(.dragTextPosition(itemId: itemId, centerX: 0.3, centerY: 0.8, phase: .ended))
+        store.dispatch(.dragOverlayPosition(itemId: itemId, centerX: 0.3, centerY: 0.8, phase: .began))
+        store.dispatch(.dragOverlayPosition(itemId: itemId, centerX: 0.3, centerY: 0.8, phase: .ended))
 
         XCTAssertEqual(store.state.canonicalTimeline.textPayload(for: itemId)?.centerX, 0.3)
         XCTAssertEqual(store.state.canonicalTimeline.textPayload(for: itemId)?.centerY, 0.8)
@@ -160,10 +160,10 @@ final class TextOverlayIntegrationTests: XCTestCase {
         XCTAssertEqual(payload?.text, "Test")
     }
 
-    // MARK: - Production Wiring: TextPositionOverlayView
+    // MARK: - Production Wiring: OverlayPositionDragView
 
-    /// Verifies that TextPositionOverlayView drag callback wired through production path
-    /// dispatches .dragTextPosition and mutates session state.
+    /// Verifies that OverlayPositionDragView drag callback wired through production path
+    /// dispatches .dragOverlayPosition and mutates session state.
     func testTextPositionOverlay_productionDragWiring_updatesSessionState() {
         let store = makeStore()
 
@@ -179,23 +179,23 @@ final class TextOverlayIntegrationTests: XCTestCase {
         let itemId = store.state.canonicalTimeline.textItems.first!.id
         XCTAssertTrue(store.state.selection.isTextSelected)
 
-        // 2. Create real TextPositionOverlayView and wire exactly as production does
-        let overlay = TextPositionOverlayView()
+        // 2. Create real OverlayPositionDragView and wire exactly as production does
+        let overlay = OverlayPositionDragView()
         overlay.canvasSize = CGSize(width: 1080, height: 1920)
         // Simulate a simple identity-scale canvas→view transform for test (1:1)
         overlay.canvasToView = CGAffineTransform(scaleX: 0.5, y: 0.5)
 
         // Wire callback exactly as PlayerViewController does
         overlay.onDragPosition = { [weak store] dragItemId, centerX, centerY, phase in
-            store?.dispatch(.dragTextPosition(itemId: dragItemId, centerX: centerX, centerY: centerY, phase: phase))
+            store?.dispatch(.dragOverlayPosition(itemId: dragItemId, centerX: centerX, centerY: centerY, phase: phase))
         }
 
-        // 3. Set selected text item (as PlayerViewController.updateTextPositionOverlay does)
+        // 3. Set selected text item (as PlayerViewController.updateOverlayPositionDrag does)
         let payload = store.state.canonicalTimeline.textPayload(for: itemId)!
-        overlay.setSelectedTextItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
-        XCTAssertNotNil(overlay.selectedTextItem)
-        XCTAssertEqual(overlay.selectedTextItem?.centerX, 0.5)
-        XCTAssertEqual(overlay.selectedTextItem?.centerY, 0.5)
+        overlay.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
+        XCTAssertNotNil(overlay.selectedItem)
+        XCTAssertEqual(overlay.selectedItem?.centerX, 0.5)
+        XCTAssertEqual(overlay.selectedItem?.centerY, 0.5)
 
         // 4. Simulate drag via production callback (as gesture would fire)
         overlay.onDragPosition?(itemId, 0.5, 0.5, .began)
@@ -210,7 +210,7 @@ final class TextOverlayIntegrationTests: XCTestCase {
 
     /// Verifies coordinate mapping round-trip: normalized → canvas → view → drag → normalized.
     func testTextPositionOverlay_coordinateMappingRoundTrip() {
-        let overlay = TextPositionOverlayView()
+        let overlay = OverlayPositionDragView()
 
         // Set up a realistic canvas mapper scenario: 1080x1920 canvas in a 375x400 view
         let canvasWidth: CGFloat = 1080
@@ -225,7 +225,7 @@ final class TextOverlayIntegrationTests: XCTestCase {
 
         // Set item at center
         let testId = UUID()
-        overlay.setSelectedTextItem(itemId: testId, centerX: 0.5, centerY: 0.5)
+        overlay.setSelectedItem(itemId: testId, centerX: 0.5, centerY: 0.5)
 
         // Force layout with a realistic frame
         overlay.frame = CGRect(x: 0, y: 0, width: 375, height: 400)
@@ -238,8 +238,8 @@ final class TextOverlayIntegrationTests: XCTestCase {
             y: 0.5 * canvasHeight
         ))
         let handleCenter = CGPoint(
-            x: overlay.selectedTextItem!.centerX,
-            y: overlay.selectedTextItem!.centerY
+            x: overlay.selectedItem!.centerX,
+            y: overlay.selectedItem!.centerY
         )
         XCTAssertEqual(handleCenter.x, 0.5, accuracy: 0.001)
         XCTAssertEqual(handleCenter.y, 0.5, accuracy: 0.001)

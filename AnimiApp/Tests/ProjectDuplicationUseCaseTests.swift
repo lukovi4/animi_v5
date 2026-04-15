@@ -226,7 +226,66 @@ final class ProjectDuplicationUseCaseTests: XCTestCase {
         XCTAssertEqual(payload?.centerY, 0.7)
     }
 
+    // MARK: - Sticker Overlay Duplication (PR10)
+
+    func testDuplicate_withStickerOverlay_preservesPayloadFields() async throws {
+        let sourceId = try await createSavedProjectWithStickerOverlay()
+
+        let useCase = ProjectDuplicationUseCase(persistence: storageActor, mediaWriter: storageActor)
+        let newId = try await useCase.execute(sourceProjectId: sourceId)
+
+        let record = await storageActor.loadSavedProject(projectId: newId)
+        XCTAssertNotNil(record)
+
+        let timeline = record!.draft.canonicalTimeline
+        XCTAssertNotNil(timeline.overlayTrack, "Duplicated project should have overlay track")
+        XCTAssertEqual(timeline.stickerItems.count, 1, "Duplicated project should have sticker item")
+
+        let item = timeline.stickerItems.first!
+        XCTAssertEqual(item.startUs, 300_000)
+        XCTAssertEqual(item.durationUs, 1_500_000)
+
+        let payload = timeline.stickerPayload(for: item.id)
+        XCTAssertNotNil(payload, "Duplicated project should have sticker payload")
+        XCTAssertEqual(payload?.stickerId, "emoji_star")
+        XCTAssertEqual(payload?.centerX, 0.2)
+        XCTAssertEqual(payload?.centerY, 0.8)
+    }
+
     // MARK: - Helpers
+
+    private func createSavedProjectWithStickerOverlay() async throws -> UUID {
+        var draft = ProjectDraft(origin: .template(templateId: "tpl_sticker"))
+
+        var timeline = CanonicalTimeline.empty()
+        let scenePayloadId = UUID()
+        timeline.payloads[scenePayloadId] = .scene(ScenePayload(sceneTypeId: "scene_0"))
+        timeline.tracks[0].items.append(TimelineItem(
+            payloadId: scenePayloadId, kind: .scene, startUs: nil, durationUs: 5_000_000
+        ))
+
+        let stickerPayloadId = UUID()
+        timeline.payloads[stickerPayloadId] = .sticker(StickerPayload(
+            stickerId: "emoji_star",
+            centerX: 0.2,
+            centerY: 0.8
+        ))
+        var overlayTrack = Track(kind: .overlay)
+        overlayTrack.items.append(TimelineItem(
+            payloadId: stickerPayloadId, kind: .sticker, startUs: 300_000, durationUs: 1_500_000
+        ))
+        timeline.tracks.append(overlayTrack)
+
+        draft.canonicalTimeline = timeline
+
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: draft.origin),
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        let materialized = try await storageActor.materializeSavedProject(slot)
+        return materialized.draft.id
+    }
 
     private func createSavedProjectWithTextOverlay() async throws -> UUID {
         var draft = ProjectDraft(origin: .template(templateId: "tpl_text"))

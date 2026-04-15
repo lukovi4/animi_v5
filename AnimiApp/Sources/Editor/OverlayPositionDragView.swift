@@ -11,7 +11,7 @@ import UIKit
 /// - `canvasToView` is the canvas→view transform (from EditorCanvasMapper.canvasToViewTransform())
 /// - Display: normalized → canvas coords → view coords via transform
 /// - Drag: view delta → canvas delta → normalized delta
-final class TextPositionOverlayView: UIView {
+final class OverlayPositionDragView: UIView {
 
     // MARK: - Callbacks
 
@@ -21,7 +21,7 @@ final class TextPositionOverlayView: UIView {
     // MARK: - State
 
     /// Currently selected text item for positioning.
-    private(set) var selectedTextItem: (itemId: UUID, centerX: CGFloat, centerY: CGFloat)?
+    private(set) var selectedItem: (itemId: UUID, centerX: CGFloat, centerY: CGFloat)?
 
     /// Canvas size in scene units. Set by controller from EditorCanvasMapper.
     var canvasSize: CGSize = .zero {
@@ -87,12 +87,12 @@ final class TextPositionOverlayView: UIView {
 
     /// Updates the selected text item for drag interaction.
     /// Pass nil itemId to hide the drag handle.
-    func setSelectedTextItem(itemId: UUID?, centerX: CGFloat, centerY: CGFloat) {
+    func setSelectedItem(itemId: UUID?, centerX: CGFloat, centerY: CGFloat) {
         if let itemId {
-            selectedTextItem = (itemId: itemId, centerX: centerX, centerY: centerY)
+            selectedItem = (itemId: itemId, centerX: centerX, centerY: centerY)
             handleView.isHidden = false
         } else {
-            selectedTextItem = nil
+            selectedItem = nil
             handleView.isHidden = true
         }
         setNeedsLayout()
@@ -100,7 +100,7 @@ final class TextPositionOverlayView: UIView {
 
     /// Hides the drag handle.
     func clearSelection() {
-        selectedTextItem = nil
+        selectedItem = nil
         handleView.isHidden = true
     }
 
@@ -136,7 +136,7 @@ final class TextPositionOverlayView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard let item = selectedTextItem,
+        guard let item = selectedItem,
               canvasSize.width > 0, canvasSize.height > 0 else { return }
 
         let viewPoint = normalizedToView(item.centerX, item.centerY)
@@ -157,7 +157,7 @@ final class TextPositionOverlayView: UIView {
     // MARK: - Gesture Handling
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        guard let item = selectedTextItem,
+        guard let item = selectedItem,
               canvasSize.width > 0, canvasSize.height > 0 else { return }
 
         switch recognizer.state {
@@ -182,17 +182,17 @@ final class TextPositionOverlayView: UIView {
             let newCenterX = max(0, min(1, dragStartCenterX + normalizedDelta.x))
             let newCenterY = max(0, min(1, dragStartCenterY + normalizedDelta.y))
 
-            selectedTextItem = (itemId: item.itemId, centerX: newCenterX, centerY: newCenterY)
+            selectedItem = (itemId: item.itemId, centerX: newCenterX, centerY: newCenterY)
             setNeedsLayout()
             onDragPosition?(item.itemId, newCenterX, newCenterY, .changed)
 
         case .ended:
-            guard let current = selectedTextItem else { return }
+            guard let current = selectedItem else { return }
             onDragPosition?(current.itemId, current.centerX, current.centerY, .ended)
 
         case .cancelled:
             onDragPosition?(item.itemId, dragStartCenterX, dragStartCenterY, .cancelled)
-            selectedTextItem = (itemId: item.itemId, centerX: dragStartCenterX, centerY: dragStartCenterY)
+            selectedItem = (itemId: item.itemId, centerX: dragStartCenterX, centerY: dragStartCenterY)
             setNeedsLayout()
 
         default:
@@ -202,7 +202,7 @@ final class TextPositionOverlayView: UIView {
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         // Only capture touches near the handle
-        guard let _ = selectedTextItem, !handleView.isHidden else { return nil }
+        guard let _ = selectedItem, !handleView.isHidden else { return nil }
         let expandedFrame = handleView.frame.insetBy(dx: -20, dy: -20)
         if expandedFrame.contains(point) {
             return self

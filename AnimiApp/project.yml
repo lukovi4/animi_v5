@@ -22,6 +22,7 @@ targets:
           - Templates/**
           - BackgroundPresets/**
           - Scenes/**
+          - Stickers/**
         type: group
       - path: Resources/Templates
         type: folder
@@ -30,6 +31,9 @@ targets:
         type: folder
         buildPhase: resources
       - path: Resources/Scenes
+        type: folder
+        buildPhase: resources
+      - path: Resources/Stickers
         type: folder
         buildPhase: resources
       - path: ../SharedAssets
