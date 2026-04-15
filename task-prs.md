@@ -16,7 +16,7 @@
 
 Этот раздел фиксирует фактический progress rollout-а и не меняет authoritative scope или порядок PR-ов ниже.
 
-Текущий статус на 2026-04-13:
+Текущий статус на 2026-04-15:
 
 - закрыт `PR 0` `Validation And Guardrails`;
 - закрыт `PR 1` `AppCompositionRoot, Launch Routing And Recovery Prompt`;
@@ -26,7 +26,9 @@
 - закрыт `PR 5` `Asset Identity Cutover And Runtime Storage Boundary`;
 - закрыт `PR 6` `EditorRuntime Extraction And Render Contract`;
 - закрыт `PR 7` `Blank Project, Duplicate Project And My Projects`;
-- следующий незакрытый шаг: `PR 8` `Audio V1: Single Project-Level Music Track`;
+- закрыт `PR 8` `Audio V1: Single Project-Level Music Track`;
+- закрыт `PR 9` `Text Overlay Timeline Editing`;
+- следующий незакрытый шаг: `PR 10` `Sticker Overlay Timeline Editing`;
 - рабочая epic-ветка для rollout-а: `codex/epic-q-editor-app-layer-refactor`.
 
 Что уже сделано в `PR 0`:
@@ -144,6 +146,46 @@
   - `SavedProjectsListingTests`
   - `ProjectPersistenceGatewayTests`
   - обновленные `ProjectStorePersistenceTests`
+
+Что уже сделано в `PR 5`:
+
+- canonical media identity переведена на `ProjectAssetID` и `ProjectAssetRegistry`;
+- `MediaRef` больше не опирается на storage path как canonical identity;
+- storage/runtime/export paths переведены на registry-backed resolve contract;
+- duplication/reopen/missing-media behavior выровнены вокруг canonical asset registry;
+- подтвержден delivered storage boundary для runtime/export/listing/duplication contracts.
+
+Что уже сделано в `PR 6`:
+
+- введен `EditorRuntime` как runtime/playback/render/export owner;
+- `draw(in:)` больше не ветвится по `uiMode`; render path driven by `runtime.currentRenderSource`;
+- export pipeline и background editor execution graph переведены в runtime boundary;
+- `PlayerViewController` перестал читать raw runtime internals и владеть direct runtime mutations;
+- shared `ProjectPreviewService` зафиксирован как canonical preview seam.
+
+Что уже сделано в `PR 7`:
+
+- shipped `blank project` flow со starter scene из `SceneLibrary`;
+- shipped `duplicate project` flow в `My Projects`;
+- duplicate flow стал missing-media-safe без special-case reopen path;
+- saved-project listing/preview contract больше не зависит от template preview как correctness requirement;
+- project-origin driven flows работают на canonical storage/session architecture.
+
+Что уже сделано в `PR 8`:
+
+- shipped один project-level music track на canonical timeline model;
+- доступны import/select, remove, trim, volume;
+- music участвует в save/open/duplicate/export/dirty/undo flows;
+- export/session/audio-writer coverage закрыта по реальному коду;
+- post-PR8 cleanup убрал crash-only duplicate path, internal `TemplateCatalog` singleton coupling и часть controller-owned orchestration debt.
+
+Что уже сделано в `PR 9`:
+
+- shipped text overlays на canonical overlay track в `CanonicalTimeline`;
+- доступны add/edit/remove/move/trailing-trim и canvas positioning;
+- preview/export идут через shared runtime/render pipeline, без второго text-only render stack;
+- text overlays участвуют в save/open/duplicate/dirty/undo flows;
+- required duplication/payload/export-session coverage и production positioning wiring tests добавлены.
 
 ## 1. Зафиксированные Product Assumptions
 
@@ -1197,6 +1239,20 @@ PR7 delivered the canonical blank-project / duplicate-project product flows.
 - обновленные audio writer / export session tests;
 - UI/state tests для audio selection/edit/trim/volume behavior.
 
+### 12.8. Final status
+
+PR8 delivered the canonical audio V1 contract.
+
+- один project-level music track живет в canonical timeline model, а не в sidecar state;
+- shipped real add/remove/trim/volume flow вместо placeholder-only `Music` UI;
+- music import/duplicate/save/export paths опираются на canonical asset registry and session/runtime/export contracts;
+- updated duplication, payload round-trip, audio writer, export session и bridge coverage присутствует в test tree;
+- accepted PR8 baseline validation is green:
+  - `Scripts/verify_module_boundary.sh` — PASS
+  - `cd TVECore && swift test` — PASS
+  - app-level suite on the accepted PR8 baseline — green
+  - app build on the accepted PR8 baseline — green
+
 ## 13. PR 9. Text Overlay Timeline Editing
 
 ### 13.1. Цель
@@ -1255,6 +1311,21 @@ PR7 delivered the canonical blank-project / duplicate-project product flows.
 - обновленные `ProjectDuplicatePayloadRoundTripTests` с text payload coverage;
 - обновленные render/export tests с text overlay coverage;
 - reducer/state tests для add/edit/remove/move/trim behavior.
+
+### 13.8. Final status
+
+PR9 delivered the canonical text overlay contract.
+
+- text overlays живут на canonical overlay track и не используют second rendering stack;
+- shipped real add/edit/remove/move/trim + canvas positioning flow;
+- preview и export используют shared runtime/render path with resolved text overlay payloads;
+- text overlays участвуют в save/open/duplicate/dirty/undo flows;
+- updated duplication/payload/export-session coverage и production positioning wiring tests присутствуют в test tree;
+- accepted PR9 baseline validation is green:
+  - `Scripts/verify_module_boundary.sh` — PASS
+  - `cd TVECore && swift test` — PASS
+  - app-level suite on the accepted PR9 baseline — green
+  - app build on the accepted PR9 baseline — green
 
 ## 14. PR 10. Sticker Overlay Timeline Editing
 
