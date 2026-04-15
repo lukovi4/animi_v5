@@ -1,10 +1,9 @@
 import UIKit
 
-// MARK: - Audio Track View (PR2.6)
+// MARK: - Audio Track View (PR8: Real Clip Display)
 
-/// Placeholder track for audio layer.
-/// Shows an empty track with "Audio" label (no functionality in PR2).
-/// PR2.6: Uses leftPadding to position track at time=0.
+/// Track view for audio layer.
+/// Shows a real music clip when present, or an empty lane when no music.
 final class AudioTrackView: UIView {
 
     // MARK: - Configuration
@@ -15,11 +14,13 @@ final class AudioTrackView: UIView {
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
     private var leftPadding: CGFloat = 0
     private var isSelected: Bool = false
+    private var hasClip: Bool = false
 
     // MARK: - Appearance
 
     private let normalColor: UIColor = .systemGray4
     private let selectedColor: UIColor = .systemGray3
+    private let emptyColor: UIColor = .systemGray5
     private let labelColor: UIColor = .secondaryLabel
     private let cornerRadius: CGFloat = 6
 
@@ -46,9 +47,20 @@ final class AudioTrackView: UIView {
     private lazy var titleLabel: UILabel = {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "Audio"
+        label.text = "Music"
         label.font = .systemFont(ofSize: 11, weight: .regular)
         label.textColor = labelColor
+        return label
+    }()
+
+    /// Empty state label shown when no music is added
+    private lazy var emptyLabel: UILabel = {
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "No music"
+        label.font = .systemFont(ofSize: 11, weight: .regular)
+        label.textColor = .tertiaryLabel
+        label.textAlignment = .center
         return label
     }()
 
@@ -71,13 +83,13 @@ final class AudioTrackView: UIView {
 
     private func setupViews() {
         backgroundColor = .clear
+        addSubview(emptyLabel)
         addSubview(trackBackground)
         trackBackground.addSubview(iconImageView)
         trackBackground.addSubview(titleLabel)
     }
 
     private func setupConstraints() {
-        // PR2.6: Track starts at leftPadding (where time=0 is)
         trackLeadingConstraint = trackBackground.leadingAnchor.constraint(equalTo: leadingAnchor)
         trackWidthConstraint = trackBackground.widthAnchor.constraint(equalToConstant: 200)
 
@@ -94,13 +106,15 @@ final class AudioTrackView: UIView {
 
             titleLabel.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 4),
             titleLabel.centerYAnchor.constraint(equalTo: trackBackground.centerYAnchor),
+
+            emptyLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
     // MARK: - Configuration
 
     /// Configures track with duration in microseconds, pxPerSecond, and leftPadding.
-    /// PR2.6: leftPadding is the X position where time=0 starts.
     /// - Parameters:
     ///   - durationUs: Duration in microseconds
     ///   - pxPerSecond: Pixels per second for width calculation
@@ -127,17 +141,22 @@ final class AudioTrackView: UIView {
         }
     }
 
+    /// PR8: Sets whether a real music clip is present.
+    func setHasClip(_ has: Bool) {
+        hasClip = has
+        trackBackground.isHidden = !has
+        emptyLabel.isHidden = has
+    }
+
     // MARK: - Private
 
     private func updateTrackLayout() {
-        guard durationUs > 0 else { return }
+        guard durationUs > 0, hasClip else { return }
 
         let durationSeconds = CGFloat(usToSeconds(durationUs))
         let trackWidth = durationSeconds * pxPerSecond
 
         trackWidthConstraint?.constant = trackWidth
-
-        // PR2.6: Track starts at leftPadding (where time=0 is in contentView coordinates)
         trackLeadingConstraint?.constant = leftPadding
     }
 }

@@ -82,16 +82,34 @@ public struct ScenePayload: Codable, Equatable, Sendable {
 // MARK: - Audio Payload
 
 /// Payload for audio clip items.
-/// Placeholder in PR1 (Core). Implemented in PR5 (Audio V1).
+/// V1 (PR8): project-level music track with trim + volume.
 public struct AudioPayload: Codable, Equatable, Sendable {
-    /// Audio asset reference (implemented in PR5).
+    /// Audio asset reference.
     public var assetRef: AudioAssetRef?
+
+    /// Full source file duration in microseconds.
+    public var sourceDurationUs: TimeUs
+
+    /// In-source trim start (0 = beginning).
+    public var trimStartUs: TimeUs
+
+    /// In-source trim end (= sourceDurationUs for full length).
+    public var trimEndUs: TimeUs
 
     /// Volume level 0.0 - 1.0 (default: 1.0).
     public var volume: Float
 
-    public init(assetRef: AudioAssetRef? = nil, volume: Float = 1.0) {
+    public init(
+        assetRef: AudioAssetRef? = nil,
+        sourceDurationUs: TimeUs = 0,
+        trimStartUs: TimeUs = 0,
+        trimEndUs: TimeUs = 0,
+        volume: Float = 1.0
+    ) {
         self.assetRef = assetRef
+        self.sourceDurationUs = sourceDurationUs
+        self.trimStartUs = trimStartUs
+        self.trimEndUs = trimEndUs
         self.volume = volume
     }
 }
@@ -121,7 +139,7 @@ public struct StickerPayload: Codable, Equatable, Sendable {
 // MARK: - Text Payload
 
 /// Payload for text overlay items.
-/// Placeholder in PR1 (Core). Implemented in PR7 (Text V1).
+/// PR9: Shipped with canvas-normalized positioning (centerX/centerY).
 public struct TextPayload: Codable, Equatable, Sendable {
     /// Text content.
     public var text: String
@@ -135,16 +153,26 @@ public struct TextPayload: Codable, Equatable, Sendable {
     /// Text color as hex string (e.g., "#FF0000").
     public var colorHex: String?
 
+    /// Canvas-normalized X position (0..1, default 0.5 = center).
+    public var centerX: CGFloat
+
+    /// Canvas-normalized Y position (0..1, default 0.5 = center).
+    public var centerY: CGFloat
+
     public init(
         text: String = "",
         fontFamily: String? = nil,
         fontSize: CGFloat? = nil,
-        colorHex: String? = nil
+        colorHex: String? = nil,
+        centerX: CGFloat = 0.5,
+        centerY: CGFloat = 0.5
     ) {
         self.text = text
         self.fontFamily = fontFamily
         self.fontSize = fontSize
         self.colorHex = colorHex
+        self.centerX = centerX
+        self.centerY = centerY
     }
 }
 

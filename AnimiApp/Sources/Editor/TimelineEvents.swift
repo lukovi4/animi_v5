@@ -59,4 +59,17 @@ public enum TimelineEvent: Sendable {
     /// Moves playhead to scene start and derives selection from playhead.
     /// - sceneId: ID of the scene to focus
     case focusScene(sceneId: UUID)
+
+    /// Move overlay item event (PR9): user is dragging a text/sticker item on timeline.
+    /// - itemId: ID of the overlay item being moved
+    /// - newStartUs: New start time in microseconds
+    /// - phase: Gesture phase (.began, .changed, .ended)
+    case moveOverlayItem(itemId: UUID, newStartUs: TimeUs, phase: InteractionPhase)
+
+    /// Trim overlay item event (PR9): user is dragging a trim handle on a text/sticker item.
+    /// - itemId: ID of the overlay item being trimmed
+    /// - newDurationUs: New duration in microseconds
+    /// - edge: Which edge is being trimmed (.leading or .trailing)
+    /// - phase: Gesture phase (.began, .changed, .ended)
+    case trimOverlayItem(itemId: UUID, newDurationUs: TimeUs, edge: TrimEdge, phase: InteractionPhase)
 }

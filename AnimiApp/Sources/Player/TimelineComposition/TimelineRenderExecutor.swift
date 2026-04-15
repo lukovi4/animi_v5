@@ -1,4 +1,5 @@
 import Metal
+import UIKit
 import TVECore
 
 // MARK: - TT-06: Unified Render Executor
@@ -24,6 +25,8 @@ internal struct TimelineRenderRequest {
     let waitUntilCompleted: Bool
     /// Optional diagnostic frame tag (compressed frame for preview, export frame index for export).
     let diagnosticFrameTag: Int?
+    /// PR9: Text overlays to render on top of the scene.
+    let textOverlays: [ResolvedTextOverlay]
 
     init(
         resolved: ResolvedTimelineFrame,
@@ -35,7 +38,8 @@ internal struct TimelineRenderRequest {
         clearColorOverride: ClearColor?,
         presentationDrawable: MTLDrawable?,
         waitUntilCompleted: Bool,
-        diagnosticFrameTag: Int? = nil
+        diagnosticFrameTag: Int? = nil,
+        textOverlays: [ResolvedTextOverlay] = []
     ) {
         self.resolved = resolved
         self.targetTexture = targetTexture
@@ -47,6 +51,7 @@ internal struct TimelineRenderRequest {
         self.presentationDrawable = presentationDrawable
         self.waitUntilCompleted = waitUntilCompleted
         self.diagnosticFrameTag = diagnosticFrameTag
+        self.textOverlays = textOverlays
     }
 }
 
@@ -166,6 +171,11 @@ internal enum TimelineRenderExecutor {
             backgroundState: nil,
             initialLoadAction: .load
         )
+
+        // Pass 3: Text overlays (PR9)
+        if !request.textOverlays.isEmpty {
+            renderTextOverlays(request.textOverlays, target: target, commandBuffer: commandBuffer, renderer: renderer)
+        }
     }
 
     private static func renderTransition(
@@ -307,6 +317,16 @@ internal enum TimelineRenderExecutor {
             target: request.targetTexture,
             commandBuffer: commandBuffer
         )
+
+        // Pass 3: Text overlays (PR9)
+        if !request.textOverlays.isEmpty {
+            let finalTarget = RenderTarget(
+                texture: request.targetTexture,
+                drawableScale: request.drawableScale,
+                animSize: request.timelineCanvasSize
+            )
+            renderTextOverlays(request.textOverlays, target: finalTarget, commandBuffer: commandBuffer, renderer: renderer)
+        }
     }
 
     /// Routes to the appropriate MetalRenderer.draw overload based on clearColorOverride.
@@ -346,5 +366,108 @@ internal enum TimelineRenderExecutor {
                 initialLoadAction: initialLoadAction
             )
         }
+    }
+
+    // MARK: - Text Overlay Rendering (PR9)
+
+    /// CPU-rasterizes text overlays via Core Graphics directly onto the target pixel buffer.
+    /// V1: Adequate for 1-3 overlays per frame (<1ms). V2 optimization (MSDF) deferred.
+    /// Strategy: Reads current target texture, composites text in CG, writes back.
+    private static func renderTextOverlays(
+        _ overlays: [ResolvedTextOverlay],
+        target: RenderTarget,
+        commandBuffer: MTLCommandBuffer,
+        renderer: MetalRenderer
+    ) {
+        let pixelWidth = target.texture.width
+        let pixelHeight = target.texture.height
+
+        guard pixelWidth > 0, pixelHeight > 0 else { return }
+
+        let bytesPerRow = pixelWidth * 4
+        let dataSize = bytesPerRow * pixelHeight
+
+        // Read current texture content
+        var pixelBuffer = [UInt8](repeating: 0, count: dataSize)
+        target.texture.getBytes(
+            &pixelBuffer,
+            bytesPerRow: bytesPerRow,
+            from: MTLRegionMake2D(0, 0, pixelWidth, pixelHeight),
+            mipmapLevel: 0
+        )
+
+        // Create CGContext from existing pixels
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let cgContext = CGContext(
+            data: &pixelBuffer,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+
+        // Flip coordinates (CG origin is bottom-left, Metal is top-left)
+        cgContext.translateBy(x: 0, y: CGFloat(pixelHeight))
+        cgContext.scaleBy(x: 1, y: -1)
+
+        for overlay in overlays {
+            let scale = CGFloat(pixelWidth) / CGFloat(target.animSize.width)
+            let fontSize = overlay.fontSize * scale
+            #if canImport(UIKit)
+            let font: UIFont
+            if let family = overlay.fontFamily {
+                font = UIFont(name: family, size: fontSize) ?? .boldSystemFont(ofSize: fontSize)
+            } else {
+                font = .boldSystemFont(ofSize: fontSize)
+            }
+            let color = UIColor(hexString: overlay.colorHex) ?? .white
+            #else
+            let font = NSFont.boldSystemFont(ofSize: fontSize)
+            let color = NSColor.white
+            #endif
+
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: color,
+            ]
+
+            let nsString = overlay.text as NSString
+            let textSize = nsString.size(withAttributes: attributes)
+
+            let x = CGFloat(overlay.centerX) * CGFloat(pixelWidth) - textSize.width / 2
+            let y = CGFloat(overlay.centerY) * CGFloat(pixelHeight) - textSize.height / 2
+
+            nsString.draw(at: CGPoint(x: x, y: y), withAttributes: attributes)
+        }
+
+        // Write back to texture
+        target.texture.replace(
+            region: MTLRegionMake2D(0, 0, pixelWidth, pixelHeight),
+            mipmapLevel: 0,
+            withBytes: pixelBuffer,
+            bytesPerRow: bytesPerRow
+        )
+    }
+}
+
+// MARK: - UIColor Hex Helper (PR9)
+
+private extension UIColor {
+    convenience init?(hexString: String) {
+        var hex = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        hex = hex.replacingOccurrences(of: "#", with: "")
+        guard hex.count == 6 else { return nil }
+
+        var rgb: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&rgb)
+
+        self.init(
+            red: CGFloat((rgb & 0xFF0000) >> 16) / 255.0,
+            green: CGFloat((rgb & 0x00FF00) >> 8) / 255.0,
+            blue: CGFloat(rgb & 0x0000FF) / 255.0,
+            alpha: 1.0
+        )
     }
 }

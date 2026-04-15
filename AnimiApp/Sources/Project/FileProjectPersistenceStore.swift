@@ -180,8 +180,9 @@ final class FileProjectPersistenceStore: @unchecked Sendable {
             return slot
         } catch {
             #if DEBUG
-            print("[FileProjectPersistenceStore] Failed to load active draft: \(error.localizedDescription)")
+            print("[FileProjectPersistenceStore] Failed to load active draft, resetting: \(error.localizedDescription)")
             #endif
+            try? deleteActiveDraft()
             return nil
         }
     }
@@ -193,9 +194,11 @@ final class FileProjectPersistenceStore: @unchecked Sendable {
         }
     }
 
+    /// Returns `true` only if an active draft exists AND decodes successfully.
+    /// Unreadable / incompatible draft files are reset by `loadActiveDraft()`
+    /// as a side effect, so the next call returns `false`.
     func hasActiveDraft() -> Bool {
-        guard let url = try? activeDraftURL() else { return false }
-        return fileManager.fileExists(atPath: url.path)
+        loadActiveDraft() != nil
     }
 
     // MARK: - Saved Projects API

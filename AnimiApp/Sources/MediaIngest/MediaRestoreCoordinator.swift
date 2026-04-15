@@ -78,6 +78,10 @@ public enum MediaRestoreCoordinator {
                 #if DEBUG
                 print("[MediaRestoreCoordinator] Restored video for \(blockId): presentOnReady=\(presentOnReady), \(success ? "success" : "failed")")
                 #endif
+
+            case .audio:
+                // Audio media kind is not used in scene media slots — skip
+                break
             }
         }
 

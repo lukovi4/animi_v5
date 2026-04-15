@@ -159,6 +159,17 @@ actor ProjectStorageActor: ProjectPersistenceGateway, ProjectMediaLocator, Proje
         }
         newDraft.sceneInstanceStates = newSceneStates
 
+        // PR8: Rewrite audio payload asset refs.
+        var newPayloads = newDraft.canonicalTimeline.payloads
+        for (payloadId, payload) in newDraft.canonicalTimeline.payloads {
+            guard case .audio(var audioPayload) = payload,
+                  case .imported(let oldAssetId) = audioPayload.assetRef else { continue }
+            let newAssetId = idRewrite[oldAssetId] ?? oldAssetId
+            audioPayload.assetRef = .imported(assetId: newAssetId)
+            newPayloads[payloadId] = .audio(audioPayload)
+        }
+        newDraft.canonicalTimeline.payloads = newPayloads
+
         return newDraft
     }
 

@@ -1220,6 +1220,7 @@ public final class VideoExporter: @unchecked Sendable {
                 // Resolve and render via unified TimelineRenderExecutor
                 do {
                     let resolved = try exportRuntime.resolveFrame(frameIndex)
+                    let textOverlays = exportRuntime.resolveTextOverlays(at: frameIndex)
 
                     let request = TimelineRenderRequest(
                         resolved: resolved,
@@ -1231,7 +1232,8 @@ public final class VideoExporter: @unchecked Sendable {
                         clearColorOverride: settings.clearColor,
                         presentationDrawable: nil,
                         waitUntilCompleted: true,
-                        diagnosticFrameTag: frameIndex
+                        diagnosticFrameTag: frameIndex,
+                        textOverlays: textOverlays
                     )
                     do {
                         try TimelineRenderExecutor.render(

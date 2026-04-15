@@ -279,6 +279,50 @@ public extension TrackKind {
     }
 }
 
+// MARK: - Audio Track Accessors (PR8: Project Music)
+
+public extension CanonicalTimeline {
+    /// Returns the first audio track, if any.
+    var audioTrack: Track? {
+        tracks.first { $0.kind == .audio }
+    }
+
+    /// Returns the single music item (first item in the audio track), if any.
+    var musicItem: TimelineItem? {
+        audioTrack?.items.first
+    }
+
+    /// Returns the music AudioPayload, if a music item exists.
+    func musicPayload() -> AudioPayload? {
+        guard let item = musicItem,
+              let payload = payloads[item.payloadId],
+              case .audio(let audioPayload) = payload else { return nil }
+        return audioPayload
+    }
+}
+
+// MARK: - Overlay Track Accessors (PR9: Text Overlay)
+
+public extension CanonicalTimeline {
+    /// Returns the first overlay track, if any.
+    var overlayTrack: Track? {
+        tracks.first { $0.kind == .overlay }
+    }
+
+    /// Returns all text items from the overlay track.
+    var textItems: [TimelineItem] {
+        overlayTrack?.items.filter { $0.kind == .text } ?? []
+    }
+
+    /// Returns the TextPayload for a given item ID, if it exists in the overlay track.
+    func textPayload(for itemId: UUID) -> TextPayload? {
+        guard let item = overlayTrack?.items.first(where: { $0.id == itemId }),
+              let payload = payloads[item.payloadId],
+              case .text(let textPayload) = payload else { return nil }
+        return textPayload
+    }
+}
+
 // MARK: - SceneDraft Adapter (PR1 UI Compatibility)
 
 public extension CanonicalTimeline {

@@ -143,14 +143,15 @@ final class EditorReducerPlayheadSelectionTests: XCTestCase {
         state = focusResult.state
 
         // Select audio
-        let audioResult = EditorReducer.reduce(state: state, action: .select(selection: .audio))
+        let audioItemId = UUID()
+        let audioResult = EditorReducer.reduce(state: state, action: .select(selection: .audio(itemId: audioItemId)))
         state = audioResult.state
-        XCTAssertEqual(state.selection, .audio)
+        XCTAssertEqual(state.selection, .audio(itemId: audioItemId))
         XCTAssertEqual(state.timelineSceneSelectionMode, .inactive)
 
         // Move playhead — should NOT re-select scene (mode is inactive)
         let result = EditorReducer.reduce(state: state, action: .setPlayhead(compressedFrame: 5))
-        XCTAssertEqual(result.state.selection, .audio)
+        XCTAssertEqual(result.state.selection, .audio(itemId: audioItemId))
     }
 
     // MARK: - 7. select(.scene) in timeline mode → no-op

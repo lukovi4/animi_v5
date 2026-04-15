@@ -2,6 +2,7 @@ import UIKit
 import MetalKit
 import PhotosUI
 import UniformTypeIdentifiers
+import AVFoundation
 import TVECore
 import os.log
 
@@ -55,7 +56,7 @@ final class PlayerViewController: UIViewController {
     }
 
     deinit {
-        autosaveTimer?.invalidate()
+        autosaveCoordinator?.stopFromDeinit()
         NotificationCenter.default.removeObserver(self, name: .appDidEnterBackground, object: nil)
         // Defense-in-depth: cancel ingest tasks even if viewWillDisappear was somehow skipped.
         // Uses nonisolated helper since deinit cannot call @MainActor methods.
@@ -71,7 +72,7 @@ final class PlayerViewController: UIViewController {
 
     @objc private func appDidEnterBackground() {
         if !userMadeExplicitCloseChoice {
-            Task { await session.persistCheckpointIfNeeded() }
+            autosaveCoordinator?.handleBackgrounding()
         }
     }
 
@@ -150,22 +151,33 @@ final class PlayerViewController: UIViewController {
         #endif
     }
 
-    /// Active inline video trim session. Nil when not trimming.
-    private var videoTrimSession: VideoTrimSession?
-
-    /// Thumbnail provider for the active trim session filmstrip.
-    private var trimThumbnailProvider: VideoTrimThumbnailProvider?
+    /// Inline video trim coordinator — owns trim state and methods.
+    private lazy var videoTrimCoordinator: InlineVideoTrimCoordinator = {
+        let coord = InlineVideoTrimCoordinator()
+        coord.getRuntime = { [weak self] in self?.runtime }
+        coord.getSession = { [weak self] in self?.session }
+        coord.getSceneEditTargetInstanceId = { [weak self] in self?.sceneEditTargetInstanceId }
+        coord.getEditorLayoutContainer = { [weak self] in self?.editorLayoutContainer }
+        coord.onSyncPausedVideoStill = { [weak self] force in self?.syncPausedVideoStill(force: force) }
+        coord.onUpdateSceneEditBottomBar = { [weak self] blockId in
+            self?.editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: blockId)
+        }
+        coord.onUpdateMediaBlockActionBar = { [weak self] in self?.updateMediaBlockActionBarForSelectedBlock() }
+        coord.onPresentAlert = { [weak self] alert in self?.present(alert, animated: true) }
+        return coord
+    }()
 
     // MARK: - PR2: Visual Editor Timeline
     /// Tracks whether user made explicit Save/Don't Save choice (prevents double-save in viewWillDisappear).
     private var userMadeExplicitCloseChoice = false
-    /// Periodic autosave timer (crash recovery safety net).
-    private var autosaveTimer: Timer?
+    /// Periodic autosave coordinator (crash recovery safety net).
+    private var autosaveCoordinator: EditorAutosaveCoordinator?
     private lazy var editorLayoutContainer = EditorLayoutContainerView()
     private weak var fullScreenPreviewVC: FullScreenPreviewViewController?
 
     // MARK: - User Media (PR-32)
     private lazy var overlayView = EditorOverlayView()
+    private lazy var textPositionOverlay = TextPositionOverlayView()
 
     // MARK: - Scene Edit Mode (PR-D)
     private var sceneEditController: SceneEditInteractionController?
@@ -291,10 +303,10 @@ final class PlayerViewController: UIViewController {
             name: .appDidEnterBackground, object: nil
         )
 
-        // Autosave timer (crash recovery safety net, 30s interval)
-        autosaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { [weak self] in await self?.session.persistCheckpointIfNeeded() }
-        }
+        // Autosave coordinator (crash recovery safety net, 30s interval)
+        let coordinator = EditorAutosaveCoordinator(session: session)
+        coordinator.start(interval: 30)
+        autosaveCoordinator = coordinator
 
         // Wire session output and start bootstrap
         session.onOutput = { [weak self] output in
@@ -352,6 +364,9 @@ final class PlayerViewController: UIViewController {
 
         // PR-E: Embed overlayView for gesture handling in Scene Edit
         editorLayoutContainer.embedOverlayView(overlayView)
+
+        // PR9: Embed text position overlay for canvas drag
+        editorLayoutContainer.embedTextPositionOverlay(textPositionOverlay)
 
         // Phase 6: Embed ingest status overlay (above outline overlay, below menuStrip)
         editorLayoutContainer.embedStatusOverlayView(ingestStatusOverlayView)
@@ -437,6 +452,40 @@ final class PlayerViewController: UIViewController {
 
         editorLayoutContainer.onAddScene = { [weak self] in
             self?.presentSceneCatalog()
+        }
+
+        // PR8: Music callbacks
+        editorLayoutContainer.onMusic = { [weak self] in
+            self?.presentMusicPicker()
+        }
+
+        editorLayoutContainer.onRemoveMusic = { [weak self] in
+            self?.session.dispatch(.removeProjectMusic)
+        }
+
+        editorLayoutContainer.onMusicVolume = { [weak self] itemId in
+            self?.presentMusicVolumeSlider(itemId: itemId)
+        }
+
+        editorLayoutContainer.onMusicTrim = { [weak self] itemId in
+            self?.presentMusicTrimEditor(itemId: itemId)
+        }
+
+        // PR9: Text overlay callbacks
+        editorLayoutContainer.onAddText = { [weak self] in
+            self?.presentTextEditor(existingPayload: nil, itemId: nil)
+        }
+        editorLayoutContainer.onEditText = { [weak self] itemId in
+            guard let payload = self?.session.state?.canonicalTimeline.textPayload(for: itemId) else { return }
+            self?.presentTextEditor(existingPayload: payload, itemId: itemId)
+        }
+        editorLayoutContainer.onDeleteText = { [weak self] itemId in
+            self?.session.dispatch(.deleteItem(itemId: itemId))
+        }
+
+        // PR9: Text position overlay drag callback
+        textPositionOverlay.onDragPosition = { [weak self] itemId, centerX, centerY, phase in
+            self?.session.dispatch(.dragTextPosition(itemId: itemId, centerX: centerX, centerY: centerY, phase: phase))
         }
 
         // PR-D: Scene Edit Mode callbacks
@@ -603,6 +652,12 @@ final class PlayerViewController: UIViewController {
 
         case .focusScene(let sceneId):
             session.dispatch(.focusScene(sceneId: sceneId))
+
+        case .moveOverlayItem(let itemId, let newStartUs, let phase):
+            session.dispatch(.moveItem(itemId: itemId, newStartUs: newStartUs, phase: phase))
+
+        case .trimOverlayItem(let itemId, let newDurationUs, _, let phase):
+            session.dispatch(.trimItem(itemId: itemId, newDurationUs: newDurationUs, phase: phase))
         }
     }
 
@@ -952,24 +1007,28 @@ final class PlayerViewController: UIViewController {
     }
 
     /// Configures timeline after scene is loaded.
-    /// Release v1: Uses EditorStore with split callbacks and defaultSceneSequence.
-    /// No legacy migrations - schema mismatch creates new project.
+    /// Top-level coordinator calling focused helpers for each responsibility.
     private func configureEditorTimeline(
         loadResult: EditorRuntime.InitialSceneLoadResult
     ) {
         let fps = sceneLibrarySnapshot?.fps ?? Int(loadResult.compiled.runtime.fps)
 
-        // Step 1: Get store from session (created during bootstrap)
         guard let state = session.state else {
             log("[Release v1] configureEditorTimeline: session state is nil")
             return
         }
 
-        // Step 2: Wire split callbacks via EditorStoreCallbacks (PR3-fix: internalized store)
+        wireStoreCallbacks()
+        setupSceneEditController(loadResult: loadResult)
+        configureTimelineUI(state: state, fps: fps)
+        bootRuntime(loadResult: loadResult, state: state)
+    }
+
+    /// Wires all store callbacks via EditorStoreCallbacks.
+    private func wireStoreCallbacks() {
         var callbacks = EditorStoreCallbacks()
         callbacks.onPlayheadChanged = { [weak self] cf in
             self?.runtime?.handlePlayheadChanged(cf)
-            // Sync timeline scroll to follow playhead
             if let mapper = self?.session.state?.makePlayheadMapper() {
                 self?.editorLayoutContainer.setCurrentCompressedFrame(cf, mapper: mapper)
             }
@@ -977,7 +1036,6 @@ final class PlayerViewController: UIViewController {
         callbacks.onSelectionChanged = { [weak self] sel in self?.handleSelectionChanged(sel) }
         callbacks.onTimelineChanged = { [weak self] st in
             self?.handleTimelineChanged(st)
-            // Sync engine timeline via runtime
             self?.runtime?.setupTimelineCompositionEngine(state: st)
         }
         callbacks.onTimelinePreviewChanged = { [weak self] st in self?.handleTimelinePreviewChanged(st) }
@@ -992,8 +1050,10 @@ final class PlayerViewController: UIViewController {
         callbacks.onMediaSlotChanged = { [weak self] instanceId, blockId, slot in self?.handleMediaSlotChanged(instanceId: instanceId, blockId: blockId, slot: slot) }
         callbacks.onNotice = { [weak self] notice in self?.handleEditorNotice(notice) }
         session.setStoreCallbacks(callbacks)
+    }
 
-        // PR-D: Setup Scene Edit interaction controller
+    /// Assembles the SceneEditInteractionController with all closure bindings.
+    private func setupSceneEditController(loadResult: EditorRuntime.InitialSceneLoadResult) {
         let sceneEditCtrl = SceneEditInteractionController()
         sceneEditCtrl.overlayView = overlayView
         sceneEditCtrl.getOverlayProvider = { [weak self] in self?.runtime?.sceneEditOverlayProvider() }
@@ -1017,10 +1077,8 @@ final class PlayerViewController: UIViewController {
             guard let self = self,
                   let instanceId = self.sceneEditTargetInstanceId else { return }
 
-            // Live preview via runtime
             self.runtime?.applyMediaPlacementChange(instanceId: instanceId, blockId: blockId, placement: placement)
 
-            // Persist to store
             self.session.dispatch(.setMediaPlacement(
                 sceneInstanceId: instanceId,
                 blockId: blockId,
@@ -1028,14 +1086,12 @@ final class PlayerViewController: UIViewController {
                 phase: phase
             ))
 
-            // Cancel: restore baseline visually
             if phase == .cancelled {
                 let restored = self.session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.asset.placement ?? .defaultCover
                 self.runtime?.applyMediaPlacementChange(instanceId: instanceId, blockId: blockId, placement: restored)
             }
         }
 
-        // Phase 6: Wire ingest status overlay
         sceneEditCtrl.ingestStatusOverlayView = ingestStatusOverlayView
         sceneEditCtrl.showsIngestStatusOverlay = showsMediaIngestStatusOverlay
         sceneEditCtrl.getIngestStatusesByBlockId = { [weak self] in
@@ -1043,10 +1099,12 @@ final class PlayerViewController: UIViewController {
         }
 
         self.sceneEditController = sceneEditCtrl
+    }
 
+    /// Configures timeline UI from current editor state.
+    private func configureTimelineUI(state: EditorState, fps: Int) {
         log("[Release v1] Timeline configured: \(state.sceneItems.count) scenes, duration=\(state.projectDurationUs)us")
 
-        // PR-E: Configure timeline UI with scenes from store (PR-G: includes boundaries)
         let scenes = state.canonicalTimeline.toSceneDrafts()
         let boundaries = state.canonicalTimeline.toSceneBoundaryDrafts()
         editorLayoutContainer.configure(
@@ -1055,8 +1113,10 @@ final class PlayerViewController: UIViewController {
             templateFPS: fps,
             minSceneDurationUs: ProjectDraft.minSceneDurationUs
         )
+    }
 
-        // Create EditorRuntime — single-call boot owns the entire setup sequence
+    /// Creates EditorRuntime, configures Metal context, and boots the render engine.
+    private func bootRuntime(loadResult: EditorRuntime.InitialSceneLoadResult, state: EditorState) {
         let library = sceneLibrarySnapshot!
         let rt = EditorRuntime(session: session)
         rt.onOutput = { [weak self] output in self?.handleRuntimeOutput(output) }
@@ -1072,11 +1132,9 @@ final class PlayerViewController: UIViewController {
             )
         }
 
-        // Wire mapper to timeline UI after engine setup
         let mapper = state.makePlayheadMapper()
         editorLayoutContainer.setMapper(mapper)
 
-        // Verify boot invariants
         #if DEBUG
         rt.assertBootInvariants(uiMode: state.uiMode)
         #endif
@@ -1177,6 +1235,25 @@ final class PlayerViewController: UIViewController {
         let sel = selection ?? .none
         let sceneCount = session.state?.sceneItems.count ?? 1
         editorLayoutContainer.setTimelineSelection(sel, sceneCount: sceneCount)
+        updateTextPositionOverlay(selection: sel)
+    }
+
+    /// PR9: Updates text position overlay visibility and state based on selection.
+    private func updateTextPositionOverlay(selection: TimelineSelection) {
+        guard session.state?.uiMode == .timeline else {
+            textPositionOverlay.clearSelection()
+            textPositionOverlay.isHidden = true
+            return
+        }
+
+        if case .text(let itemId) = selection,
+           let payload = session.state?.canonicalTimeline.textPayload(for: itemId) {
+            textPositionOverlay.isHidden = false
+            textPositionOverlay.setSelectedTextItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
+        } else {
+            textPositionOverlay.clearSelection()
+            textPositionOverlay.isHidden = true
+        }
     }
 
     /// Called when timeline structure changes (heavier, less frequent).
@@ -1186,6 +1263,18 @@ final class PlayerViewController: UIViewController {
         let scenes = state.canonicalTimeline.toSceneDrafts()
         let boundaries = state.canonicalTimeline.toSceneBoundaryDrafts()
         editorLayoutContainer.updateScenes(scenes, boundaries: boundaries)
+
+        // PR8: Update music item in timeline
+        editorLayoutContainer.timelineView.setMusicItem(
+            state.canonicalTimeline.musicItem,
+            payload: state.canonicalTimeline.musicPayload()
+        )
+
+        // PR9: Update overlay items in timeline
+        updateOverlayTrack(state: state)
+
+        // PR9: Refresh text position overlay after timeline structure change
+        updateTextPositionOverlay(selection: state.selection)
 
         // Update coordinator timeline (legacy path for Scene Edit)
         runtime?.syncCoordinatorTimeline(from: state)
@@ -1199,6 +1288,20 @@ final class PlayerViewController: UIViewController {
 
         // PR-G: Refresh current frame to reflect timeline changes
         runtime?.refreshCurrentTimelineFrame()
+    }
+
+    /// PR9: Updates the overlay track in the timeline UI from current state.
+    private func updateOverlayTrack(state: EditorState) {
+        let items = state.canonicalTimeline.textItems.compactMap { item -> (id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)? in
+            guard let payload = state.canonicalTimeline.textPayload(for: item.id) else { return nil }
+            let label = payload.text.isEmpty ? "Text" : String(payload.text.prefix(20))
+            return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label)
+        }
+        let selectedTextId: UUID? = {
+            if case .text(let itemId) = state.selection { return itemId }
+            return nil
+        }()
+        editorLayoutContainer.timelineView.setOverlayItems(items, selectedItemId: selectedTextId)
     }
 
     /// PR-F: Called when scene state changes (but not timeline structure).
@@ -1435,216 +1538,38 @@ final class PlayerViewController: UIViewController {
         }
     }
 
-    // MARK: - Inline Video Trim (PR 3+4)
+    // MARK: - Inline Video Trim (PR 3+4) — delegated to InlineVideoTrimCoordinator
 
-    /// Enters inline video trim mode for the given block.
     private func enterVideoTrim(for blockId: String) {
-        guard let instanceId = sceneEditTargetInstanceId,
-              let rt = runtime,
-              let context = rt.videoTrimContext(blockId: blockId) else { return }
-
-        // Verify slot is actually video
-        guard let slot = session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
-              slot.mediaRef.mediaKind == .video else { return }
-
-        // Stop playback if playing
-        if rt.isPlaying {
-            rt.stopPlayback()
-        }
-
-        // Compute current video time at paused playhead
-        let localFrame = rt.bestLocalFrame
-        let currentVideoTime = rt.currentVideoTime(blockId: blockId, sceneFrameIndex: localFrame)
-
-        // Create trim session (opens at current playhead if inside clip, else trimStart)
-        let session = VideoTrimSession(
-            instanceId: instanceId,
-            blockId: blockId,
-            actualDuration: context.actualDuration,
-            selection: context.currentSelection,
-            currentVideoTime: currentVideoTime
-        )
-        videoTrimSession = session
-
-        // Switch layout to trim mode
-        editorLayoutContainer.setVideoTrimMode(true)
-
-        // Configure trim bar positions
-        editorLayoutContainer.videoTrimBar.setPositions(
-            start: session.trimStartFraction,
-            end: session.trimEndFraction,
-            cursor: session.cursorFraction
-        )
-
-        // Generate filmstrip thumbnails
-        let thumbnailProvider = VideoTrimThumbnailProvider(
-            url: context.videoURL,
-            duration: context.actualDuration
-        )
-        self.trimThumbnailProvider = thumbnailProvider
-
-        let barWidth = editorLayoutContainer.videoTrimBar.bounds.width
-        let thumbHeight = VideoTrimBarView.filmstripHeight
-        let thumbWidth = thumbHeight * 16.0 / 9.0 // Approximate 16:9 aspect
-        let count = max(1, Int(ceil(barWidth / thumbWidth)))
-
-        thumbnailProvider.generateThumbnails(
-            count: count,
-            size: CGSize(width: thumbWidth, height: thumbHeight)
-        ) { [weak self] results in
-            self?.editorLayoutContainer.videoTrimBar.setThumbnails(results.map(\.image))
-        }
-
-        // Preview initial frame at trimStart
-        runtime?.previewExactVideoTrimFrame(
-            blockId: blockId,
-            draftSelection: session.draftSelection,
-            previewTime: session.currentPreviewTime
-        )
+        videoTrimCoordinator.enterVideoTrim(for: blockId)
     }
 
-    /// Handles left handle drag during trim.
     private func handleTrimStartDrag(_ fraction: Double) {
-        guard var session = videoTrimSession else { return }
-        let newTrimStart = fraction * session.actualDuration
-        session.draftSelection.trimStart = newTrimStart
-        session.currentPreviewTime = newTrimStart
-        videoTrimSession = session
-
-        // Interactive preview during drag (tolerant, coalescing)
-        runtime?.updateInteractiveTrimPreview(
-            blockId: session.blockId,
-            draftSelection: session.draftSelection,
-            previewTime: newTrimStart
-        )
+        videoTrimCoordinator.handleTrimStartDrag(fraction)
     }
 
-    /// Handles right handle drag during trim.
     private func handleTrimEndDrag(_ fraction: Double) {
-        guard var session = videoTrimSession else { return }
-        let newTrimEnd = fraction * session.actualDuration
-        session.draftSelection.trimEnd = newTrimEnd
-        session.currentPreviewTime = newTrimEnd
-        videoTrimSession = session
-
-        // Interactive preview during drag (tolerant, coalescing)
-        runtime?.updateInteractiveTrimPreview(
-            blockId: session.blockId,
-            draftSelection: session.draftSelection,
-            previewTime: newTrimEnd
-        )
+        videoTrimCoordinator.handleTrimEndDrag(fraction)
     }
 
-    /// Handles cursor drag during trim (scrub within trim range).
     private func handleTrimCursorDrag(_ fraction: Double) {
-        guard var session = videoTrimSession else { return }
-        let previewTime = fraction * session.actualDuration
-        session.currentPreviewTime = previewTime
-        videoTrimSession = session
-
-        // Interactive preview during drag (tolerant, coalescing)
-        runtime?.updateInteractiveTrimPreview(
-            blockId: session.blockId,
-            draftSelection: session.draftSelection,
-            previewTime: previewTime
-        )
+        videoTrimCoordinator.handleTrimCursorDrag(fraction)
     }
 
-    /// Handles end of any trim drag gesture: switch from interactive to exact.
     private func handleTrimDragEnded() {
-        guard let session = videoTrimSession else { return }
-        runtime?.endInteractiveTrimPreview(blockId: session.blockId)
-        runtime?.previewExactVideoTrimFrame(
-            blockId: session.blockId,
-            draftSelection: session.draftSelection,
-            previewTime: session.currentPreviewTime
-        )
+        videoTrimCoordinator.handleTrimDragEnded()
     }
 
-    /// Commits the trim session: validates, applies, dispatches, exits.
     private func commitVideoTrim() {
-        guard let session = videoTrimSession else { return }
-
-        // End interactive preview before commit
-        runtime?.endInteractiveTrimPreview(blockId: session.blockId)
-
-        if session.hasChanges {
-            guard runtime?.canCommitVideoTrim == true else {
-                exitVideoTrim()
-                return
-            }
-
-            // 1. Validate + apply to runtime
-            do {
-                try runtime?.applyPersistedVideoSelection(blockId: session.blockId, session.draftSelection)
-            } catch {
-                let alert = UIAlertController(
-                    title: "Invalid Selection",
-                    message: error.localizedDescription,
-                    preferredStyle: .alert
-                )
-                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                present(alert, animated: true)
-                return
-            }
-
-            // 2. Render exact still at new trimStart for poster/cover
-            runtime?.previewExactVideoTrimFrame(
-                blockId: session.blockId,
-                draftSelection: session.draftSelection,
-                previewTime: session.draftSelection.trimStart
-            )
-
-            // 3. Dispatch to store
-            self.session.dispatch(.setVideoSelection(
-                sceneInstanceId: session.instanceId,
-                blockId: session.blockId,
-                selection: session.draftSelection
-            ))
-        }
-
-        exitVideoTrim()
+        videoTrimCoordinator.commitVideoTrim()
     }
 
-    /// Cancels the trim session: reverts runtime preview, exits.
     private func cancelVideoTrim() {
-        guard let session = videoTrimSession else { return }
-
-        // End interactive preview
-        runtime?.endInteractiveTrimPreview(blockId: session.blockId)
-
-        // Revert draft selection if handles were moved
-        if session.hasChanges {
-            try? runtime?.applyPersistedVideoSelection(blockId: session.blockId, session.originalSelection)
-        }
-
-        // Always restore the committed scene-frame still.
-        // Even cursor-only scrubs change the displayed texture without touching draftSelection,
-        // so we must re-sync to the paused playhead regardless of hasChanges.
-        videoTrimSession = nil  // clear before sync so the trim guard in syncPausedVideoStill does not block
-        syncPausedVideoStill(force: true)
-
-        exitVideoTrim()
+        videoTrimCoordinator.cancelVideoTrim()
     }
 
-    /// Exits trim mode and cleans up session state.
     private func exitVideoTrim() {
-        // Safety-net: ensure interactive preview is cleaned up
-        if let session = videoTrimSession {
-            runtime?.endInteractiveTrimPreview(blockId: session.blockId)
-        }
-        trimThumbnailProvider?.cancel()
-        trimThumbnailProvider = nil
-        videoTrimSession = nil
-
-        editorLayoutContainer.setVideoTrimMode(false)
-
-        // Restore scene edit bottom bar state
-        let selectedBlockId = session.state?.selectedBlockId
-        editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: selectedBlockId)
-        if selectedBlockId != nil {
-            updateMediaBlockActionBarForSelectedBlock()
-        }
+        videoTrimCoordinator.exitVideoTrim()
     }
 
     /// Handles committed video selection change from store callback.
@@ -1685,7 +1610,7 @@ final class PlayerViewController: UIViewController {
     private func syncPausedVideoStill(force: Bool) {
         guard !(runtime?.isPlaying ?? false) else { return }
         // During active trim, preview is driven by previewExactVideoTrimFrame — don't stomp it
-        guard videoTrimSession == nil else { return }
+        guard videoTrimCoordinator.videoTrimSession == nil else { return }
 
         let localFrame = runtime?.bestLocalFrame ?? 0
         runtime?.syncVideoStillFrames(sceneFrameIndex: localFrame)
@@ -1754,7 +1679,7 @@ final class PlayerViewController: UIViewController {
 
         // Safety net: save to active slot when leaving editor without explicit choice
         if (isMovingFromParent || isBeingDismissed) && !userMadeExplicitCloseChoice {
-            Task { await session.persistCheckpointIfNeeded() }
+            autosaveCoordinator?.handleDisappear()
         }
     }
 
@@ -1775,6 +1700,15 @@ final class PlayerViewController: UIViewController {
         // PR-E: Update Scene Edit mapper with current canvas/view sizes
         sceneEditController?.mapper.canvasSize = runtime?.queryCanvasSize ?? .zero
         sceneEditController?.mapper.viewSize = metalView.bounds.size
+
+        // PR9: Update text position overlay canvas mapper
+        let canvasSize = runtime?.queryCanvasSize ?? .zero
+        let viewSize = metalView.bounds.size
+        var textMapper = EditorCanvasMapper()
+        textMapper.canvasSize = canvasSize
+        textMapper.viewSize = viewSize
+        textPositionOverlay.canvasSize = CGSize(width: canvasSize.width, height: canvasSize.height)
+        textPositionOverlay.canvasToView = textMapper.canvasToViewTransform()
 
         // P1-2: Refresh Scene Edit overlay after layout change
         if case .sceneEdit = session.state?.uiMode {
@@ -2202,6 +2136,134 @@ final class PlayerViewController: UIViewController {
         fullScreenPreviewVC != nil
     }
 
+    // MARK: - Project Music (PR8)
+
+    private lazy var musicImportCoordinator = ProjectMusicImportCoordinator(session: session)
+
+    // MARK: - PR9: Text Editor
+
+    /// Presents the text editor modal for adding or editing a text overlay.
+    private func presentTextEditor(existingPayload: TextPayload?, itemId: UUID?) {
+        let editor = TextEditorViewController(payload: existingPayload)
+        editor.onCommit = { [weak self] payload in
+            guard let self = self else { return }
+            if let itemId = itemId {
+                // Edit existing
+                self.session.dispatch(.updateTextPayload(itemId: itemId, payload: payload))
+            } else {
+                // Add new: place at playhead position
+                let playheadFrame = self.session.state?.playheadCompressedFrame ?? 0
+                let mapper = self.session.state?.makePlayheadMapper()
+                let startUs = mapper?.nominalTimeUs(forCompressedFrame: playheadFrame) ?? 0
+                let defaultDuration: TimeUs = 3_000_000 // 3 seconds
+                self.session.dispatch(.addTextOverlay(
+                    text: payload.text,
+                    fontSize: payload.fontSize ?? 32,
+                    colorHex: payload.colorHex ?? "#FFFFFF",
+                    fontFamily: payload.fontFamily,
+                    startUs: startUs,
+                    durationUs: defaultDuration
+                ))
+            }
+        }
+        let nav = UINavigationController(rootViewController: editor)
+        present(nav, animated: true)
+    }
+
+    /// Presents a document picker for importing audio files.
+    private func presentMusicPicker() {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.audio])
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    /// Forwards music import to the dedicated coordinator.
+    private func importProjectMusic(tempURL: URL, originalExtension: String) {
+        musicImportCoordinator.importProjectMusic(tempURL: tempURL, originalExtension: originalExtension)
+    }
+
+    /// Presents a volume slider alert for the music track.
+    private func presentMusicVolumeSlider(itemId: UUID) {
+        guard let payload = session.state?.canonicalTimeline.musicPayload() else { return }
+
+        let alert = UIAlertController(
+            title: "Music Volume",
+            message: "\n\n",
+            preferredStyle: .alert
+        )
+
+        let slider = UISlider()
+        slider.minimumValue = 0.0
+        slider.maximumValue = 1.0
+        slider.value = payload.volume
+        slider.translatesAutoresizingMaskIntoConstraints = false
+
+        alert.view.addSubview(slider)
+        NSLayoutConstraint.activate([
+            slider.leadingAnchor.constraint(equalTo: alert.view.leadingAnchor, constant: 20),
+            slider.trailingAnchor.constraint(equalTo: alert.view.trailingAnchor, constant: -20),
+            slider.topAnchor.constraint(equalTo: alert.view.topAnchor, constant: 60),
+        ])
+
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Done", style: .default) { [weak self] _ in
+            self?.session.dispatch(.setProjectMusicVolume(itemId: itemId, volume: slider.value))
+        })
+
+        present(alert, animated: true)
+    }
+
+    /// Presents a modal trim editor for the music track.
+    /// Shows current trim start/end as text fields clamped to source duration.
+    private func presentMusicTrimEditor(itemId: UUID) {
+        guard let payload = session.state?.canonicalTimeline.musicPayload() else { return }
+
+        let sourceDurationSec = usToSeconds(payload.sourceDurationUs)
+        let currentStartSec = usToSeconds(payload.trimStartUs)
+        let currentEndSec = usToSeconds(payload.trimEndUs)
+
+        let alert = UIAlertController(
+            title: "Trim Music",
+            message: String(format: "Source duration: %.1fs", sourceDurationSec),
+            preferredStyle: .alert
+        )
+
+        alert.addTextField { field in
+            field.placeholder = "Start (seconds)"
+            field.text = String(format: "%.1f", currentStartSec)
+            field.keyboardType = .decimalPad
+        }
+
+        alert.addTextField { field in
+            field.placeholder = "End (seconds)"
+            field.text = String(format: "%.1f", currentEndSec)
+            field.keyboardType = .decimalPad
+        }
+
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Done", style: .default) { [weak self] _ in
+            guard let self,
+                  let startText = alert.textFields?[0].text,
+                  let endText = alert.textFields?[1].text,
+                  let startSec = Double(startText),
+                  let endSec = Double(endText) else { return }
+
+            let clampedStartSec = max(0, min(startSec, sourceDurationSec))
+            let clampedEndSec = max(clampedStartSec, min(endSec, sourceDurationSec))
+            let trimStartUs = secondsToUs(clampedStartSec)
+            let trimEndUs = secondsToUs(clampedEndSec)
+
+            self.session.dispatch(.setProjectMusicTrim(
+                itemId: itemId,
+                trimStartUs: trimStartUs,
+                trimEndUs: trimEndUs
+            ))
+        })
+
+        present(alert, animated: true)
+    }
+
     // MARK: - Load Pre-Compiled Template (Release Path - PR2)
 
     /// PR-D: Updates UI based on loading state.
@@ -2446,7 +2508,8 @@ extension PlayerViewController: MTKViewDelegate {
             clearColorOverride: nil,
             presentationDrawable: drawable,
             waitUntilCompleted: false,
-            diagnosticFrameTag: payload.diagnosticFrameTag
+            diagnosticFrameTag: payload.diagnosticFrameTag,
+            textOverlays: payload.textOverlays
         )
 
         do {
@@ -2515,7 +2578,8 @@ extension PlayerViewController: MTKViewDelegate {
             clearColorOverride: nil,
             presentationDrawable: drawable,
             waitUntilCompleted: false,
-            diagnosticFrameTag: payload.diagnosticFrameTag
+            diagnosticFrameTag: payload.diagnosticFrameTag,
+            textOverlays: payload.textOverlays
         )
 
         do {
@@ -2787,6 +2851,40 @@ extension PlayerViewController: BackgroundEditorDelegate {
         pendingBackgroundEditor = nil
         runtime?.commitBackgroundEditorDismiss(override: override, presetId: presetId)
         metalView.setNeedsDisplay()
+    }
+}
+
+// MARK: - UIDocumentPickerDelegate (PR8: Music Import)
+
+extension PlayerViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        // Start security-scoped access
+        guard url.startAccessingSecurityScopedResource() else {
+            log("[Music] Failed to access security-scoped resource")
+            return
+        }
+
+        // Synchronous temp copy while security scope is open
+        let ext = url.pathExtension
+        let tempFilename = ext.isEmpty ? UUID().uuidString : "\(UUID().uuidString).\(ext)"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(tempFilename)
+        do {
+            if FileManager.default.fileExists(atPath: tempURL.path) {
+                try FileManager.default.removeItem(at: tempURL)
+            }
+            try FileManager.default.copyItem(at: url, to: tempURL)
+        } catch {
+            url.stopAccessingSecurityScopedResource()
+            log("[Music] Failed to copy to temp: \(error)")
+            return
+        }
+
+        // Security scope no longer needed — temp copy is local
+        url.stopAccessingSecurityScopedResource()
+
+        // Async persist from temp copy
+        importProjectMusic(tempURL: tempURL, originalExtension: ext)
     }
 }
 

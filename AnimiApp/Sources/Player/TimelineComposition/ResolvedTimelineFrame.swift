@@ -86,6 +86,28 @@ public struct TransitionRenderContext: Sendable {
     }
 }
 
+// MARK: - Resolved Text Overlay (PR9)
+
+/// Resolved text overlay for rendering.
+/// Used by both preview and export render paths.
+public struct ResolvedTextOverlay: Sendable {
+    public let text: String
+    public let fontFamily: String?
+    public let fontSize: CGFloat
+    public let colorHex: String
+    public let centerX: CGFloat
+    public let centerY: CGFloat
+
+    public init(text: String, fontFamily: String?, fontSize: CGFloat, colorHex: String, centerX: CGFloat, centerY: CGFloat) {
+        self.text = text
+        self.fontFamily = fontFamily
+        self.fontSize = fontSize
+        self.colorHex = colorHex
+        self.centerX = centerX
+        self.centerY = centerY
+    }
+}
+
 // MARK: - TT-02: Timeline Resolution Policy
 
 /// TT-02: Policy for resolving timeline frames.

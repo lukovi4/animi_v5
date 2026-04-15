@@ -156,7 +156,174 @@ final class ProjectDuplicationUseCaseTests: XCTestCase {
         XCTAssertEqual(existingFiles.count, 1, "Only the healthy source file should produce a copied file")
     }
 
+    // MARK: - Music Duplication (PR8)
+
+    func testDuplicate_withMusic_preservesPayloadFields() async throws {
+        let sourceId = try await createSavedProjectWithMusic()
+
+        let useCase = ProjectDuplicationUseCase(persistence: storageActor, mediaWriter: storageActor)
+        let newId = try await useCase.execute(sourceProjectId: sourceId)
+
+        let record = await storageActor.loadSavedProject(projectId: newId)
+        XCTAssertNotNil(record)
+
+        let payload = record!.draft.canonicalTimeline.musicPayload()
+        XCTAssertNotNil(payload, "Duplicated project should have music payload")
+        XCTAssertEqual(payload?.sourceDurationUs, 10_000_000)
+        XCTAssertEqual(payload?.trimStartUs, 1_000_000)
+        XCTAssertEqual(payload?.trimEndUs, 8_000_000)
+        XCTAssertEqual(payload?.volume, 0.7)
+    }
+
+    func testDuplicate_withMusic_getsIndependentAssetId() async throws {
+        let sourceId = try await createSavedProjectWithMusic()
+        let sourceRecord = await storageActor.loadSavedProject(projectId: sourceId)
+        let sourcePayload = sourceRecord!.draft.canonicalTimeline.musicPayload()!
+        guard case .imported(let sourceAssetId) = sourcePayload.assetRef else {
+            XCTFail("Expected imported asset ref")
+            return
+        }
+
+        let useCase = ProjectDuplicationUseCase(persistence: storageActor, mediaWriter: storageActor)
+        let newId = try await useCase.execute(sourceProjectId: sourceId)
+
+        let newRecord = await storageActor.loadSavedProject(projectId: newId)
+        let newPayload = newRecord!.draft.canonicalTimeline.musicPayload()!
+        guard case .imported(let newAssetId) = newPayload.assetRef else {
+            XCTFail("Expected imported asset ref in duplicate")
+            return
+        }
+
+        XCTAssertNotEqual(newAssetId, sourceAssetId, "Duplicate should have fresh asset ID")
+    }
+
+    // MARK: - Text Overlay Duplication (PR9)
+
+    func testDuplicate_withTextOverlay_preservesPayloadFields() async throws {
+        let sourceId = try await createSavedProjectWithTextOverlay()
+
+        let useCase = ProjectDuplicationUseCase(persistence: storageActor, mediaWriter: storageActor)
+        let newId = try await useCase.execute(sourceProjectId: sourceId)
+
+        let record = await storageActor.loadSavedProject(projectId: newId)
+        XCTAssertNotNil(record)
+
+        let timeline = record!.draft.canonicalTimeline
+        XCTAssertNotNil(timeline.overlayTrack, "Duplicated project should have overlay track")
+        XCTAssertEqual(timeline.textItems.count, 1, "Duplicated project should have text item")
+
+        let item = timeline.textItems.first!
+        XCTAssertEqual(item.startUs, 500_000)
+        XCTAssertEqual(item.durationUs, 2_000_000)
+
+        let payload = timeline.textPayload(for: item.id)
+        XCTAssertNotNil(payload, "Duplicated project should have text payload")
+        XCTAssertEqual(payload?.text, "Duplicated Text")
+        XCTAssertEqual(payload?.fontFamily, "Avenir-Heavy")
+        XCTAssertEqual(payload?.fontSize, 42)
+        XCTAssertEqual(payload?.colorHex, "#007AFF")
+        XCTAssertEqual(payload?.centerX, 0.3)
+        XCTAssertEqual(payload?.centerY, 0.7)
+    }
+
     // MARK: - Helpers
+
+    private func createSavedProjectWithTextOverlay() async throws -> UUID {
+        var draft = ProjectDraft(origin: .template(templateId: "tpl_text"))
+
+        var timeline = CanonicalTimeline.empty()
+        let scenePayloadId = UUID()
+        timeline.payloads[scenePayloadId] = .scene(ScenePayload(sceneTypeId: "scene_0"))
+        timeline.tracks[0].items.append(TimelineItem(
+            payloadId: scenePayloadId, kind: .scene, startUs: nil, durationUs: 5_000_000
+        ))
+
+        let textPayloadId = UUID()
+        timeline.payloads[textPayloadId] = .text(TextPayload(
+            text: "Duplicated Text",
+            fontFamily: "Avenir-Heavy",
+            fontSize: 42,
+            colorHex: "#007AFF",
+            centerX: 0.3,
+            centerY: 0.7
+        ))
+        var overlayTrack = Track(kind: .overlay)
+        overlayTrack.items.append(TimelineItem(
+            payloadId: textPayloadId, kind: .text, startUs: 500_000, durationUs: 2_000_000
+        ))
+        timeline.tracks.append(overlayTrack)
+
+        draft.canonicalTimeline = timeline
+
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: draft.origin),
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        let materialized = try await storageActor.materializeSavedProject(slot)
+        return materialized.draft.id
+    }
+
+    private func createSavedProjectWithMusic() async throws -> UUID {
+        var registry = ProjectAssetRegistry()
+        let (assetId, audioRef) = try seedAudioMedia(filename: "test_song.mp3", into: &registry)
+
+        var draft = ProjectDraft(origin: .template(templateId: "tpl_music"))
+
+        // Build timeline with music
+        var timeline = CanonicalTimeline.empty()
+        let scenePayloadId = UUID()
+        timeline.payloads[scenePayloadId] = .scene(ScenePayload(sceneTypeId: "scene_0"))
+        timeline.tracks[0].items.append(TimelineItem(
+            payloadId: scenePayloadId, kind: .scene, startUs: nil, durationUs: 3_000_000
+        ))
+
+        let audioPayloadId = UUID()
+        timeline.payloads[audioPayloadId] = .audio(AudioPayload(
+            assetRef: .imported(assetId: assetId),
+            sourceDurationUs: 10_000_000,
+            trimStartUs: 1_000_000,
+            trimEndUs: 8_000_000,
+            volume: 0.7
+        ))
+        var audioTrack = Track(kind: .audio)
+        audioTrack.items.append(TimelineItem(
+            payloadId: audioPayloadId, kind: .audioClip, startUs: 0, durationUs: 7_000_000
+        ))
+        timeline.tracks.append(audioTrack)
+
+        draft.canonicalTimeline = timeline
+        draft.assetRegistry = registry
+
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: draft.origin),
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        let materialized = try await storageActor.materializeSavedProject(slot)
+        return materialized.draft.id
+    }
+
+    private func seedAudioMedia(
+        filename: String,
+        into registry: inout ProjectAssetRegistry
+    ) throws -> (ProjectAssetID, MediaRef) {
+        let relPath = "Media/UserMedia/\(filename)"
+        let fileURL = tempDir.appendingPathComponent(relPath)
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("stub_audio:\(filename)".utf8).write(to: fileURL)
+
+        let assetId = ProjectAssetID()
+        registry.register(ProjectAssetDescriptor(
+            assetId: assetId,
+            mediaKind: .audio,
+            storagePath: relPath
+        ))
+        return (assetId, MediaRef(storagePath: relPath, mediaKind: .audio, assetId: assetId))
+    }
 
     private func createSavedProject(origin: ProjectOrigin, name: String? = nil) async throws -> UUID {
         let draft = ProjectDraft(origin: origin, name: name)

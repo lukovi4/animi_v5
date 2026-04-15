@@ -18,6 +18,22 @@ struct TimelineRenderSourcePayload {
     let backgroundState: EffectiveBackgroundState?
     let backgroundTextureProvider: (any TextureProvider)?
     let diagnosticFrameTag: Int?
+    /// PR9: Text overlays to render on top of the scene.
+    let textOverlays: [ResolvedTextOverlay]
+
+    init(
+        resolvedFrame: ResolvedTimelineFrame,
+        backgroundState: EffectiveBackgroundState?,
+        backgroundTextureProvider: (any TextureProvider)?,
+        diagnosticFrameTag: Int?,
+        textOverlays: [ResolvedTextOverlay] = []
+    ) {
+        self.resolvedFrame = resolvedFrame
+        self.backgroundState = backgroundState
+        self.backgroundTextureProvider = backgroundTextureProvider
+        self.diagnosticFrameTag = diagnosticFrameTag
+        self.textOverlays = textOverlays
+    }
 }
 
 /// Payload for scene-edit mode rendering — wraps resolved commands

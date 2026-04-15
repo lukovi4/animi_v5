@@ -130,12 +130,18 @@ public final class EditorStore {
             break
         }
 
-        // Handle gesture baseline for trim and transform gestures (PR9, PR2)
+        // Handle gesture baseline for trim, transform, and overlay gestures (PR9, PR2)
         let gesturePhase: InteractionPhase?
         switch action {
         case .trimScene(_, let phase, _, _):
             gesturePhase = phase
         case .setMediaPlacement(_, _, _, let phase):
+            gesturePhase = phase
+        case .moveItem(_, _, let phase):
+            gesturePhase = phase
+        case .trimItem(_, _, let phase):
+            gesturePhase = phase
+        case .dragTextPosition(_, _, _, let phase):
             gesturePhase = phase
         default:
             gesturePhase = nil
@@ -177,6 +183,12 @@ public final class EditorStore {
         case .trimScene(_, .ended, _, _):
             isGestureEnded = true
         case .setMediaPlacement(_, _, _, .ended):
+            isGestureEnded = true
+        case .moveItem(_, _, .ended):
+            isGestureEnded = true
+        case .trimItem(_, _, .ended):
+            isGestureEnded = true
+        case .dragTextPosition(_, _, _, .ended):
             isGestureEnded = true
         default:
             isGestureEnded = false
@@ -513,6 +525,10 @@ public final class EditorStore {
         case .setMediaFitMode: actionName = "setMediaFitMode"
         case .resetMediaPlacement: actionName = "resetMediaPlacement"
         case .setBackground: actionName = "setBackground"
+        case .setProjectMusic: actionName = "setProjectMusic"
+        case .removeProjectMusic: actionName = "removeProjectMusic"
+        case .setProjectMusicTrim: actionName = "setProjectMusicTrim"
+        case .setProjectMusicVolume: actionName = "setProjectMusicVolume"
         case .undo: actionName = "undo"
         case .redo: actionName = "redo"
         default: actionName = "other"

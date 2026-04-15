@@ -1,7 +1,7 @@
 import Foundation
 
 /// Abstracts access to the template catalog for feature controllers.
-/// Feature code depends on this protocol, not on `TemplateCatalog.shared`.
+/// Feature code depends on this protocol, not on `TemplateCatalog` directly.
 @MainActor
 protocol TemplateCatalogProviding {
     func load() async -> Result<TemplateCatalogSnapshot, Error>
@@ -14,7 +14,9 @@ protocol TemplateCatalogProviding {
     ) throws -> [SceneTypeDefault]
 }
 
-/// Singleton-backed implementation. The singleton lives inside this adapter only.
+/// Default implementation that owns a `TemplateCatalog` instance.
+/// The `SceneLibrary.shared` singleton is referenced only here, keeping
+/// `TemplateCatalog` itself fully decoupled from any singleton.
 @MainActor
 final class TemplateCatalogRepository: TemplateCatalogProviding {
 
@@ -25,7 +27,7 @@ final class TemplateCatalogRepository: TemplateCatalogProviding {
     }
 
     convenience init() {
-        self.init(catalog: .shared)
+        self.init(catalog: TemplateCatalog(sceneLibraryLoader: { try await SceneLibrary.shared.load() }))
     }
 
     func load() async -> Result<TemplateCatalogSnapshot, Error> {

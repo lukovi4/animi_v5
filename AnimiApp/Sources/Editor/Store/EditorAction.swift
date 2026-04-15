@@ -190,16 +190,52 @@ public enum EditorAction: Sendable {
     /// Redoes the last undone operation.
     case redo
 
-    // MARK: - Future Actions (API reserved, not implemented yet)
+    // MARK: - Project Music (PR8)
 
-    /// Moves an item to a new start time (for audio/overlay, future).
-    case moveItem(itemId: UUID, newStartUs: TimeUs)
+    /// Sets (or replaces) the project music track.
+    /// Creates/replaces the single audio clip in the audio track.
+    /// Pushes undo snapshot.
+    case setProjectMusic(assetRef: AudioAssetRef, sourceDurationUs: TimeUs)
 
-    /// Trims an item's duration (for audio/overlay, future).
-    case trimItem(itemId: UUID, newDurationUs: TimeUs)
+    /// Removes the project music track.
+    /// Pushes undo snapshot.
+    case removeProjectMusic
 
-    /// Deletes an item (future).
+    /// Sets trim range for the project music clip.
+    /// Pushes undo snapshot.
+    case setProjectMusicTrim(itemId: UUID, trimStartUs: TimeUs, trimEndUs: TimeUs)
+
+    /// Sets volume for the project music clip.
+    /// Pushes undo snapshot.
+    case setProjectMusicVolume(itemId: UUID, volume: Float)
+
+    // MARK: - Generic Overlay Item Actions (PR9)
+
+    /// Moves an overlay item to a new start time. Gesture-aware.
+    /// Only `.ended` pushes undo snapshot.
+    case moveItem(itemId: UUID, newStartUs: TimeUs, phase: InteractionPhase)
+
+    /// Trims an overlay item's duration. Gesture-aware.
+    /// Only `.ended` pushes undo snapshot.
+    case trimItem(itemId: UUID, newDurationUs: TimeUs, phase: InteractionPhase)
+
+    /// Deletes an overlay item and its payload. Pushes undo snapshot.
     case deleteItem(itemId: UUID)
+
+    // MARK: - Text Overlay Actions (PR9)
+
+    /// Atomically adds a text overlay: creates overlay track if needed,
+    /// creates payload + item, selects it. Pushes undo snapshot.
+    case addTextOverlay(text: String, fontSize: CGFloat, colorHex: String, fontFamily: String?, startUs: TimeUs, durationUs: TimeUs)
+
+    /// Updates text payload content/style/position. Pushes undo snapshot.
+    case updateTextPayload(itemId: UUID, payload: TextPayload)
+
+    /// Drags text position on canvas. Gesture-aware.
+    /// Only `.ended` pushes undo snapshot.
+    case dragTextPosition(itemId: UUID, centerX: CGFloat, centerY: CGFloat, phase: InteractionPhase)
+
+    // MARK: - Future Actions (API reserved, not implemented yet)
 
     /// Adds a new track (future).
     case addTrack(kind: TrackKind)

@@ -170,6 +170,10 @@ public struct ExportMediaSnapshot: Sendable {
                     selection: selection,
                     bindingAssetIds: bindingAssetIds
                 ))
+
+            case .audio:
+                // Audio media kind is not used in scene media slots — skip
+                break
             }
         }
 

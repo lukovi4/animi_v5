@@ -75,6 +75,13 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
                 }
             }
         }
+        // PR8: Walk audio payloads for imported asset refs
+        for (_, payload) in draft.canonicalTimeline.payloads {
+            if case .audio(let audioPayload) = payload,
+               case .imported(let assetId) = audioPayload.assetRef {
+                ids.insert(assetId)
+            }
+        }
         return ids
     }
 
@@ -169,6 +176,15 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
                 for (_, slot) in slots {
                     let ref = slot.mediaRef
                     paths.insert(descriptors[ref.assetId]?.storagePath ?? ref.storagePath)
+                }
+            }
+        }
+        // PR8: Walk audio payloads for imported asset storage paths
+        for (_, payload) in draft.canonicalTimeline.payloads {
+            if case .audio(let audioPayload) = payload,
+               case .imported(let assetId) = audioPayload.assetRef {
+                if let path = descriptors[assetId]?.storagePath {
+                    paths.insert(path)
                 }
             }
         }

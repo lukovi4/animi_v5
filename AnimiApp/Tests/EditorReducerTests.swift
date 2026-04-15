@@ -61,7 +61,7 @@ final class EditorReducerTests: XCTestCase {
 
         for (startUs, durationUs) in audioItems {
             let payloadId = UUID()
-            timeline.payloads[payloadId] = .audio(AudioPayload(volume: 1.0))
+            timeline.payloads[payloadId] = .audio(AudioPayload(sourceDurationUs: durationUs, trimStartUs: 0, trimEndUs: durationUs, volume: 1.0))
             let item = TimelineItem(
                 payloadId: payloadId,
                 kind: .audioClip,

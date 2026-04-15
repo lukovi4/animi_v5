@@ -50,6 +50,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// PR4: Min scene duration for trim clamp (model constraint)
     private var minSceneDurationUs: TimeUs = ProjectDraft.minSceneDurationUs
 
+    /// PR8: Current music item ID (for selection events)
+    private var musicItemId: UUID?
+
     // MARK: - Initial Positioning State
 
     private var didInitialPositioning = false
@@ -158,6 +161,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }()
 
     private lazy var sceneTrack = SceneTrackView()
+    private lazy var overlayTrack = OverlayTrackView()
     private lazy var audioTrack = AudioTrackView()
 
     #if DEBUG
@@ -204,8 +208,9 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         scrollView.addSubview(contentView)
         contentView.addSubview(tracksStack)
 
-        // Add tracks
+        // Add tracks (scene → overlay → audio)
         tracksStack.addArrangedSubview(sceneTrack)
+        tracksStack.addArrangedSubview(overlayTrack)
         tracksStack.addArrangedSubview(audioTrack)
 
         #if DEBUG
@@ -219,6 +224,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // Wire sceneTrack callbacks for selection and trim
         wireSceneTrackCallbacks()
+        wireOverlayTrackCallbacks()
     }
 
     private func wireSceneTrackCallbacks() {
@@ -256,8 +262,21 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
     }
 
+    private func wireOverlayTrackCallbacks() {
+        overlayTrack.onSelectItem = { [weak self] itemId in
+            self?.emitEvent(.selection(.text(itemId: itemId)))
+        }
+        overlayTrack.onMoveItem = { [weak self] itemId, newStartUs, phase in
+            self?.emitEvent(.moveOverlayItem(itemId: itemId, newStartUs: newStartUs, phase: phase))
+        }
+        overlayTrack.onTrimItem = { [weak self] itemId, newDurationUs, edge, phase in
+            self?.emitEvent(.trimOverlayItem(itemId: itemId, newDurationUs: newDurationUs, edge: edge, phase: phase))
+        }
+    }
+
     private func setupConstraints() {
         sceneTrack.translatesAutoresizingMaskIntoConstraints = false
+        overlayTrack.translatesAutoresizingMaskIntoConstraints = false
         audioTrack.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
@@ -284,6 +303,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
             // Track heights
             sceneTrack.heightAnchor.constraint(equalToConstant: 60),
+            overlayTrack.heightAnchor.constraint(equalToConstant: 36),
             audioTrack.heightAnchor.constraint(equalToConstant: 40),
         ])
 
@@ -356,6 +376,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // PR4: Layout path - setLayoutContext (done via updateContentSize)
         let padding = leftPaddingPx
+        overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
         #if DEBUG
@@ -385,6 +406,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // Audio: configure is ok (single block, no active gesture)
         let padding = leftPaddingPx
+        overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
         #if DEBUG
@@ -471,14 +493,45 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             selectedSceneId = id
             sceneTrack.setSelectedScene(id)
             audioTrack.setSelected(false)
+            overlayTrack.setSelectedItem(nil)
         case .audio:
             selectedSceneId = nil
             sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(true)
+            overlayTrack.setSelectedItem(nil)
+        case .text(let itemId):
+            selectedSceneId = nil
+            sceneTrack.setSelectedScene(nil)
+            audioTrack.setSelected(false)
+            overlayTrack.setSelectedItem(itemId)
         case .none:
             selectedSceneId = nil
             sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(false)
+            overlayTrack.setSelectedItem(nil)
+        }
+    }
+
+    /// PR9: Updates overlay items for the overlay track.
+    func setOverlayItems(_ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)], selectedItemId: UUID?) {
+        let snapshot = OverlayTrackSnapshot(items: items, selectedItemId: selectedItemId)
+        overlayTrack.applySnapshot(snapshot)
+        overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: leftPaddingPx)
+        overlayTrack.isHidden = items.isEmpty
+    }
+
+    /// PR8: Updates the music item data for audio track display and selection.
+    func setMusicItem(_ item: TimelineItem?, payload: AudioPayload?) {
+        musicItemId = item?.id
+        if let item, let payload {
+            audioTrack.configure(
+                durationUs: item.durationUs,
+                pxPerSecond: pxPerSecond,
+                leftPadding: leftPaddingPx + CGFloat(usToSeconds(item.startUs ?? 0)) * pxPerSecond
+            )
+            audioTrack.setHasClip(true)
+        } else {
+            audioTrack.setHasClip(false)
         }
     }
 
@@ -580,6 +633,10 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             print("[Timeline] editBoundaryTransition: \(fromId) → \(toId)")
         case .focusScene(let sceneId):
             print("[Timeline] focusScene: \(sceneId)")
+        case .moveOverlayItem(let itemId, let newStartUs, let phase):
+            print("[Timeline] moveOverlayItem: \(itemId), \(newStartUs)us, \(phase)")
+        case .trimOverlayItem(let itemId, let newDurationUs, let edge, let phase):
+            print("[Timeline] trimOverlayItem: \(itemId), \(newDurationUs)us, \(edge), \(phase)")
         }
         #endif
         onEvent?(event)
@@ -830,12 +887,21 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let location = recognizer.location(in: contentView)
 
         // Scene track taps are handled by SceneClipView (via onSelectScene callback)
-        // Only check for audio track and empty space here
+        // Only check for overlay, audio track and empty space here
+
+        // PR9: Check if tap is on overlay track (handled by OverlayTrackView's onSelectItem)
+        if !overlayTrack.isHidden {
+            let overlayFrame = overlayTrack.convert(overlayTrack.bounds, to: contentView)
+            if overlayFrame.contains(location) {
+                // OverlayTrackView handles its own item selection via callbacks
+                return
+            }
+        }
 
         // Check if tap is on audio track
         let audioFrame = audioTrack.convert(audioTrack.bounds, to: contentView)
-        if audioFrame.contains(location) {
-            emitEvent(.selection(.audio))
+        if audioFrame.contains(location), let itemId = musicItemId {
+            emitEvent(.selection(.audio(itemId: itemId)))
             return
         }
 

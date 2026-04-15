@@ -350,6 +350,171 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         XCTAssertEqual(session.transitionMath.compressedDurationFrames, engine.compressedDurationFrames)
     }
 
+    // MARK: - PR8: Timeline with Music Track
+
+    /// Timeline export with an audio track present does not regress buildExportSession.
+    @MainActor
+    func testBuildExportSession_withMusicTrack_doesNotRegress() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        var (timeline, resources) = makeMinimalTimeline(sceneCount: 2, framesPerScene: 60)
+
+        // Add a music audio track to the timeline
+        let audioPid = UUID()
+        timeline.payloads[audioPid] = .audio(AudioPayload(
+            assetRef: .imported(assetId: ProjectAssetID()),
+            sourceDurationUs: 5_000_000,
+            trimStartUs: 0,
+            trimEndUs: 5_000_000,
+            volume: 0.8
+        ))
+        var audioTrack = Track(kind: .audio)
+        audioTrack.items.append(TimelineItem(
+            payloadId: audioPid, kind: .audioClip, startUs: 0, durationUs: 5_000_000
+        ))
+        timeline.tracks.append(audioTrack)
+
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        // buildExportSession should succeed — music track is orthogonal to scene snapshots
+        let session = try await engine.buildExportSession()
+
+        XCTAssertEqual(session.scenesByInstanceId.count, 2, "All scenes should still be present")
+        XCTAssertEqual(session.audioSceneData.count, 2, "Audio scene data should cover all scenes")
+    }
+
+    /// Music track presence does not affect scene snapshot content.
+    @MainActor
+    func testBuildExportSession_musicDoesNotAffectSceneSnapshots() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        // Build timeline without music
+        let (timelineNoMusic, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let engineNoMusic = makeEngine(device: device, commandQueue: commandQueue, timeline: timelineNoMusic, resources: resources)
+        let sessionNoMusic = try await engineNoMusic.buildExportSession()
+
+        // Build same timeline with music
+        var timelineWithMusic = timelineNoMusic
+        let audioPid = UUID()
+        timelineWithMusic.payloads[audioPid] = .audio(AudioPayload(
+            assetRef: .imported(assetId: ProjectAssetID()),
+            sourceDurationUs: 10_000_000, trimStartUs: 0, trimEndUs: 10_000_000, volume: 1.0
+        ))
+        var audioTrack = Track(kind: .audio)
+        audioTrack.items.append(TimelineItem(
+            payloadId: audioPid, kind: .audioClip, startUs: 0, durationUs: 10_000_000
+        ))
+        timelineWithMusic.tracks.append(audioTrack)
+
+        let engineWithMusic = makeEngine(device: device, commandQueue: commandQueue, timeline: timelineWithMusic, resources: resources)
+        let sessionWithMusic = try await engineWithMusic.buildExportSession()
+
+        // Scene snapshots should be identical
+        XCTAssertEqual(sessionNoMusic.scenesByInstanceId.count, sessionWithMusic.scenesByInstanceId.count)
+        XCTAssertEqual(sessionNoMusic.fps, sessionWithMusic.fps)
+    }
+
+    // MARK: - PR9: Text Overlay Export Session
+
+    /// buildExportSession() snapshots text overlay items from overlay track.
+    @MainActor
+    func testBuildExportSession_snapshotsTextOverlayItems() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        var (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 90)
+
+        // Add text overlay track
+        let textPid = UUID()
+        timeline.payloads[textPid] = .text(TextPayload(
+            text: "Export Title",
+            fontFamily: nil,
+            fontSize: 32,
+            colorHex: "#FFFFFF",
+            centerX: 0.5,
+            centerY: 0.3
+        ))
+        var overlayTrack = Track(kind: .overlay)
+        overlayTrack.items.append(TimelineItem(
+            payloadId: textPid, kind: .text, startUs: 0, durationUs: 2_000_000
+        ))
+        timeline.tracks.append(overlayTrack)
+
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+        let session = try await engine.buildExportSession()
+
+        XCTAssertEqual(session.textOverlayItems.count, 1, "Export session should snapshot text overlay items")
+        XCTAssertEqual(session.textOverlayItems.first?.payload.text, "Export Title")
+        XCTAssertEqual(session.textOverlayItems.first?.payload.centerX, 0.5)
+        XCTAssertEqual(session.textOverlayItems.first?.payload.centerY, 0.3)
+        XCTAssertEqual(session.textOverlayItems.first?.item.durationUs, 2_000_000)
+    }
+
+    /// Text overlay items in export session are empty when no overlay track exists.
+    @MainActor
+    func testBuildExportSession_noTextOverlay_emptySnapshot() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+        let session = try await engine.buildExportSession()
+
+        XCTAssertTrue(session.textOverlayItems.isEmpty, "Export session should have no text overlays when none exist")
+    }
+
+    /// resolveTextOverlays returns overlays visible at a given frame, empty for non-visible.
+    @MainActor
+    func testResolveTextOverlays_visibleAndNonVisible() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        var (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 90)
+
+        // Text starts at 1s, lasts 1s (frames 30-59 at 30fps)
+        let textPid = UUID()
+        timeline.payloads[textPid] = .text(TextPayload(
+            text: "Timed",
+            fontSize: 24,
+            colorHex: "#FF0000",
+            centerX: 0.5,
+            centerY: 0.5
+        ))
+        var overlayTrack = Track(kind: .overlay)
+        overlayTrack.items.append(TimelineItem(
+            payloadId: textPid, kind: .text, startUs: 1_000_000, durationUs: 1_000_000
+        ))
+        timeline.tracks.append(overlayTrack)
+
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        // Frame 0 (t=0): text not visible
+        let beforeText = engine.resolveTextOverlays(at: 0)
+        XCTAssertTrue(beforeText.isEmpty, "Text should not be visible before startUs")
+
+        // Frame 30 (t=1s): text visible
+        let duringText = engine.resolveTextOverlays(at: 30)
+        XCTAssertEqual(duringText.count, 1, "Text should be visible during its time range")
+        XCTAssertEqual(duringText.first?.text, "Timed")
+        XCTAssertEqual(duringText.first?.colorHex, "#FF0000")
+
+        // Frame 60 (t=2s): text no longer visible
+        let afterText = engine.resolveTextOverlays(at: 60)
+        XCTAssertTrue(afterText.isEmpty, "Text should not be visible after endUs")
+    }
+
     // MARK: - Legacy Cold Export
 
     /// Creates a minimal valid .mp4 file so AVURLAsset.duration returns > 0.

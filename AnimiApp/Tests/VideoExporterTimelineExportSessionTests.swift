@@ -152,7 +152,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             canvasSize: SizeD(width: 1080, height: 1920),
             fps: 30,
             scenesByInstanceId: snapshots,
-            audioSceneData: audioData
+            audioSceneData: audioData,
+            textOverlayItems: []
         )
 
         return (session, instanceIds)
@@ -404,5 +405,147 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
 
         XCTAssertTrue(spyA.cancelCalled)
         XCTAssertTrue(spyB.cancelCalled)
+    }
+
+    // MARK: - PR9: Text Overlay Export Render Request Propagation
+
+    /// Proves that a visible text overlay in the export session reaches
+    /// TimelineRenderRequest.textOverlays through the production export path.
+    /// Mirrors exactly what VideoExporter.swift does: resolveFrame + resolveTextOverlays → request.
+    @MainActor
+    func testExportPath_visibleTextOverlay_populatesRenderRequestTextOverlays() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        // Build a session with 1 scene (90 frames = 3s) + 1 text overlay (0-2s)
+        var items: [TimelineItem] = []
+        var payloads: [UUID: TimelinePayload] = [:]
+        var snapshots: [UUID: TimelineCompositionEngine.TimelineExportSceneSnapshot] = [:]
+        var audioData: [TimelineCompositionEngine.SceneAudioExportData] = []
+
+        let instanceId = UUID()
+        let payloadId = UUID()
+        let sceneTypeId = "scene-type-0"
+        let framesPerScene = 90
+        let durationUs = framesToUs(framesPerScene)
+
+        let item = TimelineItem(id: instanceId, payloadId: payloadId, kind: .scene, startUs: nil, durationUs: durationUs)
+        items.append(item)
+        payloads[payloadId] = .scene(ScenePayload(sceneTypeId: sceneTypeId))
+
+        let res = makeMinimalResources(durationFrames: framesPerScene, sceneTypeId: sceneTypeId)
+        let renderState = SceneRenderStateSnapshot(
+            resolvedTransforms: [:], variantOverrides: [:], userMediaPresent: [:], layerToggleState: [:]
+        )
+        let mediaSnapshot = ExportMediaSnapshot(
+            imageRefs: [], videoRefs: [],
+            allAssetIds: Set(res.compiled.mergedAssetIndex.basenameById.keys)
+        )
+        snapshots[instanceId] = TimelineCompositionEngine.TimelineExportSceneSnapshot(
+            sceneIndex: 0, instanceId: instanceId, runtime: res.compiled.runtime,
+            renderState: renderState, videoSelections: [:], mediaSnapshot: mediaSnapshot,
+            assetIndex: res.compiled.mergedAssetIndex, resolver: res.resolver,
+            bindingAssetIds: res.compiled.bindingAssetIds, pathRegistry: res.pathRegistry,
+            assetSizes: res.assetSizes, sceneCanvasSize: res.canvasSize
+        )
+        audioData.append(TimelineCompositionEngine.SceneAudioExportData(
+            sceneIndex: 0, runtime: res.compiled.runtime, videoSelections: [:]
+        ))
+
+        // Text overlay visible at frames 0-59 (0s-2s)
+        let textPayloadId = UUID()
+        let textPayload = TextPayload(
+            text: "Export Visible",
+            fontFamily: nil,
+            fontSize: 36,
+            colorHex: "#FF0000",
+            centerX: 0.3,
+            centerY: 0.7
+        )
+        payloads[textPayloadId] = .text(textPayload)
+        let textItem = TimelineItem(
+            payloadId: textPayloadId, kind: .text, startUs: 0, durationUs: 2_000_000
+        )
+
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: items)
+        let overlayTrack = Track(id: UUID(), kind: .overlay, items: [textItem])
+        let timeline = CanonicalTimeline(tracks: [sceneTrack, overlayTrack], payloads: payloads, boundaryTransitions: [:])
+        let math = TimelineTransitionMath(
+            sceneItems: timeline.sceneItems,
+            boundaryTransitions: timeline.boundaryTransitions,
+            fps: 30
+        )
+
+        let session = TimelineCompositionEngine.TimelineExportSession(
+            transitionMath: math,
+            canvasSize: SizeD(width: 1080, height: 1920),
+            fps: 30,
+            scenesByInstanceId: snapshots,
+            audioSceneData: audioData,
+            textOverlayItems: [(item: textItem, payload: textPayload)]
+        )
+
+        // Create export runtime (same as VideoExporter does)
+        let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
+        let exportRuntime = try TimelineExportRuntime(
+            session: session, textureCache: textureCache, coordinatorFactory: noCoordinators
+        )
+
+        // --- Production export path (mirrors VideoExporter.swift lines 1222-1235) ---
+
+        // Frame 15 (t=0.5s): text IS visible
+        let frameInside = 15
+        let resolvedInside = try exportRuntime.resolveFrame(frameInside)
+        let textOverlaysInside = exportRuntime.resolveTextOverlays(at: frameInside)
+
+        // This is the exact construction from VideoExporter production code
+        let textureDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: 1080, height: 1920, mipmapped: false
+        )
+        let dummyTexture = device.makeTexture(descriptor: textureDesc)!
+
+        let requestInside = TimelineRenderRequest(
+            resolved: resolvedInside,
+            targetTexture: dummyTexture,
+            drawableScale: 1.0,
+            timelineCanvasSize: SizeD(width: 1080, height: 1920),
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: nil,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            diagnosticFrameTag: frameInside,
+            textOverlays: textOverlaysInside
+        )
+
+        XCTAssertEqual(requestInside.textOverlays.count, 1, "Render request must contain visible text overlay")
+        XCTAssertEqual(requestInside.textOverlays.first?.text, "Export Visible")
+        XCTAssertEqual(requestInside.textOverlays.first?.fontSize, 36)
+        XCTAssertEqual(requestInside.textOverlays.first?.colorHex, "#FF0000")
+        XCTAssertEqual(requestInside.textOverlays.first?.centerX, 0.3)
+        XCTAssertEqual(requestInside.textOverlays.first?.centerY, 0.7)
+
+        // Frame 75 (t=2.5s): text is NOT visible
+        let frameOutside = 75
+        let textOverlaysOutside = exportRuntime.resolveTextOverlays(at: frameOutside)
+
+        let requestOutside = TimelineRenderRequest(
+            resolved: try exportRuntime.resolveFrame(frameOutside),
+            targetTexture: dummyTexture,
+            drawableScale: 1.0,
+            timelineCanvasSize: SizeD(width: 1080, height: 1920),
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: nil,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            diagnosticFrameTag: frameOutside,
+            textOverlays: textOverlaysOutside
+        )
+
+        XCTAssertTrue(requestOutside.textOverlays.isEmpty, "Render request must be empty when text not visible")
     }
 }

@@ -678,12 +678,16 @@ final class EditorRuntime {
                     }
                 }
 
+                // PR9: Resolve text overlays for this frame
+                let textOverlays = self.timelineCompositionEngine?.resolveTextOverlays(at: compressedFrame) ?? []
+
                 // Update render source
                 self.currentRenderSource = .timeline(TimelineRenderSourcePayload(
                     resolvedFrame: resolved,
                     backgroundState: self.effectiveBackgroundState,
                     backgroundTextureProvider: self.backgroundTextureProvider,
-                    diagnosticFrameTag: compressedFrame
+                    diagnosticFrameTag: compressedFrame,
+                    textOverlays: textOverlays
                 ))
                 self.onOutput?(.renderSourceUpdated)
 
@@ -1030,9 +1034,10 @@ final class EditorRuntime {
         // Output URL
         let outputURL = makeExportOutputURL(prefix: "export_\(sceneRuntime.scene.sceneId ?? "scene")")
 
-        // Audio config
+        // Audio config (PR8: bridge project music from canonical timeline)
+        let musicConfig = await buildProjectMusicTrackConfig()
         let audioConfig = AudioExportConfig(
-            music: nil,
+            music: musicConfig,
             voiceover: nil,
             includeOriginalFromVideoSlots: true,
             originalDefaultVolume: 1.0
@@ -1183,8 +1188,10 @@ final class EditorRuntime {
 
         let outputURL = makeExportOutputURL(prefix: "export_timeline")
 
+        // Audio config (PR8: bridge project music from canonical timeline)
+        let musicConfig = await buildProjectMusicTrackConfig()
         let audioConfig = AudioExportConfig(
-            music: nil,
+            music: musicConfig,
             voiceover: nil,
             includeOriginalFromVideoSlots: true,
             originalDefaultVolume: 1.0
@@ -1329,6 +1336,46 @@ final class EditorRuntime {
         )
         activeExportRequest?.deliveryFlow = flow
         flow.start(fileURL: url, destination: .photoLibrary)
+    }
+
+    /// PR8: Builds AudioTrackConfig from the project's canonical timeline music item.
+    /// Returns nil if no music is set or resolution fails.
+    ///
+    /// - Note: `internal` visibility for `#if DEBUG` test access via
+    ///   `_testBuildProjectMusicTrackConfig()`. Production call sites remain
+    ///   the two export paths in this file.
+    func buildProjectMusicTrackConfig() async -> AudioTrackConfig? {
+        guard let state = session.state,
+              let item = state.canonicalTimeline.musicItem,
+              let payload = state.canonicalTimeline.musicPayload(),
+              case .imported(let assetId) = payload.assetRef else {
+            return nil
+        }
+
+        // Resolve file URL through registry-backed locator
+        let registry = state.draft.assetRegistry
+        guard let storagePath = registry.storagePath(for: assetId) else {
+            #if DEBUG
+            logger.warning("[PR8] Music asset not found in registry: \(assetId.rawValue.uuidString)")
+            #endif
+            return nil
+        }
+
+        let mediaRef = MediaRef(storagePath: storagePath, mediaKind: .audio, assetId: assetId)
+        guard let fileURL = try? await session.mediaLocator.absoluteURL(for: mediaRef, registry: registry) else {
+            #if DEBUG
+            logger.warning("[PR8] Failed to resolve music asset URL")
+            #endif
+            return nil
+        }
+
+        return AudioTrackConfig(
+            url: fileURL,
+            startTimeSeconds: usToSeconds(item.startUs ?? 0),
+            volume: payload.volume,
+            trimStartSeconds: usToSeconds(payload.trimStartUs),
+            trimEndSeconds: usToSeconds(payload.trimEndUs)
+        )
     }
 
     private func makeExportOutputURL(prefix: String) -> URL {

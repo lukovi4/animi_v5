@@ -4,6 +4,7 @@ import Foundation
 public enum MediaKind: String, Codable, Hashable, Sendable {
     case photo
     case video
+    case audio
 }
 
 /// Persistent reference to user media file.

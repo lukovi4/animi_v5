@@ -53,6 +53,9 @@ final class ProjectStorePersistenceTests: XCTestCase {
         let audioPayloadId = UUID()
         payloads[audioPayloadId] = .audio(AudioPayload(
             assetRef: .bundled(id: "track_01"),
+            sourceDurationUs: 6_000_000,
+            trimStartUs: 500_000,
+            trimEndUs: 5_500_000,
             volume: 0.8
         ))
         var audioTrack = Track(kind: .audio)

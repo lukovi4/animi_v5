@@ -102,6 +102,116 @@ final class EditorSessionLifecycleTests: XCTestCase {
         let session = await makeBootstrappedSession()
         XCTAssertEqual(session.backgroundPresetProvider.count, 0)
     }
+
+    // MARK: - Behavioral Contract Tests
+
+    func testMultipleCheckpoints_withoutMutation_secondIsNoOp() async {
+        var saveCount = 0
+        let session = await makeBootstrappedSession(saveActiveDraft: { _ in saveCount += 1 })
+
+        // Mutate to make dirty
+        session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
+
+        // First checkpoint should save
+        let saved1 = await session.persistCheckpointIfNeeded()
+        XCTAssertTrue(saved1)
+        let countAfterFirst = saveCount
+
+        // Second checkpoint without further mutation — should be a no-op
+        let saved2 = await session.persistCheckpointIfNeeded()
+        XCTAssertFalse(saved2)
+        XCTAssertEqual(saveCount, countAfterFirst, "Save count should not increase on redundant checkpoint")
+    }
+
+    func testUndoAfterCheckpoint_dirtyRelativeToMaterializedBaseline() async {
+        let session = await makeBootstrappedSession()
+
+        // Mutate
+        session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
+        XCTAssertEqual(session.requestClose(), .needsUserDecision)
+
+        // Checkpoint (recovery write)
+        await session.persistCheckpointIfNeeded()
+
+        // Undo reverts to the bootstrapped state — which is the materialized baseline
+        session.dispatch(.undo)
+        XCTAssertEqual(session.requestClose(), .safeToClose, "After undoing back to baseline, session should be safe to close")
+    }
+
+    func testSaveAndClose_verifiesMaterializeDeleteAndSavedContent() async {
+        var materializeCalled = false
+        var deleteCalled = false
+        var materializedDraft: ProjectDraft?
+
+        let session = await makeBootstrappedSession(
+            deleteActiveDraft: { deleteCalled = true },
+            materializeSavedProject: { slot in
+                materializeCalled = true
+                materializedDraft = slot.draft
+                return slot
+            }
+        )
+
+        // Mutate — add a scene
+        session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
+        let sceneCountAfterAdd = session.state?.sceneItems.count ?? 0
+
+        // Save and close
+        try! await session.executeSaveAndClose()
+
+        XCTAssertTrue(materializeCalled, "executeSaveAndClose must call materializeSavedProject")
+        XCTAssertTrue(deleteCalled, "executeSaveAndClose must call deleteActiveDraft")
+        XCTAssertEqual(
+            materializedDraft?.canonicalTimeline.sceneItems.count,
+            sceneCountAfterAdd,
+            "Materialized draft should contain the added scene"
+        )
+    }
+
+    func testExportCommit_clearsUserDirty() async {
+        let session = await makeBootstrappedSession(
+            materializeSavedProject: { $0 }
+        )
+
+        // Mutate — dirty
+        session.dispatch(.addScene(sceneTypeId: "scene_1", durationUs: 3_000_000))
+        XCTAssertEqual(session.requestClose(), .needsUserDecision)
+
+        // Export commit — materializes and resets baseline
+        await session.commitAfterExportSuccess()
+        XCTAssertEqual(session.requestClose(), .safeToClose, "After export commit, user-dirty should be cleared")
+    }
+
+    func testBootstrapFailure_emitsBootstrapFailedAndNoState() async {
+        let deps = EditorSessionDependencies(
+            saveActiveDraft: { _ in },
+            loadActiveDraft: { nil },
+            deleteActiveDraft: {},
+            loadSavedProject: { _ in nil },
+            materializeSavedProject: { $0 },
+            mediaLocator: StubMediaLocator(),
+            mediaWriter: StubMediaWriter(),
+            loadSceneLibrary: { throw NSError(domain: "test", code: 1) },
+            sceneTypeDefaults: { _, _ in [] },
+            loadTemplateCatalog: { .success(TemplateCatalogSnapshot(categories: [], templates: [])) },
+            backgroundPresetProvider: StubPresetProvider()
+        )
+
+        let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
+        var emittedOutput: EditorSessionOutput?
+        session.onOutput = { output in emittedOutput = output }
+
+        await session.bootstrap()
+
+        // Verify bootstrap failed
+        if case .bootstrapFailed = emittedOutput {
+            // expected
+        } else {
+            XCTFail("Expected .bootstrapFailed output, got \(String(describing: emittedOutput))")
+        }
+
+        XCTAssertNil(session.state, "State must be nil after bootstrap failure")
+    }
 }
 
 private struct StubMediaLocator: ProjectMediaLocator {

@@ -1127,6 +1127,49 @@ public final class TimelineCompositionEngine {
         public let videoSelections: [String: VideoSelection]
     }
 
+    // MARK: - Text Overlay Resolution (PR9)
+
+    /// Resolves text overlays visible at a given compressed frame.
+    /// Used by preview path.
+    public func resolveTextOverlays(at compressedFrame: Int) -> [ResolvedTextOverlay] {
+        guard let math = transitionMath, let timeline = timeline else { return [] }
+
+        // Use frameMapping to get scene index + local frame, then compute global timeUs
+        guard let mapping = math.frameMapping(for: compressedFrame) else { return [] }
+        let sceneStartUs = math.sceneItems.prefix(mapping.sceneIndex).reduce(TimeUs(0)) { sum, item in
+            sum + item.durationUs
+        }
+        let localTimeUs = frameToUs(mapping.localFrame, fps: math.fps)
+        let timeUs = sceneStartUs + localTimeUs
+
+        return Self.resolveTextOverlaysFromTimeline(timeline, at: timeUs)
+    }
+
+    /// Resolves text overlays from timeline at a given timeUs. Shared logic for preview + export.
+    internal static func resolveTextOverlaysFromTimeline(_ timeline: CanonicalTimeline, at timeUs: TimeUs) -> [ResolvedTextOverlay] {
+        guard let overlayTrack = timeline.overlayTrack else { return [] }
+
+        var result: [ResolvedTextOverlay] = []
+        for item in overlayTrack.items where item.kind == .text {
+            let itemStart = item.startUs ?? 0
+            let itemEnd = itemStart + item.durationUs
+            guard timeUs >= itemStart && timeUs < itemEnd else { continue }
+
+            guard let payload = timeline.payloads[item.payloadId],
+                  case .text(let textPayload) = payload else { continue }
+
+            result.append(ResolvedTextOverlay(
+                text: textPayload.text,
+                fontFamily: textPayload.fontFamily,
+                fontSize: textPayload.fontSize ?? 32,
+                colorHex: textPayload.colorHex ?? "#FFFFFF",
+                centerX: textPayload.centerX,
+                centerY: textPayload.centerY
+            ))
+        }
+        return result
+    }
+
     /// Compatibility helper — timeline export after TT-05 uses session.audioSceneData instead.
     // MARK: - TT-05 Export Session
 
@@ -1162,6 +1205,8 @@ public final class TimelineCompositionEngine {
         let fps: Int
         let scenesByInstanceId: [UUID: TimelineExportSceneSnapshot]
         let audioSceneData: [SceneAudioExportData]
+        /// PR9: Snapshotted text overlay items for export (not queried from live state).
+        let textOverlayItems: [(item: TimelineItem, payload: TextPayload)]
     }
 
     /// TT-05: Builds an immutable export session from current engine state.
@@ -1259,12 +1304,22 @@ public final class TimelineCompositionEngine {
             ))
         }
 
+        // PR9: Snapshot text overlay items for export
+        let textOverlayItems: [(item: TimelineItem, payload: TextPayload)] =
+            (timeline.overlayTrack?.items ?? []).compactMap { item in
+                guard item.kind == .text,
+                      let payload = timeline.payloads[item.payloadId],
+                      case .text(let textPayload) = payload else { return nil }
+                return (item: item, payload: textPayload)
+            }
+
         return TimelineExportSession(
             transitionMath: math,
             canvasSize: canvasSize,
             fps: fps,
             scenesByInstanceId: scenesByInstanceId,
-            audioSceneData: audioSceneData
+            audioSceneData: audioSceneData,
+            textOverlayItems: textOverlayItems
         )
     }
 

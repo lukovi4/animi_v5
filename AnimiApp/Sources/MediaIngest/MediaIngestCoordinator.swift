@@ -209,7 +209,7 @@ public final class MediaIngestCoordinator {
                     ingestedMediaKind = .video
                     ingestedVideoWindow = validatedSelection
 
-                case nil:
+                case .audio, nil:
                     throw PickerAssetError.unsupportedMediaType
                 }
 

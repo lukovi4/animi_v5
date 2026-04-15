@@ -7,21 +7,22 @@ import Foundation
 @MainActor
 final class TemplateCatalog {
 
-    // MARK: - Singleton
+    // MARK: - Dependencies
 
-    static let shared = TemplateCatalog()
+    private let sceneLibraryLoader: @Sendable () async throws -> SceneLibrarySnapshot
 
     // MARK: - State
 
     private var snapshot: TemplateCatalogSnapshot?
     private var loadTask: Task<Result<TemplateCatalogSnapshot, Error>, Never>?
 
-    private init() {}
+    init(sceneLibraryLoader: @escaping @Sendable () async throws -> SceneLibrarySnapshot) {
+        self.sceneLibraryLoader = sceneLibraryLoader
+    }
 
     // MARK: - Loading
 
     /// Loads catalog from bundle. Safe to call multiple times.
-    /// Uses SceneLibrary.shared as the authoritative source for hardened scene data.
     /// Concurrent callers coalesce into a single load operation.
     func load() async -> Result<TemplateCatalogSnapshot, Error> {
         // Return cached if available
@@ -34,12 +35,15 @@ final class TemplateCatalog {
             return await existingTask.value
         }
 
+        // Capture loader before entering the task to avoid capturing self in a Sendable closure
+        let loader = sceneLibraryLoader
+
         // Assign loadTask immediately before any suspension point
         // so concurrent callers coalesce into this single task.
         loadTask = Task<Result<TemplateCatalogSnapshot, Error>, Never> {
             do {
-                // Get hardened library on @MainActor (no duplicate probe)
-                let library = try await SceneLibrary.shared.load()
+                // Get hardened library via injected loader
+                let library = try await loader()
 
                 // Load raw catalog manifest on background, prune against hardened library
                 let loaded = try await Task.detached(priority: .userInitiated) {

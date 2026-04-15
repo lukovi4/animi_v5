@@ -67,6 +67,29 @@ final class EditorLayoutContainerView: UIView {
     /// Called when Done is tapped in video trim mode
     var onTrimDone: (() -> Void)?
 
+    // PR8: Music callbacks
+    /// Called when Music button is tapped in GlobalActionBar
+    var onMusic: (() -> Void)?
+
+    /// Called when Remove Music is tapped in ContextBar
+    var onRemoveMusic: (() -> Void)?
+
+    /// Called when Volume is tapped for audio item in ContextBar
+    var onMusicVolume: ((UUID) -> Void)?
+
+    /// Called when Trim is tapped for audio item in ContextBar
+    var onMusicTrim: ((UUID) -> Void)?
+
+    // PR9: Text overlay callbacks
+    /// Called when Add Text button is tapped in GlobalActionBar
+    var onAddText: (() -> Void)?
+
+    /// Called when Edit Text is tapped in ContextBar. Parameter: text item ID.
+    var onEditText: ((UUID) -> Void)?
+
+    /// Called when Delete Text is tapped in ContextBar. Parameter: text item ID.
+    var onDeleteText: ((UUID) -> Void)?
+
     // PR-E: SceneEditBar callbacks
     /// Called when Background button is tapped
     var onBackground: (() -> Void)?
@@ -365,6 +388,35 @@ final class EditorLayoutContainerView: UIView {
             self?.onAddScene?()
         }
 
+        // PR9: Global action bar - Add Text
+        globalActionBar.onAddText = { [weak self] in
+            self?.onAddText?()
+        }
+
+        // PR8: Global action bar - Music
+        globalActionBar.onMusic = { [weak self] in
+            self?.onMusic?()
+        }
+
+        // PR8: Context bar - audio actions
+        contextBar.onRemoveMusic = { [weak self] in
+            self?.onRemoveMusic?()
+        }
+        contextBar.onMusicVolume = { [weak self] itemId in
+            self?.onMusicVolume?(itemId)
+        }
+        contextBar.onMusicTrim = { [weak self] itemId in
+            self?.onMusicTrim?(itemId)
+        }
+
+        // PR9: Text context bar actions
+        contextBar.onEditText = { [weak self] itemId in
+            self?.onEditText?(itemId)
+        }
+        contextBar.onDeleteText = { [weak self] itemId in
+            self?.onDeleteText?(itemId)
+        }
+
         // PR-C: Edit scene
         contextBar.onEditScene = { [weak self] sceneId in
             self?.onEditScene?(sceneId)
@@ -457,6 +509,10 @@ final class EditorLayoutContainerView: UIView {
         case .focusScene:
             // Forward to VC — playhead moves to scene start, selection derived from playhead
             onTimelineEvent?(event)
+
+        case .moveOverlayItem, .trimOverlayItem:
+            // PR9: Forward overlay item gestures to VC
+            onTimelineEvent?(event)
         }
     }
 
@@ -479,6 +535,19 @@ final class EditorLayoutContainerView: UIView {
     func embedOverlayView(_ overlay: UIView) {
         overlay.translatesAutoresizingMaskIntoConstraints = false
         // Insert below menuStrip (which is already in previewContainer)
+        previewContainer.insertSubview(overlay, belowSubview: menuStrip)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: previewContainer.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: previewContainer.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: previewContainer.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor),
+        ])
+    }
+
+    /// Adds TextPositionOverlayView to previewContainer (PR9).
+    /// Inserted above EditorOverlayView, below menuStrip.
+    func embedTextPositionOverlay(_ overlay: UIView) {
+        overlay.translatesAutoresizingMaskIntoConstraints = false
         previewContainer.insertSubview(overlay, belowSubview: menuStrip)
         NSLayoutConstraint.activate([
             overlay.topAnchor.constraint(equalTo: previewContainer.topAnchor),
@@ -744,7 +813,7 @@ final class EditorLayoutContainerView: UIView {
         case .none:
             globalActionBar.isHidden = false
             contextBar.isHidden = true
-        case .scene, .audio:
+        case .scene, .audio, .text:
             globalActionBar.isHidden = true
             contextBar.isHidden = false
         }

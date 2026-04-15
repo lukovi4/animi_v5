@@ -92,6 +92,53 @@ final class AudioWriterPumpTests: XCTestCase {
         wait(for: [exp], timeout: 1.0)
     }
 
+    // MARK: - PR8: Music composition does not break pump contract
+
+    func test_musicComposition_completesWithoutError() {
+        // Prove that a composition built from AudioExportConfig with music
+        // does not break the pump lifecycle (start → completion).
+        let pump = AudioWriterPump()
+        let composition = AVMutableComposition()
+
+        // Add a music track to the composition (empty, simulating AudioCompositionBuilder output)
+        // The pump should handle this gracefully — no audio data means immediate completion.
+        if let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+            // Track exists but has no samples — pump should still complete cleanly
+            _ = track
+        }
+
+        let exp = expectation(description: "completion with music composition")
+        pump.start(
+            composition: composition,
+            audioMix: nil,
+            audioInput: MockWriterInput(),
+            onError: { _ in },
+            completion: { exp.fulfill() }
+        )
+
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func test_musicCompositionWithMix_completesWithoutError() {
+        // Prove that a non-nil audioMix (as produced for music with volume < 1.0)
+        // does not break pump lifecycle.
+        let pump = AudioWriterPump()
+        let composition = AVMutableComposition()
+        let mix = AVMutableAudioMix()
+        mix.inputParameters = []
+
+        let exp = expectation(description: "completion with music mix")
+        pump.start(
+            composition: composition,
+            audioMix: mix,
+            audioInput: MockWriterInput(),
+            onError: { _ in },
+            completion: { exp.fulfill() }
+        )
+
+        wait(for: [exp], timeout: 1.0)
+    }
+
     // MARK: - test_completionCalledExactlyOnce
 
     func test_completionCalledExactlyOnce() {

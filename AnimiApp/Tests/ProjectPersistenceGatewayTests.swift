@@ -246,6 +246,41 @@ final class ProjectPersistenceGatewayTests: XCTestCase {
         XCTAssertEqual(loaded?.draft.canonicalTimeline.payloads.count, 1)
     }
 
+    // MARK: - Self-healing active draft
+
+    func testLoadActiveDraft_decodeFailure_deletesFileAndReturnsNil() async throws {
+        // Seed an invalid active_draft.json at the canonical path.
+        let store = FileProjectPersistenceStore(rootDirectoryURL: tempDir)
+        try store.ensureDirectoriesExist()
+        let activeDraftURL = try store.projectsDirectoryURL()
+            .appendingPathComponent(FileProjectPersistenceStore.activeDraftFileName)
+        try Data("{not-json".utf8).write(to: activeDraftURL, options: .atomic)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: activeDraftURL.path))
+
+        let loaded = store.loadActiveDraft()
+        XCTAssertNil(loaded, "Corrupt active draft should decode to nil")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: activeDraftURL.path),
+            "Corrupt active draft should be self-healed (deleted)"
+        )
+    }
+
+    func testHasActiveDraft_invalidFile_returnsFalseAndCleansUp() async throws {
+        let store = FileProjectPersistenceStore(rootDirectoryURL: tempDir)
+        try store.ensureDirectoriesExist()
+        let activeDraftURL = try store.projectsDirectoryURL()
+            .appendingPathComponent(FileProjectPersistenceStore.activeDraftFileName)
+        try Data("{not-json".utf8).write(to: activeDraftURL, options: .atomic)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: activeDraftURL.path))
+
+        let has = store.hasActiveDraft()
+        XCTAssertFalse(has, "hasActiveDraft should return false for undecodable draft")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: activeDraftURL.path),
+            "Corrupt active draft should be self-healed (deleted)"
+        )
+    }
+
     // MARK: - Resume Draft with Duplicate Origin
 
     func testResumeDraft_duplicateOrigin_loadsSuccessfully() async throws {

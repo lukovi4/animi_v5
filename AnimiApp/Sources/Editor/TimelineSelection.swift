@@ -12,14 +12,27 @@ public enum TimelineSelection: Equatable, Sendable {
     /// Scene clip selected by ID - show ContextBar with trim handles
     case scene(id: UUID)
 
-    /// Audio track selected - show ContextBar (placeholder for future)
-    case audio
+    /// Audio clip selected by item ID - show ContextBar with audio actions
+    case audio(itemId: UUID)
 
-    // Future: case layer(id: String)
+    /// Text overlay item selected by item ID - show ContextBar with text actions (PR9)
+    case text(itemId: UUID)
 
     /// Returns true if any scene is selected (regardless of ID)
     var isSceneSelected: Bool {
         if case .scene = self { return true }
+        return false
+    }
+
+    /// Returns true if an audio item is selected
+    var isAudioSelected: Bool {
+        if case .audio = self { return true }
+        return false
+    }
+
+    /// Returns true if a text overlay item is selected (PR9)
+    var isTextSelected: Bool {
+        if case .text = self { return true }
         return false
     }
 }

@@ -145,6 +145,14 @@ final class FileProjectMediaStore: @unchecked Sendable {
                 for (_, slot) in slots { fallbackRefs[slot.mediaRef.assetId] = slot.mediaRef }
             }
         }
+        // PR8: Walk audio payloads for imported asset fallback refs
+        for (_, payload) in sourceDraft.canonicalTimeline.payloads {
+            if case .audio(let audioPayload) = payload,
+               case .imported(let assetId) = audioPayload.assetRef,
+               let storagePath = sourceDraft.assetRegistry.storagePath(for: assetId) {
+                fallbackRefs[assetId] = MediaRef(storagePath: storagePath, mediaKind: .audio, assetId: assetId)
+            }
+        }
 
         for oldAssetId in referenced {
             // Resolve the source file and infer its destination class.

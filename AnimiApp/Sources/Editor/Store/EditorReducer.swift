@@ -76,13 +76,14 @@ public enum EditorReducer {
                 return ReducerResult(state: newState, shouldPushSnapshot: false)
             }
             newState.selection = selection
-            // Mode management: clearing selection or selecting audio deactivates follow mode
+            // Mode management: clearing selection or selecting non-scene deactivates follow mode
             switch selection {
-            case .none, .audio:
+            case .none, .audio, .text:
                 newState.timelineSceneSelectionMode = .inactive
             case .scene:
                 break // guarded as no-op above for timeline mode
             }
+
             // Selection changes don't push snapshot
             return ReducerResult(state: newState, shouldPushSnapshot: false)
 
@@ -230,9 +231,45 @@ public enum EditorReducer {
             // These are handled by EditorStore directly
             return ReducerResult(state: state, shouldPushSnapshot: false)
 
+        // MARK: - Project Music (PR8)
+
+        case .setProjectMusic(let assetRef, let sourceDurationUs):
+            return setProjectMusic(state: newState, assetRef: assetRef, sourceDurationUs: sourceDurationUs)
+
+        case .removeProjectMusic:
+            return removeProjectMusic(state: newState)
+
+        case .setProjectMusicTrim(let itemId, let trimStartUs, let trimEndUs):
+            return setProjectMusicTrim(state: newState, itemId: itemId, trimStartUs: trimStartUs, trimEndUs: trimEndUs)
+
+        case .setProjectMusicVolume(let itemId, let volume):
+            return setProjectMusicVolume(state: newState, itemId: itemId, volume: volume)
+
+        // MARK: - Generic Overlay Item Actions (PR9)
+
+        case .moveItem(let itemId, let newStartUs, let phase):
+            return moveItem(state: newState, itemId: itemId, newStartUs: newStartUs, phase: phase)
+
+        case .trimItem(let itemId, let newDurationUs, let phase):
+            return trimItem(state: newState, itemId: itemId, newDurationUs: newDurationUs, phase: phase)
+
+        case .deleteItem(let itemId):
+            return deleteItem(state: newState, itemId: itemId)
+
+        // MARK: - Text Overlay Actions (PR9)
+
+        case .addTextOverlay(let text, let fontSize, let colorHex, let fontFamily, let startUs, let durationUs):
+            return addTextOverlay(state: newState, text: text, fontSize: fontSize, colorHex: colorHex, fontFamily: fontFamily, startUs: startUs, durationUs: durationUs)
+
+        case .updateTextPayload(let itemId, let payload):
+            return updateTextPayload(state: newState, itemId: itemId, payload: payload)
+
+        case .dragTextPosition(let itemId, let centerX, let centerY, let phase):
+            return dragTextPosition(state: newState, itemId: itemId, centerX: centerX, centerY: centerY, phase: phase)
+
         // MARK: - Future Actions (not implemented yet)
 
-        case .moveItem, .trimItem, .deleteItem, .addTrack, .addItem:
+        case .addTrack, .addItem:
             #if DEBUG
             print("[EditorReducer] Action not implemented: \(action)")
             #endif
@@ -605,6 +642,369 @@ private extension EditorReducer {
         let notices = applyInvariantsAndBuildNotices(state: &newState)
 
         return ReducerResult(state: newState, shouldPushSnapshot: true, notices: notices)
+    }
+}
+
+// MARK: - Project Music (PR8)
+
+private extension EditorReducer {
+
+    /// Sets or replaces the project music track with a single audio clip.
+    static func setProjectMusic(
+        state: EditorState,
+        assetRef: AudioAssetRef,
+        sourceDurationUs: TimeUs
+    ) -> ReducerResult {
+        var newState = state
+
+        // Find or create audio track
+        var audioTrackIndex = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .audio })
+        if audioTrackIndex == nil {
+            let newTrack = Track(kind: .audio)
+            newState.canonicalTimeline.tracks.append(newTrack)
+            audioTrackIndex = newState.canonicalTimeline.tracks.count - 1
+        }
+
+        guard let trackIdx = audioTrackIndex else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Remove old item + payload if replacing
+        if let oldItem = newState.canonicalTimeline.tracks[trackIdx].items.first {
+            newState.canonicalTimeline.payloads.removeValue(forKey: oldItem.payloadId)
+        }
+
+        // Create new payload
+        let payloadId = UUID()
+        let payload = AudioPayload(
+            assetRef: assetRef,
+            sourceDurationUs: sourceDurationUs,
+            trimStartUs: 0,
+            trimEndUs: sourceDurationUs,
+            volume: 1.0
+        )
+        newState.canonicalTimeline.payloads[payloadId] = .audio(payload)
+
+        // Create new item
+        let newItem = TimelineItem(
+            id: UUID(),
+            payloadId: payloadId,
+            kind: .audioClip,
+            startUs: 0,
+            durationUs: sourceDurationUs
+        )
+
+        // Replace track items with single new item
+        newState.canonicalTimeline.tracks[trackIdx].items = [newItem]
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Removes the project music track entirely.
+    static func removeProjectMusic(
+        state: EditorState
+    ) -> ReducerResult {
+        var newState = state
+
+        guard let trackIdx = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .audio }) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Remove payload for each item
+        for item in newState.canonicalTimeline.tracks[trackIdx].items {
+            newState.canonicalTimeline.payloads.removeValue(forKey: item.payloadId)
+        }
+
+        // Remove the audio track
+        newState.canonicalTimeline.tracks.remove(at: trackIdx)
+
+        // Clear audio selection if active
+        if newState.selection.isAudioSelected {
+            newState.selection = .none
+        }
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Sets trim range for the project music clip.
+    static func setProjectMusicTrim(
+        state: EditorState,
+        itemId: UUID,
+        trimStartUs: TimeUs,
+        trimEndUs: TimeUs
+    ) -> ReducerResult {
+        var newState = state
+
+        // Find audio track and item
+        guard let trackIdx = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .audio }),
+              let itemIdx = newState.canonicalTimeline.tracks[trackIdx].items.firstIndex(where: { $0.id == itemId }),
+              let payloadId = Optional(newState.canonicalTimeline.tracks[trackIdx].items[itemIdx].payloadId),
+              case .audio(var audioPayload) = newState.canonicalTimeline.payloads[payloadId] else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Clamp trim range within source duration
+        let clampedStart = max(0, min(trimStartUs, audioPayload.sourceDurationUs))
+        let clampedEnd = max(clampedStart, min(trimEndUs, audioPayload.sourceDurationUs))
+
+        // Update payload
+        audioPayload.trimStartUs = clampedStart
+        audioPayload.trimEndUs = clampedEnd
+        newState.canonicalTimeline.payloads[payloadId] = .audio(audioPayload)
+
+        // Update item durationUs to match trimmed range
+        newState.canonicalTimeline.tracks[trackIdx].items[itemIdx].durationUs = clampedEnd - clampedStart
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Sets volume for the project music clip.
+    static func setProjectMusicVolume(
+        state: EditorState,
+        itemId: UUID,
+        volume: Float
+    ) -> ReducerResult {
+        var newState = state
+
+        // Find audio track and item
+        guard let trackIdx = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .audio }),
+              let itemIdx = newState.canonicalTimeline.tracks[trackIdx].items.firstIndex(where: { $0.id == itemId }),
+              let payloadId = Optional(newState.canonicalTimeline.tracks[trackIdx].items[itemIdx].payloadId),
+              case .audio(var audioPayload) = newState.canonicalTimeline.payloads[payloadId] else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Clamp volume to valid range
+        audioPayload.volume = max(0.0, min(1.0, volume))
+        newState.canonicalTimeline.payloads[payloadId] = .audio(audioPayload)
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+}
+
+// MARK: - Generic Overlay Item Actions (PR9)
+
+private extension EditorReducer {
+
+    /// Moves an overlay item to a new start time. Gesture-aware.
+    static func moveItem(
+        state: EditorState,
+        itemId: UUID,
+        newStartUs: TimeUs,
+        phase: InteractionPhase
+    ) -> ReducerResult {
+        var newState = state
+
+        // Find item across all non-sceneSequence tracks
+        guard let (trackIdx, itemIdx) = findOverlayItem(in: newState.canonicalTimeline, itemId: itemId) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Clamp startUs to [0, totalDuration - item.durationUs]
+        let itemDuration = newState.canonicalTimeline.tracks[trackIdx].items[itemIdx].durationUs
+        let maxStart = max(0, newState.projectDurationUs - itemDuration)
+        let clampedStart = max(0, min(newStartUs, maxStart))
+
+        newState.canonicalTimeline.tracks[trackIdx].items[itemIdx].startUs = clampedStart
+
+        switch phase {
+        case .began, .changed:
+            return ReducerResult(state: newState, shouldPushSnapshot: false)
+        case .ended:
+            return ReducerResult(state: newState, shouldPushSnapshot: true)
+        case .cancelled:
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+    }
+
+    /// Trims an overlay item's duration. Gesture-aware.
+    static func trimItem(
+        state: EditorState,
+        itemId: UUID,
+        newDurationUs: TimeUs,
+        phase: InteractionPhase
+    ) -> ReducerResult {
+        var newState = state
+
+        guard let (trackIdx, itemIdx) = findOverlayItem(in: newState.canonicalTimeline, itemId: itemId) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        let item = newState.canonicalTimeline.tracks[trackIdx].items[itemIdx]
+        let startUs = item.startUs ?? 0
+
+        // Clamp durationUs to [500_000 (0.5s), totalDuration - startUs]
+        let minDuration: TimeUs = 500_000
+        let maxDuration = max(minDuration, newState.projectDurationUs - startUs)
+        let clampedDuration = max(minDuration, min(newDurationUs, maxDuration))
+
+        newState.canonicalTimeline.tracks[trackIdx].items[itemIdx].durationUs = clampedDuration
+
+        switch phase {
+        case .began, .changed:
+            return ReducerResult(state: newState, shouldPushSnapshot: false)
+        case .ended:
+            return ReducerResult(state: newState, shouldPushSnapshot: true)
+        case .cancelled:
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+    }
+
+    /// Deletes an overlay item and its payload.
+    static func deleteItem(
+        state: EditorState,
+        itemId: UUID
+    ) -> ReducerResult {
+        var newState = state
+
+        guard let (trackIdx, itemIdx) = findOverlayItem(in: newState.canonicalTimeline, itemId: itemId) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        let removedItem = newState.canonicalTimeline.tracks[trackIdx].items.remove(at: itemIdx)
+        newState.canonicalTimeline.payloads.removeValue(forKey: removedItem.payloadId)
+
+        // Clear selection if it referenced this item
+        switch newState.selection {
+        case .text(let selectedId) where selectedId == itemId:
+            newState.selection = .none
+        case .audio(let selectedId) where selectedId == itemId:
+            newState.selection = .none
+        default:
+            break
+        }
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Finds an item by ID across all non-sceneSequence tracks.
+    /// Returns (trackIndex, itemIndex) or nil.
+    static func findOverlayItem(in timeline: CanonicalTimeline, itemId: UUID) -> (Int, Int)? {
+        for trackIdx in timeline.tracks.indices {
+            let track = timeline.tracks[trackIdx]
+            if track.kind == .sceneSequence { continue }
+            if let itemIdx = track.items.firstIndex(where: { $0.id == itemId }) {
+                return (trackIdx, itemIdx)
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - Text Overlay Actions (PR9)
+
+private extension EditorReducer {
+
+    /// Atomically adds a text overlay: creates overlay track if needed,
+    /// creates payload + item, selects it. One dispatch → one undo snapshot.
+    static func addTextOverlay(
+        state: EditorState,
+        text: String,
+        fontSize: CGFloat,
+        colorHex: String,
+        fontFamily: String?,
+        startUs: TimeUs,
+        durationUs: TimeUs
+    ) -> ReducerResult {
+        var newState = state
+
+        // Find or create overlay track
+        var overlayTrackIndex = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .overlay })
+        if overlayTrackIndex == nil {
+            let newTrack = Track(kind: .overlay)
+            newState.canonicalTimeline.tracks.append(newTrack)
+            overlayTrackIndex = newState.canonicalTimeline.tracks.count - 1
+        }
+
+        guard let trackIdx = overlayTrackIndex else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Create payload with positioning defaults
+        let payloadId = UUID()
+        let payload = TextPayload(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            colorHex: colorHex,
+            centerX: 0.5,
+            centerY: 0.5
+        )
+        newState.canonicalTimeline.payloads[payloadId] = .text(payload)
+
+        // Clamp to fit within project, guaranteeing minimum visible duration
+        let minTextDurationUs: TimeUs = 500_000 // 0.5s, matches trim minimum
+        let maxStart = max(0, newState.projectDurationUs - minTextDurationUs)
+        let clampedStart = max(0, min(startUs, maxStart))
+        let remaining = max(minTextDurationUs, newState.projectDurationUs - clampedStart)
+        let clampedDuration = max(minTextDurationUs, min(durationUs, remaining))
+
+        // Create item
+        let newItem = TimelineItem(
+            id: UUID(),
+            payloadId: payloadId,
+            kind: .text,
+            startUs: clampedStart,
+            durationUs: clampedDuration
+        )
+
+        newState.canonicalTimeline.tracks[trackIdx].items.append(newItem)
+
+        // Select the new item
+        newState.selection = .text(itemId: newItem.id)
+        newState.timelineSceneSelectionMode = .inactive
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Updates text payload content/style/position.
+    static func updateTextPayload(
+        state: EditorState,
+        itemId: UUID,
+        payload: TextPayload
+    ) -> ReducerResult {
+        var newState = state
+
+        // Find item in overlay track
+        guard let overlayTrack = newState.canonicalTimeline.overlayTrack,
+              let item = overlayTrack.items.first(where: { $0.id == itemId }) else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        newState.canonicalTimeline.payloads[item.payloadId] = .text(payload)
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
+    }
+
+    /// Drags text position on canvas. Gesture-aware.
+    static func dragTextPosition(
+        state: EditorState,
+        itemId: UUID,
+        centerX: CGFloat,
+        centerY: CGFloat,
+        phase: InteractionPhase
+    ) -> ReducerResult {
+        var newState = state
+
+        guard let overlayTrack = newState.canonicalTimeline.overlayTrack,
+              let item = overlayTrack.items.first(where: { $0.id == itemId }),
+              case .text(var textPayload) = newState.canonicalTimeline.payloads[item.payloadId] else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Clamp to [0, 1]
+        textPayload.centerX = max(0, min(1, centerX))
+        textPayload.centerY = max(0, min(1, centerY))
+        newState.canonicalTimeline.payloads[item.payloadId] = .text(textPayload)
+
+        switch phase {
+        case .began, .changed:
+            return ReducerResult(state: newState, shouldPushSnapshot: false)
+        case .ended:
+            return ReducerResult(state: newState, shouldPushSnapshot: true)
+        case .cancelled:
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
     }
 }
 

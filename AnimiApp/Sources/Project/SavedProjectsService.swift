@@ -26,8 +26,19 @@ final class SavedProjectsService {
     /// Duplicates a saved project and returns the new project's id.
     func duplicateProject(projectId: UUID) async throws -> UUID {
         guard let duplication else {
-            fatalError("ProjectDuplicationUseCase not configured")
+            throw SavedProjectsServiceError.duplicationNotConfigured
         }
         return try await duplication.execute(sourceProjectId: projectId)
+    }
+}
+
+enum SavedProjectsServiceError: Error, LocalizedError, Equatable {
+    case duplicationNotConfigured
+
+    var errorDescription: String? {
+        switch self {
+        case .duplicationNotConfigured:
+            return "Project duplication is not available"
+        }
     }
 }

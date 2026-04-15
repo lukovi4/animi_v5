@@ -144,11 +144,50 @@ final class SavedProjectsListingTests: XCTestCase {
         XCTAssertTrue(idx2 < idx1, "id2 should appear before id1 (oldest)")
     }
 
+    func testListing_equalTimestamps_deterministicByUUID() throws {
+        let idHigh = UUID(uuidString: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")!
+        let idLow  = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let sameInstant = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let draftHigh = makeDraft(origin: .template(templateId: "tpl_eq_high"), projectId: idHigh)
+        let draftLow  = makeDraft(origin: .template(templateId: "tpl_eq_low"),  projectId: idLow)
+
+        let recordHigh = SavedProjectRecord(savedAt: sameInstant, draft: draftHigh)
+        let recordLow  = SavedProjectRecord(savedAt: sameInstant, draft: draftLow)
+
+        try store.saveSavedProjectRecord(recordHigh)
+        try store.saveSavedProjectRecord(recordLow)
+
+        var index = try store.loadSavedIndex()
+        index.projects[idHigh] = SavedProjectIndexEntry(projectId: idHigh, origin: draftHigh.origin, title: nil, savedAt: sameInstant)
+        index.projects[idLow]  = SavedProjectIndexEntry(projectId: idLow,  origin: draftLow.origin,  title: nil, savedAt: sameInstant)
+        try store.saveSavedIndex(index)
+
+        let summaries = store.allSavedProjectSummaries()
+        // savedAt ties break on projectId.uuidString descending: higher UUID first.
+        XCTAssertEqual(summaries.map(\.projectId), [idHigh, idLow])
+    }
+
     // MARK: - Empty State
 
     func testListing_emptyState_returnsEmptyArray() {
         let summaries = store.allSavedProjectSummaries()
         XCTAssertTrue(summaries.isEmpty, "Fresh isolated store should have no summaries")
+    }
+
+    // MARK: - SavedProjectsService: duplication not configured
+
+    @MainActor
+    func testDuplicateProject_withoutUseCase_throwsDuplicationNotConfigured() async {
+        let service = SavedProjectsService(persistence: StubPersistenceGateway())
+        do {
+            _ = try await service.duplicateProject(projectId: UUID())
+            XCTFail("Expected duplicationNotConfigured error")
+        } catch let error as SavedProjectsServiceError {
+            XCTAssertEqual(error, .duplicationNotConfigured)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
     }
 
     // MARK: - materializeSavedProject
@@ -167,4 +206,17 @@ final class SavedProjectsListingTests: XCTestCase {
         XCTAssertEqual(summary?.origin, .blank(starterSceneTypeId: "scene_empty"))
         XCTAssertEqual(summary?.title, "Blank Project")
     }
+}
+
+// MARK: - Stub for SavedProjectsService tests
+
+private struct StubPersistenceGateway: ProjectPersistenceGateway {
+    func saveActiveDraft(_ slot: ActiveDraftSlot) async throws {}
+    func loadActiveDraft() async -> ActiveDraftSlot? { nil }
+    func deleteActiveDraft() async throws {}
+    func hasActiveDraft() async -> Bool { false }
+    func materializeSavedProject(_ slot: ActiveDraftSlot) async throws -> ActiveDraftSlot { slot }
+    func loadSavedProject(projectId: UUID) async -> SavedProjectRecord? { nil }
+    func deleteSavedProject(projectId: UUID) async throws {}
+    func allSavedProjectSummaries() async -> [SavedProjectSummary] { [] }
 }

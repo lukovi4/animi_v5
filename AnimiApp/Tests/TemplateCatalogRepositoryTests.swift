@@ -1,4 +1,5 @@
 import XCTest
+import TVECore
 @testable import AnimiApp
 
 final class TemplateCatalogRepositoryTests: XCTestCase {
@@ -10,10 +11,8 @@ final class TemplateCatalogRepositoryTests: XCTestCase {
 
         switch result {
         case .success(let snapshot):
-            // Verify repository returns same data as direct singleton access
-            let directCategories = TemplateCatalog.shared.categoriesInOrder()
             let repoCategories = repo.categoriesInOrder()
-            XCTAssertEqual(repoCategories.map(\.id), directCategories.map(\.id))
+            XCTAssertEqual(repoCategories.map(\.id), snapshot.categoriesInOrder().map(\.id))
 
             // Verify template lookup consistency
             if let firstTemplate = snapshot.templates.first {
@@ -49,5 +48,36 @@ final class TemplateCatalogRepositoryTests: XCTestCase {
         }
 
         XCTAssertNil(repo.template(by: "nonexistent_template_id"))
+    }
+
+    // MARK: - Injected Loader
+
+    @MainActor
+    func testCatalogWithInjectedLoader_usesInjectedLoader() async {
+        var loaderCalled = false
+        let stubLibrary = SceneLibrarySnapshot(
+            fps: 30,
+            canvas: CanvasConfig(width: 1080, height: 1920),
+            scenes: [
+                SceneTypeDescriptor(id: "scene_stub", order: 0, title: "Stub", baseDurationUs: 3_000_000)
+            ]
+        )
+
+        let catalog = TemplateCatalog(sceneLibraryLoader: {
+            loaderCalled = true
+            return stubLibrary
+        })
+
+        let result = await catalog.load()
+        XCTAssertTrue(loaderCalled, "TemplateCatalog must use the injected sceneLibraryLoader")
+
+        // The load may succeed or fail depending on bundle availability,
+        // but the loader must have been called
+        switch result {
+        case .success:
+            break // Bundle manifest loaded and pruned against stub library
+        case .failure:
+            break // Acceptable if BundleTemplateCatalogLoader fails in test host
+        }
     }
 }
