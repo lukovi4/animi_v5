@@ -52,7 +52,7 @@ public struct ScenePlayerMediaInputProvider: MediaInputProvider {
 
 /// Stateless helper that applies `SceneState` to runtime components.
 ///
-/// Used by both `PlayerViewController` (scene-edit path) and `SceneInstanceRuntime` (timeline path)
+/// Used by both `EditorViewController` (scene-edit path) and `SceneInstanceRuntime` (timeline path)
 /// to eliminate duplicated apply logic.
 ///
 /// ## Apply Order (canonical)

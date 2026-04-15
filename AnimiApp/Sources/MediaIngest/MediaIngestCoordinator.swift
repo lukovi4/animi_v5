@@ -32,7 +32,7 @@ public enum IngestSlotStatus: Equatable, Sendable {
 /// Result of a completed ingest operation.
 ///
 /// Contains only persisted media payload — no placement policy.
-/// The caller (PlayerViewController) is responsible for resolving `defaultFit`
+/// The caller (EditorViewController) is responsible for resolving `defaultFit`
 /// from template metadata and assembling the final `SceneMediaSlot`.
 public struct IngestResult: Sendable {
     public let key: IngestSlotKey
@@ -349,7 +349,7 @@ public final class MediaIngestCoordinator {
     /// Does not touch status dicts — not needed at dealloc, no observers remain.
     nonisolated func cancelAllFromDeinit() {
         // Access ingestTasks via assumeIsolated — safe because:
-        // 1. PlayerViewController is @MainActor, so its deinit runs on main thread
+        // 1. EditorViewController is @MainActor, so its deinit runs on main thread
         // 2. At deinit, no other references exist, so no concurrent access
         MainActor.assumeIsolated {
             for (_, task) in self.ingestTasks {

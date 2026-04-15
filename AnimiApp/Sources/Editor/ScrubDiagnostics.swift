@@ -90,7 +90,7 @@ enum ScrubSignpost {
         os_signpost(.event, log: log, name: "clampHit")
     }
 
-    // MARK: - PlayerViewController.handlePlayheadChanged
+    // MARK: - EditorViewController.handlePlayheadChanged
 
     /// Begin interval for handlePlayheadChanged (total)
     static func beginHandlePlayheadChanged() -> OSSignpostID {

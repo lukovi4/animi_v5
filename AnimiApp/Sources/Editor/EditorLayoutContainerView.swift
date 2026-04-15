@@ -4,7 +4,7 @@ import MetalKit
 // MARK: - Editor Layout Container (PR2.6)
 
 /// Main container view for editor mode layout.
-/// Replaces vertical scrollView layout in PlayerViewController when in .editor mode.
+/// Replaces vertical scrollView layout in EditorViewController when in .editor mode.
 ///
 /// Layout structure (top to bottom):
 /// - EditorNavBar (60px)
@@ -539,7 +539,7 @@ final class EditorLayoutContainerView: UIView {
 
     // MARK: - Public API
 
-    /// Adds MetalView to previewContainer (called by PlayerViewController)
+    /// Adds MetalView to previewContainer (called by EditorViewController)
     func embedMetalView(_ metalView: MTKView) {
         metalView.translatesAutoresizingMaskIntoConstraints = false
         previewContainer.insertSubview(metalView, at: 0)
@@ -551,7 +551,7 @@ final class EditorLayoutContainerView: UIView {
         ])
     }
 
-    /// Adds EditorOverlayView to previewContainer (PR-C: called by PlayerViewController).
+    /// Adds EditorOverlayView to previewContainer (PR-C: called by EditorViewController).
     /// Inserted between metalView and menuStrip for proper z-ordering.
     func embedOverlayView(_ overlay: UIView) {
         overlay.translatesAutoresizingMaskIntoConstraints = false
@@ -699,7 +699,7 @@ final class EditorLayoutContainerView: UIView {
     }
 
     /// Configures the MediaBlockActionBar with block-specific data (PR-E).
-    /// Called by PlayerViewController when block selection changes.
+    /// Called by EditorViewController when block selection changes.
     /// - Parameters:
     ///   - blockId: The selected block ID
     ///   - allowedMedia: Media types allowed for this block

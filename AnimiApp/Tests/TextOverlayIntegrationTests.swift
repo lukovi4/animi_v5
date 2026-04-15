@@ -185,12 +185,12 @@ final class TextOverlayIntegrationTests: XCTestCase {
         // Simulate a simple identity-scale canvas→view transform for test (1:1)
         overlay.canvasToView = CGAffineTransform(scaleX: 0.5, y: 0.5)
 
-        // Wire callback exactly as PlayerViewController does
+        // Wire callback exactly as EditorViewController does
         overlay.onDragPosition = { [weak store] dragItemId, centerX, centerY, phase in
             store?.dispatch(.dragOverlayPosition(itemId: dragItemId, centerX: centerX, centerY: centerY, phase: phase))
         }
 
-        // 3. Set selected text item (as PlayerViewController.updateOverlayPositionDrag does)
+        // 3. Set selected text item (as EditorViewController.updateOverlayPositionDrag does)
         let payload = store.state.canonicalTimeline.textPayload(for: itemId)!
         overlay.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
         XCTAssertNotNil(overlay.selectedItem)

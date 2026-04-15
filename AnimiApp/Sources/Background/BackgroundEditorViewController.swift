@@ -409,7 +409,7 @@ final class BackgroundEditorViewController: UIViewController {
 
     // MARK: - Image Configuration
 
-    /// Called by PlayerViewController after image is selected and saved.
+    /// Called by EditorViewController after image is selected and saved.
     func setImage(for regionId: String, mediaRef: MediaRef) {
         let imageOverride = ImageOverride(
             mediaRef: mediaRef,

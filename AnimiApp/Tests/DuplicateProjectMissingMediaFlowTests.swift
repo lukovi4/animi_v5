@@ -119,7 +119,7 @@ final class DuplicateProjectMissingMediaFlowTests: XCTestCase {
             XCTFail("Expected media slot in duplicated draft")
         }
 
-        // 7. Simulate the controller reporting missing media (as PlayerViewController
+        // 7. Simulate the controller reporting missing media (as EditorViewController
         //    does after scene load fails to find the file). This proves the existing
         //    missing-media notice contract activates for real duplicated artifacts.
         var emittedSummary: MissingMediaSummary?

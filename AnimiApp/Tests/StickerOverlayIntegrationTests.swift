@@ -133,12 +133,12 @@ final class StickerOverlayIntegrationTests: XCTestCase {
         overlay.canvasSize = CGSize(width: 1080, height: 1920)
         overlay.canvasToView = CGAffineTransform(scaleX: 0.5, y: 0.5)
 
-        // Wire callback exactly as PlayerViewController does
+        // Wire callback exactly as EditorViewController does
         overlay.onDragPosition = { [weak store] dragItemId, centerX, centerY, phase in
             store?.dispatch(.dragOverlayPosition(itemId: dragItemId, centerX: centerX, centerY: centerY, phase: phase))
         }
 
-        // 3. Set selected sticker item (as PlayerViewController.updateOverlayPositionDrag does for .sticker)
+        // 3. Set selected sticker item (as EditorViewController.updateOverlayPositionDrag does for .sticker)
         let payload = store.state.canonicalTimeline.stickerPayload(for: itemId)!
         overlay.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
         XCTAssertNotNil(overlay.selectedItem)

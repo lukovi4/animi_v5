@@ -12,7 +12,7 @@ final class SceneEditIsolationTests: XCTestCase {
     func testIsolationHelper_cancelsPendingTimelineResolveBeforeStoppingPlayback() {
         var log: [String] = []
 
-        PlayerViewController.isolateTimelineActivityForSceneEdit(
+        EditorViewController.isolateTimelineActivityForSceneEdit(
             cancelPendingTimelineResolve: { log.append("cancel") },
             stopPlayback: { log.append("stop") }
         )
@@ -24,7 +24,7 @@ final class SceneEditIsolationTests: XCTestCase {
     func testIsolationHelper_stopsPlaybackUnconditionally() {
         var stopCalled = false
 
-        PlayerViewController.isolateTimelineActivityForSceneEdit(
+        EditorViewController.isolateTimelineActivityForSceneEdit(
             cancelPendingTimelineResolve: {},
             stopPlayback: { stopCalled = true }
         )

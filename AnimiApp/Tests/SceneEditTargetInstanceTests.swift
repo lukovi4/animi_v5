@@ -11,7 +11,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
     func testWriteTarget_sceneEdit_returnsDuplicateId_evenWhenRuntimePointsToOriginal() {
         let originalId = UUID()
         let duplicateId = UUID()
-        let target = PlayerViewController.resolveWriteTargetForSceneEdit(
+        let target = EditorViewController.resolveWriteTargetForSceneEdit(
             uiMode: .sceneEdit(sceneInstanceId: duplicateId),
             activeSceneInstanceId: originalId
         )
@@ -21,7 +21,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
 
     func testWriteTarget_sceneEdit_ignoresNilRuntime() {
         let duplicateId = UUID()
-        let target = PlayerViewController.resolveWriteTargetForSceneEdit(
+        let target = EditorViewController.resolveWriteTargetForSceneEdit(
             uiMode: .sceneEdit(sceneInstanceId: duplicateId),
             activeSceneInstanceId: nil
         )
@@ -30,7 +30,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
 
     func testWriteTarget_timeline_returnsRuntimeId() {
         let runtimeId = UUID()
-        let target = PlayerViewController.resolveWriteTargetForSceneEdit(
+        let target = EditorViewController.resolveWriteTargetForSceneEdit(
             uiMode: .timeline,
             activeSceneInstanceId: runtimeId
         )
@@ -38,7 +38,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
     }
 
     func testWriteTarget_timeline_noRuntime_returnsNil() {
-        let target = PlayerViewController.resolveWriteTargetForSceneEdit(
+        let target = EditorViewController.resolveWriteTargetForSceneEdit(
             uiMode: .timeline,
             activeSceneInstanceId: nil
         )
@@ -50,7 +50,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
     func testWriteTarget_reset_usesEditorTarget() {
         let originalId = UUID()
         let duplicateId = UUID()
-        let target = PlayerViewController.resolveWriteTargetForSceneEdit(
+        let target = EditorViewController.resolveWriteTargetForSceneEdit(
             uiMode: .sceneEdit(sceneInstanceId: duplicateId),
             activeSceneInstanceId: originalId
         )
@@ -74,8 +74,8 @@ final class SceneEditTargetInstanceTests: XCTestCase {
         // Enter scene edit on duplicate
         store.dispatch(.enterSceneEdit(sceneId: duplicateId))
 
-        // Resolve write target (simulates what fixed PlayerVC does)
-        let writeTarget = PlayerViewController.resolveWriteTargetForSceneEdit(
+        // Resolve write target (simulates what EditorViewController does)
+        let writeTarget = EditorViewController.resolveWriteTargetForSceneEdit(
             uiMode: store.state.uiMode,
             activeSceneInstanceId: originalId // runtime still points to original!
         )

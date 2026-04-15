@@ -137,7 +137,7 @@ final class FullScreenPreviewViewController: UIViewController {
 
     // MARK: - Public API
 
-    /// Embeds the Metal view from PlayerViewController.
+    /// Embeds the Metal view from EditorViewController.
     func embedMetalView(_ metalView: MTKView) {
         metalView.translatesAutoresizingMaskIntoConstraints = false
         metalViewContainer.addSubview(metalView)

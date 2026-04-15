@@ -1,7 +1,7 @@
 import TVECore
 
 /// Resolves defaultFit for a block from scene-type metadata.
-/// Extracted from PlayerViewController for testability.
+/// Extracted from EditorViewController for testability.
 enum DefaultFitResolver {
 
     /// Resolves defaultFit synchronously from cache, returns nil on miss.

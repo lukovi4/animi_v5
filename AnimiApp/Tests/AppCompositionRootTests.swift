@@ -39,7 +39,7 @@ final class AppCompositionRootTests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
     }
 
-    func testOpenEditorTemplate_pushesPlayerViewController() {
+    func testOpenEditorTemplate_pushesEditorViewController() {
         let root = AppCompositionRoot()
         let nav = root.bootstrap()
 
@@ -51,10 +51,10 @@ final class AppCompositionRootTests: XCTestCase {
         waitForPushToCommit()
 
         XCTAssertEqual(nav.viewControllers.count, 2)
-        XCTAssertTrue(nav.viewControllers.last is PlayerViewController)
+        XCTAssertTrue(nav.viewControllers.last is EditorViewController)
     }
 
-    func testOpenEditorResumeDraft_pushesPlayerViewController() {
+    func testOpenEditorResumeDraft_pushesEditorViewController() {
         let root = AppCompositionRoot()
         let nav = root.bootstrap()
 
@@ -66,10 +66,10 @@ final class AppCompositionRootTests: XCTestCase {
         waitForPushToCommit()
 
         XCTAssertEqual(nav.viewControllers.count, 2)
-        XCTAssertTrue(nav.viewControllers.last is PlayerViewController)
+        XCTAssertTrue(nav.viewControllers.last is EditorViewController)
     }
 
-    func testOpenEditorBlankProject_pushesPlayerViewController() {
+    func testOpenEditorBlankProject_pushesEditorViewController() {
         let root = AppCompositionRoot()
         let nav = root.bootstrap()
 
@@ -81,10 +81,10 @@ final class AppCompositionRootTests: XCTestCase {
         waitForPushToCommit()
 
         XCTAssertEqual(nav.viewControllers.count, 2)
-        XCTAssertTrue(nav.viewControllers.last is PlayerViewController)
+        XCTAssertTrue(nav.viewControllers.last is EditorViewController)
     }
 
-    func testOpenEditorSavedProject_pushesPlayerViewController() {
+    func testOpenEditorSavedProject_pushesEditorViewController() {
         let root = AppCompositionRoot()
         let nav = root.bootstrap()
 
@@ -96,6 +96,6 @@ final class AppCompositionRootTests: XCTestCase {
         waitForPushToCommit()
 
         XCTAssertEqual(nav.viewControllers.count, 2)
-        XCTAssertTrue(nav.viewControllers.last is PlayerViewController)
+        XCTAssertTrue(nav.viewControllers.last is EditorViewController)
     }
 }

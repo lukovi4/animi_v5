@@ -6,7 +6,7 @@ import TVECore
 /// Lightweight descriptor for background media in export.
 ///
 /// Contains slot keys and resolved URLs — NO live MTLTextures.
-/// Built from `projectBackgroundOverride` + `effectiveBackgroundState`.
+/// Built from the draft's background regions and effective background state.
 /// Loaded via `BackgroundTextureService` + `DownsampledImageLoader` (not live preview provider).
 public struct ExportBackgroundSnapshot: Sendable {
 

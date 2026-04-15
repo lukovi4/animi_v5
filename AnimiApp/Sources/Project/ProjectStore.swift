@@ -54,26 +54,16 @@ struct SavedProjectIndexEntry: Codable {
     var savedAt: Date
 }
 
-// MARK: - Project Store
+// MARK: - Project Store (Test-Only Convenience)
 
-/// Thin shim over `FileProjectPersistenceStore` + `FileProjectMediaStore`.
+/// **Test-only** convenience shim over `FileProjectPersistenceStore` +
+/// `FileProjectMediaStore`.
 ///
-/// All production code goes through `ProjectStorageActor` for isolation.
-/// This class remains for test convenience (instantiate with `rootDirectoryURL:`).
-///
-/// File structure:
-/// ```
-/// Application Support/AnimiProjects/
-/// ├── index.json                    # SavedProjectsIndex (projectId → entry)
-/// ├── active_draft.json             # ActiveDraftSlot (current editor session)
-/// ├── <projectId>.json              # SavedProjectRecord
-/// └── Media/
-///     ├── Background/
-///     │   └── <uuid>.jpg
-///     └── UserMedia/
-///         └── <uuid>.jpg
-/// ```
-public final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
+/// Production code must go through `ProjectStorageActor`. This class exists
+/// solely so tests can instantiate a self-contained store with a temp
+/// `rootDirectoryURL` — it must NOT appear as a dependency in production
+/// feature code.
+final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
 
     // MARK: - Backing Stores
 
@@ -82,26 +72,26 @@ public final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
 
     // MARK: - Initialization
 
-    public init(fileManager: FileManager = .default, rootDirectoryURL: URL? = nil) {
+    init(fileManager: FileManager = .default, rootDirectoryURL: URL? = nil) {
         self.persistence = FileProjectPersistenceStore(fileManager: fileManager, rootDirectoryURL: rootDirectoryURL)
         self.media = FileProjectMediaStore(fileManager: fileManager, rootDirectoryURL: rootDirectoryURL)
     }
 
     // MARK: - Directory Helpers (delegated)
 
-    public func projectsDirectoryURL() throws -> URL {
+    func projectsDirectoryURL() throws -> URL {
         try persistence.projectsDirectoryURL()
     }
 
-    public func backgroundMediaDirectoryURL() throws -> URL {
+    func backgroundMediaDirectoryURL() throws -> URL {
         try media.backgroundMediaDirectoryURL()
     }
 
-    public func userMediaDirectoryURL() throws -> URL {
+    func userMediaDirectoryURL() throws -> URL {
         try media.userMediaDirectoryURL()
     }
 
-    public func ensureDirectoriesExist() throws {
+    func ensureDirectoriesExist() throws {
         try persistence.ensureDirectoriesExist()
     }
 
@@ -115,11 +105,11 @@ public final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
         persistence.loadActiveDraft()
     }
 
-    public func deleteActiveDraft() throws {
+    func deleteActiveDraft() throws {
         try persistence.deleteActiveDraft()
     }
 
-    public func hasActiveDraft() -> Bool {
+    func hasActiveDraft() -> Bool {
         persistence.hasActiveDraft()
     }
 
@@ -133,7 +123,7 @@ public final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
         persistence.loadSavedProject(projectId: projectId)
     }
 
-    public func deleteSavedProject(projectId: UUID) throws {
+    func deleteSavedProject(projectId: UUID) throws {
         try persistence.deleteSavedProject(projectId: projectId)
     }
 
@@ -143,46 +133,33 @@ public final class ProjectStore: @unchecked Sendable, ProjectMediaLocator {
 
     // MARK: - Media File API (delegated)
 
-    public func saveBackgroundImage(from preparedFileURL: URL) throws -> (MediaRef, URL) {
+    func saveBackgroundImage(from preparedFileURL: URL) throws -> (MediaRef, URL) {
         try media.saveBackgroundImage(from: preparedFileURL)
     }
 
     /// Canonical registry-backed locator (Phase B). Instance-scoped —
     /// the caller passes the registry snapshot explicitly.
-    public func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) throws -> URL {
+    func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) throws -> URL {
         try media.absoluteURL(for: mediaRef, registry: registry)
     }
 
-    /// Deprecated single-argument resolver, retained as a test-convenience
-    /// wrapper. Equivalent to calling `absoluteURL(for:registry:)` with an
-    /// empty `ProjectAssetRegistry`, which forces the `mediaRef.storagePath`
-    /// fallback inside `FileProjectMediaStore` and bumps `legacyFallbackHits`.
-    ///
-    /// Not for production use — the runtime/composition/export boundary is
-    /// grep-enforced to pass an explicit registry at every call site
-    /// (`rg 'absoluteURL\(for: [^,)]+\)' AnimiApp/Sources` → 0 hits).
-    @available(*, deprecated, message: "Pass a ProjectAssetRegistry snapshot explicitly")
-    public func absoluteURL(for mediaRef: MediaRef) throws -> URL {
-        try media.absoluteURL(for: mediaRef, registry: ProjectAssetRegistry())
-    }
-
-    public func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) throws -> (MediaRef, URL) {
+    func saveUserMedia(from fileURL: URL, mediaKind: MediaKind, filename: String) throws -> (MediaRef, URL) {
         try media.saveUserMedia(from: fileURL, mediaKind: mediaKind, filename: filename)
     }
 
-    public func deleteMediaFile(_ mediaRef: MediaRef) throws {
+    func deleteMediaFile(_ mediaRef: MediaRef) throws {
         try media.deleteMediaFile(mediaRef)
     }
 
     // MARK: - Garbage Collection (delegated)
 
-    public func collectOrphanMediaFiles() async {
+    func collectOrphanMediaFiles() async {
         await media.collectOrphanMediaFiles(persistence: persistence)
     }
 
     // MARK: - Cache Management
 
-    public func clearCache() {
+    func clearCache() {
         persistence.clearCache()
     }
 }

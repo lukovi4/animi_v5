@@ -82,15 +82,6 @@ final class FileProjectMediaStore: @unchecked Sendable {
         return try absoluteURL(forRelativePath: mediaRef.storagePath)
     }
 
-    /// Deprecated legacy wrapper. Equivalent to calling
-    /// `absoluteURL(for:registry:)` with an empty registry — always hits the
-    /// storagePath fallback. Retained as a transitional bridge during
-    /// PR5 Phase B/C; production sites are migrated by end of Phase D.
-    @available(*, deprecated, message: "Pass a ProjectAssetRegistry snapshot explicitly")
-    func absoluteURL(for mediaRef: MediaRef) throws -> URL {
-        try absoluteURL(for: mediaRef, registry: ProjectAssetRegistry())
-    }
-
     /// Observable counter of legacy-path fallbacks. Tests assert this stays
     /// zero on happy-path production flows. Non-atomic — single-thread actor use.
     private(set) var legacyFallbackHits: Int = 0

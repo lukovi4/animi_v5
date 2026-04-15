@@ -76,7 +76,7 @@ public final class TimelineCompositionEngine {
     internal private(set) var renderDiagnosticsSink: RenderDiagnosticsSink?
 
     /// PR4: Called when a timeline runtime needs a redraw (e.g., after async media placement re-resolve).
-    /// PlayerViewController wires this to `refreshCurrentTimelineFrame()`.
+    /// EditorViewController wires this to `refreshCurrentTimelineFrame()`.
     public var onNeedsRedraw: (() -> Void)?
 
     /// Media locator for resolving MediaRef → URL in export path.
@@ -163,7 +163,7 @@ public final class TimelineCompositionEngine {
     ///
     /// The parameter defaults to `.init()` (empty) so tests that don't exercise
     /// media resolution can keep calling the two-argument form. Production
-    /// call sites in `PlayerViewController` must pass the current draft's
+    /// call sites in `EditorViewController` must pass the current draft's
     /// registry explicitly (`session.state?.draft.assetRegistry ?? .init()`).
     ///
     /// PR-C: Scene states are expected to be already hydrated at project-load time.

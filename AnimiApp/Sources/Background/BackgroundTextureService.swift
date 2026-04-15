@@ -152,7 +152,7 @@ public final class BackgroundTextureService {
     }
 
     /// PR4: Alias for clearAllTextures - clears all tracked background textures.
-    /// Called on PlayerViewController lifecycle (viewDidDisappear/deinit).
+    /// Called on EditorViewController lifecycle (viewDidDisappear/deinit).
     public func clearAllTrackedTextures() {
         clearAllTextures()
     }

@@ -3,7 +3,7 @@ import XCTest
 
 /// TT-08: Integration tests for boundary picker flow.
 /// Tests dismiss-then-callback semantics, dispatch handler mapping,
-/// and alert creation — using internal test seams on PlayerViewController.
+/// and alert creation — using internal test seams on EditorViewController.
 final class TT08BoundaryPickerIntegrationTests: XCTestCase {
 
     // MARK: - 1. Picker Factory Tests
@@ -11,7 +11,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
     /// Test: makeTransitionPicker returns picker with correct currentType and wired callback.
     func test_makeTransitionPicker_configuresCurrentTypeAndCallback() {
         var received: SceneTransition?
-        let picker = PlayerViewController.makeTransitionPicker(
+        let picker = EditorViewController.makeTransitionPicker(
             currentType: .fade,
             onSelect: { received = $0 }
         )
@@ -40,7 +40,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
     // MARK: - 2. Dismiss-Then-Callback Integration Test
 
     /// Test: Selecting a preset in a presented picker calls onSelectTransition AFTER dismiss completion.
-    /// Uses lightweight host VC + UIWindow (no PlayerViewController).
+    /// Uses lightweight host VC + UIWindow (no EditorViewController).
     func test_pickerSelection_callsCallbackAfterDismiss() {
         let window = UIWindow(frame: UIScreen.main.bounds)
         let host = UIViewController()
@@ -53,7 +53,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
         let callbackExpectation = expectation(description: "onSelectTransition called")
         var receivedTransition: SceneTransition?
 
-        let picker = PlayerViewController.makeTransitionPicker(
+        let picker = EditorViewController.makeTransitionPicker(
             currentType: .none,
             onSelect: { transition in
                 receivedTransition = transition
@@ -100,7 +100,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
         let toId = UUID()
         var receivedAction: EditorAction?
 
-        let handler = PlayerViewController.makeBoundaryTransitionDispatchHandler(
+        let handler = EditorViewController.makeBoundaryTransitionDispatchHandler(
             fromSceneId: fromId,
             toSceneId: toId,
             dispatch: { receivedAction = $0 }
@@ -128,7 +128,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
         let toId = UUID()
         var receivedAction: EditorAction?
 
-        let handler = PlayerViewController.makeBoundaryTransitionDispatchHandler(
+        let handler = EditorViewController.makeBoundaryTransitionDispatchHandler(
             fromSceneId: fromId,
             toSceneId: toId,
             dispatch: { receivedAction = $0 }
@@ -151,7 +151,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
         let toId = UUID()
         var actions: [EditorAction] = []
 
-        let handler = PlayerViewController.makeBoundaryTransitionDispatchHandler(
+        let handler = EditorViewController.makeBoundaryTransitionDispatchHandler(
             fromSceneId: fromId,
             toSceneId: toId,
             dispatch: { actions.append($0) }
@@ -187,7 +187,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
 
     /// Test: makeBoundaryTransitionsResetAlert returns correctly configured alert.
     func test_resetAlert_hasCorrectConfiguration() {
-        let alert = PlayerViewController.makeBoundaryTransitionsResetAlert()
+        let alert = EditorViewController.makeBoundaryTransitionsResetAlert()
 
         XCTAssertEqual(alert.title, "Transitions Removed")
         XCTAssertEqual(
@@ -250,7 +250,7 @@ final class TT08BoundaryPickerIntegrationTests: XCTestCase {
         XCTAssertTrue(keys.contains(key01))
 
         // And: Alert factory produces correct alert for this notice
-        let alert = PlayerViewController.makeBoundaryTransitionsResetAlert()
+        let alert = EditorViewController.makeBoundaryTransitionsResetAlert()
         XCTAssertEqual(alert.title, "Transitions Removed")
         XCTAssertEqual(alert.actions.count, 1)
     }

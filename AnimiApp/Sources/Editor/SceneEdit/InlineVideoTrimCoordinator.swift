@@ -1,7 +1,7 @@
 import UIKit
 
 /// Owns inline video trim session state and orchestrates trim interactions.
-/// Communicates with PlayerViewController via closure-based DI.
+/// Communicates with EditorViewController via closure-based DI.
 @MainActor
 final class InlineVideoTrimCoordinator {
 

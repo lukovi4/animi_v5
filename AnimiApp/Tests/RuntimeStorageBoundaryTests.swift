@@ -14,7 +14,7 @@ import TVECore
 ///   `ProjectMediaWriteGateway`.
 /// - `ResolvedMediaMapBuilder.build(slots:locator:registry:)` — the async
 ///   pre-resolve path used by `SceneInstanceRuntime.applyState` and
-///   `PlayerViewController.applySceneInstanceState`.
+///   `EditorViewController.applySceneInstanceState`.
 @MainActor
 final class RuntimeStorageBoundaryTests: XCTestCase {
 

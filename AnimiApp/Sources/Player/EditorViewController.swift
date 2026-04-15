@@ -6,7 +6,7 @@ import AVFoundation
 import TVECore
 import os.log
 
-private let logger = Logger(subsystem: "com.animi.app", category: "PlayerViewController")
+private let logger = Logger(subsystem: "com.animi.app", category: "EditorViewController")
 
 // MARK: - PR-D: Template Loading State
 
@@ -31,9 +31,9 @@ enum TemplateLoadingState: Equatable {
     }
 }
 
-/// Main player view controller with Metal rendering surface.
+/// Main editor view controller with Metal rendering surface.
 /// PR-E: Production-only editor mode (dev-UI removed).
-final class PlayerViewController: UIViewController {
+final class EditorViewController: UIViewController {
 
     // MARK: - Runtime
 
@@ -744,14 +744,14 @@ final class PlayerViewController: UIViewController {
         let key = SceneBoundaryKey(fromSceneId, toSceneId)
         let current = session.state?.canonicalTimeline.boundaryTransitions[key] ?? .none
 
-        let handler = PlayerViewController.makeBoundaryTransitionDispatchHandler(
+        let handler = EditorViewController.makeBoundaryTransitionDispatchHandler(
             fromSceneId: fromSceneId,
             toSceneId: toSceneId
         ) { [weak self] action in
             self?.session.dispatch(action)
         }
 
-        let picker = PlayerViewController.makeTransitionPicker(
+        let picker = EditorViewController.makeTransitionPicker(
             currentType: current.type,
             onSelect: handler
         )
@@ -781,7 +781,7 @@ final class PlayerViewController: UIViewController {
     private func handleEditorNotice(_ notice: EditorNotice) {
         switch notice {
         case .boundaryTransitionsReset:
-            let alert = PlayerViewController.makeBoundaryTransitionsResetAlert()
+            let alert = EditorViewController.makeBoundaryTransitionsResetAlert()
             present(alert, animated: true)
         }
     }
@@ -2382,7 +2382,7 @@ final class PlayerViewController: UIViewController {
         loadingState = .preparing(requestId: requestId)
         updateLoadingStateUI()
 
-        // Async loading pipeline — runtime owns scene/player/texture construction
+        // Async loading pipeline — runtime owns scene/texture construction
         preparingTask = Task { [weak self] in
             guard let self = self else { return }
 
@@ -2507,7 +2507,7 @@ final class PlayerViewController: UIViewController {
 
 // MARK: - MTKViewDelegate
 
-extension PlayerViewController: MTKViewDelegate {
+extension EditorViewController: MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) { view.setNeedsDisplay() }
 
     func draw(in view: MTKView) {
@@ -2795,7 +2795,7 @@ extension PlayerViewController: MTKViewDelegate {
 
 // MARK: - UIGestureRecognizerDelegate (PR-19)
 
-extension PlayerViewController: UIGestureRecognizerDelegate {
+extension EditorViewController: UIGestureRecognizerDelegate {
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
@@ -2832,7 +2832,7 @@ extension PlayerViewController: UIGestureRecognizerDelegate {
 
 // MARK: - PHPickerViewControllerDelegate (PR-32, PR-E)
 
-extension PlayerViewController: PHPickerViewControllerDelegate {
+extension EditorViewController: PHPickerViewControllerDelegate {
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
 
@@ -2874,7 +2874,7 @@ extension PlayerViewController: PHPickerViewControllerDelegate {
 
 // MARK: - BackgroundEditorDelegate (PR3)
 
-extension PlayerViewController: BackgroundEditorDelegate {
+extension EditorViewController: BackgroundEditorDelegate {
 
     func backgroundEditorDidUpdateState(_ state: EffectiveBackgroundState) {
         runtime?.setEffectiveBackgroundState(state)
@@ -2922,7 +2922,7 @@ extension PlayerViewController: BackgroundEditorDelegate {
 
 // MARK: - UIDocumentPickerDelegate (PR8: Music Import)
 
-extension PlayerViewController: UIDocumentPickerDelegate {
+extension EditorViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let url = urls.first else { return }
         // Start security-scoped access

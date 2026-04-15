@@ -20,16 +20,3 @@ public protocol ProjectMediaLocator: Sendable {
     /// registry has no descriptor.
     func absoluteURL(for mediaRef: MediaRef, registry: ProjectAssetRegistry) async throws -> URL
 }
-
-public extension ProjectMediaLocator {
-    /// Deprecated compatibility wrapper — equivalent to calling the canonical
-    /// API with an empty registry, which forces the concrete implementation
-    /// into its legacy/storagePath fallback branch.
-    ///
-    /// - Important: Transitional bridge. Do not use on production runtime /
-    ///   composition / export call sites after PR5 Phase D. Phase G verifies.
-    @available(*, deprecated, message: "Pass a ProjectAssetRegistry snapshot explicitly via absoluteURL(for:registry:)")
-    func absoluteURL(for mediaRef: MediaRef) async throws -> URL {
-        try await absoluteURL(for: mediaRef, registry: ProjectAssetRegistry())
-    }
-}

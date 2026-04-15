@@ -9,7 +9,7 @@ private struct StubMediaLocator: ProjectMediaLocator {
 
 /// Tests production request-gating helpers on EditorRuntime.ActiveExportRequest
 /// and the isActiveExportRequest / clearExportRequestIfCurrent methods.
-/// PR6: Migrated from PlayerViewController to EditorRuntime.
+/// PR6: Migrated from EditorViewController to EditorRuntime.
 final class ExportRequestGatingTests: XCTestCase {
 
     // MARK: - ActiveExportRequest.isActive

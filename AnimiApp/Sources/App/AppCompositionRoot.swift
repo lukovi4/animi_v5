@@ -3,7 +3,7 @@ import UIKit
 /// Central owner of app-level dependencies and root navigation.
 ///
 /// Creates view controllers with injected dependencies and routing callbacks.
-/// Feature controllers never create `PlayerViewController` or access singletons directly.
+/// Feature controllers never create `EditorViewController` or access singletons directly.
 @MainActor
 final class AppCompositionRoot {
 
@@ -87,7 +87,7 @@ final class AppCompositionRoot {
             stickerProvider: stickerRepository
         )
         let session = EditorSession(intent: intent, dependencies: deps)
-        let editorVC = PlayerViewController(session: session)
+        let editorVC = EditorViewController(session: session)
         navigationController?.pushViewController(editorVC, animated: true)
     }
 
