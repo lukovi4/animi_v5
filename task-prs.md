@@ -28,7 +28,8 @@
 - закрыт `PR 7` `Blank Project, Duplicate Project And My Projects`;
 - закрыт `PR 8` `Audio V1: Single Project-Level Music Track`;
 - закрыт `PR 9` `Text Overlay Timeline Editing`;
-- следующий незакрытый шаг: `PR 10` `Sticker Overlay Timeline Editing`;
+- закрыт `PR 10` `Sticker Overlay Timeline Editing`;
+- следующий незакрытый шаг: `PR 11` `Legacy Cleanup И Ban Enforcement`;
 - рабочая epic-ветка для rollout-а: `codex/epic-q-editor-app-layer-refactor`.
 
 Что уже сделано в `PR 0`:
@@ -186,6 +187,31 @@
 - preview/export идут через shared runtime/render pipeline, без второго text-only render stack;
 - text overlays участвуют в save/open/duplicate/dirty/undo flows;
 - required duplication/payload/export-session coverage и production positioning wiring tests добавлены.
+
+Что уже сделано в `PR 10`:
+
+- shipped sticker overlays на том же canonical overlay track, что и text overlays;
+- введен bundle-backed sticker content seam:
+  - `StickerLibrary`
+  - `StickerRepository`
+  - `StickerProviding`
+  - `Resources/Stickers/stickers_index.json`
+- `StickerPayload` получил persisted positioning contract (`centerX` / `centerY`);
+- доступны add/change/remove/move/trailing-trim и canvas reposition для stickers;
+- `OverlayPositionDragView` обобщен для text + sticker overlays;
+- `OverlayTrackView` и `TimelineView` переведены на mixed overlay lane с explicit `itemKind` routing;
+- preview/export path расширен sticker overlays без второго render stack:
+  - preview и export используют тот же `TimelineRenderExecutor`;
+  - stickers рендерятся ниже text overlays;
+  - export path работает через snapshotted sticker overlay items;
+- sticker overlays участвуют в save/open/duplicate/dirty/undo flows;
+- shared regression suites получили sticker coverage:
+  - duplication
+  - payload round-trip
+  - persistence
+  - export session / render request propagation;
+- `StickerLibrary.loadFromBundle()` fail-fast валидирует referenced bundle PNGs;
+- acceptance для `PR 10` подтвержден по коду и архитектуре; отдельный simulator-destination хвост в repo wrappers остается operational tooling issue, а не blocker для PR acceptance.
 
 ## 1. Зафиксированные Product Assumptions
 
