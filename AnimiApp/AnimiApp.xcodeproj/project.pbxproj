@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -535,7 +535,7 @@
 		B7DA813366CB015C14593389 /* ExportVideoFrameProviderBlendTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProviderBlendTests.swift; sourceTree = "<group>"; };
 		B807292DC00C6DF32839947B /* Point2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Point2.swift; sourceTree = "<group>"; };
 		B853898BDFB63E02EA083BD5 /* CategoryTemplatesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryTemplatesViewController.swift; sourceTree = "<group>"; };
-		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BADE2C25A73924C2B3793A4D /* MediaRestoreHelperVideoSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRestoreHelperVideoSelectionTests.swift; sourceTree = "<group>"; };
 		BBE7E90FA899680D42547C51 /* ProjectDuplicatePayloadRoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDuplicatePayloadRoundTripTests.swift; sourceTree = "<group>"; };
 		BC0A332A9804FD46A50F4BF3 /* GlobalVideoBudgetCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalVideoBudgetCoordinator.swift; sourceTree = "<group>"; };
@@ -1174,7 +1174,6 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					10B17D6EDD6B127CDCBC280E = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					65136F447BC60C8FF7FDE046 = {
@@ -1196,7 +1195,6 @@
 			packageReferences = (
 				94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "../TVECore" */,
 			);
-			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -1663,7 +1661,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = KRX7JQ8GTF;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1706,7 +1704,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = KRX7JQ8GTF;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

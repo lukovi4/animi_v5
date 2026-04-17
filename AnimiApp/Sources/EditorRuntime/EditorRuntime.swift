@@ -58,7 +58,21 @@ final class EditorRuntime {
     // MARK: - State
 
     private(set) var state: EditorRuntimeState = .idle
-    private(set) var currentRenderSource: EditorRuntimeRenderSource = .none
+
+    /// Current render source for the view layer.
+    /// Every assignment increments `renderSourceRevision` for test observability.
+    private(set) var currentRenderSource: EditorRuntimeRenderSource = .none {
+        didSet { renderSourceRevision &+= 1 }
+    }
+
+    /// Monotonically increasing counter incremented on every `currentRenderSource` assignment.
+    /// Read-only test seam — proves render-source was regenerated, not merely retained.
+    private(set) var renderSourceRevision: UInt = 0
+
+    /// Tracks which codepath last triggered a timeline frame refresh.
+    /// Read-only test seam — proves engine.onNeedsRedraw fired vs manual playhead change.
+    enum RefreshTrigger: Equatable { case none, playheadChanged, engineRedraw, sceneEditMutation }
+    private(set) var lastRefreshTrigger: RefreshTrigger = .none
 
     var onOutput: ((EditorRuntimeOutput) -> Void)?
 
@@ -159,6 +173,15 @@ final class EditorRuntime {
     func bootForTesting(state: EditorRuntimeState = .timelinePreview) {
         self.state = state
     }
+
+    /// Test seam: forwards to the private runtime-owned `handleMediaReadyForPlacement`.
+    /// Exercises the exact same path that `UserMediaService.onMediaReady` invokes in production.
+    func simulateMediaReadyCallback(blockId: String) {
+        handleMediaReadyForPlacement(blockId: blockId)
+    }
+
+    /// Test seam: exposes the timeline composition engine for cache pre-population.
+    var testTimelineCompositionEngine: TimelineCompositionEngine? { timelineCompositionEngine }
     #endif
 
     func boot(metalContext: EditorRuntimeMetalContext, library: SceneLibrarySnapshot) {
@@ -244,8 +267,10 @@ final class EditorRuntime {
         setupBackground(compiled: loadResult.compiled)
         setupPlaybackCoordinator(library: library, state: editorState)
         setupTimelineCompositionEngine(state: editorState)
-        handlePlayheadChanged(editorState.playheadCompressedFrame)
         transitionToTimelinePreview()
+        // Initial playhead application must run after the runtime enters
+        // timelinePreview; in .booting, handlePlayheadChanged() is a no-op.
+        handlePlayheadChanged(editorState.playheadCompressedFrame)
     }
 
     /// Boots the runtime with the initial scene loaded during template load.
@@ -276,11 +301,11 @@ final class EditorRuntime {
             )
             ums.setSceneFPS(Double(compiled.runtime.fps))
             ums.onNeedsDisplay = { [weak self] in
-                self?.onOutput?(.renderSourceUpdated)
+                self?.refreshSceneEditIfActive()
                 self?.syncPausedVideoStill(force: true)
             }
             ums.onStillFrameDelivered = { [weak self] in
-                self?.onOutput?(.renderSourceUpdated)
+                self?.refreshSceneEditIfActive()
             }
             ums.onMediaReady = { [weak self] blockId in
                 self?.handleMediaReadyForPlacement(blockId: blockId)
@@ -516,11 +541,11 @@ final class EditorRuntime {
             )
             userMediaService?.setSceneFPS(Double(loadedScene.compiled.runtime.fps))
             userMediaService?.onNeedsDisplay = { [weak self] in
-                self?.onOutput?(.renderSourceUpdated)
+                self?.refreshSceneEditIfActive()
                 self?.syncPausedVideoStill(force: true)
             }
             userMediaService?.onStillFrameDelivered = { [weak self] in
-                self?.onOutput?(.renderSourceUpdated)
+                self?.refreshSceneEditIfActive()
             }
             userMediaService?.onMediaReady = { [weak self] blockId in
                 self?.handleMediaReadyForPlacement(blockId: blockId)
@@ -540,11 +565,11 @@ final class EditorRuntime {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.applySceneInstanceState(instanceId: instanceId)
-                self.onOutput?(.renderSourceUpdated)
+                self.refreshSceneEditIfActive()
             }
         }
 
-        onOutput?(.renderSourceUpdated)
+        refreshSceneEditIfActive()
     }
 
     // MARK: - Active Scene Changed
@@ -567,7 +592,7 @@ final class EditorRuntime {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     await self.applySceneInstanceState(instanceId: newInstanceId)
-                    self.onOutput?(.renderSourceUpdated)
+                    self.refreshSceneEditIfActive()
                 }
             }
         }
@@ -624,6 +649,7 @@ final class EditorRuntime {
         currentCompressedFrame = compressedFrame
         activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
 
+        lastRefreshTrigger = .playheadChanged
         resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: true)
     }
 
@@ -631,6 +657,7 @@ final class EditorRuntime {
         guard case .timelinePreview = state else { return }
         guard timelineCompositionEngine != nil else { return }
 
+        lastRefreshTrigger = .engineRedraw
         let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: false)
     }
@@ -756,6 +783,17 @@ final class EditorRuntime {
     }
 
     // MARK: - Scene Edit Render Source
+
+    /// Rebuilds render source if in scene-edit mode, otherwise emits bare event.
+    /// Consolidates the pattern of "if sceneEdit → rebuild, else → emit" used by fast-path mutations.
+    private func refreshSceneEditIfActive() {
+        if case .sceneEdit = state {
+            lastRefreshTrigger = .sceneEditMutation
+            updateSceneEditRenderSource()
+        } else {
+            onOutput?(.renderSourceUpdated)
+        }
+    }
 
     private func updateSceneEditRenderSource() {
         guard case .sceneEdit(let targetId) = state else { return }
@@ -1358,15 +1396,16 @@ final class EditorRuntime {
         guard let state = session.state,
               let item = state.canonicalTimeline.musicItem,
               let payload = state.canonicalTimeline.musicPayload(),
-              case .imported(let assetId) = payload.assetRef else {
+              case .imported(let assetId, let contentStoragePath) = payload.assetRef else {
             return nil
         }
 
-        // Resolve file URL through registry-backed locator
-        let registry = state.draft.assetRegistry
-        guard let storagePath = registry.storagePath(for: assetId) else {
+        // Resolve file URL through self-healed registry (covers undo-asymmetry / stale registry).
+        let registry = selfHealedRegistry()
+        let storagePath = registry.storagePath(for: assetId) ?? contentStoragePath
+        guard !storagePath.isEmpty else {
             #if DEBUG
-            logger.warning("[PR8] Music asset not found in registry: \(assetId.rawValue.uuidString)")
+            logger.warning("[PR8] Music asset has no resolvable storage path: \(assetId.rawValue.uuidString)")
             #endif
             return nil
         }
@@ -1518,7 +1557,7 @@ final class EditorRuntime {
            activeSceneInstanceId == instanceId {
             let deps = SceneRuntimeStateApplier.FastPathDependencies(scenePlayer: player, userMediaService: service)
             SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
-            onOutput?(.renderSourceUpdated)
+            refreshSceneEditIfActive()
             localApplied = true
         }
 
@@ -1537,7 +1576,7 @@ final class EditorRuntime {
         // Scene-edit path: apply to local player
         if let player = scenePlayer, activeSceneInstanceId == instanceId {
             SceneRuntimeStateApplier.applyVisibilityChange(blockId: blockId, visible: visible, player: player)
-            onOutput?(.renderSourceUpdated)
+            refreshSceneEditIfActive()
             localApplied = true
         }
 
@@ -1563,7 +1602,7 @@ final class EditorRuntime {
                     resolvedMedia: .empty
                 )
                 SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slot, deps: deps)
-                onOutput?(.renderSourceUpdated)
+                refreshSceneEditIfActive()
                 session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
             } else {
                 // Insert/replace: resolve URL async, then apply
@@ -1582,7 +1621,7 @@ final class EditorRuntime {
                         resolvedMedia: resolved
                     )
                     SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slot, deps: deps)
-                    self.onOutput?(.renderSourceUpdated)
+                    self.refreshSceneEditIfActive()
                     self.session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
                 }
             }
@@ -1591,7 +1630,7 @@ final class EditorRuntime {
         // Timeline path: full state update for any scene
         if let sceneState = session.state?.draft.sceneInstanceStates[instanceId] {
             Task { @MainActor in
-                await self.timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId)
+                await self.timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId, assetRegistry: self.selfHealedRegistry())
                 self.refreshCurrentTimelineFrame()
             }
         }
@@ -1603,14 +1642,14 @@ final class EditorRuntime {
         guard let player = scenePlayer, let service = userMediaService else { return false }
         let deps = SceneRuntimeStateApplier.FastPathDependencies(scenePlayer: player, userMediaService: service)
         SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
-        onOutput?(.renderSourceUpdated)
+        refreshSceneEditIfActive()
         return true
     }
 
     /// Applies incremental scene state change to timeline engine.
     func applySceneStateChange(instanceId: UUID, sceneState: SceneState) {
         Task { @MainActor in
-            await self.timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId)
+            await self.timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId, assetRegistry: self.selfHealedRegistry())
             self.refreshCurrentTimelineFrame()
         }
     }
@@ -1629,8 +1668,9 @@ final class EditorRuntime {
             assetRegistry: state.draft.assetRegistry.selfHealed(for: state.draft)
         )
         Task { @MainActor in
+            let registry = state.draft.assetRegistry.selfHealed(for: state.draft)
             for (instanceId, sceneState) in state.draft.sceneInstanceStates {
-                await engine.updateSceneState(sceneState, for: instanceId)
+                await engine.updateSceneState(sceneState, for: instanceId, assetRegistry: registry)
             }
         }
     }
@@ -2002,8 +2042,12 @@ final class EditorRuntime {
     }
 
     private func handleMediaReadyForPlacement(blockId: String) {
-        // Re-resolve placement after async media load
-        onOutput?(.renderSourceUpdated)
+        guard let instanceId = activeSceneInstanceId,
+              let slot = session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else {
+            onOutput?(.renderSourceUpdated)
+            return
+        }
+        let _ = reapplyPlacementAfterMediaReady(instanceId: instanceId, blockId: blockId, placement: slot.asset.placement)
     }
 }
 

@@ -13,6 +13,7 @@ final class AudioTrackView: UIView {
 
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
     private var leftPadding: CGFloat = 0
+    private var clipOffsetPx: CGFloat = 0
     private var isSelected: Bool = false
     private var hasClip: Bool = false
 
@@ -114,15 +115,17 @@ final class AudioTrackView: UIView {
 
     // MARK: - Configuration
 
-    /// Configures track with duration in microseconds, pxPerSecond, and leftPadding.
+    /// Configures track with duration in microseconds, pxPerSecond, leftPadding, and clip offset.
     /// - Parameters:
     ///   - durationUs: Duration in microseconds
     ///   - pxPerSecond: Pixels per second for width calculation
     ///   - leftPadding: Left padding in pixels
-    func configure(durationUs: TimeUs, pxPerSecond: CGFloat, leftPadding: CGFloat) {
+    ///   - clipOffsetPx: Clip start offset in pixels (from startUs)
+    func configure(durationUs: TimeUs, pxPerSecond: CGFloat, leftPadding: CGFloat, clipOffsetPx: CGFloat = 0) {
         self.durationUs = durationUs
         self.pxPerSecond = pxPerSecond
         self.leftPadding = leftPadding
+        self.clipOffsetPx = clipOffsetPx
         updateTrackLayout()
     }
 
@@ -157,6 +160,6 @@ final class AudioTrackView: UIView {
         let trackWidth = durationSeconds * pxPerSecond
 
         trackWidthConstraint?.constant = trackWidth
-        trackLeadingConstraint?.constant = leftPadding
+        trackLeadingConstraint?.constant = leftPadding + clipOffsetPx
     }
 }

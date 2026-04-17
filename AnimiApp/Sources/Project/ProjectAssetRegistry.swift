@@ -78,7 +78,7 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
         // PR8: Walk audio payloads for imported asset refs
         for (_, payload) in draft.canonicalTimeline.payloads {
             if case .audio(let audioPayload) = payload,
-               case .imported(let assetId) = audioPayload.assetRef {
+               case .imported(let assetId, _) = audioPayload.assetRef {
                 ids.insert(assetId)
             }
         }
@@ -154,6 +154,21 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
             }
         }
 
+        // Walk imported audio payloads for missing descriptors.
+        for (_, payload) in draft.canonicalTimeline.payloads {
+            if case .audio(let audioPayload) = payload,
+               case .imported(let assetId, let storagePath) = audioPayload.assetRef {
+                guard !storagePath.isEmpty else { continue }
+                guard healed.descriptors[assetId] == nil else { continue }
+                healed.descriptors[assetId] = ProjectAssetDescriptor(
+                    assetId: assetId,
+                    mediaKind: .audio,
+                    storagePath: storagePath
+                )
+                addedAny = true
+            }
+        }
+
         return addedAny ? healed : self
     }
 
@@ -182,9 +197,10 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
         // PR8: Walk audio payloads for imported asset storage paths
         for (_, payload) in draft.canonicalTimeline.payloads {
             if case .audio(let audioPayload) = payload,
-               case .imported(let assetId) = audioPayload.assetRef {
-                if let path = descriptors[assetId]?.storagePath {
-                    paths.insert(path)
+               case .imported(let assetId, let storagePath) = audioPayload.assetRef {
+                let resolved = descriptors[assetId]?.storagePath ?? storagePath
+                if !resolved.isEmpty {
+                    paths.insert(resolved)
                 }
             }
         }

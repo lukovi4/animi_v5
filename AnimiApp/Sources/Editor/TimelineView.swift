@@ -164,10 +164,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private lazy var overlayTrack = OverlayTrackView()
     private lazy var audioTrack = AudioTrackView()
 
-    #if DEBUG
-    /// PR2 v8: Extra audio tracks to test Y-scroll
-    private var debugAudioTracks: [AudioTrackView] = []
-    #endif
 
     private var contentWidthConstraint: NSLayoutConstraint?
 
@@ -213,14 +209,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         tracksStack.addArrangedSubview(overlayTrack)
         tracksStack.addArrangedSubview(audioTrack)
 
-        #if DEBUG
-        // PR2 v8: Add 8 extra audio tracks to force vertical scroll for testing
-        for _ in 0..<8 {
-            let track = AudioTrackView()
-            debugAudioTracks.append(track)
-            tracksStack.addArrangedSubview(track)
-        }
-        #endif
 
         // Wire sceneTrack callbacks for selection and trim
         wireSceneTrackCallbacks()
@@ -311,13 +299,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             audioTrack.heightAnchor.constraint(equalToConstant: 40),
         ])
 
-        #if DEBUG
-        // PR2 v8: Height constraints for debug audio tracks
-        for track in debugAudioTracks {
-            track.translatesAutoresizingMaskIntoConstraints = false
-            track.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        }
-        #endif
 
         // Content width constraint (will be updated in updateContentSize)
         contentWidthConstraint = contentView.widthAnchor.constraint(equalToConstant: 1000)
@@ -383,12 +364,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
-        #if DEBUG
-        for track in debugAudioTracks {
-            track.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
-        }
-        #endif
-
         updateContentSize()
     }
 
@@ -412,12 +387,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let padding = leftPaddingPx
         overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
-
-        #if DEBUG
-        for track in debugAudioTracks {
-            track.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
-        }
-        #endif
 
         // PR4: Layout path via updateContentSize
         updateContentSize()
@@ -536,7 +505,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             audioTrack.configure(
                 durationUs: item.durationUs,
                 pxPerSecond: pxPerSecond,
-                leftPadding: leftPaddingPx + CGFloat(usToSeconds(item.startUs ?? 0)) * pxPerSecond
+                leftPadding: leftPaddingPx,
+                clipOffsetPx: CGFloat(usToSeconds(item.startUs ?? 0)) * pxPerSecond
             )
             audioTrack.setHasClip(true)
         } else {
@@ -558,11 +528,6 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         sceneTrack.setLayoutContext(layoutContext)
         audioTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
 
-        #if DEBUG
-        for track in debugAudioTracks {
-            track.setPxPerSecond(pxPerSecond, leftPadding: padding)
-        }
-        #endif
     }
 
     /// Centers the timeline on a specific X offset.

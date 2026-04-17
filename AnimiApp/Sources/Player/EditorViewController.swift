@@ -1375,15 +1375,6 @@ final class EditorViewController: UIViewController {
         refreshSceneEditBars()
     }
 
-    /// PR4: Re-resolve placement after media finishes async loading.
-    /// Called by UserMediaService.onMediaReady — now we have actual media dimensions.
-    private func handleMediaReadyForPlacement(blockId: String) {
-        let instanceId = sceneEditTargetInstanceId ?? runtime?.currentActiveSceneInstanceId
-        guard let instanceId,
-              let slot = session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else { return }
-        runtime?.reapplyPlacementAfterMediaReady(instanceId: instanceId, blockId: blockId, placement: slot.asset.placement)
-    }
-
     /// Called during live-trim preview (lightweight, frequent).
     /// Only updates UI, skips playback coordinator and persistence.
     /// Phase 2.1: Must update mapper for live trim scrub to work correctly.

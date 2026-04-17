@@ -115,12 +115,80 @@ public struct AudioPayload: Codable, Equatable, Sendable {
 }
 
 /// Reference to audio asset.
-public enum AudioAssetRef: Codable, Equatable, Sendable {
+public enum AudioAssetRef: Equatable, Sendable {
     /// Bundled sound effect by ID.
     case bundled(id: String)
 
-    /// Imported audio file identified by logical asset ID.
-    case imported(assetId: ProjectAssetID)
+    /// Imported audio file identified by logical asset ID, with content-side
+    /// recovery path so stale/missing registry entries can be self-healed.
+    case imported(assetId: ProjectAssetID, storagePath: String)
+
+    /// Backward-compatible convenience for older call sites/tests that only
+    /// care about identity, not recovery data.
+    public static func imported(assetId: ProjectAssetID) -> AudioAssetRef {
+        .imported(assetId: assetId, storagePath: "")
+    }
+}
+
+// MARK: - AudioAssetRef Codable (backward-compatible)
+
+extension AudioAssetRef: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case type, id, assetId, storagePath
+    }
+
+    private enum LegacyCaseKeys: String, CodingKey {
+        case bundled, imported
+    }
+
+    private enum RefType: String, Codable {
+        case bundled, imported
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        if let type = try container.decodeIfPresent(RefType.self, forKey: .type) {
+            switch type {
+            case .bundled:
+                let id = try container.decode(String.self, forKey: .id)
+                self = .bundled(id: id)
+            case .imported:
+                let assetId = try container.decode(ProjectAssetID.self, forKey: .assetId)
+                let storagePath = try container.decodeIfPresent(String.self, forKey: .storagePath) ?? ""
+                self = .imported(assetId: assetId, storagePath: storagePath)
+            }
+            return
+        }
+
+        let legacyContainer = try decoder.container(keyedBy: LegacyCaseKeys.self)
+        if legacyContainer.contains(.bundled) {
+            let nested = try legacyContainer.nestedContainer(keyedBy: CodingKeys.self, forKey: .bundled)
+            let id = try nested.decode(String.self, forKey: .id)
+            self = .bundled(id: id)
+        } else if legacyContainer.contains(.imported) {
+            let nested = try legacyContainer.nestedContainer(keyedBy: CodingKeys.self, forKey: .imported)
+            let assetId = try nested.decode(ProjectAssetID.self, forKey: .assetId)
+            self = .imported(assetId: assetId, storagePath: "")
+        } else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Unknown AudioAssetRef format")
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .bundled(let id):
+            try container.encode(RefType.bundled, forKey: .type)
+            try container.encode(id, forKey: .id)
+        case .imported(let assetId, let storagePath):
+            try container.encode(RefType.imported, forKey: .type)
+            try container.encode(assetId, forKey: .assetId)
+            try container.encode(storagePath, forKey: .storagePath)
+        }
+    }
 }
 
 // MARK: - Sticker Payload

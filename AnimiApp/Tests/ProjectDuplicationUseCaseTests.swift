@@ -179,7 +179,7 @@ final class ProjectDuplicationUseCaseTests: XCTestCase {
         let sourceId = try await createSavedProjectWithMusic()
         let sourceRecord = await storageActor.loadSavedProject(projectId: sourceId)
         let sourcePayload = sourceRecord!.draft.canonicalTimeline.musicPayload()!
-        guard case .imported(let sourceAssetId) = sourcePayload.assetRef else {
+        guard case .imported(let sourceAssetId, _) = sourcePayload.assetRef else {
             XCTFail("Expected imported asset ref")
             return
         }
@@ -189,7 +189,7 @@ final class ProjectDuplicationUseCaseTests: XCTestCase {
 
         let newRecord = await storageActor.loadSavedProject(projectId: newId)
         let newPayload = newRecord!.draft.canonicalTimeline.musicPayload()!
-        guard case .imported(let newAssetId) = newPayload.assetRef else {
+        guard case .imported(let newAssetId, _) = newPayload.assetRef else {
             XCTFail("Expected imported asset ref in duplicate")
             return
         }

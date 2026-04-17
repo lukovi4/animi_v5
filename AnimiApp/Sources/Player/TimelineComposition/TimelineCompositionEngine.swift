@@ -201,10 +201,11 @@ public final class TimelineCompositionEngine {
 
     /// Updates scene state for a specific instance.
     /// If runtime is already loaded, state is also re-applied to the runtime.
-    public func updateSceneState(_ state: SceneState, for instanceId: UUID) async {
+    public func updateSceneState(_ state: SceneState, for instanceId: UUID, assetRegistry: ProjectAssetRegistry) async {
+        self.currentAssetRegistry = assetRegistry
         sceneStates[instanceId] = state
 
-        // If runtime already loaded, re-apply state with current registry snapshot.
+        // If runtime already loaded, re-apply state with fresh registry.
         if let runtime = instanceRuntimes[instanceId] {
             await runtime.reloadState(state, assetRegistry: currentAssetRegistry)
             #if DEBUG

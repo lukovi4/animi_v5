@@ -64,7 +64,7 @@ final class ProjectMusicImportTests: XCTestCase {
         XCTAssertEqual(audioTrackItemCount1, 1)
 
         // New asset ref should be active
-        if case .imported(let activeId) = store.state.canonicalTimeline.musicPayload()?.assetRef {
+        if case .imported(let activeId, _) = store.state.canonicalTimeline.musicPayload()?.assetRef {
             XCTAssertEqual(activeId, assetId2)
         } else {
             XCTFail("Expected imported asset ref")
@@ -123,7 +123,7 @@ final class ProjectMusicImportTests: XCTestCase {
         XCTAssertEqual(store.state.canonicalTimeline.audioTrack?.items.count, 1)
 
         // Asset ref is the latest one
-        if case .imported(let activeId) = store.state.canonicalTimeline.musicPayload()?.assetRef {
+        if case .imported(let activeId, _) = store.state.canonicalTimeline.musicPayload()?.assetRef {
             XCTAssertEqual(activeId, id2)
         } else {
             XCTFail("Expected imported ref")

@@ -36,6 +36,9 @@ resolve_destination() {
         preferred_devices=("${ANIMIAPP_SIMULATOR_NAME}")
     else
         preferred_devices=(
+            "iPhone 17 Pro"
+            "iPhone 16 Pro"
+            "iPhone 17"
             "iPhone 16"
             "iPhone 15"
             "iPhone SE (3rd generation)"
@@ -67,6 +70,38 @@ resolve_destination() {
             return 0
         fi
     done
+
+    local first_available_device first_available_os
+    first_available_device="$(
+        printf '%s\n' "$destinations_output" \
+            | awk -F 'name:' '
+                /platform:iOS Simulator/ && NF > 1 {
+                    name = $2
+                    sub(/[[:space:]]*}[[:space:]]*$/, "", name)
+                    if (name ~ /^iPhone /) {
+                        print name
+                        exit
+                    }
+                }
+            ' || true
+    )"
+    first_available_os="$(
+        printf '%s\n' "$destinations_output" \
+            | awk -v device="$first_available_device" '
+                /platform:iOS Simulator/ && index($0, "name:" device) && match($0, /OS:[^,}]*/) {
+                    os = substr($0, RSTART + 3, RLENGTH - 3)
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", os)
+                    print os
+                    exit
+                }
+            ' || true
+    )"
+
+    if [[ -n "$first_available_device" && -n "$first_available_os" ]]; then
+        echo "Falling back to first available iPhone simulator: $first_available_device ($first_available_os)" >&2
+        printf 'platform=iOS Simulator,arch=%s,name=%s,OS=%s\n' "$FALLBACK_SIMULATOR_ARCH" "$first_available_device" "$first_available_os"
+        return 0
+    fi
 
     echo "Falling back to platform=iOS Simulator,arch=$FALLBACK_SIMULATOR_ARCH,name=$FALLBACK_SIMULATOR_NAME,OS=$FALLBACK_SIMULATOR_OS" >&2
     printf 'platform=iOS Simulator,arch=%s,name=%s,OS=%s\n' "$FALLBACK_SIMULATOR_ARCH" "$FALLBACK_SIMULATOR_NAME" "$FALLBACK_SIMULATOR_OS"

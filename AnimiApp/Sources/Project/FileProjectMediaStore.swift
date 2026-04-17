@@ -139,9 +139,10 @@ final class FileProjectMediaStore: @unchecked Sendable {
         // PR8: Walk audio payloads for imported asset fallback refs
         for (_, payload) in sourceDraft.canonicalTimeline.payloads {
             if case .audio(let audioPayload) = payload,
-               case .imported(let assetId) = audioPayload.assetRef,
-               let storagePath = sourceDraft.assetRegistry.storagePath(for: assetId) {
-                fallbackRefs[assetId] = MediaRef(storagePath: storagePath, mediaKind: .audio, assetId: assetId)
+               case .imported(let assetId, let storagePath) = audioPayload.assetRef {
+                let resolvedStoragePath = sourceDraft.assetRegistry.storagePath(for: assetId) ?? storagePath
+                guard !resolvedStoragePath.isEmpty else { continue }
+                fallbackRefs[assetId] = MediaRef(storagePath: resolvedStoragePath, mediaKind: .audio, assetId: assetId)
             }
         }
 
@@ -314,6 +315,13 @@ final class FileProjectMediaStore: @unchecked Sendable {
                 for (_, slot) in slots {
                     paths.insert(slot.mediaRef.storagePath)
                 }
+            }
+        }
+        for (_, payload) in draft.canonicalTimeline.payloads {
+            if case .audio(let audioPayload) = payload,
+               case .imported(_, let storagePath) = audioPayload.assetRef,
+               !storagePath.isEmpty {
+                paths.insert(storagePath)
             }
         }
     }

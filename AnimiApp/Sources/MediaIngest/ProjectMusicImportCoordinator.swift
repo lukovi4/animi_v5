@@ -55,7 +55,7 @@ final class ProjectMusicImportCoordinator {
 
                 // Dispatch to store
                 self.session.dispatch(.setProjectMusic(
-                    assetRef: .imported(assetId: mediaRef.assetId),
+                    assetRef: .imported(assetId: mediaRef.assetId, storagePath: mediaRef.storagePath),
                     sourceDurationUs: durationUs
                 ))
 

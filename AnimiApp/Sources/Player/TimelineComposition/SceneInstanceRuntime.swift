@@ -460,6 +460,7 @@ public final class SceneInstanceRuntime {
                 }
 
                 readinessState = .ready(targetLocalFrame: targetFrame)
+                onNeedsRedraw?()
                 runtimeDiagnosticsSink?.receive(.instancePrepareCompleted(instanceId: sceneInstanceId, targetFrame: targetFrame))
                 #if DEBUG
                 print("[SceneInstanceRuntime] Ready for presentation at frame \(targetFrame): \(sceneInstanceId)")

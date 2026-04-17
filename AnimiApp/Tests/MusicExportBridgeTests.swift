@@ -52,27 +52,51 @@ final class MusicExportBridgeTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeSession(draft: ProjectDraft) -> EditorSession {
+    private func stubSceneLibrary() -> SceneLibrarySnapshot {
+        SceneLibrarySnapshot(
+            fps: 30,
+            canvas: CanvasConfig(width: 1080, height: 1920),
+            scenes: [
+                SceneTypeDescriptor(
+                    id: "scene_0",
+                    order: 0,
+                    title: "Test Scene",
+                    baseDurationUs: 3_000_000
+                )
+            ]
+        )
+    }
+
+    private func makeSession(draft: ProjectDraft) async -> EditorSession {
+        let slot = ActiveDraftSlot(
+            entryContext: .newProject(origin: draft.origin),
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
         let deps = EditorSessionDependencies(
             saveActiveDraft: { _ in },
-            loadActiveDraft: { nil },
+            loadActiveDraft: { slot },
             deleteActiveDraft: {},
             loadSavedProject: { _ in nil },
             materializeSavedProject: { $0 },
             mediaLocator: StubMediaLocator(rootDir: tempDir),
             mediaWriter: StubMediaWriter(),
-            loadSceneLibrary: { throw NSError(domain: "test", code: 0) },
-            sceneTypeDefaults: { _, _ in [] },
-            loadTemplateCatalog: { .failure(NSError(domain: "test", code: 0)) },
+            loadSceneLibrary: { self.stubSceneLibrary() },
+            sceneTypeDefaults: { _, _ in
+                [SceneTypeDefault(sceneTypeId: "scene_0", baseDurationUs: 3_000_000)]
+            },
+            loadTemplateCatalog: {
+                .success(TemplateCatalogSnapshot(categories: [], templates: []))
+            },
             backgroundPresetProvider: StubPresetProvider()
         )
-        let session = EditorSession(intent: .template(templateId: "test"), dependencies: deps)
-        session.dispatch(.loadProject(draft: draft, templateFPS: 30, defaultSceneSequence: []))
+        let session = EditorSession(intent: .resumeDraft, dependencies: deps)
+        await session.bootstrap()
         return session
     }
 
-    private func makeRuntime(draft: ProjectDraft) -> EditorRuntime {
-        let session = makeSession(draft: draft)
+    private func makeRuntime(draft: ProjectDraft) async -> EditorRuntime {
+        let session = await makeSession(draft: draft)
         let runtime = EditorRuntime(session: session)
         runtime.bootForTesting(state: .timelinePreview)
         return runtime
@@ -116,7 +140,7 @@ final class MusicExportBridgeTests: XCTestCase {
         ))
         let audioPid = UUID()
         draft.canonicalTimeline.payloads[audioPid] = .audio(AudioPayload(
-            assetRef: .imported(assetId: assetId),
+            assetRef: .imported(assetId: assetId, storagePath: storagePath),
             sourceDurationUs: sourceDurationUs,
             trimStartUs: trimStartUs,
             trimEndUs: trimEndUs,
@@ -133,7 +157,7 @@ final class MusicExportBridgeTests: XCTestCase {
     // MARK: - No Music → nil
 
     func testNoMusic_bridgeReturnsNil() async {
-        let runtime = makeRuntime(draft: makeDraft(sceneDurations: [3_000_000]))
+        let runtime = await makeRuntime(draft: makeDraft(sceneDurations: [3_000_000]))
         let config = await runtime.buildProjectMusicTrackConfig()
         XCTAssertNil(config)
     }
@@ -148,7 +172,7 @@ final class MusicExportBridgeTests: XCTestCase {
         var draft = makeDraft(sceneDurations: [5_000_000])
         addMusicToDraft(&draft, assetId: assetId, storagePath: storagePath)
 
-        let runtime = makeRuntime(draft: draft)
+        let runtime = await makeRuntime(draft: draft)
         let config = await runtime.buildProjectMusicTrackConfig()
 
         XCTAssertNotNil(config, "Production bridge should return config for imported music")
@@ -173,7 +197,7 @@ final class MusicExportBridgeTests: XCTestCase {
             volume: 0.6
         )
 
-        let runtime = makeRuntime(draft: draft)
+        let runtime = await makeRuntime(draft: draft)
         let config = await runtime.buildProjectMusicTrackConfig()!
 
         XCTAssertEqual(config.trimStartSeconds!, 2.0, accuracy: 0.001)
@@ -189,7 +213,7 @@ final class MusicExportBridgeTests: XCTestCase {
         // Add music but do NOT register asset or seed file
         let audioPid = UUID()
         draft.canonicalTimeline.payloads[audioPid] = .audio(AudioPayload(
-            assetRef: .imported(assetId: ProjectAssetID()),
+            assetRef: .imported(assetId: ProjectAssetID(), storagePath: ""),
             sourceDurationUs: 10_000_000, trimStartUs: 0, trimEndUs: 10_000_000, volume: 1.0
         ))
         var audioTrack = Track(kind: .audio)
@@ -198,7 +222,7 @@ final class MusicExportBridgeTests: XCTestCase {
         ))
         draft.canonicalTimeline.tracks.append(audioTrack)
 
-        let runtime = makeRuntime(draft: draft)
+        let runtime = await makeRuntime(draft: draft)
         let config = await runtime.buildProjectMusicTrackConfig()
         XCTAssertNil(config, "Bridge should return nil when asset is not in registry")
     }
@@ -213,7 +237,7 @@ final class MusicExportBridgeTests: XCTestCase {
         var draft = makeDraft(sceneDurations: [5_000_000])
         addMusicToDraft(&draft, assetId: assetId, storagePath: storagePath)
 
-        let runtime = makeRuntime(draft: draft)
+        let runtime = await makeRuntime(draft: draft)
         let config = await runtime.buildProjectMusicTrackConfig()!
 
         // V1: music starts at 0

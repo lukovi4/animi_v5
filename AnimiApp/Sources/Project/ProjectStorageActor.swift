@@ -163,9 +163,12 @@ actor ProjectStorageActor: ProjectPersistenceGateway, ProjectMediaLocator, Proje
         var newPayloads = newDraft.canonicalTimeline.payloads
         for (payloadId, payload) in newDraft.canonicalTimeline.payloads {
             guard case .audio(var audioPayload) = payload,
-                  case .imported(let oldAssetId) = audioPayload.assetRef else { continue }
+                  case .imported(let oldAssetId, let oldStoragePath) = audioPayload.assetRef else { continue }
             let newAssetId = idRewrite[oldAssetId] ?? oldAssetId
-            audioPayload.assetRef = .imported(assetId: newAssetId)
+            let newStoragePath = pathRewrite[oldStoragePath]
+                ?? newRegistry.storagePath(for: newAssetId)
+                ?? oldStoragePath
+            audioPayload.assetRef = .imported(assetId: newAssetId, storagePath: newStoragePath)
             newPayloads[payloadId] = .audio(audioPayload)
         }
         newDraft.canonicalTimeline.payloads = newPayloads
