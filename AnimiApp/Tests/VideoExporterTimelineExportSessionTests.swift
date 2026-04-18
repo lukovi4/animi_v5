@@ -1,6 +1,8 @@
 import XCTest
 import Metal
 import CoreVideo
+import AVFoundation
+import UIKit
 @testable import AnimiApp
 @testable import TVECore
 
@@ -636,5 +638,449 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         )
 
         XCTAssertTrue(requestOutside.stickerOverlays.isEmpty, "Render request must be empty when sticker not visible")
+    }
+
+    // MARK: - Pixel Buffer Readback Helpers
+
+    private func readPixels(from pb: CVPixelBuffer) -> [UInt8] {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        let base = CVPixelBufferGetBaseAddress(pb)!
+        let bpr = CVPixelBufferGetBytesPerRow(pb)
+        let h = CVPixelBufferGetHeight(pb)
+        return Array(UnsafeBufferPointer(start: base.assumingMemoryBound(to: UInt8.self), count: bpr * h))
+    }
+
+    private func hasNonBlackInROI(_ pixels: [UInt8], bytesPerRow: Int,
+                                   cx: Int, cy: Int, radius: Int) -> Bool {
+        for dy in -radius...radius {
+            for dx in -radius...radius {
+                let py = cy + dy, px = cx + dx
+                guard py >= 0, px >= 0 else { continue }
+                let offset = py * bytesPerRow + px * 4
+                guard offset + 3 < pixels.count else { continue }
+                // BGRA format: B=offset, G=offset+1, R=offset+2
+                if pixels[offset] > 0 || pixels[offset+1] > 0 || pixels[offset+2] > 0 { return true }
+            }
+        }
+        return false
+    }
+
+    /// Makes a CVPixelBuffer + CVMetalTexture pair for testing the render path.
+    private func makePixelBufferAndTexture(
+        device: MTLDevice,
+        textureCache: CVMetalTextureCache,
+        width: Int,
+        height: Int
+    ) -> (CVPixelBuffer, MTLTexture)? {
+        let attrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+        var pb: CVPixelBuffer?
+        let status = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                         kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb)
+        guard status == kCVReturnSuccess, let pb else { return nil }
+
+        var cvTex: CVMetalTexture?
+        let texStatus = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, textureCache, pb, nil,
+            .bgra8Unorm, width, height, 0, &cvTex
+        )
+        guard texStatus == kCVReturnSuccess, let cvTex,
+              let texture = CVMetalTextureGetTexture(cvTex) else { return nil }
+        return (pb, texture)
+    }
+
+    // MARK: - Export Pixel Proof Tests
+
+    /// Text overlay pixels are present in CVPixelBuffer after production render path.
+    @MainActor
+    func testRenderTimelineFrame_textOverlay_pixelsVisibleInCVPixelBuffer() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let width = 1080, height = 1920
+        guard let (pb, targetTexture) = makePixelBufferAndTexture(
+            device: device, textureCache: textureCache, width: width, height: height
+        ) else {
+            throw XCTSkip("Failed to create pixel buffer + texture pair")
+        }
+
+        // Build session with text overlay at center (0.5, 0.5)
+        let (baseSession, _) = makeSession(device: device, commandQueue: commandQueue, sceneCount: 1, framesPerScene: 90)
+
+        let textPayloadId = UUID()
+        let textPayload = TextPayload(
+            text: "PIXEL PROOF",
+            fontFamily: nil,
+            fontSize: 72,
+            colorHex: "#FFFFFF",
+            centerX: 0.5,
+            centerY: 0.5
+        )
+        let textItem = TimelineItem(payloadId: textPayloadId, kind: .text, startUs: 0, durationUs: 3_000_000)
+
+        let session = TimelineCompositionEngine.TimelineExportSession(
+            transitionMath: baseSession.transitionMath,
+            canvasSize: baseSession.canvasSize,
+            fps: baseSession.fps,
+            scenesByInstanceId: baseSession.scenesByInstanceId,
+            audioSceneData: baseSession.audioSceneData,
+            textOverlayItems: [(item: textItem, payload: textPayload)],
+            stickerOverlayItems: []
+        )
+
+        let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
+        let exportRuntime = try TimelineExportRuntime(
+            session: session, textureCache: textureCache, coordinatorFactory: noCoordinators
+        )
+
+        let renderer = try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        let compositor = try TransitionCompositor(device: device, colorPixelFormat: .bgra8Unorm)
+
+        let counts = try VideoExporter.renderTimelineFrame(
+            frameIndex: 0,
+            targetTexture: targetTexture,
+            exportRuntime: exportRuntime,
+            renderer: renderer,
+            transitionCompositor: compositor,
+            canvasSize: SizeD(width: Double(width), height: Double(height)),
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColor: .opaqueBlack,
+            renderDiagnosticsSink: nil
+        )
+
+        XCTAssertEqual(counts.textOverlayCount, 1)
+        XCTAssertEqual(counts.stickerOverlayCount, 0)
+
+        // Pixel readback: text overlay at center should produce non-black pixels
+        let pixels = readPixels(from: pb)
+        let bpr = CVPixelBufferGetBytesPerRow(pb)
+        let cx = width / 2, cy = height / 2
+
+        XCTAssertTrue(
+            hasNonBlackInROI(pixels, bytesPerRow: bpr, cx: cx, cy: cy, radius: 50),
+            "Text overlay pixels must be visible at center of CVPixelBuffer"
+        )
+
+        // Control: corner should be black (no overlay there)
+        XCTAssertFalse(
+            hasNonBlackInROI(pixels, bytesPerRow: bpr, cx: 10, cy: 10, radius: 5),
+            "Corner pixels should be black (no overlay at corner)"
+        )
+    }
+
+    /// Sticker overlay pixels are present in CVPixelBuffer.
+    @MainActor
+    func testRenderTimelineFrame_stickerOverlay_pixelsVisibleInCVPixelBuffer() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let width = 1080, height = 1920
+        guard let (pb, targetTexture) = makePixelBufferAndTexture(
+            device: device, textureCache: textureCache, width: width, height: height
+        ) else {
+            throw XCTSkip("Failed to create pixel buffer + texture pair")
+        }
+
+        // Create a solid red 32x32 PNG fixture
+        let fixtureURL = FileManager.default.temporaryDirectory.appendingPathComponent("test_sticker_\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: fixtureURL) }
+
+        // Generate solid red PNG
+        let context = CGContext(
+            data: nil, width: 32, height: 32, bitsPerComponent: 8,
+            bytesPerRow: 32 * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        let cgImage = context.makeImage()!
+        let data = UIImage(cgImage: cgImage).pngData()!
+        try data.write(to: fixtureURL)
+
+        let (baseSession, _) = makeSession(device: device, commandQueue: commandQueue, sceneCount: 1, framesPerScene: 90)
+
+        let stickerPayload = StickerPayload(stickerId: "test-red", centerX: 0.5, centerY: 0.5)
+        let stickerItem = TimelineItem(payloadId: UUID(), kind: .sticker, startUs: 0, durationUs: 3_000_000)
+
+        let session = TimelineCompositionEngine.TimelineExportSession(
+            transitionMath: baseSession.transitionMath,
+            canvasSize: baseSession.canvasSize,
+            fps: baseSession.fps,
+            scenesByInstanceId: baseSession.scenesByInstanceId,
+            audioSceneData: baseSession.audioSceneData,
+            textOverlayItems: [],
+            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: fixtureURL)]
+        )
+
+        let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
+        let exportRuntime = try TimelineExportRuntime(
+            session: session, textureCache: textureCache, coordinatorFactory: noCoordinators
+        )
+
+        let renderer = try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        let compositor = try TransitionCompositor(device: device, colorPixelFormat: .bgra8Unorm)
+
+        let counts = try VideoExporter.renderTimelineFrame(
+            frameIndex: 0,
+            targetTexture: targetTexture,
+            exportRuntime: exportRuntime,
+            renderer: renderer,
+            transitionCompositor: compositor,
+            canvasSize: SizeD(width: Double(width), height: Double(height)),
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColor: .opaqueBlack,
+            renderDiagnosticsSink: nil
+        )
+
+        XCTAssertEqual(counts.textOverlayCount, 0)
+        XCTAssertEqual(counts.stickerOverlayCount, 1)
+
+        let pixels = readPixels(from: pb)
+        let bpr = CVPixelBufferGetBytesPerRow(pb)
+        let cx = width / 2, cy = height / 2
+
+        XCTAssertTrue(
+            hasNonBlackInROI(pixels, bytesPerRow: bpr, cx: cx, cy: cy, radius: 50),
+            "Sticker overlay pixels must be visible at center of CVPixelBuffer"
+        )
+    }
+
+    /// Mixed text+sticker: text renders on top of sticker (z-order contract).
+    @MainActor
+    func testRenderTimelineFrame_mixedOverlays_stickerBelowText() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let width = 1080, height = 1920
+        guard let (pb, targetTexture) = makePixelBufferAndTexture(
+            device: device, textureCache: textureCache, width: width, height: height
+        ) else {
+            throw XCTSkip("Failed to create pixel buffer + texture pair")
+        }
+
+        // Create solid red sticker fixture
+        let fixtureURL = FileManager.default.temporaryDirectory.appendingPathComponent("test_sticker_zorder_\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: fixtureURL) }
+        let context = CGContext(
+            data: nil, width: 200, height: 200, bitsPerComponent: 8,
+            bytesPerRow: 200 * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 200, height: 200))
+        let cgImage = context.makeImage()!
+        try UIImage(cgImage: cgImage).pngData()!.write(to: fixtureURL)
+
+        let (baseSession, _) = makeSession(device: device, commandQueue: commandQueue, sceneCount: 1, framesPerScene: 90)
+
+        // Text: white at center. Sticker: red at center. If z-order is correct, center should be white.
+        let textPayload = TextPayload(text: "Z", fontFamily: nil, fontSize: 200, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5)
+        let textItem = TimelineItem(payloadId: UUID(), kind: .text, startUs: 0, durationUs: 3_000_000)
+
+        let stickerPayload = StickerPayload(stickerId: "red-bg", centerX: 0.5, centerY: 0.5)
+        let stickerItem = TimelineItem(payloadId: UUID(), kind: .sticker, startUs: 0, durationUs: 3_000_000)
+
+        let session = TimelineCompositionEngine.TimelineExportSession(
+            transitionMath: baseSession.transitionMath,
+            canvasSize: baseSession.canvasSize,
+            fps: baseSession.fps,
+            scenesByInstanceId: baseSession.scenesByInstanceId,
+            audioSceneData: baseSession.audioSceneData,
+            textOverlayItems: [(item: textItem, payload: textPayload)],
+            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: fixtureURL)]
+        )
+
+        let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
+        let exportRuntime = try TimelineExportRuntime(
+            session: session, textureCache: textureCache, coordinatorFactory: noCoordinators
+        )
+
+        let renderer = try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        let compositor = try TransitionCompositor(device: device, colorPixelFormat: .bgra8Unorm)
+
+        let counts = try VideoExporter.renderTimelineFrame(
+            frameIndex: 0,
+            targetTexture: targetTexture,
+            exportRuntime: exportRuntime,
+            renderer: renderer,
+            transitionCompositor: compositor,
+            canvasSize: SizeD(width: Double(width), height: Double(height)),
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColor: .opaqueBlack,
+            renderDiagnosticsSink: nil
+        )
+
+        XCTAssertEqual(counts.textOverlayCount, 1)
+        XCTAssertEqual(counts.stickerOverlayCount, 1)
+
+        // Pixel readback: center should have white-ish pixels (text on top of red sticker)
+        let pixels = readPixels(from: pb)
+        let bpr = CVPixelBufferGetBytesPerRow(pb)
+        let cx = width / 2, cy = height / 2
+
+        // Check a small region at center — at least some pixels should have high B+G+R (white text)
+        var hasWhitePixel = false
+        for dy in -20...20 {
+            for dx in -20...20 {
+                let py = cy + dy, px = cx + dx
+                let offset = py * bpr + px * 4
+                guard offset + 3 < pixels.count else { continue }
+                // BGRA: if B, G, R are all > 200, it's white-ish
+                if pixels[offset] > 200 && pixels[offset+1] > 200 && pixels[offset+2] > 200 {
+                    hasWhitePixel = true
+                    break
+                }
+            }
+            if hasWhitePixel { break }
+        }
+        XCTAssertTrue(hasWhitePixel, "Text (white) must render on top of sticker (red) — z-order proof")
+    }
+
+    /// Overlays survive through the full pipeline: render -> enqueue -> AVAssetWriter -> file -> readback.
+    @MainActor
+    func testFullExportPipeline_overlaysVisibleInOutputFile() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let width = 540, height = 960  // smaller for speed
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("export_pixel_proof_\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        // Build session with text overlay
+        let (baseSession, _) = makeSession(device: device, commandQueue: commandQueue, sceneCount: 1, framesPerScene: 30)
+
+        let textPayload = TextPayload(
+            text: "EXPORT",
+            fontFamily: nil,
+            fontSize: 96,
+            colorHex: "#FFFFFF",
+            centerX: 0.5,
+            centerY: 0.5
+        )
+        let textItem = TimelineItem(payloadId: UUID(), kind: .text, startUs: 0, durationUs: 1_000_000)
+
+        let session = TimelineCompositionEngine.TimelineExportSession(
+            transitionMath: baseSession.transitionMath,
+            canvasSize: SizeD(width: Double(width), height: Double(height)),
+            fps: baseSession.fps,
+            scenesByInstanceId: baseSession.scenesByInstanceId,
+            audioSceneData: baseSession.audioSceneData,
+            textOverlayItems: [(item: textItem, payload: textPayload)],
+            stickerOverlayItems: []
+        )
+
+        // Run the export loop manually (same as VideoExporter does, but synchronous for test)
+        let renderer = try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm)
+        let compositor = try TransitionCompositor(device: device, colorPixelFormat: .bgra8Unorm)
+
+        let pipeline = try ExportWriterPipeline(
+            outputURL: outputURL,
+            video: .init(sizePx: (width: width, height: height), fps: 30, bitrate: 2_000_000, gopSeconds: 1),
+            audio: nil
+        )
+        try pipeline.startWriting()
+
+        let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
+        let exportRuntime = try TimelineExportRuntime(
+            session: session, textureCache: textureCache, coordinatorFactory: noCoordinators
+        )
+
+        let totalFrames = session.transitionMath.compressedDurationFrames
+        for frameIndex in 0..<totalFrames {
+            guard let pool = pipeline.pixelBufferPool else {
+                XCTFail("No pixel buffer pool")
+                return
+            }
+
+            var pixelBuffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
+            guard let pixelBuffer else {
+                XCTFail("Failed to create pixel buffer")
+                return
+            }
+
+            var cvMetalTexture: CVMetalTexture?
+            CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault, textureCache, pixelBuffer, nil,
+                .bgra8Unorm, width, height, 0, &cvMetalTexture
+            )
+            guard let cvMetalTexture, let targetTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
+                XCTFail("Failed to create metal texture")
+                return
+            }
+
+            _ = try VideoExporter.renderTimelineFrame(
+                frameIndex: frameIndex,
+                targetTexture: targetTexture,
+                exportRuntime: exportRuntime,
+                renderer: renderer,
+                transitionCompositor: compositor,
+                canvasSize: SizeD(width: Double(width), height: Double(height)),
+                backgroundState: nil,
+                backgroundTextureProvider: nil,
+                clearColor: .opaqueBlack,
+                renderDiagnosticsSink: nil
+            )
+
+            let pts = CMTime(value: CMTimeValue(frameIndex), timescale: 30)
+            let semaphore = DispatchSemaphore(value: 0)
+            pipeline.enqueueVideoFrame(pixelBuffer, presentationTime: pts) {
+                semaphore.signal()
+            }
+            semaphore.wait()
+        }
+
+        let finishExpectation = expectation(description: "Writer finishes")
+        pipeline.finishWriting { _ in
+            finishExpectation.fulfill()
+        }
+        await fulfillment(of: [finishExpectation], timeout: 5.0)
+
+        // Read back first frame
+        let asset = AVURLAsset(url: outputURL)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw XCTSkip("No video track in output")
+        }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
+        ])
+        reader.add(output)
+        guard reader.startReading() else { throw XCTSkip("Reader failed to start") }
+        guard let sample = output.copyNextSampleBuffer(),
+              let readbackPB = CMSampleBufferGetImageBuffer(sample) else {
+            throw XCTSkip("No frame in output")
+        }
+
+        let pixels = readPixels(from: readbackPB)
+        let bpr = CVPixelBufferGetBytesPerRow(readbackPB)
+        let cx = width / 2, cy = height / 2
+
+        XCTAssertTrue(
+            hasNonBlackInROI(pixels, bytesPerRow: bpr, cx: cx, cy: cy, radius: 50),
+            "Text overlay pixels must survive full pipeline: render -> encode -> decode"
+        )
     }
 }

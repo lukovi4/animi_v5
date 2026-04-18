@@ -1,23 +1,58 @@
 import UIKit
 
-// MARK: - Overlay Track Snapshot (PR9: Text Overlay)
+// MARK: - Overlay Lane Snapshot (row-packed)
 
-/// Data snapshot for overlay track items.
-struct OverlayTrackSnapshot {
-    let items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)]
+/// Data snapshot for a single overlay lane (text or sticker).
+struct OverlayLaneSnapshot {
+    struct RowItem {
+        let id: UUID
+        let startUs: TimeUs
+        let durationUs: TimeUs
+        let label: String
+        let row: Int
+    }
+    let items: [RowItem]
     let selectedItemId: UUID?
+    let rowCount: Int
+
+    /// Greedy row-packing: sorts by startUs, assigns each item to the first
+    /// row whose last item ends before this item starts.
+    static func packRows(
+        _ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)]
+    ) -> (items: [RowItem], rowCount: Int) {
+        let sorted = items.sorted { $0.startUs < $1.startUs }
+        var rowEnds: [TimeUs] = []
+        var result: [RowItem] = []
+        for item in sorted {
+            let endUs = item.startUs + item.durationUs
+            if let idx = rowEnds.firstIndex(where: { $0 <= item.startUs }) {
+                rowEnds[idx] = endUs
+                result.append(.init(id: item.id, startUs: item.startUs,
+                                    durationUs: item.durationUs, label: item.label, row: idx))
+            } else {
+                result.append(.init(id: item.id, startUs: item.startUs,
+                                    durationUs: item.durationUs, label: item.label, row: rowEnds.count))
+                rowEnds.append(endUs)
+            }
+        }
+        return (result, max(1, rowEnds.count))
+    }
 }
 
-// MARK: - Overlay Track View (PR9: Reusable for text + future stickers)
+// MARK: - Overlay Lane View
 
-/// Track view for overlay items (text, stickers) on the timeline.
+/// Lane view for overlay items of a single kind (text or sticker) on the timeline.
 /// Uses data/layout split pattern matching SceneTrackView.
-final class OverlayTrackView: UIView {
+final class OverlayLaneView: UIView {
+
+    // MARK: - Lane Kind
+
+    let laneKind: ItemKind
 
     // MARK: - Callbacks
 
-    /// Called when an overlay item is tapped. Carries explicit ItemKind from snapshot.
-    var onSelectItem: ((UUID, ItemKind) -> Void)?
+    /// Called when an overlay item is tapped. Lane provides its own kind.
+    var onSelectItem: ((UUID) -> Void)?
 
     /// Called when an overlay item is dragged to move.
     var onMoveItem: ((UUID, TimeUs, InteractionPhase) -> Void)?
@@ -27,7 +62,8 @@ final class OverlayTrackView: UIView {
 
     // MARK: - State
 
-    private var currentItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)] = []
+    private var currentItems: [OverlayLaneSnapshot.RowItem] = []
+    private var rowCount: Int = 1
     private var selectedItemId: UUID?
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
     private var leftPadding: CGFloat = 0
@@ -36,17 +72,14 @@ final class OverlayTrackView: UIView {
 
     private var clipViews: [UUID: OverlayClipView] = [:]
 
-    // MARK: - Appearance
-
-    private let clipColor: UIColor = .systemTeal
-    private let clipCornerRadius: CGFloat = 6
-
     // MARK: - Initialization
 
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+    init(laneKind: ItemKind) {
+        self.laneKind = laneKind
+        super.init(frame: .zero)
         backgroundColor = .clear
-        isHidden = true // Hidden until items exist
+        isHidden = true
+        accessibilityIdentifier = laneKind == .text ? "textOverlayLane" : "stickerOverlayLane"
     }
 
     required init?(coder: NSCoder) {
@@ -55,9 +88,10 @@ final class OverlayTrackView: UIView {
 
     // MARK: - Data Path
 
-    /// Applies a data snapshot, creating/removing/reusing clip subviews.
-    func applySnapshot(_ snapshot: OverlayTrackSnapshot) {
+    /// Applies a lane snapshot, creating/removing/reusing clip subviews.
+    func applySnapshot(_ snapshot: OverlayLaneSnapshot) {
         currentItems = snapshot.items
+        rowCount = snapshot.rowCount
         selectedItemId = snapshot.selectedItemId
 
         let newIds = Set(snapshot.items.map(\.id))
@@ -72,11 +106,12 @@ final class OverlayTrackView: UIView {
         // Create or update clips
         for item in snapshot.items {
             if let existing = clipViews[item.id] {
-                existing.configure(label: item.label, isSelected: item.id == snapshot.selectedItemId, itemKind: item.itemKind)
+                existing.configure(label: item.label, isSelected: item.id == snapshot.selectedItemId, laneKind: laneKind)
             } else {
                 let clip = OverlayClipView()
-                clip.configure(label: item.label, isSelected: item.id == snapshot.selectedItemId, itemKind: item.itemKind)
-                clip.onTap = { [weak self] in self?.onSelectItem?(item.id, item.itemKind) }
+                clip.accessibilityIdentifier = "overlayClip_\(item.id.uuidString)"
+                clip.configure(label: item.label, isSelected: item.id == snapshot.selectedItemId, laneKind: laneKind)
+                clip.onTap = { [weak self] in self?.onSelectItem?(item.id) }
                 clip.onMove = { [weak self] newStartUs, phase in
                     self?.onMoveItem?(item.id, newStartUs, phase)
                 }
@@ -107,13 +142,15 @@ final class OverlayTrackView: UIView {
     }
 
     private func layoutItems() {
+        let rowHeight = max(24, (bounds.height - 4) / CGFloat(rowCount))
         for item in currentItems {
             guard let clip = clipViews[item.id] else { continue }
             let startSeconds = CGFloat(usToSeconds(item.startUs))
             let durationSeconds = CGFloat(usToSeconds(item.durationUs))
             let x = leftPadding + startSeconds * pxPerSecond
             let width = max(20, durationSeconds * pxPerSecond)
-            clip.frame = CGRect(x: x, y: 2, width: width, height: bounds.height - 4)
+            let y = 2 + CGFloat(item.row) * rowHeight
+            clip.frame = CGRect(x: x, y: y, width: width, height: rowHeight - 2)
 
             // Store layout info for gesture computation
             clip.itemStartUs = item.startUs
@@ -196,11 +233,11 @@ private final class OverlayClipView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(label: String, isSelected: Bool, itemKind: ItemKind) {
+    func configure(label: String, isSelected: Bool, laneKind: ItemKind) {
         textLabel.text = label
-        switch itemKind {
+        switch laneKind {
         case .sticker:
-            iconLabel.text = "\u{1F600}" // face emoji as placeholder, or use SF Symbol approach
+            iconLabel.text = "\u{1F600}"
             backgroundColor = .systemPurple
         default:
             iconLabel.text = "Aa"

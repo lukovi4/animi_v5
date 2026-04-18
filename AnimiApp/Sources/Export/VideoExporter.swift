@@ -1217,45 +1217,20 @@ public final class VideoExporter: @unchecked Sendable {
                     return
                 }
 
-                // Resolve and render via unified TimelineRenderExecutor
+                // Resolve and render via extracted helper
                 do {
-                    let resolved = try exportRuntime.resolveFrame(frameIndex)
-                    let textOverlays = exportRuntime.resolveTextOverlays(at: frameIndex)
-                    let stickerOverlays = exportRuntime.resolveStickerOverlays(at: frameIndex)
-
-                    let request = TimelineRenderRequest(
-                        resolved: resolved,
+                    _ = try Self.renderTimelineFrame(
+                        frameIndex: frameIndex,
                         targetTexture: targetTexture,
-                        drawableScale: 1.0,
-                        timelineCanvasSize: canvasSize,
+                        exportRuntime: exportRuntime,
+                        renderer: renderer,
+                        transitionCompositor: transitionCompositor,
+                        canvasSize: canvasSize,
                         backgroundState: backgroundState,
                         backgroundTextureProvider: backgroundTextureProvider,
-                        clearColorOverride: settings.clearColor,
-                        presentationDrawable: nil,
-                        waitUntilCompleted: true,
-                        diagnosticFrameTag: frameIndex,
-                        textOverlays: textOverlays,
-                        stickerOverlays: stickerOverlays
+                        clearColor: settings.clearColor,
+                        renderDiagnosticsSink: renderDiagnosticsSink
                     )
-                    do {
-                        try TimelineRenderExecutor.render(
-                            request, renderer: renderer,
-                            commandQueue: renderer.commandQueue,
-                            transitionCompositor: transitionCompositor,
-                            completionQueue: nil,
-                            renderSink: renderDiagnosticsSink
-                        )
-                    } catch let error as TimelineRenderExecutorError {
-                        switch error {
-                        case .failedToCreateCommandBuffer:
-                            throw VideoExportError.failedToCreateCommandBuffer
-                        case .failedToAcquireOffscreenTexture:
-                            throw TimelineExportError.failedToAcquireOffscreenTexture
-                        case .missingTransitionCompositor,
-                             .missingCompletionQueueForAsyncTransition:
-                            throw VideoExportError.renderError(error)
-                        }
-                    }
                 } catch {
                     pipeline.setError(VideoExportError.renderError(error))
                     videoGroup.leave()
@@ -1284,6 +1259,62 @@ public final class VideoExporter: @unchecked Sendable {
         } else {
             exportSession.finishWriting()
         }
+    }
+
+    // MARK: - Extracted Frame Render Helper
+
+    /// Renders one timeline frame into a pre-allocated target texture.
+    /// Returns overlay counts for debug probing.
+    internal static func renderTimelineFrame(
+        frameIndex: Int,
+        targetTexture: MTLTexture,
+        exportRuntime: TimelineExportRuntime,
+        renderer: MetalRenderer,
+        transitionCompositor: TransitionCompositor,
+        canvasSize: SizeD,
+        backgroundState: EffectiveBackgroundState?,
+        backgroundTextureProvider: TextureProvider?,
+        clearColor: ClearColor?,
+        renderDiagnosticsSink: RenderDiagnosticsSink?
+    ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
+        let resolved = try exportRuntime.resolveFrame(frameIndex)
+        let textOverlays = exportRuntime.resolveTextOverlays(at: frameIndex)
+        let stickerOverlays = exportRuntime.resolveStickerOverlays(at: frameIndex)
+
+        let request = TimelineRenderRequest(
+            resolved: resolved,
+            targetTexture: targetTexture,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: backgroundState,
+            backgroundTextureProvider: backgroundTextureProvider,
+            clearColorOverride: clearColor,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            diagnosticFrameTag: frameIndex,
+            textOverlays: textOverlays,
+            stickerOverlays: stickerOverlays
+        )
+        do {
+            try TimelineRenderExecutor.render(
+                request, renderer: renderer,
+                commandQueue: renderer.commandQueue,
+                transitionCompositor: transitionCompositor,
+                completionQueue: nil,
+                renderSink: renderDiagnosticsSink
+            )
+        } catch let error as TimelineRenderExecutorError {
+            switch error {
+            case .failedToCreateCommandBuffer:
+                throw VideoExportError.failedToCreateCommandBuffer
+            case .failedToAcquireOffscreenTexture:
+                throw TimelineExportError.failedToAcquireOffscreenTexture
+            case .missingTransitionCompositor,
+                 .missingCompletionQueueForAsyncTransition:
+                throw VideoExportError.renderError(error)
+            }
+        }
+        return (textOverlayCount: textOverlays.count, stickerOverlayCount: stickerOverlays.count)
     }
 
 }

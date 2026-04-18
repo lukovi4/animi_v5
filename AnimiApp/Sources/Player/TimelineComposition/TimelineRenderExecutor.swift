@@ -1,5 +1,4 @@
 import Metal
-import UIKit
 import TVECore
 
 // MARK: - TT-06: Unified Render Executor
@@ -176,15 +175,23 @@ internal enum TimelineRenderExecutor {
             initialLoadAction: .load
         )
 
-        // Pass 3: Sticker overlays (PR10, rendered below text)
-        if !request.stickerOverlays.isEmpty {
-            renderStickerOverlays(request.stickerOverlays, target: target, commandBuffer: commandBuffer, renderer: renderer)
-        }
-
-        // Pass 4: Text overlays (PR9, rendered above stickers)
-        if !request.textOverlays.isEmpty {
-            renderTextOverlays(request.textOverlays, target: target, commandBuffer: commandBuffer, renderer: renderer)
-        }
+        // Pass 3: Overlay composition (GPU composite)
+        let overlayTex = TimelineOverlayRasterizer.makeOverlayTexture(
+            stickers: request.stickerOverlays,
+            texts: request.textOverlays,
+            pixelWidth: target.texture.width,
+            pixelHeight: target.texture.height,
+            animSize: ctx.canvasSize,
+            device: target.texture.device,
+            stickerCache: stickerCache
+        )
+        try composeOverlayTextureIfNeeded(
+            overlayTexture: overlayTex,
+            target: target,
+            renderer: renderer,
+            commandBuffer: commandBuffer,
+            clearColorOverride: request.clearColorOverride
+        )
     }
 
     private static func renderTransition(
@@ -327,25 +334,28 @@ internal enum TimelineRenderExecutor {
             commandBuffer: commandBuffer
         )
 
-        // Pass 3: Sticker overlays (PR10, rendered below text)
-        if !request.stickerOverlays.isEmpty {
-            let stickerTarget = RenderTarget(
-                texture: request.targetTexture,
-                drawableScale: request.drawableScale,
-                animSize: request.timelineCanvasSize
-            )
-            renderStickerOverlays(request.stickerOverlays, target: stickerTarget, commandBuffer: commandBuffer, renderer: renderer)
-        }
-
-        // Pass 4: Text overlays (PR9, rendered above stickers)
-        if !request.textOverlays.isEmpty {
-            let finalTarget = RenderTarget(
-                texture: request.targetTexture,
-                drawableScale: request.drawableScale,
-                animSize: request.timelineCanvasSize
-            )
-            renderTextOverlays(request.textOverlays, target: finalTarget, commandBuffer: commandBuffer, renderer: renderer)
-        }
+        // Pass 3: Overlay composition (GPU composite)
+        let overlayTarget = RenderTarget(
+            texture: request.targetTexture,
+            drawableScale: request.drawableScale,
+            animSize: request.timelineCanvasSize
+        )
+        let overlayTex = TimelineOverlayRasterizer.makeOverlayTexture(
+            stickers: request.stickerOverlays,
+            texts: request.textOverlays,
+            pixelWidth: request.targetTexture.width,
+            pixelHeight: request.targetTexture.height,
+            animSize: request.timelineCanvasSize,
+            device: request.targetTexture.device,
+            stickerCache: stickerCache
+        )
+        try composeOverlayTextureIfNeeded(
+            overlayTexture: overlayTex,
+            target: overlayTarget,
+            renderer: renderer,
+            commandBuffer: commandBuffer,
+            clearColorOverride: request.clearColorOverride
+        )
     }
 
     /// Routes to the appropriate MetalRenderer.draw overload based on clearColorOverride.
@@ -387,193 +397,43 @@ internal enum TimelineRenderExecutor {
         }
     }
 
-    // MARK: - Text Overlay Rendering (PR9)
+    // MARK: - Overlay Composition
 
-    /// CPU-rasterizes text overlays via Core Graphics directly onto the target pixel buffer.
-    /// V1: Adequate for 1-3 overlays per frame (<1ms). V2 optimization (MSDF) deferred.
-    /// Strategy: Reads current target texture, composites text in CG, writes back.
-    private static func renderTextOverlays(
-        _ overlays: [ResolvedTextOverlay],
+    private static let stickerCache = StickerImageCache()
+
+    /// Composites a pre-rasterized overlay texture onto the render target via GPU draw pass.
+    /// Uses `initialLoadAction: .load` to preserve existing target content.
+    private static func composeOverlayTextureIfNeeded(
+        overlayTexture: MTLTexture?,
         target: RenderTarget,
+        renderer: MetalRenderer,
         commandBuffer: MTLCommandBuffer,
-        renderer: MetalRenderer
-    ) {
-        let pixelWidth = target.texture.width
-        let pixelHeight = target.texture.height
+        clearColorOverride: ClearColor?
+    ) throws {
+        guard let overlayTex = overlayTexture else { return }
 
-        guard pixelWidth > 0, pixelHeight > 0 else { return }
+        let provider = ThreadSafeInMemoryTextureProvider()
+        let overlayAssetId = "__timeline_overlay__"
+        provider.setTexture(overlayTex, for: overlayAssetId)
 
-        let bytesPerRow = pixelWidth * 4
-        let dataSize = bytesPerRow * pixelHeight
+        let commands: [RenderCommand] = [
+            .drawImage(assetId: overlayAssetId, opacity: 1.0)
+        ]
+        let assetSizes: [String: AssetSize] = [
+            overlayAssetId: AssetSize(width: target.animSize.width, height: target.animSize.height)
+        ]
 
-        // Read current texture content
-        var pixelBuffer = [UInt8](repeating: 0, count: dataSize)
-        target.texture.getBytes(
-            &pixelBuffer,
-            bytesPerRow: bytesPerRow,
-            from: MTLRegionMake2D(0, 0, pixelWidth, pixelHeight),
-            mipmapLevel: 0
-        )
-
-        // Create CGContext from existing pixels
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let cgContext = CGContext(
-            data: &pixelBuffer,
-            width: pixelWidth,
-            height: pixelHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return }
-
-        // Flip coordinates (CG origin is bottom-left, Metal is top-left)
-        cgContext.translateBy(x: 0, y: CGFloat(pixelHeight))
-        cgContext.scaleBy(x: 1, y: -1)
-
-        for overlay in overlays {
-            let scale = CGFloat(pixelWidth) / CGFloat(target.animSize.width)
-            let fontSize = overlay.fontSize * scale
-            #if canImport(UIKit)
-            let font: UIFont
-            if let family = overlay.fontFamily {
-                font = UIFont(name: family, size: fontSize) ?? .boldSystemFont(ofSize: fontSize)
-            } else {
-                font = .boldSystemFont(ofSize: fontSize)
-            }
-            let color = UIColor(hexString: overlay.colorHex) ?? .white
-            #else
-            let font = NSFont.boldSystemFont(ofSize: fontSize)
-            let color = NSColor.white
-            #endif
-
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .foregroundColor: color,
-            ]
-
-            let nsString = overlay.text as NSString
-            let textSize = nsString.size(withAttributes: attributes)
-
-            let x = CGFloat(overlay.centerX) * CGFloat(pixelWidth) - textSize.width / 2
-            let y = CGFloat(overlay.centerY) * CGFloat(pixelHeight) - textSize.height / 2
-
-            nsString.draw(at: CGPoint(x: x, y: y), withAttributes: attributes)
-        }
-
-        // Write back to texture
-        target.texture.replace(
-            region: MTLRegionMake2D(0, 0, pixelWidth, pixelHeight),
-            mipmapLevel: 0,
-            withBytes: pixelBuffer,
-            bytesPerRow: bytesPerRow
-        )
-    }
-
-    // MARK: - Sticker Overlay Rendering (PR10)
-
-    /// Per-imageURL CGImage cache to avoid per-frame disk I/O.
-    private static var stickerImageCache: [URL: CGImage] = [:]
-
-    /// CPU-rasterizes sticker overlays via Core Graphics directly onto the target pixel buffer.
-    /// Same CPU rasterization pattern as renderTextOverlays.
-    /// Sticker render size: 15% of canvas pixel width, aspect-fit.
-    private static func renderStickerOverlays(
-        _ overlays: [ResolvedStickerOverlay],
-        target: RenderTarget,
-        commandBuffer: MTLCommandBuffer,
-        renderer: MetalRenderer
-    ) {
-        let pixelWidth = target.texture.width
-        let pixelHeight = target.texture.height
-
-        guard pixelWidth > 0, pixelHeight > 0 else { return }
-
-        let bytesPerRow = pixelWidth * 4
-        let dataSize = bytesPerRow * pixelHeight
-
-        // Read current texture content
-        var pixelBuffer = [UInt8](repeating: 0, count: dataSize)
-        target.texture.getBytes(
-            &pixelBuffer,
-            bytesPerRow: bytesPerRow,
-            from: MTLRegionMake2D(0, 0, pixelWidth, pixelHeight),
-            mipmapLevel: 0
-        )
-
-        // Create CGContext from existing pixels
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let cgContext = CGContext(
-            data: &pixelBuffer,
-            width: pixelWidth,
-            height: pixelHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return }
-
-        // Flip coordinates (CG origin is bottom-left, Metal is top-left)
-        cgContext.translateBy(x: 0, y: CGFloat(pixelHeight))
-        cgContext.scaleBy(x: 1, y: -1)
-
-        for overlay in overlays {
-            // Load or cache CGImage from URL
-            let cgImage: CGImage
-            if let cached = stickerImageCache[overlay.imageURL] {
-                cgImage = cached
-            } else {
-                guard let source = CGImageSourceCreateWithURL(overlay.imageURL as CFURL, nil),
-                      let loaded = CGImageSourceCreateImageAtIndex(source, 0, nil) else { continue }
-                stickerImageCache[overlay.imageURL] = loaded
-                cgImage = loaded
-            }
-
-            // Render size: 15% of canvas pixel width, aspect-fit
-            let targetWidth = CGFloat(pixelWidth) * 0.15
-            let imageAspect = CGFloat(cgImage.width) / max(1, CGFloat(cgImage.height))
-            let drawWidth: CGFloat
-            let drawHeight: CGFloat
-            if imageAspect >= 1.0 {
-                drawWidth = targetWidth
-                drawHeight = targetWidth / imageAspect
-            } else {
-                drawHeight = targetWidth
-                drawWidth = targetWidth * imageAspect
-            }
-
-            let x = CGFloat(overlay.centerX) * CGFloat(pixelWidth) - drawWidth / 2
-            let y = CGFloat(overlay.centerY) * CGFloat(pixelHeight) - drawHeight / 2
-
-            cgContext.draw(cgImage, in: CGRect(x: x, y: y, width: drawWidth, height: drawHeight))
-        }
-
-        // Write back to texture
-        target.texture.replace(
-            region: MTLRegionMake2D(0, 0, pixelWidth, pixelHeight),
-            mipmapLevel: 0,
-            withBytes: pixelBuffer,
-            bytesPerRow: bytesPerRow
-        )
-    }
-}
-
-// MARK: - UIColor Hex Helper (PR9)
-
-private extension UIColor {
-    convenience init?(hexString: String) {
-        var hex = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
-        hex = hex.replacingOccurrences(of: "#", with: "")
-        guard hex.count == 6 else { return nil }
-
-        var rgb: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&rgb)
-
-        self.init(
-            red: CGFloat((rgb & 0xFF0000) >> 16) / 255.0,
-            green: CGFloat((rgb & 0x00FF00) >> 8) / 255.0,
-            blue: CGFloat(rgb & 0x0000FF) / 255.0,
-            alpha: 1.0
+        try drawPass(
+            renderer: renderer,
+            commands: commands,
+            target: target,
+            clearColorOverride: clearColorOverride,
+            textureProvider: provider,
+            commandBuffer: commandBuffer,
+            assetSizes: assetSizes,
+            pathRegistry: PathRegistry(),
+            backgroundState: nil,
+            initialLoadAction: .load
         )
     }
 }

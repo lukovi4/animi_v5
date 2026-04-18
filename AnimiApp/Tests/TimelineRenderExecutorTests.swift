@@ -1,5 +1,6 @@
 import XCTest
 import Metal
+import UIKit
 import TVECore
 @testable import AnimiApp
 
@@ -37,14 +38,14 @@ final class TimelineRenderExecutorTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeRenderTarget(width: Int, height: Int) -> MTLTexture {
+    private func makeRenderTarget(width: Int, height: Int, storageMode: MTLStorageMode = .shared) -> MTLTexture {
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
             width: width, height: height,
             mipmapped: false
         )
         desc.usage = [.renderTarget, .shaderRead, .shaderWrite]
-        desc.storageMode = .shared
+        desc.storageMode = storageMode
         return device.makeTexture(descriptor: desc)!
     }
 
@@ -110,6 +111,24 @@ final class TimelineRenderExecutorTests: XCTestCase {
             mipmapLevel: 0
         )
         return pixels
+    }
+
+    /// Reads pixels from a `.private` storage texture by blitting to a `.shared` staging texture.
+    private func readPixelsViaBlit(from texture: MTLTexture) -> [UInt8] {
+        let staging = makeRenderTarget(width: texture.width, height: texture.height, storageMode: .shared)
+        let cmdBuf = renderer.commandQueue.makeCommandBuffer()!
+        let blit = cmdBuf.makeBlitCommandEncoder()!
+        blit.copy(
+            from: texture, sourceSlice: 0, sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
+            to: staging, destinationSlice: 0, destinationLevel: 0,
+            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+        )
+        blit.endEncoding()
+        cmdBuf.commit()
+        cmdBuf.waitUntilCompleted()
+        return readPixels(from: staging)
     }
 
     // MARK: - 1. Single scene parity with real commands
@@ -668,5 +687,336 @@ final class TimelineRenderExecutorTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? TimelineRenderExecutorError, .missingCompletionQueueForAsyncTransition)
         }
+    }
+
+    // MARK: - 14. Text overlay rasterizer produces non-zero pixels
+
+    func testOverlayRasterizer_textProducesNonTransparentPixels() throws {
+        let size = 64
+        let animSize = SizeD(width: Double(size), height: Double(size))
+        let overlayTex = TimelineOverlayRasterizer.makeOverlayTexture(
+            stickers: [],
+            texts: [
+                ResolvedTextOverlay(
+                    text: "HELLO",
+                    fontFamily: nil,
+                    fontSize: 24,
+                    colorHex: "#FFFFFF",
+                    centerX: 0.5,
+                    centerY: 0.5
+                )
+            ],
+            pixelWidth: size,
+            pixelHeight: size,
+            animSize: animSize,
+            device: device,
+            stickerCache: StickerImageCache()
+        )
+        let texture = try XCTUnwrap(overlayTex, "Rasterizer must return non-nil for non-empty text overlays")
+
+        let pixels = readPixels(from: texture)
+        let hasNonTransparentPixel = stride(from: 0, to: pixels.count, by: 4).contains { i in
+            pixels[i + 3] > 0
+        }
+        XCTAssertTrue(hasNonTransparentPixel, "Text overlay rasterizer must produce non-transparent pixels")
+    }
+
+    // MARK: - 14b. Text overlay GPU composition produces visible pixels
+
+    func testSingle_textOverlay_producesVisiblePixels() throws {
+        let canvasSize = SizeD(width: 64, height: 64)
+        let assetTex = makeSolidTexture(width: 64, height: 64, red: 0, green: 0, blue: 0, alpha: 255)
+        let ctx = makeSceneContext(canvasSize: canvasSize, assetId: "bg_black", texture: assetTex)
+
+        let tex = makeRenderTarget(width: 64, height: 64)
+        let request = TimelineRenderRequest(
+            resolved: .single(ctx),
+            targetTexture: tex,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: .opaqueBlack,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            textOverlays: [
+                ResolvedTextOverlay(
+                    text: "HELLO",
+                    fontFamily: nil,
+                    fontSize: 24,
+                    colorHex: "#FFFFFF",
+                    centerX: 0.5,
+                    centerY: 0.5
+                )
+            ]
+        )
+        try TimelineRenderExecutor.render(
+            request, renderer: renderer,
+            commandQueue: renderer.commandQueue,
+            transitionCompositor: nil,
+            completionQueue: nil
+        )
+
+        let pixels = readPixels(from: tex)
+        // Text "HELLO" in white on black — at least one pixel must have non-zero R/G/B
+        let hasNonBlackPixel = stride(from: 0, to: pixels.count, by: 4).contains { i in
+            pixels[i] > 0 || pixels[i + 1] > 0 || pixels[i + 2] > 0
+        }
+        XCTAssertTrue(hasNonBlackPixel, "Text overlay must produce visible (non-black) pixels")
+    }
+
+    // MARK: - 15. Sticker overlay produces visible pixels (GPU composition)
+
+    func testSingle_stickerOverlay_producesVisiblePixels() throws {
+        let canvasSize = SizeD(width: 128, height: 128)
+        let assetTex = makeSolidTexture(width: 128, height: 128, red: 0, green: 0, blue: 0, alpha: 255)
+        let ctx = makeSceneContext(canvasSize: canvasSize, assetId: "bg_black", texture: assetTex)
+
+        // Create a temporary red PNG as sticker fixture (32x32 so 15% of 128 = ~19px is enough)
+        let stickerURL = FileManager.default.temporaryDirectory.appendingPathComponent("test_sticker_\(UUID().uuidString).png")
+        let stickerSize = 32
+        var stickerPixels = [UInt8](repeating: 0, count: stickerSize * stickerSize * 4)
+        for i in stride(from: 0, to: stickerPixels.count, by: 4) {
+            stickerPixels[i]     = 255   // R (premultipliedLast = RGBA)
+            stickerPixels[i + 1] = 0     // G
+            stickerPixels[i + 2] = 0     // B
+            stickerPixels[i + 3] = 255   // A
+        }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let cgContext = CGContext(
+            data: &stickerPixels,
+            width: stickerSize, height: stickerSize,
+            bitsPerComponent: 8, bytesPerRow: stickerSize * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ),
+        let cgImage = cgContext.makeImage(),
+        let pngData = UIImage(cgImage: cgImage).pngData()
+        else {
+            XCTFail("Failed to create sticker fixture PNG")
+            return
+        }
+        try pngData.write(to: stickerURL)
+        defer { try? FileManager.default.removeItem(at: stickerURL) }
+
+        let tex = makeRenderTarget(width: 128, height: 128)
+        let request = TimelineRenderRequest(
+            resolved: .single(ctx),
+            targetTexture: tex,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: .opaqueBlack,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            stickerOverlays: [
+                ResolvedStickerOverlay(
+                    stickerId: "test_sticker",
+                    imageURL: stickerURL,
+                    centerX: 0.5,
+                    centerY: 0.5
+                )
+            ]
+        )
+        try TimelineRenderExecutor.render(
+            request, renderer: renderer,
+            commandQueue: renderer.commandQueue,
+            transitionCompositor: nil,
+            completionQueue: nil
+        )
+
+        let pixels = readPixels(from: tex)
+        // Sticker on black — at least one pixel with non-zero color channels
+        let hasColorPixel = stride(from: 0, to: pixels.count, by: 4).contains { i in
+            pixels[i] > 0 || pixels[i + 1] > 0 || pixels[i + 2] > 0
+        }
+        XCTAssertTrue(hasColorPixel, "Sticker overlay must produce visible pixels")
+    }
+
+    // MARK: - 16. Transition with overlays produces visible overlay pixels
+
+    func testTransition_withOverlays_producesVisiblePixels() throws {
+        let canvasSize = SizeD(width: 16, height: 16)
+        let texA = makeSolidTexture(width: 16, height: 16, red: 0, green: 0, blue: 0, alpha: 255)
+        let texB = makeSolidTexture(width: 16, height: 16, red: 0, green: 0, blue: 0, alpha: 255)
+        let ctxA = makeSceneContext(canvasSize: canvasSize, assetId: "scene_a", texture: texA)
+        let ctxB = makeSceneContext(canvasSize: canvasSize, assetId: "scene_b", texture: texB)
+        let transition = SceneTransition(type: .fade, durationFrames: 14, easingPreset: .linear)
+        let transCtx = TransitionRenderContext(sceneA: ctxA, sceneB: ctxB, transition: transition, progress: 0.5)
+
+        let tex = makeRenderTarget(width: 16, height: 16)
+        let request = TimelineRenderRequest(
+            resolved: .transition(transCtx),
+            targetTexture: tex,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: .opaqueBlack,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            textOverlays: [
+                ResolvedTextOverlay(
+                    text: "X",
+                    fontFamily: nil,
+                    fontSize: 14,
+                    colorHex: "#FFFFFF",
+                    centerX: 0.5,
+                    centerY: 0.5
+                )
+            ]
+        )
+        try TimelineRenderExecutor.render(
+            request, renderer: renderer,
+            commandQueue: renderer.commandQueue,
+            transitionCompositor: compositor,
+            completionQueue: nil
+        )
+
+        let pixels = readPixels(from: tex)
+        let hasNonBlackPixel = stride(from: 0, to: pixels.count, by: 4).contains { i in
+            pixels[i] > 0 || pixels[i + 1] > 0 || pixels[i + 2] > 0
+        }
+        XCTAssertTrue(hasNonBlackPixel, "Transition with text overlay must produce visible pixels")
+    }
+
+    // MARK: - 17. No overlays does not alter pixels
+
+    func testNoOverlays_doesNotAlterPixels() throws {
+        let canvasSize = SizeD(width: 16, height: 16)
+        let assetTex = makeSolidTexture(width: 16, height: 16, red: 200, green: 100, blue: 50, alpha: 255)
+        let ctx = makeSceneContext(canvasSize: canvasSize, assetId: "test_img", texture: assetTex)
+
+        // Render without overlays
+        let baselineTex = makeRenderTarget(width: 16, height: 16)
+        let baselineRequest = TimelineRenderRequest(
+            resolved: .single(ctx),
+            targetTexture: baselineTex,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: .opaqueBlack,
+            presentationDrawable: nil,
+            waitUntilCompleted: true
+        )
+        try TimelineRenderExecutor.render(
+            baselineRequest, renderer: renderer,
+            commandQueue: renderer.commandQueue,
+            transitionCompositor: nil,
+            completionQueue: nil
+        )
+
+        // Render with empty overlay arrays (explicit)
+        let overlayTex = makeRenderTarget(width: 16, height: 16)
+        let overlayRequest = TimelineRenderRequest(
+            resolved: .single(ctx),
+            targetTexture: overlayTex,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: .opaqueBlack,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            textOverlays: [],
+            stickerOverlays: []
+        )
+        try TimelineRenderExecutor.render(
+            overlayRequest, renderer: renderer,
+            commandQueue: renderer.commandQueue,
+            transitionCompositor: nil,
+            completionQueue: nil
+        )
+
+        let baselinePixels = readPixels(from: baselineTex)
+        let overlayPixels = readPixels(from: overlayTex)
+        XCTAssertEqual(baselinePixels, overlayPixels, "Empty overlay arrays must produce pixel-identical output to no overlays")
+    }
+
+    // MARK: - 18. Private storage target does not crash (device-like surface)
+
+    func testSingle_textOverlay_privateStorageTarget_doesNotCrash() throws {
+        let canvasSize = SizeD(width: 64, height: 64)
+        let assetTex = makeSolidTexture(width: 64, height: 64, red: 0, green: 0, blue: 0, alpha: 255)
+        let ctx = makeSceneContext(canvasSize: canvasSize, assetId: "bg_black", texture: assetTex)
+
+        let tex = makeRenderTarget(width: 64, height: 64, storageMode: .private)
+        let request = TimelineRenderRequest(
+            resolved: .single(ctx),
+            targetTexture: tex,
+            drawableScale: 1.0,
+            timelineCanvasSize: canvasSize,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            clearColorOverride: .opaqueBlack,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            textOverlays: [
+                ResolvedTextOverlay(
+                    text: "HELLO",
+                    fontFamily: nil,
+                    fontSize: 24,
+                    colorHex: "#FFFFFF",
+                    centerX: 0.5,
+                    centerY: 0.5
+                )
+            ]
+        )
+        try TimelineRenderExecutor.render(
+            request, renderer: renderer,
+            commandQueue: renderer.commandQueue,
+            transitionCompositor: nil,
+            completionQueue: nil
+        )
+
+        // Blit from .private → .shared to verify pixels
+        let pixels = readPixelsViaBlit(from: tex)
+        let hasNonBlackPixel = stride(from: 0, to: pixels.count, by: 4).contains { i in
+            pixels[i] > 0 || pixels[i + 1] > 0 || pixels[i + 2] > 0
+        }
+        XCTAssertTrue(hasNonBlackPixel, "Text overlay on .private target must produce visible pixels (no crash, correct composition)")
+    }
+
+    // MARK: - 19. Off-main rasterizer correctness (export path simulation)
+
+    func testOverlayRasterizer_offMainThread_producesNonTransparentPixels() throws {
+        let expectation = expectation(description: "off-main rasterizer completes")
+        var offMainResult: MTLTexture?
+        let capturedDevice = device!
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let size = 64
+            let animSize = SizeD(width: Double(size), height: Double(size))
+            offMainResult = TimelineOverlayRasterizer.makeOverlayTexture(
+                stickers: [],
+                texts: [
+                    ResolvedTextOverlay(
+                        text: "EXPORT",
+                        fontFamily: nil,
+                        fontSize: 20,
+                        colorHex: "#FF0000",
+                        centerX: 0.5,
+                        centerY: 0.5
+                    )
+                ],
+                pixelWidth: size,
+                pixelHeight: size,
+                animSize: animSize,
+                device: capturedDevice,
+                stickerCache: StickerImageCache()
+            )
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+
+        let texture = try XCTUnwrap(offMainResult, "Off-main rasterizer must return non-nil texture")
+        let pixels = readPixels(from: texture)
+        let hasNonTransparentPixel = stride(from: 0, to: pixels.count, by: 4).contains { i in
+            pixels[i + 3] > 0
+        }
+        XCTAssertTrue(hasNonTransparentPixel, "Off-main rasterizer must produce non-transparent pixels (export path)")
     }
 }

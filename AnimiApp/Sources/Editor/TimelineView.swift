@@ -161,8 +161,12 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }()
 
     private lazy var sceneTrack = SceneTrackView()
-    private lazy var overlayTrack = OverlayTrackView()
+    private lazy var textOverlayLane = OverlayLaneView(laneKind: .text)
+    private lazy var stickerOverlayLane = OverlayLaneView(laneKind: .sticker)
     private lazy var audioTrack = AudioTrackView()
+
+    private var textLaneHeightConstraint: NSLayoutConstraint?
+    private var stickerLaneHeightConstraint: NSLayoutConstraint?
 
 
     private var contentWidthConstraint: NSLayoutConstraint?
@@ -204,15 +208,15 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         scrollView.addSubview(contentView)
         contentView.addSubview(tracksStack)
 
-        // Add tracks (scene → overlay → audio)
+        // Add tracks (scene → text lane → sticker lane → audio)
         tracksStack.addArrangedSubview(sceneTrack)
-        tracksStack.addArrangedSubview(overlayTrack)
+        tracksStack.addArrangedSubview(textOverlayLane)
+        tracksStack.addArrangedSubview(stickerOverlayLane)
         tracksStack.addArrangedSubview(audioTrack)
-
 
         // Wire sceneTrack callbacks for selection and trim
         wireSceneTrackCallbacks()
-        wireOverlayTrackCallbacks()
+        wireOverlayLaneCallbacks()
     }
 
     private func wireSceneTrackCallbacks() {
@@ -250,25 +254,34 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
     }
 
-    private func wireOverlayTrackCallbacks() {
-        overlayTrack.onSelectItem = { [weak self] itemId, kind in
-            switch kind {
-            case .text:    self?.emitEvent(.selection(.text(itemId: itemId)))
-            case .sticker: self?.emitEvent(.selection(.sticker(itemId: itemId)))
-            default: break
-            }
+    private func wireOverlayLaneCallbacks() {
+        // Text lane
+        textOverlayLane.onSelectItem = { [weak self] itemId in
+            self?.emitEvent(.selection(.text(itemId: itemId)))
         }
-        overlayTrack.onMoveItem = { [weak self] itemId, newStartUs, phase in
+        textOverlayLane.onMoveItem = { [weak self] itemId, newStartUs, phase in
             self?.emitEvent(.moveOverlayItem(itemId: itemId, newStartUs: newStartUs, phase: phase))
         }
-        overlayTrack.onTrimItem = { [weak self] itemId, newDurationUs, edge, phase in
+        textOverlayLane.onTrimItem = { [weak self] itemId, newDurationUs, edge, phase in
+            self?.emitEvent(.trimOverlayItem(itemId: itemId, newDurationUs: newDurationUs, edge: edge, phase: phase))
+        }
+
+        // Sticker lane
+        stickerOverlayLane.onSelectItem = { [weak self] itemId in
+            self?.emitEvent(.selection(.sticker(itemId: itemId)))
+        }
+        stickerOverlayLane.onMoveItem = { [weak self] itemId, newStartUs, phase in
+            self?.emitEvent(.moveOverlayItem(itemId: itemId, newStartUs: newStartUs, phase: phase))
+        }
+        stickerOverlayLane.onTrimItem = { [weak self] itemId, newDurationUs, edge, phase in
             self?.emitEvent(.trimOverlayItem(itemId: itemId, newDurationUs: newDurationUs, edge: edge, phase: phase))
         }
     }
 
     private func setupConstraints() {
         sceneTrack.translatesAutoresizingMaskIntoConstraints = false
-        overlayTrack.translatesAutoresizingMaskIntoConstraints = false
+        textOverlayLane.translatesAutoresizingMaskIntoConstraints = false
+        stickerOverlayLane.translatesAutoresizingMaskIntoConstraints = false
         audioTrack.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
@@ -295,9 +308,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
             // Track heights
             sceneTrack.heightAnchor.constraint(equalToConstant: 60),
-            overlayTrack.heightAnchor.constraint(equalToConstant: 36),
             audioTrack.heightAnchor.constraint(equalToConstant: 40),
         ])
+
+        // Dynamic height constraints for overlay lanes
+        textLaneHeightConstraint = textOverlayLane.heightAnchor.constraint(equalToConstant: 32)
+        textLaneHeightConstraint?.isActive = true
+        stickerLaneHeightConstraint = stickerOverlayLane.heightAnchor.constraint(equalToConstant: 32)
+        stickerLaneHeightConstraint?.isActive = true
 
 
         // Content width constraint (will be updated in updateContentSize)
@@ -361,7 +379,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // PR4: Layout path - setLayoutContext (done via updateContentSize)
         let padding = leftPaddingPx
-        overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
+        textOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
+        stickerOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
         updateContentSize()
@@ -385,7 +404,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // Audio: configure is ok (single block, no active gesture)
         let padding = leftPaddingPx
-        overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
+        textOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
+        stickerOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
         audioTrack.configure(durationUs: durationUs, pxPerSecond: pxPerSecond, leftPadding: padding)
 
         // PR4: Layout path via updateContentSize
@@ -466,36 +486,53 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             selectedSceneId = id
             sceneTrack.setSelectedScene(id)
             audioTrack.setSelected(false)
-            overlayTrack.setSelectedItem(nil)
+            textOverlayLane.setSelectedItem(nil)
+            stickerOverlayLane.setSelectedItem(nil)
         case .audio:
             selectedSceneId = nil
             sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(true)
-            overlayTrack.setSelectedItem(nil)
+            textOverlayLane.setSelectedItem(nil)
+            stickerOverlayLane.setSelectedItem(nil)
         case .text(let itemId):
             selectedSceneId = nil
             sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(false)
-            overlayTrack.setSelectedItem(itemId)
+            textOverlayLane.setSelectedItem(itemId)
+            stickerOverlayLane.setSelectedItem(nil)
         case .sticker(let itemId):
             selectedSceneId = nil
             sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(false)
-            overlayTrack.setSelectedItem(itemId)
+            textOverlayLane.setSelectedItem(nil)
+            stickerOverlayLane.setSelectedItem(itemId)
         case .none:
             selectedSceneId = nil
             sceneTrack.setSelectedScene(nil)
             audioTrack.setSelected(false)
-            overlayTrack.setSelectedItem(nil)
+            textOverlayLane.setSelectedItem(nil)
+            stickerOverlayLane.setSelectedItem(nil)
         }
     }
 
-    /// PR9+PR10: Updates overlay items for the overlay track (text + sticker).
-    func setOverlayItems(_ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)], selectedItemId: UUID?) {
-        let snapshot = OverlayTrackSnapshot(items: items, selectedItemId: selectedItemId)
-        overlayTrack.applySnapshot(snapshot)
-        overlayTrack.configure(pxPerSecond: pxPerSecond, leftPadding: leftPaddingPx)
-        overlayTrack.isHidden = items.isEmpty
+    /// Updates text overlay items for the text lane.
+    func setTextOverlayItems(_ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)], selectedItemId: UUID?) {
+        let (rowItems, rowCount) = OverlayLaneSnapshot.packRows(items)
+        let snapshot = OverlayLaneSnapshot(items: rowItems, selectedItemId: selectedItemId, rowCount: rowCount)
+        textOverlayLane.applySnapshot(snapshot)
+        textOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: leftPaddingPx)
+        textOverlayLane.isHidden = items.isEmpty
+        textLaneHeightConstraint?.constant = CGFloat(max(1, rowCount) * 28 + 4)
+    }
+
+    /// Updates sticker overlay items for the sticker lane.
+    func setStickerOverlayItems(_ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)], selectedItemId: UUID?) {
+        let (rowItems, rowCount) = OverlayLaneSnapshot.packRows(items)
+        let snapshot = OverlayLaneSnapshot(items: rowItems, selectedItemId: selectedItemId, rowCount: rowCount)
+        stickerOverlayLane.applySnapshot(snapshot)
+        stickerOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: leftPaddingPx)
+        stickerOverlayLane.isHidden = items.isEmpty
+        stickerLaneHeightConstraint?.constant = CGFloat(max(1, rowCount) * 28 + 4)
     }
 
     /// PR8: Updates the music item data for audio track display and selection.
@@ -526,6 +563,8 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let padding = leftPaddingPx
         let layoutContext = TimelineLayoutContext(pxPerSecond: pxPerSecond, leftPadding: padding)
         sceneTrack.setLayoutContext(layoutContext)
+        textOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
+        stickerOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: padding)
         audioTrack.setPxPerSecond(pxPerSecond, leftPadding: padding)
 
     }
@@ -863,13 +902,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // Scene track taps are handled by SceneClipView (via onSelectScene callback)
         // Only check for overlay, audio track and empty space here
 
-        // PR9: Check if tap is on overlay track (handled by OverlayTrackView's onSelectItem)
-        if !overlayTrack.isHidden {
-            let overlayFrame = overlayTrack.convert(overlayTrack.bounds, to: contentView)
-            if overlayFrame.contains(location) {
-                // OverlayTrackView handles its own item selection via callbacks
-                return
-            }
+        // Check if tap is on overlay lanes (handled by OverlayLaneView's onSelectItem)
+        if !textOverlayLane.isHidden {
+            let textFrame = textOverlayLane.convert(textOverlayLane.bounds, to: contentView)
+            if textFrame.contains(location) { return }
+        }
+        if !stickerOverlayLane.isHidden {
+            let stickerFrame = stickerOverlayLane.convert(stickerOverlayLane.bounds, to: contentView)
+            if stickerFrame.contains(location) { return }
         }
 
         // Check if tap is on audio track

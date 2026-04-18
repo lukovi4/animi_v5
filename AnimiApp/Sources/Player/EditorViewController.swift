@@ -1314,32 +1314,25 @@ final class EditorViewController: UIViewController {
         runtime?.refreshCurrentTimelineFrame()
     }
 
-    /// PR9+PR10: Updates the overlay track in the timeline UI from current state.
+    /// PR9+PR10: Updates the overlay lanes in the timeline UI from current state.
     private func updateOverlayTrack(state: EditorState) {
-        // Collect text items
-        let textItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)] =
+        let textItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)] =
             state.canonicalTimeline.textItems.compactMap { item in
                 guard let payload = state.canonicalTimeline.textPayload(for: item.id) else { return nil }
                 let label = payload.text.isEmpty ? "Text" : String(payload.text.prefix(20))
-                return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label, itemKind: .text)
+                return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label)
             }
-        // Collect sticker items
-        let stickerItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String, itemKind: ItemKind)] =
+        let stickerItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)] =
             state.canonicalTimeline.stickerItems.compactMap { item in
                 guard let payload = state.canonicalTimeline.stickerPayload(for: item.id) else { return nil }
-                let label = payload.stickerId
-                return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label, itemKind: .sticker)
+                return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: payload.stickerId)
             }
-        // Merge and sort by startUs
-        let allItems = (textItems + stickerItems).sorted { $0.startUs < $1.startUs }
-        let selectedOverlayId: UUID? = {
-            switch state.selection {
-            case .text(let itemId): return itemId
-            case .sticker(let itemId): return itemId
-            default: return nil
-            }
-        }()
-        editorLayoutContainer.timelineView.setOverlayItems(allItems, selectedItemId: selectedOverlayId)
+
+        let selectedTextId: UUID? = if case .text(let id) = state.selection { id } else { nil }
+        let selectedStickerId: UUID? = if case .sticker(let id) = state.selection { id } else { nil }
+
+        editorLayoutContainer.timelineView.setTextOverlayItems(textItems, selectedItemId: selectedTextId)
+        editorLayoutContainer.timelineView.setStickerOverlayItems(stickerItems, selectedItemId: selectedStickerId)
     }
 
     /// PR-F: Called when scene state changes (but not timeline structure).
