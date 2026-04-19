@@ -155,8 +155,7 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             fps: 30,
             scenesByInstanceId: snapshots,
             audioSceneData: audioData,
-            textOverlayItems: [],
-            stickerOverlayItems: []
+            overlaySnapshot: OverlayExportSnapshot(textItems: [], stickerItems: [])
         )
 
         return (session, instanceIds)
@@ -414,7 +413,7 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
 
     /// Proves that a visible text overlay in the export session reaches
     /// TimelineRenderRequest.textOverlays through the production export path.
-    /// Mirrors exactly what VideoExporter.swift does: resolveFrame + resolveTextOverlays → request.
+    /// Mirrors exactly what VideoExporter.swift does: resolveFrame + OverlayExportResolver → request.
     @MainActor
     func testExportPath_visibleTextOverlay_populatesRenderRequestTextOverlays() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -482,14 +481,18 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             fps: 30
         )
 
+        let overlaySnapshot = OverlayExportSnapshot.build(
+            textOverlayItems: [(item: textItem, payload: textPayload)],
+            stickerOverlayItems: []
+        )
+
         let session = TimelineCompositionEngine.TimelineExportSession(
             transitionMath: math,
             canvasSize: SizeD(width: 1080, height: 1920),
             fps: 30,
             scenesByInstanceId: snapshots,
             audioSceneData: audioData,
-            textOverlayItems: [(item: textItem, payload: textPayload)],
-            stickerOverlayItems: []
+            overlaySnapshot: overlaySnapshot
         )
 
         // Create export runtime (same as VideoExporter does)
@@ -498,12 +501,13 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             session: session, textureCache: textureCache, coordinatorFactory: noCoordinators
         )
 
-        // --- Production export path (mirrors VideoExporter.swift lines 1222-1235) ---
+        // --- Production export path (mirrors VideoExporter.swift) ---
 
         // Frame 15 (t=0.5s): text IS visible
         let frameInside = 15
         let resolvedInside = try exportRuntime.resolveFrame(frameInside)
-        let textOverlaysInside = exportRuntime.resolveTextOverlays(at: frameInside)
+        let timeUsInside = exportRuntime.globalTimeUs(for: frameInside)!
+        let textOverlaysInside = OverlayExportResolver.resolveText(from: session.overlaySnapshot, at: timeUsInside)
 
         // This is the exact construction from VideoExporter production code
         let textureDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -534,7 +538,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
 
         // Frame 75 (t=2.5s): text is NOT visible
         let frameOutside = 75
-        let textOverlaysOutside = exportRuntime.resolveTextOverlays(at: frameOutside)
+        let timeUsOutside = exportRuntime.globalTimeUs(for: frameOutside)!
+        let textOverlaysOutside = OverlayExportResolver.resolveText(from: session.overlaySnapshot, at: timeUsOutside)
 
         let requestOutside = TimelineRenderRequest(
             resolved: try exportRuntime.resolveFrame(frameOutside),
@@ -575,14 +580,18 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         )
         let stickerImageURL = URL(fileURLWithPath: "/tmp/sticker_star.png")
 
+        let overlaySnapshot = OverlayExportSnapshot.build(
+            textOverlayItems: [],
+            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: stickerImageURL)]
+        )
+
         let session = TimelineCompositionEngine.TimelineExportSession(
             transitionMath: baseSession.transitionMath,
             canvasSize: baseSession.canvasSize,
             fps: baseSession.fps,
             scenesByInstanceId: baseSession.scenesByInstanceId,
             audioSceneData: baseSession.audioSceneData,
-            textOverlayItems: [],
-            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: stickerImageURL)]
+            overlaySnapshot: overlaySnapshot
         )
 
         let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
@@ -597,7 +606,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
 
         // Frame 15 (t=0.5s): sticker IS visible
         let frameInside = 15
-        let stickerOverlaysInside = exportRuntime.resolveStickerOverlays(at: frameInside)
+        let timeUsInside = exportRuntime.globalTimeUs(for: frameInside)!
+        let stickerOverlaysInside = OverlayExportResolver.resolveSticker(from: session.overlaySnapshot, at: timeUsInside)
 
         let requestInside = TimelineRenderRequest(
             resolved: try exportRuntime.resolveFrame(frameInside),
@@ -621,7 +631,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
 
         // Frame 75 (t=2.5s): sticker is NOT visible
         let frameOutside = 75
-        let stickerOverlaysOutside = exportRuntime.resolveStickerOverlays(at: frameOutside)
+        let timeUsOutside = exportRuntime.globalTimeUs(for: frameOutside)!
+        let stickerOverlaysOutside = OverlayExportResolver.resolveSticker(from: session.overlaySnapshot, at: timeUsOutside)
 
         let requestOutside = TimelineRenderRequest(
             resolved: try exportRuntime.resolveFrame(frameOutside),
@@ -727,14 +738,18 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         )
         let textItem = TimelineItem(payloadId: textPayloadId, kind: .text, startUs: 0, durationUs: 3_000_000)
 
+        let overlaySnapshot = OverlayExportSnapshot.build(
+            textOverlayItems: [(item: textItem, payload: textPayload)],
+            stickerOverlayItems: []
+        )
+
         let session = TimelineCompositionEngine.TimelineExportSession(
             transitionMath: baseSession.transitionMath,
             canvasSize: baseSession.canvasSize,
             fps: baseSession.fps,
             scenesByInstanceId: baseSession.scenesByInstanceId,
             audioSceneData: baseSession.audioSceneData,
-            textOverlayItems: [(item: textItem, payload: textPayload)],
-            stickerOverlayItems: []
+            overlaySnapshot: overlaySnapshot
         )
 
         let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
@@ -815,14 +830,18 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         let stickerPayload = StickerPayload(stickerId: "test-red", centerX: 0.5, centerY: 0.5)
         let stickerItem = TimelineItem(payloadId: UUID(), kind: .sticker, startUs: 0, durationUs: 3_000_000)
 
+        let stickerOverlaySnapshot = OverlayExportSnapshot.build(
+            textOverlayItems: [],
+            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: fixtureURL)]
+        )
+
         let session = TimelineCompositionEngine.TimelineExportSession(
             transitionMath: baseSession.transitionMath,
             canvasSize: baseSession.canvasSize,
             fps: baseSession.fps,
             scenesByInstanceId: baseSession.scenesByInstanceId,
             audioSceneData: baseSession.audioSceneData,
-            textOverlayItems: [],
-            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: fixtureURL)]
+            overlaySnapshot: stickerOverlaySnapshot
         )
 
         let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
@@ -897,14 +916,18 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         let stickerPayload = StickerPayload(stickerId: "red-bg", centerX: 0.5, centerY: 0.5)
         let stickerItem = TimelineItem(payloadId: UUID(), kind: .sticker, startUs: 0, durationUs: 3_000_000)
 
+        let combinedOverlaySnapshot = OverlayExportSnapshot.build(
+            textOverlayItems: [(item: textItem, payload: textPayload)],
+            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: fixtureURL)]
+        )
+
         let session = TimelineCompositionEngine.TimelineExportSession(
             transitionMath: baseSession.transitionMath,
             canvasSize: baseSession.canvasSize,
             fps: baseSession.fps,
             scenesByInstanceId: baseSession.scenesByInstanceId,
             audioSceneData: baseSession.audioSceneData,
-            textOverlayItems: [(item: textItem, payload: textPayload)],
-            stickerOverlayItems: [(item: stickerItem, payload: stickerPayload, imageURL: fixtureURL)]
+            overlaySnapshot: combinedOverlaySnapshot
         )
 
         let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
@@ -981,14 +1004,18 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         )
         let textItem = TimelineItem(payloadId: UUID(), kind: .text, startUs: 0, durationUs: 1_000_000)
 
+        let pipelineOverlaySnapshot = OverlayExportSnapshot.build(
+            textOverlayItems: [(item: textItem, payload: textPayload)],
+            stickerOverlayItems: []
+        )
+
         let session = TimelineCompositionEngine.TimelineExportSession(
             transitionMath: baseSession.transitionMath,
             canvasSize: SizeD(width: Double(width), height: Double(height)),
             fps: baseSession.fps,
             scenesByInstanceId: baseSession.scenesByInstanceId,
             audioSceneData: baseSession.audioSceneData,
-            textOverlayItems: [(item: textItem, payload: textPayload)],
-            stickerOverlayItems: []
+            overlaySnapshot: pipelineOverlaySnapshot
         )
 
         // Run the export loop manually (same as VideoExporter does, but synchronous for test)

@@ -1197,6 +1197,9 @@ final class EditorRuntime {
             assetSizes: compiled.mergedAssetIndex.sizeById,
             settings: settings,
             backgroundState: effectiveBackgroundState,
+            overlaySnapshot: session.state.map { state in
+                OverlayExportSnapshot.build(from: state.canonicalTimeline, stickerProvider: session.stickerProvider)
+            },
             budget: budget,
             mediaSnapshot: mediaSnapshot,
             backgroundSnapshot: bgSnapshot,

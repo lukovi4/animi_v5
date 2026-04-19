@@ -81,61 +81,15 @@ internal final class TimelineExportRuntime {
         return try resolveFrameLegacy(compressedFrame)
     }
 
-    /// PR10: Resolves sticker overlays for a given compressed frame from snapshotted session data.
-    func resolveStickerOverlays(at compressedFrame: Int) -> [ResolvedStickerOverlay] {
+    /// Converts a compressed frame index to global timeline timeUs.
+    /// Used by VideoExporter to feed into OverlayExportResolver.
+    func globalTimeUs(for compressedFrame: Int) -> TimeUs? {
         let math = session.transitionMath
-
-        guard let mapping = math.frameMapping(for: compressedFrame) else { return [] }
+        guard let mapping = math.frameMapping(for: compressedFrame) else { return nil }
         let sceneStartUs = math.sceneItems.prefix(mapping.sceneIndex).reduce(TimeUs(0)) { sum, item in
             sum + item.durationUs
         }
-        let localTimeUs = frameToUs(mapping.localFrame, fps: math.fps)
-        let timeUs = sceneStartUs + localTimeUs
-
-        var result: [ResolvedStickerOverlay] = []
-        for (item, payload, imageURL) in session.stickerOverlayItems {
-            let itemStart = item.startUs ?? 0
-            let itemEnd = itemStart + item.durationUs
-            guard timeUs >= itemStart && timeUs < itemEnd else { continue }
-
-            result.append(ResolvedStickerOverlay(
-                stickerId: payload.stickerId,
-                imageURL: imageURL,
-                centerX: payload.centerX,
-                centerY: payload.centerY
-            ))
-        }
-        return result
-    }
-
-    /// PR9: Resolves text overlays for a given compressed frame from snapshotted session data.
-    func resolveTextOverlays(at compressedFrame: Int) -> [ResolvedTextOverlay] {
-        let math = session.transitionMath
-
-        // Convert compressed frame to global timeUs via frame mapping
-        guard let mapping = math.frameMapping(for: compressedFrame) else { return [] }
-        let sceneStartUs = math.sceneItems.prefix(mapping.sceneIndex).reduce(TimeUs(0)) { sum, item in
-            sum + item.durationUs
-        }
-        let localTimeUs = frameToUs(mapping.localFrame, fps: math.fps)
-        let timeUs = sceneStartUs + localTimeUs
-
-        var result: [ResolvedTextOverlay] = []
-        for (item, payload) in session.textOverlayItems {
-            let itemStart = item.startUs ?? 0
-            let itemEnd = itemStart + item.durationUs
-            guard timeUs >= itemStart && timeUs < itemEnd else { continue }
-
-            result.append(ResolvedTextOverlay(
-                text: payload.text,
-                fontFamily: payload.fontFamily,
-                fontSize: payload.fontSize ?? 32,
-                colorHex: payload.colorHex ?? "#FFFFFF",
-                centerX: payload.centerX,
-                centerY: payload.centerY
-            ))
-        }
-        return result
+        return sceneStartUs + frameToUs(mapping.localFrame, fps: math.fps)
     }
 
     func finish() {

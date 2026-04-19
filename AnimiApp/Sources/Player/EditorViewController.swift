@@ -1124,6 +1124,7 @@ final class EditorViewController: UIViewController {
             templateFPS: fps,
             minSceneDurationUs: ProjectDraft.minSceneDurationUs
         )
+        syncTimelineSupplementalUI(state: state)
     }
 
     /// Creates EditorRuntime, configures Metal context, and boots the render engine.
@@ -1288,24 +1289,10 @@ final class EditorViewController: UIViewController {
         let boundaries = state.canonicalTimeline.toSceneBoundaryDrafts()
         editorLayoutContainer.updateScenes(scenes, boundaries: boundaries)
 
-        // PR8: Update music item in timeline
-        editorLayoutContainer.timelineView.setMusicItem(
-            state.canonicalTimeline.musicItem,
-            payload: state.canonicalTimeline.musicPayload()
-        )
-
-        // PR9: Update overlay items in timeline
-        updateOverlayTrack(state: state)
-
-        // PR9: Refresh text position overlay after timeline structure change
-        updateOverlayPositionDrag(selection: state.selection)
+        syncTimelineSupplementalUI(state: state)
 
         // Update coordinator timeline (legacy path for Scene Edit)
         runtime?.syncCoordinatorTimeline(from: state)
-
-        // Phase 2.1: Update mapper in timeline UI after timeline changes
-        let mapper = state.makePlayheadMapper()
-        editorLayoutContainer.setMapper(mapper)
 
         // PR-F: Refresh bottom bars if in Scene Edit mode
         refreshSceneEditBars()
@@ -1333,6 +1320,17 @@ final class EditorViewController: UIViewController {
 
         editorLayoutContainer.timelineView.setTextOverlayItems(textItems, selectedItemId: selectedTextId)
         editorLayoutContainer.timelineView.setStickerOverlayItems(stickerItems, selectedItemId: selectedStickerId)
+    }
+
+    /// Keeps music/overlay lanes, selection, and mapper in sync for both initial bootstrap and later timeline updates.
+    private func syncTimelineSupplementalUI(state: EditorState) {
+        editorLayoutContainer.timelineView.setMusicItem(
+            state.canonicalTimeline.musicItem,
+            payload: state.canonicalTimeline.musicPayload()
+        )
+        updateOverlayTrack(state: state)
+        editorLayoutContainer.setMapper(state.makePlayheadMapper())
+        handleSelectionChanged(state.selection)
     }
 
     /// PR-F: Called when scene state changes (but not timeline structure).
@@ -2951,4 +2949,3 @@ private extension Collection {
         indices.contains(index) ? self[index] : nil
     }
 }
-

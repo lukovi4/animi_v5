@@ -382,6 +382,7 @@ public final class VideoExporter: @unchecked Sendable {
         let videoSelections: [String: VideoSelection]
         let settings: VideoExportSettings
         let backgroundState: EffectiveBackgroundState?
+        let overlaySnapshot: OverlayExportSnapshot?
         let mediaSnapshot: ExportMediaSnapshot?
         let backgroundSnapshot: ExportBackgroundSnapshot?
         let budget: ExportResourceBudget
@@ -396,6 +397,7 @@ public final class VideoExporter: @unchecked Sendable {
             videoSelections: [String: VideoSelection],
             settings: VideoExportSettings,
             backgroundState: EffectiveBackgroundState?,
+            overlaySnapshot: OverlayExportSnapshot? = nil,
             mediaSnapshot: ExportMediaSnapshot? = nil,
             backgroundSnapshot: ExportBackgroundSnapshot? = nil,
             budget: ExportResourceBudget = .default
@@ -409,6 +411,7 @@ public final class VideoExporter: @unchecked Sendable {
             self.videoSelections = videoSelections
             self.settings = settings
             self.backgroundState = backgroundState
+            self.overlaySnapshot = overlaySnapshot
             self.mediaSnapshot = mediaSnapshot
             self.backgroundSnapshot = backgroundSnapshot
             self.budget = budget
@@ -497,7 +500,7 @@ public final class VideoExporter: @unchecked Sendable {
     ///   - progress: Progress callback (0.0 - 1.0), called on main queue
     ///   - completion: Completion callback, called on main queue
     @MainActor
-    public func exportVideo(
+    internal func exportVideo(
         compiledScene: CompiledScene,
         scenePlayer: ScenePlayer,
         device: MTLDevice,
@@ -506,6 +509,7 @@ public final class VideoExporter: @unchecked Sendable {
         assetSizes: [String: AssetSize],
         settings: VideoExportSettings,
         backgroundState: EffectiveBackgroundState?,
+        overlaySnapshot: OverlayExportSnapshot? = nil,
         budget: ExportResourceBudget = .default,
         mediaSnapshot: ExportMediaSnapshot? = nil,
         backgroundSnapshot: ExportBackgroundSnapshot? = nil,
@@ -563,6 +567,7 @@ public final class VideoExporter: @unchecked Sendable {
             videoSelections: videoSelections,
             settings: settings,
             backgroundState: backgroundState,
+            overlaySnapshot: overlaySnapshot,
             mediaSnapshot: mediaSnapshot,
             backgroundSnapshot: backgroundSnapshot,
             budget: budget
@@ -635,6 +640,7 @@ public final class VideoExporter: @unchecked Sendable {
                 videoSelections: workItem.videoSelections,
                 settings: workItem.settings,
                 backgroundState: workItem.backgroundState,
+                overlaySnapshot: workItem.overlaySnapshot,
                 session: session,
                 budget: workItem.budget,
                 progress: progress
@@ -654,6 +660,7 @@ public final class VideoExporter: @unchecked Sendable {
         videoSelections: [String: VideoSelection],
         settings: VideoExportSettings,
         backgroundState: EffectiveBackgroundState?,
+        overlaySnapshot: OverlayExportSnapshot?,
         session: ExportSession,
         budget: ExportResourceBudget = .default,
         progress: @escaping (Double) -> Void
@@ -742,7 +749,6 @@ public final class VideoExporter: @unchecked Sendable {
 
         // 6. Video export loop
         let totalFrames = runtime.durationFrames
-        let canvasSize = runtime.canvasSize
 
         for frameIndex in 0..<totalFrames {
             if session.shouldStop { break }
@@ -806,48 +812,21 @@ public final class VideoExporter: @unchecked Sendable {
                     return
                 }
 
-                // Build render commands
-                let commands = SceneRenderPlan.renderCommands(
-                    for: runtime,
-                    sceneFrameIndex: frameIndex,
-                    resolvedTransforms: snapshot.resolvedTransforms,
-                    variantOverrides: snapshot.variantOverrides,
-                    userMediaPresent: snapshot.userMediaPresent,
-                    layerToggleState: snapshot.layerToggleState
-                )
-
                 let pts = CMTime(value: CMTimeValue(frameIndex), timescale: CMTimeScale(settings.fps))
-                let renderTarget = RenderTarget(
-                    texture: targetTexture,
-                    drawableScale: 1.0,
-                    animSize: canvasSize
-                )
-
-                guard let commandBuffer = renderer.commandQueue.makeCommandBuffer() else {
-                    pipeline.setError(VideoExportError.failedToCreateCommandBuffer)
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                // InFlightFrame keeps CVMetalTexture alive until GPU completion + enqueue
-                let inFlightFrame = InFlightFrame(
-                    pixelBuffer: pixelBuffer,
-                    cvMetalTexture: cvMetalTexture,
-                    mtlTexture: targetTexture,
-                    presentationTime: pts
-                )
 
                 do {
-                    try renderer.draw(
-                        commands: commands,
-                        target: renderTarget,
-                        clearColor: settings.clearColor,
+                    _ = try Self.renderSingleSceneFrame(
+                        frameIndex: frameIndex,
+                        targetTexture: targetTexture,
+                        runtime: runtime,
+                        snapshot: snapshot,
+                        renderer: renderer,
                         textureProvider: textureProvider,
-                        commandBuffer: commandBuffer,
-                        assetSizes: assetSizes,
                         pathRegistry: pathRegistry,
-                        backgroundState: backgroundState
+                        assetSizes: assetSizes,
+                        backgroundState: backgroundState,
+                        clearColor: settings.clearColor,
+                        overlaySnapshot: overlaySnapshot
                     )
                 } catch {
                     pipeline.setError(VideoExportError.renderError(error))
@@ -856,30 +835,22 @@ public final class VideoExporter: @unchecked Sendable {
                     return
                 }
 
-                // GPU completion: pass ONLY pixelBuffer + pts to pump.
-                // InFlightFrame (with cvMetalTexture) deallocs here after enqueue.
-                commandBuffer.addCompletedHandler { _ in
-                    guard !session.shouldStop else {
-                        videoGroup.leave()
-                        semaphore.signal()
-                        return
-                    }
-                    pipeline.enqueueVideoFrame(
-                        inFlightFrame.pixelBuffer,
-                        presentationTime: inFlightFrame.presentationTime
-                    ) {
-                        videoGroup.leave()
-                        semaphore.signal()
-                    }
+                guard !session.shouldStop else {
+                    videoGroup.leave()
+                    semaphore.signal()
+                    return
                 }
 
-                commandBuffer.commit()
+                pipeline.enqueueVideoFrame(pixelBuffer, presentationTime: pts) {
+                    videoGroup.leave()
+                    semaphore.signal()
+                }
             }
 
             session.emitProgressIfActive(Double(frameIndex + 1) / Double(totalFrames), via: progress)
         }
 
-        // 7. Wait for all GPU completions to enqueue
+        // 7. Wait for all enqueued frames to finish
         videoGroup.wait()
 
         // 8. Finish or cancel — cleanup closures fire inside complete()
@@ -1278,8 +1249,9 @@ public final class VideoExporter: @unchecked Sendable {
         renderDiagnosticsSink: RenderDiagnosticsSink?
     ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
         let resolved = try exportRuntime.resolveFrame(frameIndex)
-        let textOverlays = exportRuntime.resolveTextOverlays(at: frameIndex)
-        let stickerOverlays = exportRuntime.resolveStickerOverlays(at: frameIndex)
+        let timeUs = exportRuntime.globalTimeUs(for: frameIndex)
+        let textOverlays = timeUs.map { OverlayExportResolver.resolveText(from: exportRuntime.session.overlaySnapshot, at: $0) } ?? []
+        let stickerOverlays = timeUs.map { OverlayExportResolver.resolveSticker(from: exportRuntime.session.overlaySnapshot, at: $0) } ?? []
 
         let request = TimelineRenderRequest(
             resolved: resolved,
@@ -1314,6 +1286,81 @@ public final class VideoExporter: @unchecked Sendable {
                 throw VideoExportError.renderError(error)
             }
         }
+        return (textOverlayCount: textOverlays.count, stickerOverlayCount: stickerOverlays.count)
+    }
+
+    /// Renders one single-scene export frame into a pre-allocated target texture.
+    /// Uses the unified timeline executor so single-scene export matches preview/export overlay behavior.
+    internal static func renderSingleSceneFrame(
+        frameIndex: Int,
+        targetTexture: MTLTexture,
+        runtime: SceneRuntime,
+        snapshot: SceneRenderStateSnapshot,
+        renderer: MetalRenderer,
+        textureProvider: TextureProvider,
+        pathRegistry: PathRegistry,
+        assetSizes: [String: AssetSize],
+        backgroundState: EffectiveBackgroundState?,
+        clearColor: ClearColor,
+        overlaySnapshot: OverlayExportSnapshot?
+    ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
+        let commands = SceneRenderPlan.renderCommands(
+            for: runtime,
+            sceneFrameIndex: frameIndex,
+            resolvedTransforms: snapshot.resolvedTransforms,
+            variantOverrides: snapshot.variantOverrides,
+            userMediaPresent: snapshot.userMediaPresent,
+            layerToggleState: snapshot.layerToggleState
+        )
+
+        let timeUs = frameToUs(frameIndex, fps: runtime.fps)
+        let textOverlays = overlaySnapshot.map { OverlayExportResolver.resolveText(from: $0, at: timeUs) } ?? []
+        let stickerOverlays = overlaySnapshot.map { OverlayExportResolver.resolveSticker(from: $0, at: timeUs) } ?? []
+
+        let renderContext = SceneRenderContext(
+            commands: commands,
+            textureProvider: textureProvider,
+            pathRegistry: pathRegistry,
+            assetSizes: assetSizes,
+            localFrame: frameIndex,
+            canvasSize: runtime.canvasSize,
+            sceneInstanceId: UUID()
+        )
+
+        let request = TimelineRenderRequest(
+            resolved: .single(renderContext),
+            targetTexture: targetTexture,
+            drawableScale: 1.0,
+            timelineCanvasSize: runtime.canvasSize,
+            backgroundState: backgroundState,
+            backgroundTextureProvider: textureProvider,
+            clearColorOverride: clearColor,
+            presentationDrawable: nil,
+            waitUntilCompleted: true,
+            diagnosticFrameTag: frameIndex,
+            textOverlays: textOverlays,
+            stickerOverlays: stickerOverlays
+        )
+
+        do {
+            try TimelineRenderExecutor.render(
+                request,
+                renderer: renderer,
+                commandQueue: renderer.commandQueue,
+                transitionCompositor: nil,
+                completionQueue: nil
+            )
+        } catch let error as TimelineRenderExecutorError {
+            switch error {
+            case .failedToCreateCommandBuffer:
+                throw VideoExportError.failedToCreateCommandBuffer
+            case .failedToAcquireOffscreenTexture,
+                 .missingTransitionCompositor,
+                 .missingCompletionQueueForAsyncTransition:
+                throw VideoExportError.renderError(error)
+            }
+        }
+
         return (textOverlayCount: textOverlays.count, stickerOverlayCount: stickerOverlays.count)
     }
 

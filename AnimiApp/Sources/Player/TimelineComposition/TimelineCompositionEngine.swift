@@ -1255,10 +1255,8 @@ public final class TimelineCompositionEngine {
         let fps: Int
         let scenesByInstanceId: [UUID: TimelineExportSceneSnapshot]
         let audioSceneData: [SceneAudioExportData]
-        /// PR9: Snapshotted text overlay items for export (not queried from live state).
-        let textOverlayItems: [(item: TimelineItem, payload: TextPayload)]
-        /// PR10: Snapshotted sticker overlay items for export (pre-resolved URLs).
-        let stickerOverlayItems: [(item: TimelineItem, payload: StickerPayload, imageURL: URL)]
+        /// Unified overlay snapshot for both single-scene and timeline export paths.
+        let overlaySnapshot: OverlayExportSnapshot
     }
 
     /// TT-05: Builds an immutable export session from current engine state.
@@ -1356,8 +1354,8 @@ public final class TimelineCompositionEngine {
             ))
         }
 
-        // PR9: Snapshot text overlay items for export
-        let textOverlayItems: [(item: TimelineItem, payload: TextPayload)] =
+        // Build unified overlay snapshot from timeline + sticker provider
+        let textOverlayTuples: [(item: TimelineItem, payload: TextPayload)] =
             (timeline.overlayTrack?.items ?? []).compactMap { item in
                 guard item.kind == .text,
                       let payload = timeline.payloads[item.payloadId],
@@ -1365,8 +1363,7 @@ public final class TimelineCompositionEngine {
                 return (item: item, payload: textPayload)
             }
 
-        // PR10: Snapshot sticker overlay items for export (pre-resolve URLs via stickerProvider)
-        let stickerOverlayItems: [(item: TimelineItem, payload: StickerPayload, imageURL: URL)] =
+        let stickerOverlayTuples: [(item: TimelineItem, payload: StickerPayload, imageURL: URL)] =
             (timeline.overlayTrack?.items ?? []).compactMap { item in
                 guard item.kind == .sticker,
                       let payload = timeline.payloads[item.payloadId],
@@ -1375,14 +1372,18 @@ public final class TimelineCompositionEngine {
                 return (item: item, payload: stickerPayload, imageURL: imageURL)
             }
 
+        let overlaySnapshot = OverlayExportSnapshot.build(
+            textOverlayItems: textOverlayTuples,
+            stickerOverlayItems: stickerOverlayTuples
+        )
+
         return TimelineExportSession(
             transitionMath: math,
             canvasSize: canvasSize,
             fps: fps,
             scenesByInstanceId: scenesByInstanceId,
             audioSceneData: audioSceneData,
-            textOverlayItems: textOverlayItems,
-            stickerOverlayItems: stickerOverlayItems
+            overlaySnapshot: overlaySnapshot
         )
     }
 

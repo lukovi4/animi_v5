@@ -451,11 +451,11 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
         let session = try await engine.buildExportSession()
 
-        XCTAssertEqual(session.textOverlayItems.count, 1, "Export session should snapshot text overlay items")
-        XCTAssertEqual(session.textOverlayItems.first?.payload.text, "Export Title")
-        XCTAssertEqual(session.textOverlayItems.first?.payload.centerX, 0.5)
-        XCTAssertEqual(session.textOverlayItems.first?.payload.centerY, 0.3)
-        XCTAssertEqual(session.textOverlayItems.first?.item.durationUs, 2_000_000)
+        XCTAssertEqual(session.overlaySnapshot.textItems.count, 1, "Export session should snapshot text overlay items")
+        XCTAssertEqual(session.overlaySnapshot.textItems.first?.text, "Export Title")
+        XCTAssertEqual(session.overlaySnapshot.textItems.first?.centerX, 0.5)
+        XCTAssertEqual(session.overlaySnapshot.textItems.first?.centerY, 0.3)
+        XCTAssertEqual(session.overlaySnapshot.textItems.first?.endUs, 2_000_000)
     }
 
     /// Text overlay items in export session are empty when no overlay track exists.
@@ -470,7 +470,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
         let session = try await engine.buildExportSession()
 
-        XCTAssertTrue(session.textOverlayItems.isEmpty, "Export session should have no text overlays when none exist")
+        XCTAssertTrue(session.overlaySnapshot.textItems.isEmpty, "Export session should have no text overlays when none exist")
     }
 
     /// resolveTextOverlays returns overlays visible at a given frame, empty for non-visible.
@@ -546,12 +546,12 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
 
         let session = try await engine.buildExportSession()
 
-        XCTAssertEqual(session.stickerOverlayItems.count, 1, "Export session should snapshot sticker overlay items")
-        XCTAssertEqual(session.stickerOverlayItems.first?.payload.stickerId, "star")
-        XCTAssertEqual(session.stickerOverlayItems.first?.payload.centerX, 0.4)
-        XCTAssertEqual(session.stickerOverlayItems.first?.payload.centerY, 0.6)
-        XCTAssertEqual(session.stickerOverlayItems.first?.item.durationUs, 2_000_000)
-        XCTAssertNotNil(session.stickerOverlayItems.first?.imageURL, "Image URL should be pre-resolved")
+        XCTAssertEqual(session.overlaySnapshot.stickerItems.count, 1, "Export session should snapshot sticker overlay items")
+        XCTAssertEqual(session.overlaySnapshot.stickerItems.first?.stickerId, "star")
+        XCTAssertEqual(session.overlaySnapshot.stickerItems.first?.centerX, 0.4)
+        XCTAssertEqual(session.overlaySnapshot.stickerItems.first?.centerY, 0.6)
+        XCTAssertEqual(session.overlaySnapshot.stickerItems.first?.endUs, 2_000_000)
+        XCTAssertNotNil(session.overlaySnapshot.stickerItems.first?.imageURL, "Image URL should be pre-resolved")
     }
 
     /// Sticker overlay items are empty when no stickers on overlay track.
@@ -566,7 +566,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
         let session = try await engine.buildExportSession()
 
-        XCTAssertTrue(session.stickerOverlayItems.isEmpty, "Export session should have no sticker overlays when none exist")
+        XCTAssertTrue(session.overlaySnapshot.stickerItems.isEmpty, "Export session should have no sticker overlays when none exist")
     }
 
     /// resolveStickerOverlays returns overlays visible at a given frame, empty for non-visible.
