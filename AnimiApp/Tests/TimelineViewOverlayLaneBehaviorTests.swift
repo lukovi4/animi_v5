@@ -94,10 +94,10 @@ final class TimelineViewOverlayLaneBehaviorTests: XCTestCase {
                        "3 overlapping items should produce height 88 (3 * 28 + 4)")
     }
 
-    func testSetTextOverlayItems_nonOverlapping_heightIs32() {
+    func testSetTextOverlayItems_2nonOverlapping_heightIs60() {
         let tv = makeTimelineView()
 
-        // Non-overlapping → 1 row → height = 1 * 28 + 4 = 32
+        // 2 items → 2 rows → height = 2 * 28 + 4 = 60 (1 item = 1 row, no packing)
         tv.setTextOverlayItems([
             (id: UUID(), startUs: 0, durationUs: 1_000_000, label: "A"),
             (id: UUID(), startUs: 1_000_000, durationUs: 1_000_000, label: "B"),
@@ -107,8 +107,25 @@ final class TimelineViewOverlayLaneBehaviorTests: XCTestCase {
 
         let tl = textLane(in: tv)!
         let laneHeight = findHeightConstraint(for: tl)
-        XCTAssertEqual(laneHeight?.constant, 32,
-                       "Non-overlapping items should produce height 32 (1 * 28 + 4)")
+        XCTAssertEqual(laneHeight?.constant, 60,
+                       "2 items should produce height 60 (2 * 28 + 4) — each item gets its own row")
+    }
+
+    func testSetStickerOverlayItems_2nonOverlapping_heightIs60() {
+        let tv = makeTimelineView()
+
+        // 2 sequential stickers → 2 rows → height = 2 * 28 + 4 = 60
+        tv.setStickerOverlayItems([
+            (id: UUID(), startUs: 0, durationUs: 1_000_000, label: "star"),
+            (id: UUID(), startUs: 1_000_000, durationUs: 1_000_000, label: "heart"),
+        ], selectedItemId: nil)
+
+        tv.layoutIfNeeded()
+
+        let sl = stickerLane(in: tv)!
+        let laneHeight = findHeightConstraint(for: sl)
+        XCTAssertEqual(laneHeight?.constant, 60,
+                       "2 sticker items should produce height 60 (2 * 28 + 4) — each item gets its own row")
     }
 
     // MARK: - Selection Routing

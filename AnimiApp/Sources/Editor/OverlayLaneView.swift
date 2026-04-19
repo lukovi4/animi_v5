@@ -1,42 +1,18 @@
 import UIKit
 
-// MARK: - Overlay Lane Snapshot (row-packed)
+// MARK: - Overlay Lane Snapshot
 
 /// Data snapshot for a single overlay lane (text or sticker).
+/// Each item occupies its own visual row — no packing.
 struct OverlayLaneSnapshot {
-    struct RowItem {
+    struct Item {
         let id: UUID
         let startUs: TimeUs
         let durationUs: TimeUs
         let label: String
-        let row: Int
     }
-    let items: [RowItem]
+    let items: [Item]
     let selectedItemId: UUID?
-    let rowCount: Int
-
-    /// Greedy row-packing: sorts by startUs, assigns each item to the first
-    /// row whose last item ends before this item starts.
-    static func packRows(
-        _ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)]
-    ) -> (items: [RowItem], rowCount: Int) {
-        let sorted = items.sorted { $0.startUs < $1.startUs }
-        var rowEnds: [TimeUs] = []
-        var result: [RowItem] = []
-        for item in sorted {
-            let endUs = item.startUs + item.durationUs
-            if let idx = rowEnds.firstIndex(where: { $0 <= item.startUs }) {
-                rowEnds[idx] = endUs
-                result.append(.init(id: item.id, startUs: item.startUs,
-                                    durationUs: item.durationUs, label: item.label, row: idx))
-            } else {
-                result.append(.init(id: item.id, startUs: item.startUs,
-                                    durationUs: item.durationUs, label: item.label, row: rowEnds.count))
-                rowEnds.append(endUs)
-            }
-        }
-        return (result, max(1, rowEnds.count))
-    }
 }
 
 // MARK: - Overlay Lane View
@@ -62,8 +38,7 @@ final class OverlayLaneView: UIView {
 
     // MARK: - State
 
-    private var currentItems: [OverlayLaneSnapshot.RowItem] = []
-    private var rowCount: Int = 1
+    private var currentItems: [OverlayLaneSnapshot.Item] = []
     private var selectedItemId: UUID?
     private var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
     private var leftPadding: CGFloat = 0
@@ -91,7 +66,6 @@ final class OverlayLaneView: UIView {
     /// Applies a lane snapshot, creating/removing/reusing clip subviews.
     func applySnapshot(_ snapshot: OverlayLaneSnapshot) {
         currentItems = snapshot.items
-        rowCount = snapshot.rowCount
         selectedItemId = snapshot.selectedItemId
 
         let newIds = Set(snapshot.items.map(\.id))
@@ -142,14 +116,14 @@ final class OverlayLaneView: UIView {
     }
 
     private func layoutItems() {
-        let rowHeight = max(24, (bounds.height - 4) / CGFloat(rowCount))
-        for item in currentItems {
+        let rowHeight: CGFloat = 28
+        for (index, item) in currentItems.enumerated() {
             guard let clip = clipViews[item.id] else { continue }
             let startSeconds = CGFloat(usToSeconds(item.startUs))
             let durationSeconds = CGFloat(usToSeconds(item.durationUs))
             let x = leftPadding + startSeconds * pxPerSecond
             let width = max(20, durationSeconds * pxPerSecond)
-            let y = 2 + CGFloat(item.row) * rowHeight
+            let y: CGFloat = 2 + CGFloat(index) * rowHeight
             clip.frame = CGRect(x: x, y: y, width: width, height: rowHeight - 2)
 
             // Store layout info for gesture computation

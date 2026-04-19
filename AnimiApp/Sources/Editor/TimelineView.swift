@@ -517,22 +517,22 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// Updates text overlay items for the text lane.
     func setTextOverlayItems(_ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)], selectedItemId: UUID?) {
-        let (rowItems, rowCount) = OverlayLaneSnapshot.packRows(items)
-        let snapshot = OverlayLaneSnapshot(items: rowItems, selectedItemId: selectedItemId, rowCount: rowCount)
+        let snapshotItems = items.map { OverlayLaneSnapshot.Item(id: $0.id, startUs: $0.startUs, durationUs: $0.durationUs, label: $0.label) }
+        let snapshot = OverlayLaneSnapshot(items: snapshotItems, selectedItemId: selectedItemId)
         textOverlayLane.applySnapshot(snapshot)
         textOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: leftPaddingPx)
         textOverlayLane.isHidden = items.isEmpty
-        textLaneHeightConstraint?.constant = CGFloat(max(1, rowCount) * 28 + 4)
+        textLaneHeightConstraint?.constant = CGFloat(max(1, items.count) * 28 + 4)
     }
 
     /// Updates sticker overlay items for the sticker lane.
     func setStickerOverlayItems(_ items: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)], selectedItemId: UUID?) {
-        let (rowItems, rowCount) = OverlayLaneSnapshot.packRows(items)
-        let snapshot = OverlayLaneSnapshot(items: rowItems, selectedItemId: selectedItemId, rowCount: rowCount)
+        let snapshotItems = items.map { OverlayLaneSnapshot.Item(id: $0.id, startUs: $0.startUs, durationUs: $0.durationUs, label: $0.label) }
+        let snapshot = OverlayLaneSnapshot(items: snapshotItems, selectedItemId: selectedItemId)
         stickerOverlayLane.applySnapshot(snapshot)
         stickerOverlayLane.configure(pxPerSecond: pxPerSecond, leftPadding: leftPaddingPx)
         stickerOverlayLane.isHidden = items.isEmpty
-        stickerLaneHeightConstraint?.constant = CGFloat(max(1, rowCount) * 28 + 4)
+        stickerLaneHeightConstraint?.constant = CGFloat(max(1, items.count) * 28 + 4)
     }
 
     /// PR8: Updates the music item data for audio track display and selection.
