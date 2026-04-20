@@ -351,11 +351,188 @@ final class BootstrapOverlayTrackSyncTests: XCTestCase {
         XCTAssertEqual(textH?.constant, 60, "2 text items → height 60 (2 * 28 + 4)")
         XCTAssertEqual(stickerH?.constant, 60, "2 sticker items → height 60 (2 * 28 + 4)")
 
-        // Verify: extraction order is sorted by startUs
+        // Verify: extraction order follows overlay-track item order
         XCTAssertEqual(textItems[0].label, "Text0")
         XCTAssertEqual(textItems[1].label, "Text1")
         XCTAssertEqual(stickerItems[0].label, "s0")
         XCTAssertEqual(stickerItems[1].label, "s1")
+    }
+
+    // MARK: - Row Stability
+
+    /// Text row order is stable after startUs mutation — extraction preserves overlay-track item order.
+    func testExtraction_textRowStableAfterStartUsChange() {
+        var timeline = CanonicalTimeline.empty()
+        let scenePid = UUID()
+        timeline.payloads[scenePid] = .scene(ScenePayload(sceneTypeId: "s0"))
+        timeline.tracks[0].items.append(
+            TimelineItem(payloadId: scenePid, kind: .scene, startUs: nil, durationUs: 10_000_000)
+        )
+
+        var overlayTrack = Track(kind: .overlay)
+        let pidA = UUID(), pidB = UUID(), pidC = UUID()
+        timeline.payloads[pidA] = .text(TextPayload(text: "A", fontSize: 32, colorHex: "#FFF", centerX: 0.5, centerY: 0.5))
+        timeline.payloads[pidB] = .text(TextPayload(text: "B", fontSize: 32, colorHex: "#FFF", centerX: 0.5, centerY: 0.5))
+        timeline.payloads[pidC] = .text(TextPayload(text: "C", fontSize: 32, colorHex: "#FFF", centerX: 0.5, centerY: 0.5))
+        overlayTrack.items.append(TimelineItem(payloadId: pidA, kind: .text, startUs: 0, durationUs: 1_000_000))
+        overlayTrack.items.append(TimelineItem(payloadId: pidB, kind: .text, startUs: 2_000_000, durationUs: 1_000_000))
+        overlayTrack.items.append(TimelineItem(payloadId: pidC, kind: .text, startUs: 4_000_000, durationUs: 1_000_000))
+        timeline.tracks.append(overlayTrack)
+
+        // Move B past C
+        let overlayIdx = timeline.tracks.firstIndex { $0.kind == .overlay }!
+        let bIdx = timeline.tracks[overlayIdx].items.firstIndex { $0.payloadId == pidB }!
+        timeline.tracks[overlayIdx].items[bIdx].startUs = 6_000_000
+
+        let (textItems, _) = EditorViewController.extractOverlayLaneItems(from: timeline)
+        XCTAssertEqual(textItems.map(\.label), ["A", "B", "C"],
+                       "Text row order must be stable after startUs change")
+        XCTAssertEqual(textItems[1].startUs, 6_000_000, "B's startUs should be updated")
+    }
+
+    /// Sticker row order is stable after startUs mutation.
+    func testExtraction_stickerRowStableAfterStartUsChange() {
+        var timeline = CanonicalTimeline.empty()
+        let scenePid = UUID()
+        timeline.payloads[scenePid] = .scene(ScenePayload(sceneTypeId: "s0"))
+        timeline.tracks[0].items.append(
+            TimelineItem(payloadId: scenePid, kind: .scene, startUs: nil, durationUs: 10_000_000)
+        )
+
+        var overlayTrack = Track(kind: .overlay)
+        let pidA = UUID(), pidB = UUID()
+        timeline.payloads[pidA] = .sticker(StickerPayload(stickerId: "star", centerX: 0.5, centerY: 0.5))
+        timeline.payloads[pidB] = .sticker(StickerPayload(stickerId: "heart", centerX: 0.5, centerY: 0.5))
+        overlayTrack.items.append(TimelineItem(payloadId: pidA, kind: .sticker, startUs: 0, durationUs: 1_000_000))
+        overlayTrack.items.append(TimelineItem(payloadId: pidB, kind: .sticker, startUs: 2_000_000, durationUs: 1_000_000))
+        timeline.tracks.append(overlayTrack)
+
+        // Move star past heart
+        let overlayIdx = timeline.tracks.firstIndex { $0.kind == .overlay }!
+        let aIdx = timeline.tracks[overlayIdx].items.firstIndex { $0.payloadId == pidA }!
+        timeline.tracks[overlayIdx].items[aIdx].startUs = 5_000_000
+
+        let (_, stickerItems) = EditorViewController.extractOverlayLaneItems(from: timeline)
+        XCTAssertEqual(stickerItems.map(\.label), ["star", "heart"],
+                       "Sticker row order must be stable after startUs change")
+    }
+
+    /// Row order survives JSON encode/decode round-trip.
+    func testExtraction_rowStableAfterEncodeDecodeRoundTrip() throws {
+        var timeline = CanonicalTimeline.empty()
+        let scenePid = UUID()
+        timeline.payloads[scenePid] = .scene(ScenePayload(sceneTypeId: "s0"))
+        timeline.tracks[0].items.append(
+            TimelineItem(payloadId: scenePid, kind: .scene, startUs: nil, durationUs: 10_000_000)
+        )
+
+        var overlayTrack = Track(kind: .overlay)
+        let pidA = UUID(), pidB = UUID(), pidC = UUID()
+        timeline.payloads[pidA] = .text(TextPayload(text: "A", fontSize: 32, colorHex: "#FFF", centerX: 0.5, centerY: 0.5))
+        timeline.payloads[pidB] = .text(TextPayload(text: "B", fontSize: 32, colorHex: "#FFF", centerX: 0.5, centerY: 0.5))
+        timeline.payloads[pidC] = .text(TextPayload(text: "C", fontSize: 32, colorHex: "#FFF", centerX: 0.5, centerY: 0.5))
+        overlayTrack.items.append(TimelineItem(payloadId: pidA, kind: .text, startUs: 0, durationUs: 1_000_000))
+        overlayTrack.items.append(TimelineItem(payloadId: pidB, kind: .text, startUs: 6_000_000, durationUs: 1_000_000))
+        overlayTrack.items.append(TimelineItem(payloadId: pidC, kind: .text, startUs: 4_000_000, durationUs: 1_000_000))
+        timeline.tracks.append(overlayTrack)
+
+        let data = try JSONEncoder().encode(timeline)
+        let decoded = try JSONDecoder().decode(CanonicalTimeline.self, from: data)
+
+        let (items, _) = EditorViewController.extractOverlayLaneItems(from: decoded)
+        XCTAssertEqual(items.map(\.label), ["A", "B", "C"],
+                       "Row order must survive save/reopen — overlay-track item order preserved through Codable")
+    }
+
+    /// Proves the real reducer moveItem path does not reorder overlay track items.
+    @MainActor
+    func testReducer_moveItem_doesNotReorderOverlayTrackItems() {
+        var state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(
+                draft: makeDraftWithScene(durationUs: 10_000_000),
+                templateFPS: 30,
+                defaultSceneSequence: []
+            )
+        ).state
+
+        // Add A, B, C in order
+        state = EditorReducer.reduce(state: state, action: .addTextOverlay(
+            text: "A", fontSize: 32, colorHex: "#FFF", fontFamily: nil, startUs: 0, durationUs: 1_000_000
+        )).state
+        state = EditorReducer.reduce(state: state, action: .addTextOverlay(
+            text: "B", fontSize: 32, colorHex: "#FFF", fontFamily: nil, startUs: 2_000_000, durationUs: 1_000_000
+        )).state
+        state = EditorReducer.reduce(state: state, action: .addTextOverlay(
+            text: "C", fontSize: 32, colorHex: "#FFF", fontFamily: nil, startUs: 4_000_000, durationUs: 1_000_000
+        )).state
+
+        let textItems = state.canonicalTimeline.textItems
+        XCTAssertEqual(textItems.count, 3)
+        let idB = textItems[1].id
+
+        // Move B past C (startUs=7s) via real reducer
+        let result = EditorReducer.reduce(state: state, action: .moveItem(
+            itemId: idB, newStartUs: 7_000_000, phase: .ended
+        ))
+
+        // Overlay track item order must be unchanged: A, B, C
+        let afterItems = result.state.canonicalTimeline.textItems
+        XCTAssertEqual(afterItems.count, 3)
+        XCTAssertEqual(afterItems[0].startUs, 0, "A stays at 0s")
+        XCTAssertEqual(afterItems[1].startUs, 7_000_000, "B moved to 7s")
+        XCTAssertEqual(afterItems[2].startUs, 4_000_000, "C stays at 4s")
+
+        // Extraction order follows overlay-track item order, not startUs
+        let (extracted, _) = EditorViewController.extractOverlayLaneItems(from: result.state.canonicalTimeline)
+        XCTAssertEqual(extracted.map(\.label), ["A", "B", "C"],
+                       "Extraction must preserve overlay-track item order after moveItem")
+    }
+
+    /// Proves the real reducer moveItem path does not reorder sticker overlay track items.
+    @MainActor
+    func testReducer_moveStickerItem_doesNotReorderOverlayTrackItems() {
+        var state = EditorReducer.reduce(
+            state: .empty(),
+            action: .loadProject(
+                draft: makeDraftWithScene(durationUs: 10_000_000),
+                templateFPS: 30,
+                defaultSceneSequence: []
+            )
+        ).state
+
+        state = EditorReducer.reduce(state: state, action: .addStickerOverlay(
+            stickerId: "star", startUs: 0, durationUs: 1_000_000
+        )).state
+        state = EditorReducer.reduce(state: state, action: .addStickerOverlay(
+            stickerId: "heart", startUs: 2_000_000, durationUs: 1_000_000
+        )).state
+        state = EditorReducer.reduce(state: state, action: .addStickerOverlay(
+            stickerId: "fire", startUs: 4_000_000, durationUs: 1_000_000
+        )).state
+
+        let stickerItems = state.canonicalTimeline.stickerItems
+        let idHeart = stickerItems[1].id
+
+        let result = EditorReducer.reduce(state: state, action: .moveItem(
+            itemId: idHeart, newStartUs: 7_000_000, phase: .ended
+        ))
+
+        let (_, extracted) = EditorViewController.extractOverlayLaneItems(from: result.state.canonicalTimeline)
+        XCTAssertEqual(extracted.map(\.label), ["star", "heart", "fire"],
+                       "Sticker extraction must preserve overlay-track item order after moveItem")
+    }
+
+    // MARK: - Row Stability Helpers
+
+    private func makeDraftWithScene(durationUs: TimeUs) -> ProjectDraft {
+        var draft = ProjectDraft.create(origin: .template(templateId: "test"))
+        var timeline = CanonicalTimeline.empty()
+        let pid = UUID()
+        timeline.payloads[pid] = .scene(ScenePayload(sceneTypeId: "s0"))
+        timeline.tracks[0].items.append(TimelineItem(payloadId: pid, kind: .scene, startUs: nil, durationUs: durationUs))
+        draft.canonicalTimeline = timeline
+        return draft
     }
 
     // MARK: - View Hierarchy Helpers

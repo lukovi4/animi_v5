@@ -136,7 +136,8 @@ public struct Track: Codable, Equatable, Sendable {
     /// Type of track (determines which ItemKinds are allowed).
     public let kind: TrackKind
 
-    /// Items on this track, ordered by time.
+    /// Items on this track. For sceneSequence tracks, ordered by time.
+    /// For overlay tracks, order is stable across `moveItem` mutations and currently serves as persistent row order for timeline UI.
     public var items: [TimelineItem]
 
     public init(id: UUID = UUID(), kind: TrackKind, items: [TimelineItem] = []) {

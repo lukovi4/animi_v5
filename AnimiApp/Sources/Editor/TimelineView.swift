@@ -276,6 +276,26 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         stickerOverlayLane.onTrimItem = { [weak self] itemId, newDurationUs, edge, phase in
             self?.emitEvent(.trimOverlayItem(itemId: itemId, newDurationUs: newDurationUs, edge: edge, phase: phase))
         }
+
+        // Scroll should yield to overlay clip gestures (matching scene path at line 242)
+        textOverlayLane.onClipCreated = { [weak self] clipView in
+            guard let self = self else { return }
+            self.scrollView.panGestureRecognizer.require(toFail: clipView.trimPanGesture)
+            self.scrollView.panGestureRecognizer.require(toFail: clipView.moveLongPressGesture)
+            #if DEBUG
+            self.overlayScrollFailureDeps.append(clipView.trimPanGesture)
+            self.overlayScrollFailureDeps.append(clipView.moveLongPressGesture)
+            #endif
+        }
+        stickerOverlayLane.onClipCreated = { [weak self] clipView in
+            guard let self = self else { return }
+            self.scrollView.panGestureRecognizer.require(toFail: clipView.trimPanGesture)
+            self.scrollView.panGestureRecognizer.require(toFail: clipView.moveLongPressGesture)
+            #if DEBUG
+            self.overlayScrollFailureDeps.append(clipView.trimPanGesture)
+            self.overlayScrollFailureDeps.append(clipView.moveLongPressGesture)
+            #endif
+        }
     }
 
     private func setupConstraints() {
@@ -825,6 +845,10 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     // MARK: - Test Helpers (TT-01 Phase 2)
 
     #if DEBUG
+    /// Records gesture recognizers registered via require(toFail:) for overlay clip pans.
+    /// Used by tests to verify scroll arbitration wiring.
+    private(set) var overlayScrollFailureDeps: [UIGestureRecognizer] = []
+
     /// Simulates begin dragging for testing.
     /// - Note: For unit tests only.
     func simulateBeginDragging() {

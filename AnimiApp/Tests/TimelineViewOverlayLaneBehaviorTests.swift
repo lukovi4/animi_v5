@@ -261,4 +261,59 @@ final class TimelineViewOverlayLaneBehaviorTests: XCTestCase {
         }
         return nil
     }
+
+    // MARK: - Scroll Arbitration (require(toFail:) proof)
+
+    func testScrollArbitration_textLane_requireToFailWired() {
+        let tv = makeTimelineView()
+        let ids = [UUID(), UUID()]
+
+        tv.setTextOverlayItems([
+            (id: ids[0], startUs: 0, durationUs: 1_000_000, label: "A"),
+            (id: ids[1], startUs: 1_000_000, durationUs: 1_000_000, label: "B"),
+        ], selectedItemId: nil)
+
+        // 2 clips × 2 gestures (trimPan + moveLongPress) = 4 deps
+        XCTAssertEqual(tv.overlayScrollFailureDeps.count, 4,
+                       "Each text overlay clip must register 2 gestures as scroll failure deps")
+
+        // Verify each recorded gesture is attached to an OverlayClipView
+        for dep in tv.overlayScrollFailureDeps {
+            XCTAssertTrue(dep.view is OverlayClipView,
+                          "Failure dep gesture must be attached to an OverlayClipView")
+        }
+    }
+
+    func testScrollArbitration_stickerLane_requireToFailWired() {
+        let tv = makeTimelineView()
+        let stickerId = UUID()
+
+        tv.setStickerOverlayItems([
+            (id: stickerId, startUs: 0, durationUs: 1_000_000, label: "star")
+        ], selectedItemId: nil)
+
+        // 1 clip × 2 gestures = 2 deps
+        XCTAssertEqual(tv.overlayScrollFailureDeps.count, 2,
+                       "Sticker overlay clip must register 2 gestures as scroll failure deps")
+        XCTAssertTrue(tv.overlayScrollFailureDeps[0].view is OverlayClipView)
+        XCTAssertTrue(tv.overlayScrollFailureDeps[1].view is OverlayClipView)
+    }
+
+    func testScrollArbitration_notDuplicatedOnReuse() {
+        let tv = makeTimelineView()
+        let id = UUID()
+
+        tv.setTextOverlayItems([
+            (id: id, startUs: 0, durationUs: 1_000_000, label: "A")
+        ], selectedItemId: nil)
+        // 1 clip × 2 gestures = 2 deps
+        XCTAssertEqual(tv.overlayScrollFailureDeps.count, 2)
+
+        // Apply same snapshot again — clip is reused, onClipCreated should NOT fire
+        tv.setTextOverlayItems([
+            (id: id, startUs: 0, durationUs: 1_000_000, label: "A")
+        ], selectedItemId: nil)
+        XCTAssertEqual(tv.overlayScrollFailureDeps.count, 2,
+                       "Reused clips must not re-register scroll failure dependencies")
+    }
 }

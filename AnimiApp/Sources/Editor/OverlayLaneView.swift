@@ -36,6 +36,9 @@ final class OverlayLaneView: UIView {
     /// Called when an overlay item's trailing edge is dragged to trim.
     var onTrimItem: ((UUID, TimeUs, TrimEdge, InteractionPhase) -> Void)?
 
+    /// Called when a new clip subview is created, so TimelineView can set up gesture arbitration.
+    var onClipCreated: ((OverlayClipView) -> Void)?
+
     // MARK: - State
 
     private var currentItems: [OverlayLaneSnapshot.Item] = []
@@ -94,6 +97,7 @@ final class OverlayLaneView: UIView {
                 }
                 addSubview(clip)
                 clipViews[item.id] = clip
+                onClipCreated?(clip)
             }
         }
     }
@@ -142,7 +146,17 @@ final class OverlayLaneView: UIView {
 // MARK: - Overlay Clip View
 
 /// Individual clip view for an overlay item on the timeline.
-private final class OverlayClipView: UIView {
+///
+/// Gesture architecture: selection-gated, two separate gestures.
+/// - Tap to select (always active)
+/// - Long-press-drag to move (enabled only when selected)
+/// - Trailing-zone pan to trim (enabled only when selected, gated by delegate)
+///
+/// The clip's hit area is expanded 44pt to the right via `point(inside:with:)`
+/// only when selected. Each overlay item has its own row, so the expansion is safe.
+///
+/// Trim pill is visual-only (no gesture role).
+final class OverlayClipView: UIView, UIGestureRecognizerDelegate {
 
     var onTap: (() -> Void)?
     var onMove: ((TimeUs, InteractionPhase) -> Void)?
@@ -152,9 +166,12 @@ private final class OverlayClipView: UIView {
     var itemDurationUs: TimeUs = 0
     var pxPerSecond: CGFloat = EditorConfig.basePxPerSecond
 
-    private var dragStartX: CGFloat = 0
+    private(set) var isSelected: Bool = false
+    private var moveInitialLocationInSuperview: CGFloat = 0
     private var dragStartUs: TimeUs = 0
     private var trimStartDurationUs: TimeUs = 0
+
+    // MARK: - Subviews
 
     private let iconLabel: UILabel = {
         let label = UILabel()
@@ -172,12 +189,48 @@ private final class OverlayClipView: UIView {
         return label
     }()
 
-    private let trimHandle: UIView = {
+    /// Visual trim indicator at trailing edge. No gesture role.
+    private let trimPill: UIView = {
         let v = UIView()
         v.backgroundColor = UIColor.white.withAlphaComponent(0.5)
         v.layer.cornerRadius = 2
+        v.isUserInteractionEnabled = false
         return v
     }()
+
+    // MARK: - Gestures (exposed for scroll arbitration)
+
+    /// Long-press gesture for move. Disabled when unselected.
+    /// Gated via delegate: only begins in visible body zone.
+    private(set) lazy var moveLongPressGesture: UILongPressGestureRecognizer = {
+        let g = UILongPressGestureRecognizer(target: self, action: #selector(handleMoveLongPress(_:)))
+        g.minimumPressDuration = 0.3
+        g.allowableMovement = 10
+        g.isEnabled = false
+        g.delegate = self
+        return g
+    }()
+
+    /// Pan gesture for trailing trim. Disabled when unselected.
+    /// Gated via delegate: only begins in expanded trailing zone.
+    private(set) lazy var trimPanGesture: UIPanGestureRecognizer = {
+        let g = UIPanGestureRecognizer(target: self, action: #selector(handleTrimPan(_:)))
+        g.isEnabled = false
+        g.delegate = self
+        return g
+    }()
+
+    /// Tap gesture for selection. Gated via delegate: only in visible bounds.
+    private lazy var tapGesture: UITapGestureRecognizer = {
+        let g = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        g.delegate = self
+        return g
+    }()
+
+    // MARK: - Constants
+
+    /// Trailing hit expansion beyond visible bounds for trim target.
+    static let trailingHitExpansion: CGFloat = 44
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -187,20 +240,11 @@ private final class OverlayClipView: UIView {
 
         addSubview(iconLabel)
         addSubview(textLabel)
-        addSubview(trimHandle)
+        addSubview(trimPill)
 
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
-        addGestureRecognizer(tap)
-
-        let bodyPan = UIPanGestureRecognizer(target: self, action: #selector(handleBodyPan(_:)))
-        addGestureRecognizer(bodyPan)
-
-        let trimPan = UIPanGestureRecognizer(target: self, action: #selector(handleTrimPan(_:)))
-        trimHandle.addGestureRecognizer(trimPan)
-        trimHandle.isUserInteractionEnabled = true
-
-        // Body pan should not interfere with trim pan
-        bodyPan.require(toFail: trimPan)
+        addGestureRecognizer(tapGesture)
+        addGestureRecognizer(moveLongPressGesture)
+        addGestureRecognizer(trimPanGesture)
     }
 
     required init?(coder: NSCoder) {
@@ -221,50 +265,100 @@ private final class OverlayClipView: UIView {
     }
 
     func setSelected(_ selected: Bool) {
+        isSelected = selected
         layer.borderWidth = selected ? 2 : 0
         layer.borderColor = selected ? UIColor.white.cgColor : nil
+        moveLongPressGesture.isEnabled = selected
+        trimPanGesture.isEnabled = selected
     }
+
+    // MARK: - Expanded Hit Testing
+
+    /// Expands touch area 44pt beyond the trailing edge only when selected.
+    /// Unselected clips don't expand — no stolen scroll touches beyond visible bounds.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if isSelected {
+            let expanded = bounds.inset(by: UIEdgeInsets(top: 0, left: 0, bottom: 0, right: -Self.trailingHitExpansion))
+            return expanded.contains(point)
+        }
+        return bounds.contains(point)
+    }
+
+    /// Interaction zone classification for a local X coordinate.
+    enum InteractionZone {
+        /// Inside visible clip bounds — move/select territory.
+        case visibleBody
+        /// Beyond visible bounds in the 44pt trailing expansion — trim territory.
+        case trimZone
+    }
+
+    /// Classifies a local X coordinate into an interaction zone.
+    /// Returns nil if the coordinate is outside all zones.
+    func interactionZone(forLocalX localX: CGFloat) -> InteractionZone? {
+        if localX >= 0 && localX < bounds.width {
+            return .visibleBody
+        } else if localX >= bounds.width && localX < bounds.width + Self.trailingHitExpansion {
+            return .trimZone
+        }
+        return nil
+    }
+
+    /// Whether a local X coordinate falls in the trim zone (beyond visible bounds).
+    func isInTrimZone(localX: CGFloat) -> Bool {
+        interactionZone(forLocalX: localX) == .trimZone
+    }
+
+    // MARK: - Layout
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        let w = bounds.width
         let h = bounds.height
+
         iconLabel.frame = CGRect(x: 6, y: (h - 14) / 2, width: 18, height: 14)
-        textLabel.frame = CGRect(x: 26, y: (h - 14) / 2, width: bounds.width - 40, height: 14)
-        trimHandle.frame = CGRect(x: bounds.width - 8, y: 4, width: 4, height: h - 8)
+        textLabel.frame = CGRect(x: 26, y: (h - 14) / 2, width: max(0, w - 40), height: 14)
+
+        // Visual pill at trailing edge
+        let pillW: CGFloat = 4
+        let pillH: CGFloat = min(18, h - 8)
+        trimPill.frame = CGRect(
+            x: w - 8,
+            y: (h - pillH) / 2,
+            width: pillW,
+            height: pillH
+        )
     }
+
+    // MARK: - Gesture Handlers
 
     @objc private func handleTap() {
         onTap?()
     }
 
-    @objc private func handleBodyPan(_ recognizer: UIPanGestureRecognizer) {
-        let translation = recognizer.translation(in: superview)
-
+    @objc private func handleMoveLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard let sv = superview else { return }
+        let locationX = recognizer.location(in: sv).x
         switch recognizer.state {
         case .began:
-            dragStartX = frame.origin.x
             dragStartUs = itemStartUs
+            moveInitialLocationInSuperview = locationX
             onMove?(itemStartUs, .began)
         case .changed:
-            let deltaSeconds = Double(translation.x) / Double(pxPerSecond)
+            let deltaSeconds = Double(locationX - moveInitialLocationInSuperview) / Double(pxPerSecond)
             let deltaUs = TimeUs(deltaSeconds * 1_000_000)
-            let newStartUs = max(0, dragStartUs + deltaUs)
-            onMove?(newStartUs, .changed)
+            onMove?(max(0, dragStartUs + deltaUs), .changed)
         case .ended:
-            let deltaSeconds = Double(translation.x) / Double(pxPerSecond)
+            let deltaSeconds = Double(locationX - moveInitialLocationInSuperview) / Double(pxPerSecond)
             let deltaUs = TimeUs(deltaSeconds * 1_000_000)
-            let newStartUs = max(0, dragStartUs + deltaUs)
-            onMove?(newStartUs, .ended)
-        case .cancelled:
+            onMove?(max(0, dragStartUs + deltaUs), .ended)
+        case .cancelled, .failed:
             onMove?(dragStartUs, .cancelled)
-        default:
-            break
+        default: break
         }
     }
 
     @objc private func handleTrimPan(_ recognizer: UIPanGestureRecognizer) {
         let translation = recognizer.translation(in: superview)
-
         switch recognizer.state {
         case .began:
             trimStartDurationUs = itemDurationUs
@@ -272,17 +366,33 @@ private final class OverlayClipView: UIView {
         case .changed:
             let deltaSeconds = Double(translation.x) / Double(pxPerSecond)
             let deltaUs = TimeUs(deltaSeconds * 1_000_000)
-            let newDurationUs = max(500_000, trimStartDurationUs + deltaUs)
-            onTrim?(newDurationUs, .changed)
+            onTrim?(max(500_000, trimStartDurationUs + deltaUs), .changed)
         case .ended:
             let deltaSeconds = Double(translation.x) / Double(pxPerSecond)
             let deltaUs = TimeUs(deltaSeconds * 1_000_000)
-            let newDurationUs = max(500_000, trimStartDurationUs + deltaUs)
-            onTrim?(newDurationUs, .ended)
+            onTrim?(max(500_000, trimStartDurationUs + deltaUs), .ended)
         case .cancelled:
             onTrim?(trimStartDurationUs, .cancelled)
-        default:
-            break
+        default: break
         }
+    }
+
+
+    // MARK: - UIGestureRecognizerDelegate
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        let localX = gestureRecognizer.location(in: self).x
+        let zone = interactionZone(forLocalX: localX)
+
+        if gestureRecognizer === trimPanGesture {
+            return zone == .trimZone
+        }
+        if gestureRecognizer === moveLongPressGesture {
+            return zone == .visibleBody
+        }
+        if gestureRecognizer === tapGesture {
+            return zone == .visibleBody
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
     }
 }

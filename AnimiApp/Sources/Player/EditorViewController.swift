@@ -1309,28 +1309,18 @@ final class EditorViewController: UIViewController {
         textItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)],
         stickerItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)]
     ) {
-        // Sorted by startUs; same startUs uses overlay-track insertion order as explicit tie-break.
+        // Preserves overlay-track item order — row assignment is stable across startUs changes.
         let textItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)] =
-            timeline.textItems.enumerated().compactMap { index, item -> (index: Int, id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)? in
+            timeline.textItems.compactMap { item in
                 guard let payload = timeline.textPayload(for: item.id) else { return nil }
                 let label = payload.text.isEmpty ? "Text" : String(payload.text.prefix(20))
-                return (index: index, id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label)
+                return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: label)
             }
-            .sorted {
-                if $0.startUs != $1.startUs { return $0.startUs < $1.startUs }
-                return $0.index < $1.index
-            }
-            .map { (id: $0.id, startUs: $0.startUs, durationUs: $0.durationUs, label: $0.label) }
         let stickerItems: [(id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)] =
-            timeline.stickerItems.enumerated().compactMap { index, item -> (index: Int, id: UUID, startUs: TimeUs, durationUs: TimeUs, label: String)? in
+            timeline.stickerItems.compactMap { item in
                 guard let payload = timeline.stickerPayload(for: item.id) else { return nil }
-                return (index: index, id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: payload.stickerId)
+                return (id: item.id, startUs: item.startUs ?? 0, durationUs: item.durationUs, label: payload.stickerId)
             }
-            .sorted {
-                if $0.startUs != $1.startUs { return $0.startUs < $1.startUs }
-                return $0.index < $1.index
-            }
-            .map { (id: $0.id, startUs: $0.startUs, durationUs: $0.durationUs, label: $0.label) }
         return (textItems, stickerItems)
     }
 
