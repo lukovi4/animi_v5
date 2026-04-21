@@ -2568,8 +2568,7 @@ extension EditorViewController: MTKViewDelegate {
             presentationDrawable: drawable,
             waitUntilCompleted: false,
             diagnosticFrameTag: payload.diagnosticFrameTag,
-            textOverlays: payload.textOverlays,
-            stickerOverlays: payload.stickerOverlays
+            overlayItems: payload.overlayItems
         )
 
         do {
@@ -2639,8 +2638,7 @@ extension EditorViewController: MTKViewDelegate {
             presentationDrawable: drawable,
             waitUntilCompleted: false,
             diagnosticFrameTag: payload.diagnosticFrameTag,
-            textOverlays: payload.textOverlays,
-            stickerOverlays: payload.stickerOverlays
+            overlayItems: payload.overlayItems
         )
 
         do {

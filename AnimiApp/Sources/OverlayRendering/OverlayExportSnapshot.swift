@@ -1,12 +1,14 @@
+import CoreGraphics
 import Foundation
 import TVECore
 
 // MARK: - Overlay Export Snapshot
 
 /// Fully-flattened, pre-resolved, Sendable snapshot of overlay items for export.
-/// Built once before the export loop; consumed per-frame by `OverlayExportResolver`.
+/// Built once before the export loop; consumed per-frame by `OverlayResolver`.
 internal struct OverlayExportSnapshot: Sendable {
     struct TextItem: Sendable {
+        let itemId: UUID
         let startUs: TimeUs
         let endUs: TimeUs
         let text: String
@@ -17,6 +19,7 @@ internal struct OverlayExportSnapshot: Sendable {
         let centerY: CGFloat
     }
     struct StickerItem: Sendable {
+        let itemId: UUID
         let startUs: TimeUs
         let endUs: TimeUs
         let stickerId: String
@@ -51,6 +54,7 @@ extension OverlayExportSnapshot {
                 guard let payload = timeline.payloads[item.payloadId],
                       case .text(let textPayload) = payload else { continue }
                 textItems.append(TextItem(
+                    itemId: item.id,
                     startUs: itemStart,
                     endUs: itemEnd,
                     text: textPayload.text,
@@ -65,6 +69,7 @@ extension OverlayExportSnapshot {
                       case .sticker(let stickerPayload) = payload,
                       let imageURL = stickerProvider?.resourceURL(for: stickerPayload.stickerId) else { continue }
                 stickerItems.append(StickerItem(
+                    itemId: item.id,
                     startUs: itemStart,
                     endUs: itemEnd,
                     stickerId: stickerPayload.stickerId,
@@ -91,6 +96,7 @@ extension OverlayExportSnapshot {
         let textItems = textOverlayItems.map { (item, payload) in
             let itemStart = item.startUs ?? 0
             return TextItem(
+                itemId: item.id,
                 startUs: itemStart,
                 endUs: itemStart + item.durationUs,
                 text: payload.text,
@@ -104,6 +110,7 @@ extension OverlayExportSnapshot {
         let stickerItems = stickerOverlayItems.map { (item, payload, imageURL) in
             let itemStart = item.startUs ?? 0
             return StickerItem(
+                itemId: item.id,
                 startUs: itemStart,
                 endUs: itemStart + item.durationUs,
                 stickerId: payload.stickerId,
@@ -113,37 +120,5 @@ extension OverlayExportSnapshot {
             )
         }
         return OverlayExportSnapshot(textItems: textItems, stickerItems: stickerItems)
-    }
-}
-
-// MARK: - Resolver: pure time-range filter
-
-internal enum OverlayExportResolver {
-    /// Resolves text overlays visible at the given time (half-open: startUs <= timeUs < endUs).
-    static func resolveText(from snapshot: OverlayExportSnapshot, at timeUs: TimeUs) -> [ResolvedTextOverlay] {
-        snapshot.textItems.compactMap { item in
-            guard timeUs >= item.startUs && timeUs < item.endUs else { return nil }
-            return ResolvedTextOverlay(
-                text: item.text,
-                fontFamily: item.fontFamily,
-                fontSize: item.fontSize,
-                colorHex: item.colorHex,
-                centerX: item.centerX,
-                centerY: item.centerY
-            )
-        }
-    }
-
-    /// Resolves sticker overlays visible at the given time (half-open: startUs <= timeUs < endUs).
-    static func resolveSticker(from snapshot: OverlayExportSnapshot, at timeUs: TimeUs) -> [ResolvedStickerOverlay] {
-        snapshot.stickerItems.compactMap { item in
-            guard timeUs >= item.startUs && timeUs < item.endUs else { return nil }
-            return ResolvedStickerOverlay(
-                stickerId: item.stickerId,
-                imageURL: item.imageURL,
-                centerX: item.centerX,
-                centerY: item.centerY
-            )
-        }
     }
 }

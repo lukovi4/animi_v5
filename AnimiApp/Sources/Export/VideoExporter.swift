@@ -743,6 +743,9 @@ public final class VideoExporter: @unchecked Sendable {
         )
         session.transitionToRendering()
 
+        // Export-owned overlay cache — lives for the duration of the export session.
+        let exportOverlayCache = OverlayRenderResourceCache()
+
         // 5. Sync primitives — semaphore capped by budget
         let semaphore = DispatchSemaphore(value: renderer.maxFramesInFlight)
         let videoGroup = DispatchGroup()
@@ -826,7 +829,8 @@ public final class VideoExporter: @unchecked Sendable {
                         assetSizes: assetSizes,
                         backgroundState: backgroundState,
                         clearColor: settings.clearColor,
-                        overlaySnapshot: overlaySnapshot
+                        overlaySnapshot: overlaySnapshot,
+                        overlayCache: exportOverlayCache
                     )
                 } catch {
                     pipeline.setError(VideoExportError.renderError(error))
@@ -1125,6 +1129,9 @@ public final class VideoExporter: @unchecked Sendable {
             residencyController: residencyController
         )
 
+        // Export-owned overlay cache — lives for the duration of the export session.
+        let exportOverlayCache = OverlayRenderResourceCache()
+
         exportSession.setCleanup(
             onSuccess: { exportRuntime.finish() },
             onFailure: { exportRuntime.cancel() },
@@ -1200,7 +1207,8 @@ public final class VideoExporter: @unchecked Sendable {
                         backgroundState: backgroundState,
                         backgroundTextureProvider: backgroundTextureProvider,
                         clearColor: settings.clearColor,
-                        renderDiagnosticsSink: renderDiagnosticsSink
+                        renderDiagnosticsSink: renderDiagnosticsSink,
+                        overlayCache: exportOverlayCache
                     )
                 } catch {
                     pipeline.setError(VideoExportError.renderError(error))
@@ -1235,7 +1243,7 @@ public final class VideoExporter: @unchecked Sendable {
     // MARK: - Extracted Frame Render Helper
 
     /// Renders one timeline frame into a pre-allocated target texture.
-    /// Returns overlay counts for debug probing.
+    /// Returns overlay count for debug probing.
     internal static func renderTimelineFrame(
         frameIndex: Int,
         targetTexture: MTLTexture,
@@ -1246,12 +1254,12 @@ public final class VideoExporter: @unchecked Sendable {
         backgroundState: EffectiveBackgroundState?,
         backgroundTextureProvider: TextureProvider?,
         clearColor: ClearColor?,
-        renderDiagnosticsSink: RenderDiagnosticsSink?
+        renderDiagnosticsSink: RenderDiagnosticsSink?,
+        overlayCache: OverlayRenderResourceCache
     ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
         let resolved = try exportRuntime.resolveFrame(frameIndex)
         let timeUs = exportRuntime.globalTimeUs(for: frameIndex)
-        let textOverlays = timeUs.map { OverlayExportResolver.resolveText(from: exportRuntime.session.overlaySnapshot, at: $0) } ?? []
-        let stickerOverlays = timeUs.map { OverlayExportResolver.resolveSticker(from: exportRuntime.session.overlaySnapshot, at: $0) } ?? []
+        let overlayItems = timeUs.map { OverlayResolver.resolve(from: exportRuntime.session.overlaySnapshot, at: $0) } ?? []
 
         let request = TimelineRenderRequest(
             resolved: resolved,
@@ -1264,8 +1272,7 @@ public final class VideoExporter: @unchecked Sendable {
             presentationDrawable: nil,
             waitUntilCompleted: true,
             diagnosticFrameTag: frameIndex,
-            textOverlays: textOverlays,
-            stickerOverlays: stickerOverlays
+            overlayItems: overlayItems
         )
         do {
             try TimelineRenderExecutor.render(
@@ -1273,6 +1280,7 @@ public final class VideoExporter: @unchecked Sendable {
                 commandQueue: renderer.commandQueue,
                 transitionCompositor: transitionCompositor,
                 completionQueue: nil,
+                overlayCache: overlayCache,
                 renderSink: renderDiagnosticsSink
             )
         } catch let error as TimelineRenderExecutorError {
@@ -1286,7 +1294,9 @@ public final class VideoExporter: @unchecked Sendable {
                 throw VideoExportError.renderError(error)
             }
         }
-        return (textOverlayCount: textOverlays.count, stickerOverlayCount: stickerOverlays.count)
+        let textCount = overlayItems.filter { $0.kind == .text }.count
+        let stickerCount = overlayItems.filter { $0.kind == .sticker }.count
+        return (textOverlayCount: textCount, stickerOverlayCount: stickerCount)
     }
 
     /// Renders one single-scene export frame into a pre-allocated target texture.
@@ -1302,7 +1312,8 @@ public final class VideoExporter: @unchecked Sendable {
         assetSizes: [String: AssetSize],
         backgroundState: EffectiveBackgroundState?,
         clearColor: ClearColor,
-        overlaySnapshot: OverlayExportSnapshot?
+        overlaySnapshot: OverlayExportSnapshot?,
+        overlayCache: OverlayRenderResourceCache
     ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
         let commands = SceneRenderPlan.renderCommands(
             for: runtime,
@@ -1314,8 +1325,7 @@ public final class VideoExporter: @unchecked Sendable {
         )
 
         let timeUs = frameToUs(frameIndex, fps: runtime.fps)
-        let textOverlays = overlaySnapshot.map { OverlayExportResolver.resolveText(from: $0, at: timeUs) } ?? []
-        let stickerOverlays = overlaySnapshot.map { OverlayExportResolver.resolveSticker(from: $0, at: timeUs) } ?? []
+        let overlayItems = overlaySnapshot.map { OverlayResolver.resolve(from: $0, at: timeUs) } ?? []
 
         let renderContext = SceneRenderContext(
             commands: commands,
@@ -1338,8 +1348,7 @@ public final class VideoExporter: @unchecked Sendable {
             presentationDrawable: nil,
             waitUntilCompleted: true,
             diagnosticFrameTag: frameIndex,
-            textOverlays: textOverlays,
-            stickerOverlays: stickerOverlays
+            overlayItems: overlayItems
         )
 
         do {
@@ -1348,7 +1357,8 @@ public final class VideoExporter: @unchecked Sendable {
                 renderer: renderer,
                 commandQueue: renderer.commandQueue,
                 transitionCompositor: nil,
-                completionQueue: nil
+                completionQueue: nil,
+                overlayCache: overlayCache
             )
         } catch let error as TimelineRenderExecutorError {
             switch error {
@@ -1361,7 +1371,9 @@ public final class VideoExporter: @unchecked Sendable {
             }
         }
 
-        return (textOverlayCount: textOverlays.count, stickerOverlayCount: stickerOverlays.count)
+        let textCount = overlayItems.filter { $0.kind == .text }.count
+        let stickerCount = overlayItems.filter { $0.kind == .sticker }.count
+        return (textOverlayCount: textCount, stickerOverlayCount: stickerCount)
     }
 
 }

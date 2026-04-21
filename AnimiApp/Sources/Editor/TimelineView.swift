@@ -1,4 +1,7 @@
 import UIKit
+#if DEBUG
+import os.signpost
+#endif
 
 // MARK: - Timeline View (PR2: Y-scroll + Trim, PR4: Data/Layout split)
 
@@ -651,25 +654,27 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// Includes debug logging for PR1-PR3 development.
     private func emitEvent(_ event: TimelineEvent) {
         #if DEBUG
-        switch event {
-        case .scrub(let compressedFrame, let phase):
-            print("[Timeline] scrub: frame=\(compressedFrame), \(phase)")
-        case .scroll(let offsetX, let pxPerSecond):
-            print("[Timeline] scroll: x=\(Int(offsetX)), pps=\(Int(pxPerSecond))")
-        case .selection(let sel):
-            print("[Timeline] selection: \(sel)")
-        case .trimScene(let sceneId, let newDurationUs, let edge, let phase):
-            print("[Timeline] trimScene: \(sceneId), \(newDurationUs)us, \(edge), \(phase)")
-        case .reorderScene(let sceneId, let toIndex, let phase):
-            print("[Timeline] reorderScene: \(sceneId), toIndex=\(toIndex), \(phase)")
-        case .editBoundaryTransition(let fromId, let toId, _):
-            print("[Timeline] editBoundaryTransition: \(fromId) → \(toId)")
-        case .focusScene(let sceneId):
-            print("[Timeline] focusScene: \(sceneId)")
-        case .moveOverlayItem(let itemId, let newStartUs, let phase):
-            print("[Timeline] moveOverlayItem: \(itemId), \(newStartUs)us, \(phase)")
-        case .trimOverlayItem(let itemId, let newDurationUs, let edge, let phase):
-            print("[Timeline] trimOverlayItem: \(itemId), \(newDurationUs)us, \(edge), \(phase)")
+        if ScrubDebugToggles.verboseLogging {
+            switch event {
+            case .scrub(let compressedFrame, let phase):
+                print("[Timeline] scrub: frame=\(compressedFrame), \(phase)")
+            case .scroll(let offsetX, let pxPerSecond):
+                print("[Timeline] scroll: x=\(Int(offsetX)), pps=\(Int(pxPerSecond))")
+            case .selection(let sel):
+                print("[Timeline] selection: \(sel)")
+            case .trimScene(let sceneId, let newDurationUs, let edge, let phase):
+                print("[Timeline] trimScene: \(sceneId), \(newDurationUs)us, \(edge), \(phase)")
+            case .reorderScene(let sceneId, let toIndex, let phase):
+                print("[Timeline] reorderScene: \(sceneId), toIndex=\(toIndex), \(phase)")
+            case .editBoundaryTransition(let fromId, let toId, _):
+                print("[Timeline] editBoundaryTransition: \(fromId) → \(toId)")
+            case .focusScene(let sceneId):
+                print("[Timeline] focusScene: \(sceneId)")
+            case .moveOverlayItem(let itemId, let newStartUs, let phase):
+                print("[Timeline] moveOverlayItem: \(itemId), \(newStartUs)us, \(phase)")
+            case .trimOverlayItem(let itemId, let newDurationUs, let edge, let phase):
+                print("[Timeline] trimOverlayItem: \(itemId), \(newDurationUs)us, \(edge), \(phase)")
+            }
         }
         #endif
         onEvent?(event)
@@ -686,9 +691,14 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         guard scrollView === self.scrollView else { return }
 
         #if DEBUG
-        let signpostId = ScrubSignpost.beginScrollViewDidScroll()
-        ScrubCallCounter.shared.recordScrollViewDidScroll()
-        defer { ScrubSignpost.endScrollViewDidScroll(signpostId) }
+        var signpostId: OSSignpostID?
+        if ScrubDebugToggles.verboseLogging {
+            signpostId = ScrubSignpost.beginScrollViewDidScroll()
+            ScrubCallCounter.shared.recordScrollViewDidScroll()
+        }
+        defer {
+            if let id = signpostId { ScrubSignpost.endScrollViewDidScroll(id) }
+        }
         #endif
 
         // Clamp offset to valid range
@@ -696,8 +706,10 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let clampedX = clampOffsetX(rawX)
         if rawX != clampedX {
             #if DEBUG
-            ScrubSignpost.emitClampHit()
-            ScrubCallCounter.shared.recordClampHit()
+            if ScrubDebugToggles.verboseLogging {
+                ScrubSignpost.emitClampHit()
+                ScrubCallCounter.shared.recordClampHit()
+            }
             #endif
             // Setting contentOffset triggers another scrollViewDidScroll call,
             // so return here to emit event only on the normalized second call
@@ -727,9 +739,11 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             if resolved != lastEmittedCompressedFrame {
                 lastEmittedCompressedFrame = resolved
                 #if DEBUG
-                let timeUs = timeUnderPlayheadUs()
-                ScrubSignpost.emitScrubChanged(timeUs: timeUs)
-                ScrubCallCounter.shared.recordScrubChanged()
+                if ScrubDebugToggles.verboseLogging {
+                    let timeUs = timeUnderPlayheadUs()
+                    ScrubSignpost.emitScrubChanged(timeUs: timeUs)
+                    ScrubCallCounter.shared.recordScrubChanged()
+                }
                 #endif
                 emitEvent(.scrub(compressedFrame: resolved, phase: .changed))
             }

@@ -24,10 +24,8 @@ internal struct TimelineRenderRequest {
     let waitUntilCompleted: Bool
     /// Optional diagnostic frame tag (compressed frame for preview, export frame index for export).
     let diagnosticFrameTag: Int?
-    /// PR9: Text overlays to render on top of the scene.
-    let textOverlays: [ResolvedTextOverlay]
-    /// PR10: Sticker overlays to render on top of the scene (below text).
-    let stickerOverlays: [ResolvedStickerOverlay]
+    /// Resolved overlay items to render on top of the scene (stickers below text by zOrder).
+    let overlayItems: [ResolvedOverlayRenderItem]
 
     init(
         resolved: ResolvedTimelineFrame,
@@ -40,8 +38,7 @@ internal struct TimelineRenderRequest {
         presentationDrawable: MTLDrawable?,
         waitUntilCompleted: Bool,
         diagnosticFrameTag: Int? = nil,
-        textOverlays: [ResolvedTextOverlay] = [],
-        stickerOverlays: [ResolvedStickerOverlay] = []
+        overlayItems: [ResolvedOverlayRenderItem] = []
     ) {
         self.resolved = resolved
         self.targetTexture = targetTexture
@@ -53,8 +50,7 @@ internal struct TimelineRenderRequest {
         self.presentationDrawable = presentationDrawable
         self.waitUntilCompleted = waitUntilCompleted
         self.diagnosticFrameTag = diagnosticFrameTag
-        self.textOverlays = textOverlays
-        self.stickerOverlays = stickerOverlays
+        self.overlayItems = overlayItems
     }
 }
 
@@ -77,16 +73,23 @@ internal enum TimelineRenderExecutor {
         commandQueue: MTLCommandQueue,
         transitionCompositor: TransitionCompositor?,
         completionQueue: DispatchQueue?,
+        overlayCache: OverlayRenderResourceCache? = nil,
         onCommandBufferCompleted: ((MTLCommandBuffer) -> Void)? = nil,
         renderSink: RenderDiagnosticsSink? = nil
     ) throws {
+        #if DEBUG
+        if !request.overlayItems.isEmpty && overlayCache == nil {
+            assertionFailure("[OverlayCompositor] overlayItems present but overlayCache is nil — overlays will not render")
+        }
+        #endif
+
         guard let cmdBuf = commandQueue.makeCommandBuffer() else {
             throw TimelineRenderExecutorError.failedToCreateCommandBuffer
         }
 
         switch request.resolved {
         case .single(let ctx):
-            try renderSingle(request: request, context: ctx, renderer: renderer, commandBuffer: cmdBuf)
+            try renderSingle(request: request, context: ctx, renderer: renderer, commandBuffer: cmdBuf, overlayCache: overlayCache)
 
         case .transition(let ctx):
             guard let compositor = transitionCompositor else {
@@ -97,7 +100,7 @@ internal enum TimelineRenderExecutor {
                 request: request, context: ctx,
                 renderer: renderer, compositor: compositor,
                 commandBuffer: cmdBuf, completionQueue: completionQueue,
-                renderSink: renderSink
+                overlayCache: overlayCache, renderSink: renderSink
             )
             let encodeTime = CFAbsoluteTimeGetCurrent() - encodeStart
             renderSink?.receive(.compositorEncodeTime(seconds: encodeTime))
@@ -138,7 +141,8 @@ internal enum TimelineRenderExecutor {
         request: TimelineRenderRequest,
         context ctx: SceneRenderContext,
         renderer: MetalRenderer,
-        commandBuffer: MTLCommandBuffer
+        commandBuffer: MTLCommandBuffer,
+        overlayCache: OverlayRenderResourceCache?
     ) throws {
         let bgProvider: TextureProvider = request.backgroundTextureProvider ?? InMemoryTextureProvider()
         let target = RenderTarget(
@@ -175,23 +179,19 @@ internal enum TimelineRenderExecutor {
             initialLoadAction: .load
         )
 
-        // Pass 3: Overlay composition (GPU composite)
-        let overlayTex = TimelineOverlayRasterizer.makeOverlayTexture(
-            stickers: request.stickerOverlays,
-            texts: request.textOverlays,
-            pixelWidth: target.texture.width,
-            pixelHeight: target.texture.height,
-            animSize: ctx.canvasSize,
-            device: target.texture.device,
-            stickerCache: stickerCache
-        )
-        try composeOverlayTextureIfNeeded(
-            overlayTexture: overlayTex,
-            target: target,
-            renderer: renderer,
-            commandBuffer: commandBuffer,
-            clearColorOverride: request.clearColorOverride
-        )
+        // Pass 3: Overlay composition (retained-mode per-item GPU composite)
+        if let cache = overlayCache {
+            try OverlayCompositor.compose(
+                items: request.overlayItems,
+                cache: cache,
+                target: target,
+                renderer: renderer,
+                commandBuffer: commandBuffer,
+                device: target.texture.device,
+                canvasSize: ctx.canvasSize,
+                clearColorOverride: request.clearColorOverride
+            )
+        }
     }
 
     private static func renderTransition(
@@ -201,6 +201,7 @@ internal enum TimelineRenderExecutor {
         compositor: TransitionCompositor,
         commandBuffer: MTLCommandBuffer,
         completionQueue: DispatchQueue?,
+        overlayCache: OverlayRenderResourceCache?,
         renderSink: RenderDiagnosticsSink? = nil
     ) throws {
         #if DEBUG
@@ -239,7 +240,8 @@ internal enum TimelineRenderExecutor {
                 request: request, context: ctx,
                 renderer: renderer, compositor: compositor,
                 commandBuffer: commandBuffer,
-                textureA: textureA, textureB: textureB
+                textureA: textureA, textureB: textureB,
+                overlayCache: overlayCache
             )
         } else {
             // Non-blocking: release via completion handler on safe queue
@@ -248,7 +250,8 @@ internal enum TimelineRenderExecutor {
                     request: request, context: ctx,
                     renderer: renderer, compositor: compositor,
                     commandBuffer: commandBuffer,
-                    textureA: textureA, textureB: textureB
+                    textureA: textureA, textureB: textureB,
+                    overlayCache: overlayCache
                 )
             } catch {
                 // Encoding failed — release immediately, handler not registered
@@ -275,7 +278,8 @@ internal enum TimelineRenderExecutor {
         compositor: TransitionCompositor,
         commandBuffer: MTLCommandBuffer,
         textureA: MTLTexture,
-        textureB: MTLTexture
+        textureB: MTLTexture,
+        overlayCache: OverlayRenderResourceCache?
     ) throws {
         // Render scene A offscreen
         let targetA = RenderTarget(texture: textureA, drawableScale: 1.0, animSize: ctx.sceneA.canvasSize)
@@ -334,28 +338,24 @@ internal enum TimelineRenderExecutor {
             commandBuffer: commandBuffer
         )
 
-        // Pass 3: Overlay composition (GPU composite)
-        let overlayTarget = RenderTarget(
-            texture: request.targetTexture,
-            drawableScale: request.drawableScale,
-            animSize: request.timelineCanvasSize
-        )
-        let overlayTex = TimelineOverlayRasterizer.makeOverlayTexture(
-            stickers: request.stickerOverlays,
-            texts: request.textOverlays,
-            pixelWidth: request.targetTexture.width,
-            pixelHeight: request.targetTexture.height,
-            animSize: request.timelineCanvasSize,
-            device: request.targetTexture.device,
-            stickerCache: stickerCache
-        )
-        try composeOverlayTextureIfNeeded(
-            overlayTexture: overlayTex,
-            target: overlayTarget,
-            renderer: renderer,
-            commandBuffer: commandBuffer,
-            clearColorOverride: request.clearColorOverride
-        )
+        // Pass 3: Overlay composition (retained-mode per-item GPU composite)
+        if let cache = overlayCache {
+            let overlayTarget = RenderTarget(
+                texture: request.targetTexture,
+                drawableScale: request.drawableScale,
+                animSize: request.timelineCanvasSize
+            )
+            try OverlayCompositor.compose(
+                items: request.overlayItems,
+                cache: cache,
+                target: overlayTarget,
+                renderer: renderer,
+                commandBuffer: commandBuffer,
+                device: request.targetTexture.device,
+                canvasSize: request.timelineCanvasSize,
+                clearColorOverride: request.clearColorOverride
+            )
+        }
     }
 
     /// Routes to the appropriate MetalRenderer.draw overload based on clearColorOverride.
@@ -397,43 +397,4 @@ internal enum TimelineRenderExecutor {
         }
     }
 
-    // MARK: - Overlay Composition
-
-    private static let stickerCache = StickerImageCache()
-
-    /// Composites a pre-rasterized overlay texture onto the render target via GPU draw pass.
-    /// Uses `initialLoadAction: .load` to preserve existing target content.
-    private static func composeOverlayTextureIfNeeded(
-        overlayTexture: MTLTexture?,
-        target: RenderTarget,
-        renderer: MetalRenderer,
-        commandBuffer: MTLCommandBuffer,
-        clearColorOverride: ClearColor?
-    ) throws {
-        guard let overlayTex = overlayTexture else { return }
-
-        let provider = ThreadSafeInMemoryTextureProvider()
-        let overlayAssetId = "__timeline_overlay__"
-        provider.setTexture(overlayTex, for: overlayAssetId)
-
-        let commands: [RenderCommand] = [
-            .drawImage(assetId: overlayAssetId, opacity: 1.0)
-        ]
-        let assetSizes: [String: AssetSize] = [
-            overlayAssetId: AssetSize(width: target.animSize.width, height: target.animSize.height)
-        ]
-
-        try drawPass(
-            renderer: renderer,
-            commands: commands,
-            target: target,
-            clearColorOverride: clearColorOverride,
-            textureProvider: provider,
-            commandBuffer: commandBuffer,
-            assetSizes: assetSizes,
-            pathRegistry: PathRegistry(),
-            backgroundState: nil,
-            initialLoadAction: .load
-        )
-    }
 }

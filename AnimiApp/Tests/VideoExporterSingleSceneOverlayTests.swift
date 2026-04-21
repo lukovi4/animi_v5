@@ -203,7 +203,8 @@ final class VideoExporterSingleSceneOverlayTests: XCTestCase {
             assetSizes: [:],
             backgroundState: nil,
             clearColor: .opaqueBlack,
-            overlaySnapshot: OverlayExportSnapshot.build(from: makeTextTimeline(), stickerProvider: nil)
+            overlaySnapshot: OverlayExportSnapshot.build(from: makeTextTimeline(), stickerProvider: nil),
+            overlayCache: OverlayRenderResourceCache()
         )
 
         XCTAssertEqual(counts.textOverlayCount, 1)
@@ -259,7 +260,8 @@ final class VideoExporterSingleSceneOverlayTests: XCTestCase {
             overlaySnapshot: OverlayExportSnapshot.build(
                 from: makeStickerTimeline(),
                 stickerProvider: TestStickerProvider(urlByStickerId: ["test-sticker": fixtureURL])
-            )
+            ),
+            overlayCache: OverlayRenderResourceCache()
         )
 
         XCTAssertEqual(counts.textOverlayCount, 0)
@@ -341,7 +343,8 @@ final class VideoExporterSingleSceneOverlayTests: XCTestCase {
                 assetSizes: [:],
                 backgroundState: nil,
                 clearColor: .opaqueBlack,
-                overlaySnapshot: OverlayExportSnapshot.build(from: timeline, stickerProvider: nil)
+                overlaySnapshot: OverlayExportSnapshot.build(from: timeline, stickerProvider: nil),
+                overlayCache: OverlayRenderResourceCache()
             )
 
             let pts = CMTime(value: CMTimeValue(frameIndex), timescale: 30)

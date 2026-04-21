@@ -534,7 +534,9 @@ public final class EditorStore {
         default: actionName = "other"
         }
 
-        print("[EditorStore] dispatch(\(actionName)) push=\(shouldPush) duration=\(state.projectDurationUs)us")
+        if ScrubDebugToggles.verboseLogging {
+            print("[EditorStore] dispatch(\(actionName)) push=\(shouldPush) duration=\(state.projectDurationUs)us")
+        }
     }
     #endif
 }

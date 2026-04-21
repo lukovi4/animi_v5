@@ -412,8 +412,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
     // MARK: - PR9: Text Overlay Export Render Request Propagation
 
     /// Proves that a visible text overlay in the export session reaches
-    /// TimelineRenderRequest.textOverlays through the production export path.
-    /// Mirrors exactly what VideoExporter.swift does: resolveFrame + OverlayExportResolver → request.
+    /// TimelineRenderRequest.overlayItems through the production export path.
+    /// Mirrors exactly what VideoExporter.swift does: resolveFrame + OverlayResolver → request.
     @MainActor
     func testExportPath_visibleTextOverlay_populatesRenderRequestTextOverlays() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -507,7 +507,7 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         let frameInside = 15
         let resolvedInside = try exportRuntime.resolveFrame(frameInside)
         let timeUsInside = exportRuntime.globalTimeUs(for: frameInside)!
-        let textOverlaysInside = OverlayExportResolver.resolveText(from: session.overlaySnapshot, at: timeUsInside)
+        let overlayItemsInside = OverlayResolver.resolve(from: session.overlaySnapshot, at: timeUsInside)
 
         // This is the exact construction from VideoExporter production code
         let textureDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -526,20 +526,25 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             presentationDrawable: nil,
             waitUntilCompleted: true,
             diagnosticFrameTag: frameInside,
-            textOverlays: textOverlaysInside
+            overlayItems: overlayItemsInside
         )
 
-        XCTAssertEqual(requestInside.textOverlays.count, 1, "Render request must contain visible text overlay")
-        XCTAssertEqual(requestInside.textOverlays.first?.text, "Export Visible")
-        XCTAssertEqual(requestInside.textOverlays.first?.fontSize, 36)
-        XCTAssertEqual(requestInside.textOverlays.first?.colorHex, "#FF0000")
-        XCTAssertEqual(requestInside.textOverlays.first?.centerX, 0.3)
-        XCTAssertEqual(requestInside.textOverlays.first?.centerY, 0.7)
+        let textItemsInside = requestInside.overlayItems.filter { $0.kind == .text }
+        XCTAssertEqual(textItemsInside.count, 1, "Render request must contain visible text overlay")
+        if case .text(let text, _, let fontSize, let colorHex) = textItemsInside.first?.content {
+            XCTAssertEqual(text, "Export Visible")
+            XCTAssertEqual(fontSize, 36)
+            XCTAssertEqual(colorHex, "#FF0000")
+        } else {
+            XCTFail("Expected .text content descriptor")
+        }
+        XCTAssertEqual(textItemsInside.first?.presentation.centerX, 0.3)
+        XCTAssertEqual(textItemsInside.first?.presentation.centerY, 0.7)
 
         // Frame 75 (t=2.5s): text is NOT visible
         let frameOutside = 75
         let timeUsOutside = exportRuntime.globalTimeUs(for: frameOutside)!
-        let textOverlaysOutside = OverlayExportResolver.resolveText(from: session.overlaySnapshot, at: timeUsOutside)
+        let overlayItemsOutside = OverlayResolver.resolve(from: session.overlaySnapshot, at: timeUsOutside)
 
         let requestOutside = TimelineRenderRequest(
             resolved: try exportRuntime.resolveFrame(frameOutside),
@@ -552,16 +557,16 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             presentationDrawable: nil,
             waitUntilCompleted: true,
             diagnosticFrameTag: frameOutside,
-            textOverlays: textOverlaysOutside
+            overlayItems: overlayItemsOutside
         )
 
-        XCTAssertTrue(requestOutside.textOverlays.isEmpty, "Render request must be empty when text not visible")
+        XCTAssertTrue(requestOutside.overlayItems.filter { $0.kind == .text }.isEmpty, "Render request must be empty when text not visible")
     }
 
     // MARK: - PR10: Sticker Overlay Export Path
 
-    /// Visible sticker overlay produces non-empty stickerOverlays in TimelineRenderRequest;
-    /// invisible sticker overlay produces empty stickerOverlays.
+    /// Visible sticker overlay produces non-empty sticker items in TimelineRenderRequest.overlayItems;
+    /// invisible sticker overlay produces no sticker items.
     @MainActor
     func testVisibleStickerOverlay_reachesRenderRequest() throws {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -607,7 +612,7 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         // Frame 15 (t=0.5s): sticker IS visible
         let frameInside = 15
         let timeUsInside = exportRuntime.globalTimeUs(for: frameInside)!
-        let stickerOverlaysInside = OverlayExportResolver.resolveSticker(from: session.overlaySnapshot, at: timeUsInside)
+        let overlayItemsInside = OverlayResolver.resolve(from: session.overlaySnapshot, at: timeUsInside)
 
         let requestInside = TimelineRenderRequest(
             resolved: try exportRuntime.resolveFrame(frameInside),
@@ -620,19 +625,24 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             presentationDrawable: nil,
             waitUntilCompleted: true,
             diagnosticFrameTag: frameInside,
-            stickerOverlays: stickerOverlaysInside
+            overlayItems: overlayItemsInside
         )
 
-        XCTAssertEqual(requestInside.stickerOverlays.count, 1, "Render request must contain visible sticker overlay")
-        XCTAssertEqual(requestInside.stickerOverlays.first?.stickerId, "star")
-        XCTAssertEqual(requestInside.stickerOverlays.first?.imageURL, URL(fileURLWithPath: "/tmp/sticker_star.png"))
-        XCTAssertEqual(requestInside.stickerOverlays.first?.centerX, 0.35)
-        XCTAssertEqual(requestInside.stickerOverlays.first?.centerY, 0.65)
+        let stickerItemsInside = requestInside.overlayItems.filter { $0.kind == .sticker }
+        XCTAssertEqual(stickerItemsInside.count, 1, "Render request must contain visible sticker overlay")
+        if case .sticker(let stickerId, let imageURL) = stickerItemsInside.first?.content {
+            XCTAssertEqual(stickerId, "star")
+            XCTAssertEqual(imageURL, URL(fileURLWithPath: "/tmp/sticker_star.png"))
+        } else {
+            XCTFail("Expected .sticker content descriptor")
+        }
+        XCTAssertEqual(stickerItemsInside.first?.presentation.centerX, 0.35)
+        XCTAssertEqual(stickerItemsInside.first?.presentation.centerY, 0.65)
 
         // Frame 75 (t=2.5s): sticker is NOT visible
         let frameOutside = 75
         let timeUsOutside = exportRuntime.globalTimeUs(for: frameOutside)!
-        let stickerOverlaysOutside = OverlayExportResolver.resolveSticker(from: session.overlaySnapshot, at: timeUsOutside)
+        let overlayItemsOutside = OverlayResolver.resolve(from: session.overlaySnapshot, at: timeUsOutside)
 
         let requestOutside = TimelineRenderRequest(
             resolved: try exportRuntime.resolveFrame(frameOutside),
@@ -645,10 +655,10 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             presentationDrawable: nil,
             waitUntilCompleted: true,
             diagnosticFrameTag: frameOutside,
-            stickerOverlays: stickerOverlaysOutside
+            overlayItems: overlayItemsOutside
         )
 
-        XCTAssertTrue(requestOutside.stickerOverlays.isEmpty, "Render request must be empty when sticker not visible")
+        XCTAssertTrue(requestOutside.overlayItems.filter { $0.kind == .sticker }.isEmpty, "Render request must be empty when sticker not visible")
     }
 
     // MARK: - Pixel Buffer Readback Helpers
@@ -770,7 +780,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             backgroundState: nil,
             backgroundTextureProvider: nil,
             clearColor: .opaqueBlack,
-            renderDiagnosticsSink: nil
+            renderDiagnosticsSink: nil,
+            overlayCache: OverlayRenderResourceCache()
         )
 
         XCTAssertEqual(counts.textOverlayCount, 1)
@@ -862,7 +873,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             backgroundState: nil,
             backgroundTextureProvider: nil,
             clearColor: .opaqueBlack,
-            renderDiagnosticsSink: nil
+            renderDiagnosticsSink: nil,
+            overlayCache: OverlayRenderResourceCache()
         )
 
         XCTAssertEqual(counts.textOverlayCount, 0)
@@ -948,7 +960,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             backgroundState: nil,
             backgroundTextureProvider: nil,
             clearColor: .opaqueBlack,
-            renderDiagnosticsSink: nil
+            renderDiagnosticsSink: nil,
+            overlayCache: OverlayRenderResourceCache()
         )
 
         XCTAssertEqual(counts.textOverlayCount, 1)
@@ -1033,6 +1046,7 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         let exportRuntime = try TimelineExportRuntime(
             session: session, textureCache: textureCache, coordinatorFactory: noCoordinators
         )
+        let exportOverlayCache = OverlayRenderResourceCache()
 
         let totalFrames = session.transitionMath.compressedDurationFrames
         for frameIndex in 0..<totalFrames {
@@ -1068,7 +1082,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
                 backgroundState: nil,
                 backgroundTextureProvider: nil,
                 clearColor: .opaqueBlack,
-                renderDiagnosticsSink: nil
+                renderDiagnosticsSink: nil,
+                overlayCache: exportOverlayCache
             )
 
             let pts = CMTime(value: CMTimeValue(frameIndex), timescale: 30)

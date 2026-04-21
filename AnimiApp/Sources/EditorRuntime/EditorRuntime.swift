@@ -1,6 +1,7 @@
 import Foundation
 import MetalKit
 import TVECore
+import UIKit
 import os.log
 
 private let logger = Logger(subsystem: "com.animi.app", category: "EditorRuntime")
@@ -87,6 +88,11 @@ final class EditorRuntime {
     private var timelineCompositionEngine: TimelineCompositionEngine?
     private var transitionCompositor: TransitionCompositor?
 
+    /// Per-owner overlay texture cache for the preview path.
+    /// Purged on memory warning; released on deinit.
+    let overlayRenderCache = OverlayRenderResourceCache()
+    private var memoryWarningObserver: NSObjectProtocol?
+
     private var scenePlayer: ScenePlayer?
     private var compiledScene: CompiledScene?
     private var textureProvider: (any MutableTextureProvider)?
@@ -165,6 +171,22 @@ final class EditorRuntime {
 
     init(session: EditorSession) {
         self.session = session
+        // Subscribe to memory warnings to purge overlay texture cache.
+        let cache = overlayRenderCache
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            cache.purgeOnMemoryPressure()
+        }
+    }
+
+    deinit {
+        if let observer = memoryWarningObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        overlayRenderCache.invalidateAll()
     }
 
     // MARK: - Boot
@@ -706,15 +728,17 @@ final class EditorRuntime {
                     }
                 }
 
-                // PR9: Resolve text overlays for this frame
-                let textOverlays = self.timelineCompositionEngine?.resolveTextOverlays(at: compressedFrame) ?? []
-
-                // PR10: Resolve sticker overlays for this frame
-                let stickerOverlays: [ResolvedStickerOverlay]
-                if let engine = self.timelineCompositionEngine, let provider = engine.stickerProvider {
-                    stickerOverlays = engine.resolveStickerOverlays(at: compressedFrame, stickerProvider: provider)
+                // Resolve overlays via shared OverlayResolver
+                let overlayItems: [ResolvedOverlayRenderItem]
+                if let engine = self.timelineCompositionEngine,
+                   let timeline = engine.timeline,
+                   let math = engine.transitionMath,
+                   let timeUs = OverlayTimeMapping.globalTimeUs(for: compressedFrame, math: math, fps: engine.fps) {
+                    overlayItems = OverlayResolver.resolve(
+                        from: timeline, at: timeUs, stickerProvider: engine.stickerProvider
+                    )
                 } else {
-                    stickerOverlays = []
+                    overlayItems = []
                 }
 
                 // Update render source
@@ -723,8 +747,7 @@ final class EditorRuntime {
                     backgroundState: self.effectiveBackgroundState,
                     backgroundTextureProvider: self.backgroundTextureProvider,
                     diagnosticFrameTag: compressedFrame,
-                    textOverlays: textOverlays,
-                    stickerOverlays: stickerOverlays
+                    overlayItems: overlayItems
                 ))
                 self.onOutput?(.renderSourceUpdated)
 
@@ -1988,6 +2011,7 @@ final class EditorRuntime {
             commandQueue: commandQueue,
             transitionCompositor: compositor,
             completionQueue: completionQueue,
+            overlayCache: overlayRenderCache,
             onCommandBufferCompleted: onCommandBufferCompleted,
             renderSink: timelineCompositionEngine?.renderDiagnosticsSink
         )

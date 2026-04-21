@@ -2,7 +2,7 @@ import XCTest
 @testable import AnimiApp
 @testable import TVECore
 
-final class OverlayExportResolverTests: XCTestCase {
+final class OverlayResolverSnapshotTests: XCTestCase {
 
     // MARK: - Build from CanonicalTimeline
 
@@ -145,61 +145,71 @@ final class OverlayExportResolverTests: XCTestCase {
     func testResolveText_insideRange_returnsOverlay() {
         let snapshot = OverlayExportSnapshot(
             textItems: [
-                .init(startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
+                .init(itemId: UUID(), startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
                       fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5)
             ],
             stickerItems: []
         )
 
-        let result = OverlayExportResolver.resolveText(from: snapshot, at: 2_000_000)
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].text, "Hi")
+        let result = OverlayResolver.resolve(from: snapshot, at: 2_000_000)
+        let textItems = result.filter { $0.kind == .text }
+        XCTAssertEqual(textItems.count, 1)
+        if case .text(let text, _, _, _) = textItems[0].content {
+            XCTAssertEqual(text, "Hi")
+        } else {
+            XCTFail("Expected text content")
+        }
     }
 
     func testResolveText_outsideRange_returnsEmpty() {
         let snapshot = OverlayExportSnapshot(
             textItems: [
-                .init(startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
+                .init(itemId: UUID(), startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
                       fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5)
             ],
             stickerItems: []
         )
 
-        XCTAssertTrue(OverlayExportResolver.resolveText(from: snapshot, at: 0).isEmpty)
-        XCTAssertTrue(OverlayExportResolver.resolveText(from: snapshot, at: 4_000_000).isEmpty)
+        XCTAssertTrue(OverlayResolver.resolve(from: snapshot, at: 0).filter { $0.kind == .text }.isEmpty)
+        XCTAssertTrue(OverlayResolver.resolve(from: snapshot, at: 4_000_000).filter { $0.kind == .text }.isEmpty)
     }
 
     func testResolveText_atEndBoundary_excluded() {
         let snapshot = OverlayExportSnapshot(
             textItems: [
-                .init(startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
+                .init(itemId: UUID(), startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
                       fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5)
             ],
             stickerItems: []
         )
 
         // At startUs: included
-        XCTAssertEqual(OverlayExportResolver.resolveText(from: snapshot, at: 1_000_000).count, 1)
+        XCTAssertEqual(OverlayResolver.resolve(from: snapshot, at: 1_000_000).filter { $0.kind == .text }.count, 1)
         // At endUs: excluded (half-open)
-        XCTAssertTrue(OverlayExportResolver.resolveText(from: snapshot, at: 3_000_000).isEmpty)
+        XCTAssertTrue(OverlayResolver.resolve(from: snapshot, at: 3_000_000).filter { $0.kind == .text }.isEmpty)
     }
 
     func testResolveSticker_multipleOverlapping_allReturned() {
         let snapshot = OverlayExportSnapshot(
             textItems: [],
             stickerItems: [
-                .init(startUs: 0, endUs: 2_000_000, stickerId: "a",
+                .init(itemId: UUID(), startUs: 0, endUs: 2_000_000, stickerId: "a",
                       imageURL: URL(fileURLWithPath: "/a.png"), centerX: 0.1, centerY: 0.1),
-                .init(startUs: 500_000, endUs: 3_000_000, stickerId: "b",
+                .init(itemId: UUID(), startUs: 500_000, endUs: 3_000_000, stickerId: "b",
                       imageURL: URL(fileURLWithPath: "/b.png"), centerX: 0.9, centerY: 0.9),
-                .init(startUs: 5_000_000, endUs: 6_000_000, stickerId: "c",
+                .init(itemId: UUID(), startUs: 5_000_000, endUs: 6_000_000, stickerId: "c",
                       imageURL: URL(fileURLWithPath: "/c.png"), centerX: 0.5, centerY: 0.5)
             ]
         )
 
-        let result = OverlayExportResolver.resolveSticker(from: snapshot, at: 1_000_000)
-        XCTAssertEqual(result.count, 2)
-        XCTAssertEqual(Set(result.map(\.stickerId)), ["a", "b"])
+        let result = OverlayResolver.resolve(from: snapshot, at: 1_000_000)
+        let stickerItems = result.filter { $0.kind == .sticker }
+        XCTAssertEqual(stickerItems.count, 2)
+        let stickerIds: Set<String> = Set(stickerItems.compactMap { item in
+            if case .sticker(let stickerId, _) = item.content { return stickerId }
+            return nil
+        })
+        XCTAssertEqual(stickerIds, ["a", "b"])
     }
 }
 

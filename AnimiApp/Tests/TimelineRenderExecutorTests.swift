@@ -689,36 +689,29 @@ final class TimelineRenderExecutorTests: XCTestCase {
         }
     }
 
-    // MARK: - 14. Text overlay rasterizer produces non-zero pixels
+    // MARK: - 14. Text overlay cache produces non-zero pixels
 
-    func testOverlayRasterizer_textProducesNonTransparentPixels() throws {
+    func testOverlayCache_textProducesNonTransparentPixels() throws {
         let size = 64
-        let animSize = SizeD(width: Double(size), height: Double(size))
-        let overlayTex = TimelineOverlayRasterizer.makeOverlayTexture(
-            stickers: [],
-            texts: [
-                ResolvedTextOverlay(
-                    text: "HELLO",
-                    fontFamily: nil,
-                    fontSize: 24,
-                    colorHex: "#FFFFFF",
-                    centerX: 0.5,
-                    centerY: 0.5
-                )
-            ],
-            pixelWidth: size,
-            pixelHeight: size,
-            animSize: animSize,
-            device: device,
-            stickerCache: StickerImageCache()
+        let canvasSize = SizeD(width: Double(size), height: Double(size))
+        let cache = OverlayRenderResourceCache()
+        let item = ResolvedOverlayRenderItem(
+            stableId: UUID(),
+            kind: .text,
+            content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF"),
+            presentation: .default(centerX: 0.5, centerY: 0.5),
+            zOrder: 0
         )
-        let texture = try XCTUnwrap(overlayTex, "Rasterizer must return non-nil for non-empty text overlays")
+        let entry = try XCTUnwrap(
+            cache.texture(for: item, device: device, canvasSize: canvasSize, canvasPixelWidth: size),
+            "Cache must return non-nil for text overlay"
+        )
 
-        let pixels = readPixels(from: texture)
+        let pixels = readPixels(from: entry.texture)
         let hasNonTransparentPixel = stride(from: 0, to: pixels.count, by: 4).contains { i in
             pixels[i + 3] > 0
         }
-        XCTAssertTrue(hasNonTransparentPixel, "Text overlay rasterizer must produce non-transparent pixels")
+        XCTAssertTrue(hasNonTransparentPixel, "Text overlay cache must produce non-transparent pixels")
     }
 
     // MARK: - 14b. Text overlay GPU composition produces visible pixels
@@ -739,14 +732,13 @@ final class TimelineRenderExecutorTests: XCTestCase {
             clearColorOverride: .opaqueBlack,
             presentationDrawable: nil,
             waitUntilCompleted: true,
-            textOverlays: [
-                ResolvedTextOverlay(
-                    text: "HELLO",
-                    fontFamily: nil,
-                    fontSize: 24,
-                    colorHex: "#FFFFFF",
-                    centerX: 0.5,
-                    centerY: 0.5
+            overlayItems: [
+                ResolvedOverlayRenderItem(
+                    stableId: UUID(),
+                    kind: .text,
+                    content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF"),
+                    presentation: .default(centerX: 0.5, centerY: 0.5),
+                    zOrder: 1
                 )
             ]
         )
@@ -754,7 +746,8 @@ final class TimelineRenderExecutorTests: XCTestCase {
             request, renderer: renderer,
             commandQueue: renderer.commandQueue,
             transitionCompositor: nil,
-            completionQueue: nil
+            completionQueue: nil,
+            overlayCache: OverlayRenderResourceCache()
         )
 
         let pixels = readPixels(from: tex)
@@ -810,12 +803,13 @@ final class TimelineRenderExecutorTests: XCTestCase {
             clearColorOverride: .opaqueBlack,
             presentationDrawable: nil,
             waitUntilCompleted: true,
-            stickerOverlays: [
-                ResolvedStickerOverlay(
-                    stickerId: "test_sticker",
-                    imageURL: stickerURL,
-                    centerX: 0.5,
-                    centerY: 0.5
+            overlayItems: [
+                ResolvedOverlayRenderItem(
+                    stableId: UUID(),
+                    kind: .sticker,
+                    content: .sticker(stickerId: "test_sticker", imageURL: stickerURL),
+                    presentation: .default(centerX: 0.5, centerY: 0.5),
+                    zOrder: 0
                 )
             ]
         )
@@ -823,7 +817,8 @@ final class TimelineRenderExecutorTests: XCTestCase {
             request, renderer: renderer,
             commandQueue: renderer.commandQueue,
             transitionCompositor: nil,
-            completionQueue: nil
+            completionQueue: nil,
+            overlayCache: OverlayRenderResourceCache()
         )
 
         let pixels = readPixels(from: tex)
@@ -856,14 +851,13 @@ final class TimelineRenderExecutorTests: XCTestCase {
             clearColorOverride: .opaqueBlack,
             presentationDrawable: nil,
             waitUntilCompleted: true,
-            textOverlays: [
-                ResolvedTextOverlay(
-                    text: "X",
-                    fontFamily: nil,
-                    fontSize: 14,
-                    colorHex: "#FFFFFF",
-                    centerX: 0.5,
-                    centerY: 0.5
+            overlayItems: [
+                ResolvedOverlayRenderItem(
+                    stableId: UUID(),
+                    kind: .text,
+                    content: .text(text: "X", fontFamily: nil, fontSize: 14, colorHex: "#FFFFFF"),
+                    presentation: .default(centerX: 0.5, centerY: 0.5),
+                    zOrder: 1
                 )
             ]
         )
@@ -871,7 +865,8 @@ final class TimelineRenderExecutorTests: XCTestCase {
             request, renderer: renderer,
             commandQueue: renderer.commandQueue,
             transitionCompositor: compositor,
-            completionQueue: nil
+            completionQueue: nil,
+            overlayCache: OverlayRenderResourceCache()
         )
 
         let pixels = readPixels(from: tex)
@@ -920,8 +915,7 @@ final class TimelineRenderExecutorTests: XCTestCase {
             clearColorOverride: .opaqueBlack,
             presentationDrawable: nil,
             waitUntilCompleted: true,
-            textOverlays: [],
-            stickerOverlays: []
+            overlayItems: []
         )
         try TimelineRenderExecutor.render(
             overlayRequest, renderer: renderer,
@@ -953,14 +947,13 @@ final class TimelineRenderExecutorTests: XCTestCase {
             clearColorOverride: .opaqueBlack,
             presentationDrawable: nil,
             waitUntilCompleted: true,
-            textOverlays: [
-                ResolvedTextOverlay(
-                    text: "HELLO",
-                    fontFamily: nil,
-                    fontSize: 24,
-                    colorHex: "#FFFFFF",
-                    centerX: 0.5,
-                    centerY: 0.5
+            overlayItems: [
+                ResolvedOverlayRenderItem(
+                    stableId: UUID(),
+                    kind: .text,
+                    content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF"),
+                    presentation: .default(centerX: 0.5, centerY: 0.5),
+                    zOrder: 1
                 )
             ]
         )
@@ -968,7 +961,8 @@ final class TimelineRenderExecutorTests: XCTestCase {
             request, renderer: renderer,
             commandQueue: renderer.commandQueue,
             transitionCompositor: nil,
-            completionQueue: nil
+            completionQueue: nil,
+            overlayCache: OverlayRenderResourceCache()
         )
 
         // Blit from .private → .shared to verify pixels
@@ -979,44 +973,38 @@ final class TimelineRenderExecutorTests: XCTestCase {
         XCTAssertTrue(hasNonBlackPixel, "Text overlay on .private target must produce visible pixels (no crash, correct composition)")
     }
 
-    // MARK: - 19. Off-main rasterizer correctness (export path simulation)
+    // MARK: - 19. Off-main overlay cache correctness (export path simulation)
 
-    func testOverlayRasterizer_offMainThread_producesNonTransparentPixels() throws {
-        let expectation = expectation(description: "off-main rasterizer completes")
+    func testOverlayCache_offMainThread_producesNonTransparentPixels() throws {
+        let expectation = expectation(description: "off-main cache completes")
         var offMainResult: MTLTexture?
         let capturedDevice = device!
 
         DispatchQueue.global(qos: .userInitiated).async {
             let size = 64
-            let animSize = SizeD(width: Double(size), height: Double(size))
-            offMainResult = TimelineOverlayRasterizer.makeOverlayTexture(
-                stickers: [],
-                texts: [
-                    ResolvedTextOverlay(
-                        text: "EXPORT",
-                        fontFamily: nil,
-                        fontSize: 20,
-                        colorHex: "#FF0000",
-                        centerX: 0.5,
-                        centerY: 0.5
-                    )
-                ],
-                pixelWidth: size,
-                pixelHeight: size,
-                animSize: animSize,
-                device: capturedDevice,
-                stickerCache: StickerImageCache()
+            let canvasSize = SizeD(width: Double(size), height: Double(size))
+            let cache = OverlayRenderResourceCache()
+            let item = ResolvedOverlayRenderItem(
+                stableId: UUID(),
+                kind: .text,
+                content: .text(text: "EXPORT", fontFamily: nil, fontSize: 20, colorHex: "#FF0000"),
+                presentation: .default(centerX: 0.5, centerY: 0.5),
+                zOrder: 0
             )
+            offMainResult = cache.texture(
+                for: item, device: capturedDevice,
+                canvasSize: canvasSize, canvasPixelWidth: size
+            )?.texture
             expectation.fulfill()
         }
 
         wait(for: [expectation], timeout: 5.0)
 
-        let texture = try XCTUnwrap(offMainResult, "Off-main rasterizer must return non-nil texture")
+        let texture = try XCTUnwrap(offMainResult, "Off-main cache must return non-nil texture")
         let pixels = readPixels(from: texture)
         let hasNonTransparentPixel = stride(from: 0, to: pixels.count, by: 4).contains { i in
             pixels[i + 3] > 0
         }
-        XCTAssertTrue(hasNonTransparentPixel, "Off-main rasterizer must produce non-transparent pixels (export path)")
+        XCTAssertTrue(hasNonTransparentPixel, "Off-main cache must produce non-transparent pixels (export path)")
     }
 }

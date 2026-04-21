@@ -90,6 +90,17 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         return (timeline, resources)
     }
 
+    /// Resolves overlay items using the shared OverlayResolver via engine's timeline and transitionMath.
+    @MainActor
+    private func resolveOverlayItems(engine: TimelineCompositionEngine, at compressedFrame: Int) -> [ResolvedOverlayRenderItem] {
+        guard let timeline = engine.timeline,
+              let math = engine.transitionMath,
+              let timeUs = OverlayTimeMapping.globalTimeUs(for: compressedFrame, math: math, fps: engine.fps) else {
+            return []
+        }
+        return OverlayResolver.resolve(from: timeline, at: timeUs, stickerProvider: engine.stickerProvider)
+    }
+
     @MainActor
     private func makeEngine(
         device: MTLDevice,
@@ -501,18 +512,23 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
 
         // Frame 0 (t=0): text not visible
-        let beforeText = engine.resolveTextOverlays(at: 0)
-        XCTAssertTrue(beforeText.isEmpty, "Text should not be visible before startUs")
+        let beforeItems = resolveOverlayItems(engine: engine, at: 0)
+        XCTAssertTrue(beforeItems.filter { $0.kind == .text }.isEmpty, "Text should not be visible before startUs")
 
         // Frame 30 (t=1s): text visible
-        let duringText = engine.resolveTextOverlays(at: 30)
+        let duringItems = resolveOverlayItems(engine: engine, at: 30)
+        let duringText = duringItems.filter { $0.kind == .text }
         XCTAssertEqual(duringText.count, 1, "Text should be visible during its time range")
-        XCTAssertEqual(duringText.first?.text, "Timed")
-        XCTAssertEqual(duringText.first?.colorHex, "#FF0000")
+        if case .text(let text, _, _, let colorHex) = duringText.first?.content {
+            XCTAssertEqual(text, "Timed")
+            XCTAssertEqual(colorHex, "#FF0000")
+        } else {
+            XCTFail("Expected text content descriptor")
+        }
 
         // Frame 60 (t=2s): text no longer visible
-        let afterText = engine.resolveTextOverlays(at: 60)
-        XCTAssertTrue(afterText.isEmpty, "Text should not be visible after endUs")
+        let afterItems = resolveOverlayItems(engine: engine, at: 60)
+        XCTAssertTrue(afterItems.filter { $0.kind == .text }.isEmpty, "Text should not be visible after endUs")
     }
 
     // MARK: - PR10: Sticker Overlay Export Session
@@ -597,19 +613,24 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         engine.setStickerProvider(provider)
 
         // Frame 0 (t=0): sticker not visible
-        let beforeSticker = engine.resolveStickerOverlays(at: 0, stickerProvider: provider)
-        XCTAssertTrue(beforeSticker.isEmpty, "Sticker should not be visible before startUs")
+        let beforeItems = resolveOverlayItems(engine: engine, at: 0)
+        XCTAssertTrue(beforeItems.filter { $0.kind == .sticker }.isEmpty, "Sticker should not be visible before startUs")
 
         // Frame 30 (t=1s): sticker visible
-        let duringSticker = engine.resolveStickerOverlays(at: 30, stickerProvider: provider)
-        XCTAssertEqual(duringSticker.count, 1, "Sticker should be visible during its time range")
-        XCTAssertEqual(duringSticker.first?.stickerId, "heart")
-        XCTAssertEqual(duringSticker.first?.centerX, 0.5)
-        XCTAssertNotNil(duringSticker.first?.imageURL)
+        let duringItems = resolveOverlayItems(engine: engine, at: 30)
+        let duringStickers = duringItems.filter { $0.kind == .sticker }
+        XCTAssertEqual(duringStickers.count, 1, "Sticker should be visible during its time range")
+        if case .sticker(let stickerId, let imageURL) = duringStickers.first?.content {
+            XCTAssertEqual(stickerId, "heart")
+            XCTAssertNotNil(imageURL)
+        } else {
+            XCTFail("Expected sticker content descriptor")
+        }
+        XCTAssertEqual(duringStickers.first?.presentation.centerX, 0.5)
 
         // Frame 60 (t=2s): sticker no longer visible
-        let afterSticker = engine.resolveStickerOverlays(at: 60, stickerProvider: provider)
-        XCTAssertTrue(afterSticker.isEmpty, "Sticker should not be visible after endUs")
+        let afterItems = resolveOverlayItems(engine: engine, at: 60)
+        XCTAssertTrue(afterItems.filter { $0.kind == .sticker }.isEmpty, "Sticker should not be visible after endUs")
     }
 
     // MARK: - Legacy Cold Export

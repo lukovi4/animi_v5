@@ -42,18 +42,25 @@ final class StickerOverlayIntegrationTests: XCTestCase {
         let provider = TestStickerProvider()
 
         // Within range (1.5s)
-        let visible = TimelineCompositionEngine.resolveStickerOverlaysFromTimeline(timeline, at: 1_500_000, stickerProvider: provider)
+        let visible = OverlayResolver.resolve(from: timeline, at: 1_500_000, stickerProvider: provider)
+            .filter { $0.kind == .sticker }
         XCTAssertEqual(visible.count, 1)
-        XCTAssertEqual(visible.first?.stickerId, "star")
-        XCTAssertEqual(visible.first?.centerX, 0.3)
-        XCTAssertEqual(visible.first?.centerY, 0.7)
+        if case .sticker(let stickerId, _) = visible.first?.content {
+            XCTAssertEqual(stickerId, "star")
+        } else {
+            XCTFail("Expected .sticker content")
+        }
+        XCTAssertEqual(visible.first?.presentation.centerX, 0.3)
+        XCTAssertEqual(visible.first?.presentation.centerY, 0.7)
 
         // Before range (0.5s)
-        let before = TimelineCompositionEngine.resolveStickerOverlaysFromTimeline(timeline, at: 500_000, stickerProvider: provider)
+        let before = OverlayResolver.resolve(from: timeline, at: 500_000, stickerProvider: provider)
+            .filter { $0.kind == .sticker }
         XCTAssertTrue(before.isEmpty)
 
         // After range (3.5s)
-        let after = TimelineCompositionEngine.resolveStickerOverlaysFromTimeline(timeline, at: 3_500_000, stickerProvider: provider)
+        let after = OverlayResolver.resolve(from: timeline, at: 3_500_000, stickerProvider: provider)
+            .filter { $0.kind == .sticker }
         XCTAssertTrue(after.isEmpty)
     }
 
@@ -78,8 +85,9 @@ final class StickerOverlayIntegrationTests: XCTestCase {
         let provider = TestStickerProvider()
 
         // At 1.5s: both should be visible
-        let textOverlays = TimelineCompositionEngine.resolveTextOverlaysFromTimeline(timeline, at: 1_500_000)
-        let stickerOverlays = TimelineCompositionEngine.resolveStickerOverlaysFromTimeline(timeline, at: 1_500_000, stickerProvider: provider)
+        let allOverlays = OverlayResolver.resolve(from: timeline, at: 1_500_000, stickerProvider: provider)
+        let textOverlays = allOverlays.filter { $0.kind == .text }
+        let stickerOverlays = allOverlays.filter { $0.kind == .sticker }
         XCTAssertEqual(textOverlays.count, 1)
         XCTAssertEqual(stickerOverlays.count, 1)
     }

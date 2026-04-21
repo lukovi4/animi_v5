@@ -82,14 +82,13 @@ internal final class TimelineExportRuntime {
     }
 
     /// Converts a compressed frame index to global timeline timeUs.
-    /// Used by VideoExporter to feed into OverlayExportResolver.
+    /// Delegates to the canonical shared helper `OverlayTimeMapping.globalTimeUs`.
     func globalTimeUs(for compressedFrame: Int) -> TimeUs? {
-        let math = session.transitionMath
-        guard let mapping = math.frameMapping(for: compressedFrame) else { return nil }
-        let sceneStartUs = math.sceneItems.prefix(mapping.sceneIndex).reduce(TimeUs(0)) { sum, item in
-            sum + item.durationUs
-        }
-        return sceneStartUs + frameToUs(mapping.localFrame, fps: math.fps)
+        OverlayTimeMapping.globalTimeUs(
+            for: compressedFrame,
+            math: session.transitionMath,
+            fps: session.fps
+        )
     }
 
     func finish() {

@@ -43,6 +43,13 @@ enum ScrubDebugToggles {
     static var throttleRender30Hz: Bool {
         UserDefaults.standard.bool(forKey: "DebugThrottleRender30Hz")
     }
+
+    /// Opt-in verbose logging for scrub diagnostics (signposts, counters, prints).
+    /// Default: false — normal Debug playback is clean from per-scroll instrumentation.
+    /// Enable via launch argument: `-DebugVerboseLogging YES`
+    static var verboseLogging: Bool {
+        UserDefaults.standard.bool(forKey: "DebugVerboseLogging")
+    }
 }
 
 // MARK: - os_signpost Logger
