@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -15,8 +15,10 @@
 		014A5E06EF53A6544A6B3387 /* OverlayRenderResourceCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEEB04388DC4A4359B064F85 /* OverlayRenderResourceCache.swift */; };
 		021A10B8089507570695F432 /* ImageFilePreparePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 788A57162D753FAFEA0EA323 /* ImageFilePreparePipeline.swift */; };
 		027F8E8E35674B1C890A533E /* MediaBlockActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 341DB1C8476CB51E6A7DF543 /* MediaBlockActionBar.swift */; };
+		031EC3E9EAE2C19FCD21CCAA /* ExportBackgroundRestoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFCBCEA710FED409893FB1DF /* ExportBackgroundRestoreTests.swift */; };
 		0402365D45452BE0FFA85FE7 /* EditorStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17978D254FF4A01AF6C27265 /* EditorStore.swift */; };
 		062F11DB804AC6EE7B144AE2 /* VideoTrimThumbnailProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3482F876497C40A328903189 /* VideoTrimThumbnailProvider.swift */; };
+		0857D39D4C35C9487EDE14B2 /* EditorViewControllerLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 752804E109B26C1D093BBBC5 /* EditorViewControllerLifecycleTests.swift */; };
 		0AF81261425E3AB5C7322D54 /* OverlayCompositor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25FDDDA3FE43A3C49259142 /* OverlayCompositor.swift */; };
 		0CC3A4613EB147956A9A7C03 /* PlacementGestureSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A117EBC6ED71883406F5D1DC /* PlacementGestureSessionTests.swift */; };
 		0D7C19312488787BBA9F8379 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 7AEA66CBE6EB5B30975CB68C /* LaunchScreen.storyboard */; };
@@ -485,6 +487,7 @@
 		7350B5941EE88C3BDDEECC9F /* StickerPickerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerPickerViewController.swift; sourceTree = "<group>"; };
 		7386B6921BAF86E88B6FE1D0 /* SceneLibraryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneLibraryModels.swift; sourceTree = "<group>"; };
 		74C6E2BAD58DD29C50E60896 /* EditorSessionSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorSessionSnapshot.swift; sourceTree = "<group>"; };
+		752804E109B26C1D093BBBC5 /* EditorViewControllerLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorViewControllerLifecycleTests.swift; sourceTree = "<group>"; };
 		75F1ADA345E66CE832D053B2 /* MediaRestoreCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRestoreCoordinator.swift; sourceTree = "<group>"; };
 		7609F6873311B9A491FF15B8 /* SavedProjectsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectsService.swift; sourceTree = "<group>"; };
 		766E44EE38DE9F88295B1446 /* ExportSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportSession.swift; sourceTree = "<group>"; };
@@ -559,7 +562,7 @@
 		B7DA813366CB015C14593389 /* ExportVideoFrameProviderBlendTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProviderBlendTests.swift; sourceTree = "<group>"; };
 		B807292DC00C6DF32839947B /* Point2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Point2.swift; sourceTree = "<group>"; };
 		B853898BDFB63E02EA083BD5 /* CategoryTemplatesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryTemplatesViewController.swift; sourceTree = "<group>"; };
-		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BAD378EB2800FA21FD5D791A /* AnimiApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AnimiApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BADE2C25A73924C2B3793A4D /* MediaRestoreHelperVideoSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRestoreHelperVideoSelectionTests.swift; sourceTree = "<group>"; };
 		BBE7E90FA899680D42547C51 /* ProjectDuplicatePayloadRoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDuplicatePayloadRoundTripTests.swift; sourceTree = "<group>"; };
 		BC0A332A9804FD46A50F4BF3 /* GlobalVideoBudgetCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalVideoBudgetCoordinator.swift; sourceTree = "<group>"; };
@@ -608,6 +611,7 @@
 		DCF00B9CD6E40ED94892ADC9 /* PerfLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerfLogger.swift; sourceTree = "<group>"; };
 		DE03E0013BB58940F881C463 /* ExportBackgroundSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportBackgroundSnapshot.swift; sourceTree = "<group>"; };
 		DE5E9CF111CD6CF5A6213688 /* TimelinePlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePlaybackCoordinator.swift; sourceTree = "<group>"; };
+		DFCBCEA710FED409893FB1DF /* ExportBackgroundRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportBackgroundRestoreTests.swift; sourceTree = "<group>"; };
 		E0B1C77A6A4639DCEC207A62 /* CleanCloseContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanCloseContractTests.swift; sourceTree = "<group>"; };
 		E12F0E5F2497215DADB4A566 /* UserMediaServiceBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaServiceBudgetTests.swift; sourceTree = "<group>"; };
 		E14FC68F1D425F176A031658 /* VideoExporterTimelineResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporterTimelineResolutionTests.swift; sourceTree = "<group>"; };
@@ -720,6 +724,8 @@
 				BDD819A50AC9792C08DF2269 /* EditorSessionBootstrapTests.swift */,
 				15149D15AF406D217E7B2E61 /* EditorSessionLifecycleTests.swift */,
 				D2C27B66A7FD3D45BCA3E634 /* EditorStoreTimelinePreviewTests.swift */,
+				752804E109B26C1D093BBBC5 /* EditorViewControllerLifecycleTests.swift */,
+				DFCBCEA710FED409893FB1DF /* ExportBackgroundRestoreTests.swift */,
 				2071A955010C325833347D9F /* ExportDeliveryCoordinatorTests.swift */,
 				E5AF506783B23A9AA032D9B5 /* ExportDeliveryPlayerFlowTests.swift */,
 				4DF5AAD7D6E77AC7912DBD14 /* ExportDisplaySizeRegressionTests.swift */,
@@ -1224,6 +1230,7 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					10B17D6EDD6B127CDCBC280E = {
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					65136F447BC60C8FF7FDE046 = {
@@ -1245,6 +1252,7 @@
 			packageReferences = (
 				94582A90A844493FC6142A89 /* XCLocalSwiftPackageReference "../TVECore" */,
 			);
+			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -1303,6 +1311,8 @@
 				CE02CECEE8C7914B908FB0A6 /* EditorSessionBootstrapTests.swift in Sources */,
 				61449617A8E8AEAFB164B454 /* EditorSessionLifecycleTests.swift in Sources */,
 				D51C35ED6BE07BBA89EE3CBE /* EditorStoreTimelinePreviewTests.swift in Sources */,
+				0857D39D4C35C9487EDE14B2 /* EditorViewControllerLifecycleTests.swift in Sources */,
+				031EC3E9EAE2C19FCD21CCAA /* ExportBackgroundRestoreTests.swift in Sources */,
 				48887D83D16E4F1E5F6B8CE7 /* ExportDeliveryCoordinatorTests.swift in Sources */,
 				57DE15DF4368D76C4331A767 /* ExportDeliveryPlayerFlowTests.swift in Sources */,
 				CB7045787BB6A6B3A2A7946A /* ExportDisplaySizeRegressionTests.swift in Sources */,
@@ -1725,7 +1735,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = KRX7JQ8GTF;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1768,7 +1778,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = KRX7JQ8GTF;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

@@ -103,6 +103,11 @@ final class EditorRuntime {
     private var backgroundTextureProvider: InMemoryTextureProvider?
     private(set) var effectiveBackgroundState: EffectiveBackgroundState?
 
+    /// True after enterExportMode() has torn down preview resources.
+    /// Cleared by restorePreExportState(). Guards reload to avoid
+    /// re-preloading when cancel fires before teardown.
+    private var exportTeardownOccurred = false
+
     private var canvasSize: SizeD = .zero
     private var mergedAssetSizes: [String: AssetSize] = [:]
 
@@ -204,6 +209,27 @@ final class EditorRuntime {
 
     /// Test seam: exposes the timeline composition engine for cache pre-population.
     var testTimelineCompositionEngine: TimelineCompositionEngine? { timelineCompositionEngine }
+
+    /// Test seam: exposes background texture service for export-restore verification.
+    var testBackgroundTextureService: BackgroundTextureService? { backgroundTextureService }
+
+    /// Test seam: triggers export teardown without starting actual export.
+    func simulateEnterExportMode() {
+        enterExportMode()
+    }
+
+    /// Test seam: async exit-export-mode with background texture restore.
+    func simulateExitExportModeToIdle() async {
+        await exitExportModeToIdle()
+    }
+
+    /// Test seam: simulates exporter completion callback with a fake active request.
+    func simulateHandleExportCompletion(result: Result<URL, Error>) {
+        let exporter = VideoExporter(mediaLocator: session.mediaLocator)
+        let request = ActiveExportRequest(id: UUID(), exporter: exporter)
+        activeExportRequest = request
+        handleExportCompletion(result: result, requestId: request.id)
+    }
     #endif
 
     func boot(metalContext: EditorRuntimeMetalContext, library: SceneLibrarySnapshot) {
@@ -1000,8 +1026,16 @@ final class EditorRuntime {
         preflightContinuation?.resume(returning: .cancel)
         preflightContinuation = nil
         clearActiveExportRequest()
+        let needsReload = exportTeardownOccurred && hasImageBackgroundRegions
         restorePreExportState()
-        onOutput?(.exportCancelled)
+        if needsReload {
+            Task {
+                await reloadBackgroundTextures()
+                onOutput?(.exportCancelled)
+            }
+        } else {
+            onOutput?(.exportCancelled)
+        }
     }
 
     /// Returns true if `requestId` matches the currently active export request.
@@ -1060,10 +1094,34 @@ final class EditorRuntime {
         backgroundTextureService?.clearAllTrackedTextures()
         userMediaService?.releasePreviewResources()
         timelineCompositionEngine?.releaseForExport()
+        exportTeardownOccurred = true
     }
 
-    private func exitExportModeToIdle() {
+    private func exitExportModeToIdle() async {
+        let needsReload = exportTeardownOccurred && hasImageBackgroundRegions
         restorePreExportState()
+        if needsReload {
+            await reloadBackgroundTextures()
+        }
+    }
+
+    /// True when the current background has at least one image region that would
+    /// need texture reload after export teardown. Used to avoid unnecessary async
+    /// deferral of terminal output for color-only backgrounds.
+    private var hasImageBackgroundRegions: Bool {
+        guard let effState = effectiveBackgroundState else { return false }
+        return effState.regionStates.values.contains(where: {
+            if case .image = $0.source { return true }
+            return false
+        })
+    }
+
+    /// Re-preloads background textures after export teardown.
+    /// Caller must verify `hasImageBackgroundRegions` before invoking.
+    private func reloadBackgroundTextures() async {
+        guard let override = session.state?.draft.background,
+              let effState = effectiveBackgroundState else { return }
+        await preloadBackgroundTextures(from: override, effectiveState: effState)
     }
 
     /// Canonical terminal cleanup for export precondition failures.
@@ -1078,11 +1136,21 @@ final class EditorRuntime {
         onOutput?(.exportCompleted(.failure(ExportAbortError(message: message))))
     }
 
+    /// Async abort for post-teardown paths — restores background textures before emitting error.
+    private func abortExportAfterTeardown(message: String) async {
+        logger.error("[Export] Aborted: \(message)")
+        preflightContinuation?.resume(returning: .cancel)
+        preflightContinuation = nil
+        clearActiveExportRequest()
+        await exitExportModeToIdle()
+        onOutput?(.exportCompleted(.failure(ExportAbortError(message: message))))
+    }
+
     private func executeSingleSceneExport(ctx: EditorRuntimeMetalContext) async {
         guard let compiled = compiledScene,
               let player = scenePlayer,
               let resolver = assetResolver else {
-            abortExport(message: "Missing dependencies for single-scene export")
+            await abortExportAfterTeardown(message: "Missing dependencies for single-scene export")
             return
         }
 
@@ -1142,12 +1210,11 @@ final class EditorRuntime {
                 self.preflightContinuation = cont
             }
             guard isActiveExportRequest(requestId) else {
-                exitExportModeToIdle()
                 return
             }
             switch choice {
             case .cancel:
-                exitExportModeToIdle()
+                await exitExportModeToIdle()
                 clearActiveExportRequest()
                 onOutput?(.exportCancelled)
                 return
@@ -1194,7 +1261,7 @@ final class EditorRuntime {
             )
         } catch {
             logger.error("[Export] Media snapshot error: \(error.localizedDescription)")
-            exitExportModeToIdle()
+            await exitExportModeToIdle()
             clearActiveExportRequest()
             onOutput?(.exportCompleted(.failure(error)))
             return
@@ -1207,7 +1274,6 @@ final class EditorRuntime {
 
         guard isActiveExportRequest(requestId) else {
             logger.info("[Export] Cancelled during preflight (stale request)")
-            exitExportModeToIdle()
             return
         }
 
@@ -1245,13 +1311,13 @@ final class EditorRuntime {
     private func executeTimelineExport(ctx: EditorRuntimeMetalContext) async {
         guard let engine = timelineCompositionEngine,
               let transitionMath = engine.transitionMath else {
-            abortExport(message: "No timeline configured for timeline export")
+            await abortExportAfterTeardown(message: "No timeline configured for timeline export")
             return
         }
 
         let canvasSize = engine.canvasSize
         guard canvasSize.width > 0, canvasSize.height > 0 else {
-            abortExport(message: "Invalid canvas size for timeline export")
+            await abortExportAfterTeardown(message: "Invalid canvas size for timeline export")
             return
         }
 
@@ -1299,12 +1365,11 @@ final class EditorRuntime {
                 self.preflightContinuation = cont
             }
             guard isActiveExportRequest(requestId) else {
-                exitExportModeToIdle()
                 return
             }
             switch choice {
             case .cancel:
-                exitExportModeToIdle()
+                await exitExportModeToIdle()
                 clearActiveExportRequest()
                 onOutput?(.exportCancelled)
                 return
@@ -1345,7 +1410,6 @@ final class EditorRuntime {
 
         guard isActiveExportRequest(requestId) else {
             logger.info("[Export] Cancelled during preflight (stale request)")
-            exitExportModeToIdle()
             return
         }
 
@@ -1372,12 +1436,23 @@ final class EditorRuntime {
     }
 
     private func handleExportCompletion(result: Result<URL, Error>, requestId: UUID) {
-        exitExportModeToIdle()
         guard isActiveExportRequest(requestId) else {
             logger.info("[Export] Ignoring stale completion")
             return
         }
+        let needsReload = exportTeardownOccurred && hasImageBackgroundRegions
+        restorePreExportState()
+        if needsReload {
+            Task {
+                await reloadBackgroundTextures()
+                self.emitExportCompletionOutput(result: result, requestId: requestId)
+            }
+        } else {
+            emitExportCompletionOutput(result: result, requestId: requestId)
+        }
+    }
 
+    private func emitExportCompletionOutput(result: Result<URL, Error>, requestId: UUID) {
         switch result {
         case .success(let url):
             logger.info("[Export] SUCCESS: \(url.lastPathComponent)")
@@ -1500,6 +1575,7 @@ final class EditorRuntime {
     private func restorePreExportState() {
         state = preExportState ?? .timelinePreview
         preExportState = nil
+        exportTeardownOccurred = false
     }
 
     private func clearActiveExportRequest() {
