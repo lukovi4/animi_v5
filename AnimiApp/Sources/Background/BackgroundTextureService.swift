@@ -151,8 +151,8 @@ public final class BackgroundTextureService {
         #endif
     }
 
-    /// PR4: Alias for clearAllTextures - clears all tracked background textures.
-    /// Called on EditorViewController lifecycle (viewDidDisappear/deinit).
+    /// Clears all tracked background textures.
+    /// Used by caller-owned teardown paths such as permanent editor leave or export cleanup.
     public func clearAllTrackedTextures() {
         clearAllTextures()
     }

@@ -1722,8 +1722,15 @@ final class EditorViewController: UIViewController {
         perfLogger.stop()
         #endif
 
-        // PR4: Cleanup background textures when VC disappears
-        runtime?.clearAllBackgroundTextures()
+        if Self.shouldCleanupOnDisappear(isMovingFromParent: isMovingFromParent, isBeingDismissed: isBeingDismissed) {
+            runtime?.clearAllBackgroundTextures()
+        }
+    }
+
+    /// Pure lifecycle decision: cleanup only on permanent editor leave.
+    /// Testable without UIKit transition harness.
+    static func shouldCleanupOnDisappear(isMovingFromParent: Bool, isBeingDismissed: Bool) -> Bool {
+        isMovingFromParent || isBeingDismissed
     }
 
     // MARK: - Draft Persistence
