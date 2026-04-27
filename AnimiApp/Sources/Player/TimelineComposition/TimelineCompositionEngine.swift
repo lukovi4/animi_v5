@@ -1180,230 +1180,27 @@ public final class TimelineCompositionEngine {
     /// TT-05: Builds an immutable export session from current engine state.
     /// Must be called on MainActor. Does NOT call resolveFrame, prepareForPlayback,
     /// or touch TT-03 budget/eviction path.
+    ///
+    /// Delegates to `TimelineExportSessionBuilder` for the actual assembly.
     internal func buildExportSession() async throws -> TimelineExportSession {
         guard let math = transitionMath, templateCanvas != nil,
               let timeline = timeline else {
             throw TimelineExportSessionBuildError.noTimeline
         }
 
-        var scenesByInstanceId: [UUID: TimelineExportSceneSnapshot] = [:]
-        var audioSceneData: [SceneAudioExportData] = []
-
-        for (index, item) in math.sceneItems.enumerated() {
-            let instanceId = item.id
-
-            // 1. Resolve sceneTypeId from timeline payload (no runtime needed)
-            guard let tlItem = timeline.sceneItems.first(where: { $0.id == instanceId }),
-                  let payload = timeline.payloads[tlItem.payloadId],
-                  case .scene(let scenePayload) = payload else {
-                throw TimelineExportSessionBuildError.missingRuntime(instanceId)
-            }
-            let sceneTypeId = scenePayload.sceneTypeId
-
-            // 2. Resources: full cache if warm, metadata-only preload if cold.
-            //    NEVER calls full preload() or getOrCreateRuntime() for cold scenes.
-            let resources: SceneTypeResourcesCache.Resources
-            if let cached = resourcesCache.resources(for: sceneTypeId) {
-                resources = cached
-            } else {
-                resources = try await resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
-            }
-
-            // 3. Persisted-only: state and media slots (already hydrated at project-load time)
-            let state = sceneStates[instanceId] ?? .empty
-            let mediaSlots = state.mediaSlotsByBlockId ?? [:]
-
-            // 4. Build media snapshot first (async — probes video duration, resolves URLs)
-            let compiled = resources.compiled
-            let mediaSnapshot = try await ExportMediaSnapshot.build(
-                compiledScene: compiled,
-                mediaSlots: mediaSlots,
-                mediaLocator: self.mediaLocator,
-                assetRegistry: self.currentAssetRegistry,
-                runtime: compiled.runtime
-            )
-
-            // 5. Render state from sceneStates (no runtime needed)
-            let userMediaPresent: [String: Bool] = mediaSlots.reduce(into: [:]) { result, entry in
-                result[entry.key] = entry.value.visibility
-            }
-
-            // PR4: Resolve placement → Matrix2D for export parity with preview.
-            // Media dimensions from snapshot give correct baseFit for cover/contain/fill.
-            let resolvedTransforms = await Self.resolveTransformsForExport(
-                state: state,
-                compiled: compiled,
-                mediaSnapshot: mediaSnapshot
-            )
-
-            let renderState = SceneRenderStateSnapshot(
-                resolvedTransforms: resolvedTransforms,
-                variantOverrides: state.variantOverrides,
-                userMediaPresent: userMediaPresent,
-                layerToggleState: state.layerToggles
-            )
-
-            // Derive videoSelections from validated mediaSnapshot.videoRefs
-            var videoSelections: [String: VideoSelection] = [:]
-            for ref in mediaSnapshot.videoRefs {
-                videoSelections[ref.blockId] = ref.selection
-            }
-
-            let snapshot = TimelineExportSceneSnapshot(
-                sceneIndex: index,
-                instanceId: instanceId,
-                runtime: compiled.runtime,
-                renderState: renderState,
-                videoSelections: videoSelections,
-                mediaSnapshot: mediaSnapshot,
-                assetIndex: compiled.mergedAssetIndex,
-                resolver: resources.resolver,
-                bindingAssetIds: compiled.bindingAssetIds,
-                pathRegistry: resources.pathRegistry,
-                assetSizes: resources.assetSizes,
-                sceneCanvasSize: resources.canvasSize,
-                templateBackground: compiled.runtime.scene.background
-            )
-            scenesByInstanceId[instanceId] = snapshot
-
-            audioSceneData.append(SceneAudioExportData(
-                sceneIndex: index,
-                runtime: compiled.runtime,
-                videoSelections: videoSelections
-            ))
-        }
-
-        // Build unified overlay snapshot from timeline + sticker provider
-        let textOverlayTuples: [(item: TimelineItem, payload: TextPayload)] =
-            (timeline.overlayTrack?.items ?? []).compactMap { item in
-                guard item.kind == .text,
-                      let payload = timeline.payloads[item.payloadId],
-                      case .text(let textPayload) = payload else { return nil }
-                return (item: item, payload: textPayload)
-            }
-
-        let stickerOverlayTuples: [(item: TimelineItem, payload: StickerPayload, imageURL: URL)] =
-            (timeline.overlayTrack?.items ?? []).compactMap { item in
-                guard item.kind == .sticker,
-                      let payload = timeline.payloads[item.payloadId],
-                      case .sticker(let stickerPayload) = payload,
-                      let imageURL = self.stickerProvider?.resourceURL(for: stickerPayload.stickerId) else { return nil }
-                return (item: item, payload: stickerPayload, imageURL: imageURL)
-            }
-
-        let overlaySnapshot = OverlayExportSnapshot.build(
-            textOverlayItems: textOverlayTuples,
-            stickerOverlayItems: stickerOverlayTuples
-        )
-
-        return TimelineExportSession(
+        let context = TimelineExportSessionBuilder.Context(
             transitionMath: math,
-            canvasSize: canvasSize,
+            timeline: timeline,
+            sceneStates: sceneStates,
+            currentAssetRegistry: currentAssetRegistry,
+            resourcesCache: resourcesCache,
+            mediaLocator: mediaLocator,
+            stickerProvider: stickerProvider,
             fps: fps,
-            scenesByInstanceId: scenesByInstanceId,
-            audioSceneData: audioSceneData,
-            overlaySnapshot: overlaySnapshot
+            canvasSize: canvasSize
         )
-    }
 
-    // MARK: - PR4: Resolve Placement for Export
-
-    /// Resolves placement-based transforms for export.
-    /// Uses actual media dimensions from ExportMediaSnapshot for correct cover/contain/fill.
-    private static func resolveTransformsForExport(
-        state: SceneState,
-        compiled: CompiledScene,
-        mediaSnapshot: ExportMediaSnapshot
-    ) async -> [String: Matrix2D] {
-        var transforms: [String: Matrix2D] = [:]
-
-        // Build media size lookup from snapshot
-        var mediaSizes: [String: (Double, Double)] = [:]
-        for ref in mediaSnapshot.imageRefs {
-            if let size = probeImageSize(url: ref.url) {
-                mediaSizes[ref.blockId] = size
-            }
-        }
-        for ref in mediaSnapshot.videoRefs {
-            if let size = await probeVideoSize(url: ref.selection.url) {
-                mediaSizes[ref.blockId] = size
-            }
-        }
-
-        if let slots = state.mediaSlotsByBlockId {
-            let blocks = compiled.runtime.blocks
-            for (blockId, slot) in slots {
-                let placement = slot.asset.placement
-                guard let block = blocks.first(where: { $0.blockId == blockId }) else { continue }
-
-                let baselineRect = block.bindingBaseline.contentRectLocal
-                let mediaW: Double
-                let mediaH: Double
-                if let size = mediaSizes[blockId] {
-                    mediaW = size.0
-                    mediaH = size.1
-                } else {
-                    mediaW = baselineRect.width
-                    mediaH = baselineRect.height
-                }
-
-                let geometry = MediaPlacementResolver.SlotGeometry(
-                    baselineRectLocal: baselineRect,
-                    mediaWidth: mediaW,
-                    mediaHeight: mediaH
-                )
-                transforms[blockId] = MediaPlacementResolver.resolve(
-                    placement: placement,
-                    geometry: geometry
-                )
-            }
-        }
-
-        return transforms
-    }
-
-    /// Probes image dimensions from file URL (synchronous, lightweight via ImageIO).
-    private static func probeImageSize(url: URL) -> (Double, Double)? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
-        guard let width = properties[kCGImagePropertyPixelWidth] as? Double,
-              let height = properties[kCGImagePropertyPixelHeight] as? Double else { return nil }
-
-        // Apply EXIF orientation
-        let orientation = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
-        if orientation >= 5 && orientation <= 8 {
-            return (height, width) // rotated 90/270
-        }
-        return (width, height)
-    }
-
-    /// Probes video oriented size from file URL via AVURLAsset.
-    /// Looks up sceneTypeId for a timeline item from its payload.
-    private static func sceneTypeId(for item: TimelineItem, in timeline: CanonicalTimeline) -> String? {
-        guard let payload = timeline.payloads[item.payloadId],
-              case .scene(let scenePayload) = payload else { return nil }
-        return scenePayload.sceneTypeId
-    }
-
-    /// Looks up sceneTypeId for an instance ID from the current timeline.
-    private func sceneTypeIdForInstance(_ instanceId: UUID) -> String? {
-        guard let timeline,
-              let item = timeline.sceneItems.first(where: { $0.id == instanceId }) else { return nil }
-        return Self.sceneTypeId(for: item, in: timeline)
-    }
-
-    private static func probeVideoSize(url: URL) async -> (Double, Double)? {
-        let asset = AVURLAsset(url: url)
-        do {
-            let tracks = try await asset.loadTracks(withMediaType: .video)
-            guard let track = tracks.first else { return nil }
-            let size = try await track.load(.naturalSize)
-            let transform = try await track.load(.preferredTransform)
-            let oriented = CGRect(origin: .zero, size: size).applying(transform).standardized.size
-            return (Double(oriented.width), Double(oriented.height))
-        } catch {
-            return nil
-        }
+        return try await TimelineExportSessionBuilder.build(context: context)
     }
 
 }
