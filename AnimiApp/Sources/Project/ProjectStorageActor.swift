@@ -117,44 +117,69 @@ actor ProjectStorageActor: ProjectPersistenceGateway, ProjectMediaLocator, Proje
         // Rewrite background regions.
         var newRegions = newDraft.background.regions
         for (regionId, region) in newDraft.background.regions {
-            guard case .image(var imageOverride) = region.source else { continue }
-            let oldRef = imageOverride.mediaRef
+            guard let oldRef = region.mediaRef else { continue }
             let newAssetId = idRewrite[oldRef.assetId] ?? oldRef.assetId
             let newStoragePath = pathRewrite[oldRef.storagePath]
                 ?? newRegistry.storagePath(for: newAssetId)
                 ?? oldRef.storagePath
-            imageOverride.mediaRef = MediaRef(
+            let newMediaRef = MediaRef(
                 storagePath: newStoragePath,
                 mediaKind: oldRef.mediaKind,
                 assetId: newAssetId
             )
             var newRegion = region
-            newRegion.source = .image(imageOverride)
+            newRegion.source = region.source.withReplacedMediaRef(newMediaRef)
             newRegions[regionId] = newRegion
         }
         newDraft.background.regions = newRegions
 
-        // Rewrite scene instance slot media refs.
+        // Rewrite scene instance slot media refs + scene background overrides.
         var newSceneStates = newDraft.sceneInstanceStates
         for (instanceId, sceneState) in newDraft.sceneInstanceStates {
-            guard let slots = sceneState.mediaSlotsByBlockId else { continue }
-            var newSlots = slots
-            for (blockId, slot) in slots {
-                let oldRef = slot.mediaRef
-                let newAssetId = idRewrite[oldRef.assetId] ?? oldRef.assetId
-                let newStoragePath = pathRewrite[oldRef.storagePath]
-                    ?? newRegistry.storagePath(for: newAssetId)
-                    ?? oldRef.storagePath
-                var newSlot = slot
-                newSlot.mediaRef = MediaRef(
-                    storagePath: newStoragePath,
-                    mediaKind: oldRef.mediaKind,
-                    assetId: newAssetId
-                )
-                newSlots[blockId] = newSlot
-            }
             var newState = sceneState
-            newState.mediaSlotsByBlockId = newSlots
+
+            // Rewrite media slots
+            if let slots = sceneState.mediaSlotsByBlockId {
+                var newSlots = slots
+                for (blockId, slot) in slots {
+                    let oldRef = slot.mediaRef
+                    let newAssetId = idRewrite[oldRef.assetId] ?? oldRef.assetId
+                    let newStoragePath = pathRewrite[oldRef.storagePath]
+                        ?? newRegistry.storagePath(for: newAssetId)
+                        ?? oldRef.storagePath
+                    var newSlot = slot
+                    newSlot.mediaRef = MediaRef(
+                        storagePath: newStoragePath,
+                        mediaKind: oldRef.mediaKind,
+                        assetId: newAssetId
+                    )
+                    newSlots[blockId] = newSlot
+                }
+                newState.mediaSlotsByBlockId = newSlots
+            }
+
+            // PR2: Rewrite scene-level background override refs
+            if var bgOverride = sceneState.backgroundOverride {
+                var newBgRegions = bgOverride.regions
+                for (regionId, region) in bgOverride.regions {
+                    guard let oldRef = region.mediaRef else { continue }
+                    let newAssetId = idRewrite[oldRef.assetId] ?? oldRef.assetId
+                    let newStoragePath = pathRewrite[oldRef.storagePath]
+                        ?? newRegistry.storagePath(for: newAssetId)
+                        ?? oldRef.storagePath
+                    let newMediaRef = MediaRef(
+                        storagePath: newStoragePath,
+                        mediaKind: oldRef.mediaKind,
+                        assetId: newAssetId
+                    )
+                    var newRegion = region
+                    newRegion.source = region.source.withReplacedMediaRef(newMediaRef)
+                    newBgRegions[regionId] = newRegion
+                }
+                bgOverride.regions = newBgRegions
+                newState.backgroundOverride = bgOverride
+            }
+
             newSceneStates[instanceId] = newState
         }
         newDraft.sceneInstanceStates = newSceneStates

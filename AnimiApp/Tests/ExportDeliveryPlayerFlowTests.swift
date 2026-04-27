@@ -9,8 +9,6 @@ private final class MockDeliverer: ExportDelivering {
     func deliver(fileURL: URL, to destination: ExportDeliveryDestination,
                  completion: @escaping (Result<Void, ExportDeliveryError>) -> Void) {
         deliverCalled = true
-        // Clean up temp file like production coordinator does
-        try? FileManager.default.removeItem(at: fileURL)
         DispatchQueue.main.async { completion(self.stubbedResult) }
     }
 }
@@ -45,6 +43,7 @@ final class ExportDeliveryPlayerFlowTests: XCTestCase {
         let flow = ExportDeliveryFlow(
             requestId: requestId,
             deliverer: deliverer,
+            policy: .photoLibraryOnly,
             isRequestActive: { id in activeRequestId == id },
             clearRequestIfCurrent: { id in
                 clearedId = id
@@ -82,6 +81,7 @@ final class ExportDeliveryPlayerFlowTests: XCTestCase {
         let flow = ExportDeliveryFlow(
             requestId: requestId,
             deliverer: deliverer,
+            policy: .photoLibraryOnly,
             isRequestActive: { id in activeRequestId == id },
             clearRequestIfCurrent: { id in activeRequestId = nil },
             completion: { outcome in
@@ -114,6 +114,7 @@ final class ExportDeliveryPlayerFlowTests: XCTestCase {
         let flow = ExportDeliveryFlow(
             requestId: requestId,
             deliverer: deliverer,
+            policy: .photoLibraryOnly,
             isRequestActive: { id in activeRequestId == id },
             clearRequestIfCurrent: { id in activeRequestId = nil },
             completion: { outcome in
@@ -147,6 +148,7 @@ final class ExportDeliveryPlayerFlowTests: XCTestCase {
         let flow = ExportDeliveryFlow(
             requestId: requestA,  // flow belongs to stale request A
             deliverer: deliverer,
+            policy: .photoLibraryOnly,
             isRequestActive: { id in activeRequestId == id },
             clearRequestIfCurrent: { _ in clearCalled = true },
             completion: { outcome in
@@ -180,6 +182,7 @@ final class ExportDeliveryPlayerFlowTests: XCTestCase {
         let flow = ExportDeliveryFlow(
             requestId: requestA,
             deliverer: deliverer,
+            policy: .photoLibraryOnly,
             isRequestActive: { id in activeRequestId == id },
             clearRequestIfCurrent: { _ in },
             completion: { outcome in
@@ -211,6 +214,7 @@ final class ExportDeliveryPlayerFlowTests: XCTestCase {
         let flow = ExportDeliveryFlow(
             requestId: requestId,
             deliverer: deliverer,
+            policy: .photoLibraryOnly,
             isRequestActive: { id in activeRequestId == id },
             clearRequestIfCurrent: { id in
                 clearCount += 1
@@ -242,6 +246,7 @@ final class ExportDeliveryPlayerFlowTests: XCTestCase {
         let flow = ExportDeliveryFlow(
             requestId: requestId,
             deliverer: deliverer,
+            policy: .photoLibraryOnly,
             isRequestActive: { id in activeRequestId == id },
             clearRequestIfCurrent: { _ in activeRequestId = nil },
             completion: { _ in exp.fulfill() }
@@ -251,6 +256,172 @@ final class ExportDeliveryPlayerFlowTests: XCTestCase {
         wait(for: [exp], timeout: 2)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempURL.path),
-                       "Temp file should be deleted by deliverer")
+                       "Temp file should be deleted by flow")
+    }
+
+    func test_photoLibraryThenShare_success_callsShareHandoff() {
+        let deliverer = MockDeliverer()
+        deliverer.stubbedResult = .success(())
+
+        let requestId = UUID()
+        var activeRequestId: UUID? = requestId
+        let tempURL = makeTempFile()
+
+        let exp = expectation(description: "share handoff")
+        var handoffURL: URL?
+
+        let flow = ExportDeliveryFlow(
+            requestId: requestId,
+            deliverer: deliverer,
+            policy: .photoLibraryThenShare,
+            isRequestActive: { id in activeRequestId == id },
+            clearRequestIfCurrent: { _ in activeRequestId = nil },
+            completion: { _ in XCTFail("Completion should wait for finalizeAfterShare()") },
+            shareHandoff: { url in
+                handoffURL = url
+                exp.fulfill()
+            }
+        )
+
+        flow.start(fileURL: tempURL, destination: .photoLibrary)
+        wait(for: [exp], timeout: 2)
+
+        XCTAssertEqual(handoffURL, tempURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempURL.path),
+                      "Temp file must stay alive until share completion")
+        XCTAssertEqual(activeRequestId, requestId, "Active request must remain until share finalization")
+    }
+
+    func test_photoLibraryThenShare_success_fileNotDeletedUntilFinalize() {
+        let deliverer = MockDeliverer()
+        deliverer.stubbedResult = .success(())
+
+        let requestId = UUID()
+        var activeRequestId: UUID? = requestId
+        let tempURL = makeTempFile()
+
+        let exp = expectation(description: "share handoff")
+        let flow = ExportDeliveryFlow(
+            requestId: requestId,
+            deliverer: deliverer,
+            policy: .photoLibraryThenShare,
+            isRequestActive: { id in activeRequestId == id },
+            clearRequestIfCurrent: { _ in activeRequestId = nil },
+            completion: { _ in XCTFail("Completion should wait for finalizeAfterShare()") },
+            shareHandoff: { _ in exp.fulfill() }
+        )
+
+        flow.start(fileURL: tempURL, destination: .photoLibrary)
+        wait(for: [exp], timeout: 2)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempURL.path),
+                      "Temp file must still exist after Photos save and before finalizeAfterShare()")
+    }
+
+    func test_photoLibraryThenShare_finalizeAfterShare_deletesFile() {
+        let deliverer = MockDeliverer()
+        deliverer.stubbedResult = .success(())
+
+        let requestId = UUID()
+        var activeRequestId: UUID? = requestId
+        let tempURL = makeTempFile()
+
+        let handoffExpectation = expectation(description: "share handoff")
+        let completionExpectation = expectation(description: "final completion")
+        var receivedOutcome: ExportDeliveryOutcome?
+
+        let flow = ExportDeliveryFlow(
+            requestId: requestId,
+            deliverer: deliverer,
+            policy: .photoLibraryThenShare,
+            isRequestActive: { id in activeRequestId == id },
+            clearRequestIfCurrent: { _ in activeRequestId = nil },
+            completion: { outcome in
+                receivedOutcome = outcome
+                completionExpectation.fulfill()
+            },
+            shareHandoff: { _ in handoffExpectation.fulfill() }
+        )
+
+        flow.start(fileURL: tempURL, destination: .photoLibrary)
+        wait(for: [handoffExpectation], timeout: 2)
+
+        flow.finalizeAfterShare()
+        wait(for: [completionExpectation], timeout: 2)
+
+        if case .savedToPhotos = receivedOutcome {} else {
+            XCTFail("Expected .savedToPhotos after finalizeAfterShare(), got \(String(describing: receivedOutcome))")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempURL.path),
+                       "Temp file should be deleted after finalizeAfterShare()")
+        XCTAssertNil(activeRequestId, "Active request must be cleared after share finalization")
+    }
+
+    func test_photoLibraryThenShare_failure_noShareHandoff() {
+        let deliverer = MockDeliverer()
+        let underlyingError = NSError(domain: "test", code: 88)
+        deliverer.stubbedResult = .failure(.saveFailed(underlying: underlyingError))
+
+        let requestId = UUID()
+        var activeRequestId: UUID? = requestId
+        let tempURL = makeTempFile()
+
+        let exp = expectation(description: "outcome")
+        var receivedOutcome: ExportDeliveryOutcome?
+        var shareHandoffCalled = false
+
+        let flow = ExportDeliveryFlow(
+            requestId: requestId,
+            deliverer: deliverer,
+            policy: .photoLibraryThenShare,
+            isRequestActive: { id in activeRequestId == id },
+            clearRequestIfCurrent: { _ in activeRequestId = nil },
+            completion: { outcome in
+                receivedOutcome = outcome
+                exp.fulfill()
+            },
+            shareHandoff: { _ in shareHandoffCalled = true }
+        )
+
+        flow.start(fileURL: tempURL, destination: .photoLibrary)
+        wait(for: [exp], timeout: 2)
+
+        if case .showError = receivedOutcome {} else {
+            XCTFail("Expected .showError after failed Photos save, got \(String(describing: receivedOutcome))")
+        }
+        XCTAssertFalse(shareHandoffCalled, "Share handoff must not fire if Photos save fails")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempURL.path),
+                       "Temp file should be deleted after failed Photos save")
+        XCTAssertNil(activeRequestId, "Active request must be cleared after failed Photos save")
+    }
+
+    func test_deinit_cleansPendingShareFile() {
+        let deliverer = MockDeliverer()
+        deliverer.stubbedResult = .success(())
+
+        let requestId = UUID()
+        var activeRequestId: UUID? = requestId
+        let tempURL = makeTempFile()
+
+        let exp = expectation(description: "share handoff")
+        var flow: ExportDeliveryFlow? = ExportDeliveryFlow(
+            requestId: requestId,
+            deliverer: deliverer,
+            policy: .photoLibraryThenShare,
+            isRequestActive: { id in activeRequestId == id },
+            clearRequestIfCurrent: { _ in activeRequestId = nil },
+            completion: { _ in XCTFail("Completion should not fire during deinit cleanup") },
+            shareHandoff: { _ in exp.fulfill() }
+        )
+
+        flow?.start(fileURL: tempURL, destination: .photoLibrary)
+        wait(for: [exp], timeout: 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempURL.path),
+                      "Precondition: temp file should still exist before deinit")
+
+        flow = nil
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempURL.path),
+                       "deinit safety net should remove a pending share file")
     }
 }

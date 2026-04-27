@@ -72,16 +72,24 @@ public struct SceneState: Codable, Equatable, Sendable {
     /// nil = no media assigned to any block.
     public var mediaSlotsByBlockId: [String: SceneMediaSlot]?
 
+    // MARK: - Background Override (PR2)
+
+    /// Optional per-scene background override.
+    /// When non-nil, fully replaces the project-level background (no partial merge).
+    public var backgroundOverride: ProjectBackgroundOverride?
+
     // MARK: - Initialization
 
     public init(
         variantOverrides: [String: String] = [:],
         layerToggles: [String: [String: Bool]] = [:],
-        mediaSlotsByBlockId: [String: SceneMediaSlot]? = nil
+        mediaSlotsByBlockId: [String: SceneMediaSlot]? = nil,
+        backgroundOverride: ProjectBackgroundOverride? = nil
     ) {
         self.variantOverrides = variantOverrides
         self.layerToggles = layerToggles
         self.mediaSlotsByBlockId = mediaSlotsByBlockId
+        self.backgroundOverride = backgroundOverride
     }
 
     /// Empty state with all defaults.

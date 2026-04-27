@@ -42,7 +42,7 @@ final class ExportDeliveryCoordinatorTests: XCTestCase {
 
     // MARK: - Scenarios
 
-    func test_success_deletesTempFile() {
+    func test_success_keepsTempFile() {
         mockSaver.stubbedResult = .success(())
 
         let exp = expectation(description: "deliver")
@@ -53,11 +53,11 @@ final class ExportDeliveryCoordinatorTests: XCTestCase {
             exp.fulfill()
         }
         wait(for: [exp], timeout: 2)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: tempFileURL.path),
-                       "Temp file should be deleted after successful delivery")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempFileURL.path),
+                      "Coordinator should not delete temp file after successful delivery")
     }
 
-    func test_permissionDenied_deletesTempFile() {
+    func test_permissionDenied_keepsTempFile() {
         mockSaver.stubbedResult = .failure(.permissionDenied)
 
         let exp = expectation(description: "deliver")
@@ -68,11 +68,11 @@ final class ExportDeliveryCoordinatorTests: XCTestCase {
             exp.fulfill()
         }
         wait(for: [exp], timeout: 2)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: tempFileURL.path),
-                       "Temp file should be deleted even on permission denial")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempFileURL.path),
+                      "Coordinator should not delete temp file on permission denial")
     }
 
-    func test_saveFailure_deletesTempFile() {
+    func test_saveFailure_keepsTempFile() {
         let underlyingError = NSError(domain: "test", code: 99)
         mockSaver.stubbedResult = .failure(.saveFailed(underlying: underlyingError))
 
@@ -84,7 +84,8 @@ final class ExportDeliveryCoordinatorTests: XCTestCase {
             exp.fulfill()
         }
         wait(for: [exp], timeout: 2)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: tempFileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempFileURL.path),
+                      "Coordinator should not delete temp file on save failure")
     }
 
     func test_completionFiresExactlyOnce() {

@@ -1195,16 +1195,16 @@ final class EditorViewController: UIViewController {
         case .exportFinishing:
             exportProgressVC?.updateState(.finishing)
 
-        case .exportCompleted(let result):
+        case .exportRenderSucceeded(_):
             metalView.isPaused = false
             metalView.setNeedsDisplay()
-            switch result {
-            case .success:
-                exportProgressVC?.updateState(.savingToPhotos)
-            case .failure(let e as VideoExportError) where e.isCancelled:
-                dismiss(animated: true)
-            case .failure(let e):
-                dismiss(animated: true) { self.presentExportError(e) }
+            exportProgressVC?.updateState(.savingToPhotos)
+
+        case .exportRenderFailed(let error):
+            metalView.isPaused = false
+            metalView.setNeedsDisplay()
+            dismissPresentedExportUIIfNeeded {
+                self.presentExportError(error)
             }
 
         case .exportCancelled:
@@ -1212,14 +1212,34 @@ final class EditorViewController: UIViewController {
             metalView.setNeedsDisplay()
             dismiss(animated: true)
 
+        case .exportDeliveryShareHandoff(let fileURL):
+            dismissPresentedExportUIIfNeeded {
+                let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                if let popover = activityVC.popoverPresentationController {
+                    let anchor = self.editorLayoutContainer.exportPopoverAnchorView
+                    popover.sourceView = anchor
+                    popover.sourceRect = anchor.bounds
+                }
+                activityVC.completionWithItemsHandler = { [weak self] _, _, _, _ in
+                    self?.runtime?.confirmShareCompleted()
+                }
+                self.present(activityVC, animated: true)
+            }
+
         case .exportDeliveryCompleted(let outcome):
             switch outcome {
             case .savedToPhotos:
-                dismiss(animated: true) { self.presentSavedToPhotosAlert() }
+                dismissPresentedExportUIIfNeeded {
+                    self.presentSavedToPhotosAlert()
+                }
             case .showPermissionSettings:
-                dismiss(animated: true) { self.presentPhotoLibraryPermissionAlert() }
+                dismissPresentedExportUIIfNeeded {
+                    self.presentPhotoLibraryPermissionAlert()
+                }
             case .showError(let e):
-                dismiss(animated: true) { self.presentExportError(e) }
+                dismissPresentedExportUIIfNeeded {
+                    self.presentExportError(e)
+                }
             case .ignoredStale:
                 break
             }
@@ -1299,6 +1319,8 @@ final class EditorViewController: UIViewController {
 
         // PR-G: Refresh current frame to reflect timeline changes
         runtime?.refreshCurrentTimelineFrame()
+
+        runtime?.markPreviewAudioDirty()
     }
 
     /// Extracts overlay lane items from a CanonicalTimeline.
@@ -1784,8 +1806,27 @@ final class EditorViewController: UIViewController {
             log("[Export] ERROR: Template not ready")
             return
         }
+        guard runtime != nil else { return }
+
+        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Save to Photos", style: .default) { [weak self] _ in
+            self?.beginExport(policy: .photoLibraryOnly)
+        })
+        sheet.addAction(UIAlertAction(title: "Save to Photos & Share", style: .default) { [weak self] _ in
+            self?.beginExport(policy: .photoLibraryThenShare)
+        })
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        if let popover = sheet.popoverPresentationController {
+            let anchor = editorLayoutContainer.exportPopoverAnchorView
+            popover.sourceView = anchor
+            popover.sourceRect = anchor.bounds
+        }
+        present(sheet, animated: true)
+    }
+
+    private func beginExport(policy: ExportDeliveryPolicy) {
         guard let rt = runtime else { return }
-        rt.startExport()
+        rt.startExport(policy: policy)
         guard rt.state == .exporting else { return } // gate rejected (missing media)
         Task { await rt.executeExport() }
     }
@@ -1798,20 +1839,29 @@ final class EditorViewController: UIViewController {
             return
         }
 
+        // Determine edit scope: scene if editing a scene, otherwise project
+        let scope: EditorRuntime.BackgroundEditScope
+        if let rt = runtime, case .sceneEdit(let instanceId) = rt.state {
+            scope = .scene(instanceId: instanceId)
+        } else {
+            scope = .project
+        }
+
+        // Runtime opens session first so currentOverrideForEditScope() resolves correctly
+        runtime?.beginBackgroundEditorSession(scope: scope)
+
         let templateBackground = runtime?.templateBackground
+        let currentOverride = runtime?.currentOverrideForEditScope() ?? session.state?.draft.background ?? .empty
         let editor = BackgroundEditorViewController(
             presetLibrary: session.backgroundPresetProvider,
             templateBackground: templateBackground,
-            currentOverride: session.state?.draft.background ?? .empty
+            currentOverride: currentOverride
         )
         editor.delegate = self
         pendingBackgroundEditor = editor
 
         let nav = UINavigationController(rootViewController: editor)
         nav.isModalInPresentation = true
-
-        // Runtime owns background editor session state
-        runtime?.beginBackgroundEditorSession()
 
         present(nav, animated: true)
     }
@@ -1889,6 +1939,14 @@ final class EditorViewController: UIViewController {
             message: "Your video has been saved to the Photos library.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+
+    private func dismissPresentedExportUIIfNeeded(completion: @escaping () -> Void) {
+        if presentedViewController != nil {
+            dismiss(animated: true, completion: completion)
+        } else {
+            completion()
+        }
     }
 
     private func presentPhotoLibraryPermissionAlert() {
@@ -2251,7 +2309,8 @@ final class EditorViewController: UIViewController {
 
     /// Presents a volume slider alert for the music track.
     private func presentMusicVolumeSlider(itemId: UUID) {
-        guard let payload = session.state?.canonicalTimeline.musicPayload() else { return }
+        guard let payload = session.state?.canonicalTimeline.audioPayload(for: itemId),
+              payload.role == .music else { return }
 
         let alert = UIAlertController(
             title: "Music Volume",
@@ -2283,7 +2342,8 @@ final class EditorViewController: UIViewController {
     /// Presents a modal trim editor for the music track.
     /// Shows current trim start/end as text fields clamped to source duration.
     private func presentMusicTrimEditor(itemId: UUID) {
-        guard let payload = session.state?.canonicalTimeline.musicPayload() else { return }
+        guard let payload = session.state?.canonicalTimeline.audioPayload(for: itemId),
+              payload.role == .music else { return }
 
         let sourceDurationSec = usToSeconds(payload.sourceDurationUs)
         let currentStartSec = usToSeconds(payload.trimStartUs)
@@ -2876,8 +2936,8 @@ extension EditorViewController: PHPickerViewControllerDelegate {
 
 extension EditorViewController: BackgroundEditorDelegate {
 
-    func backgroundEditorDidUpdateState(_ state: EffectiveBackgroundState) {
-        runtime?.setEffectiveBackgroundState(state)
+    func backgroundEditorDidUpdateOverride(_ override: ProjectBackgroundOverride) {
+        runtime?.applyBackgroundPreviewOverride(override)
         metalView.setNeedsDisplay()
     }
 

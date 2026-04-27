@@ -1162,6 +1162,8 @@ public final class TimelineCompositionEngine {
         let pathRegistry: PathRegistry
         let assetSizes: [String: AssetSize]
         let sceneCanvasSize: SizeD
+        /// Template background for this specific scene (may differ across scenes in a timeline).
+        let templateBackground: Background?
     }
 
     /// Immutable export session built once before the export loop.
@@ -1259,7 +1261,8 @@ public final class TimelineCompositionEngine {
                 bindingAssetIds: compiled.bindingAssetIds,
                 pathRegistry: resources.pathRegistry,
                 assetSizes: resources.assetSizes,
-                sceneCanvasSize: resources.canvasSize
+                sceneCanvasSize: resources.canvasSize,
+                templateBackground: compiled.runtime.scene.background
             )
             scenesByInstanceId[instanceId] = snapshot
 

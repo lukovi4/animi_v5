@@ -29,6 +29,12 @@ public enum RegionSource: Equatable, Sendable {
 
     /// Image fill with transform
     case image(ImageConfig)
+
+    /// Video fill (stub — renders solid black in v1)
+    case video(VideoConfig)
+
+    /// Animated fill (stub — renders solid black in v1)
+    case animated(AnimatedConfig)
 }
 
 // MARK: - Solid Config
@@ -151,6 +157,66 @@ public enum BackgroundFitMode: String, Codable, Equatable, Sendable {
 
     /// Scale to fit within bbox (may have transparent areas)
     case fit
+}
+
+// MARK: - Video Config
+
+/// Configuration for video region source (stub in v1).
+public struct VideoConfig: Equatable, Sendable {
+    /// Slot key for texture lookup
+    public let slotKey: String
+
+    /// Whether the video should loop
+    public var loop: Bool
+
+    /// Trim start time in seconds
+    public var trimStart: Double?
+
+    /// Trim end time in seconds
+    public var trimEnd: Double?
+
+    /// Start offset in seconds
+    public var startOffset: Double?
+
+    public init(slotKey: String, loop: Bool = true, trimStart: Double? = nil, trimEnd: Double? = nil, startOffset: Double? = nil) {
+        self.slotKey = slotKey
+        self.loop = loop
+        self.trimStart = trimStart
+        self.trimEnd = trimEnd
+        self.startOffset = startOffset
+    }
+}
+
+// MARK: - Animated Config
+
+/// Configuration for animated region source (stub in v1).
+public struct AnimatedConfig: Equatable, Sendable {
+    /// Slot key for texture lookup
+    public let slotKey: String
+
+    /// Frame rate for playback (nil = use source frame rate)
+    public var frameRate: Double?
+
+    /// Whether the animation should loop
+    public var loop: Bool
+
+    /// Trim start time in seconds
+    public var trimStart: Double?
+
+    /// Trim end time in seconds
+    public var trimEnd: Double?
+
+    /// Start offset in seconds
+    public var startOffset: Double?
+
+    public init(slotKey: String, frameRate: Double? = nil, loop: Bool = true, trimStart: Double? = nil, trimEnd: Double? = nil, startOffset: Double? = nil) {
+        self.slotKey = slotKey
+        self.frameRate = frameRate
+        self.loop = loop
+        self.trimStart = trimStart
+        self.trimEnd = trimEnd
+        self.startOffset = startOffset
+    }
 }
 
 // MARK: - Effective Background State

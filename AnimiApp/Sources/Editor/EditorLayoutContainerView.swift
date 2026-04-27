@@ -170,6 +170,7 @@ final class EditorLayoutContainerView: UIView {
 
     // Video Trim bar
     private(set) lazy var videoTrimBar = VideoTrimBarView()
+    var exportPopoverAnchorView: UIView { navBar.exportPopoverAnchorView }
 
     // MARK: - State
 

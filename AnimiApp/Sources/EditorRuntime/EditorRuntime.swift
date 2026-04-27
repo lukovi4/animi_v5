@@ -139,13 +139,15 @@ final class EditorRuntime {
     final class ActiveExportRequest {
         let id: UUID
         let exporter: VideoExporter
+        let deliveryPolicy: ExportDeliveryPolicy
 
         /// Strongly retains the in-flight delivery operation until terminal completion.
         var deliveryFlow: ExportDeliveryFlow?
 
-        init(id: UUID, exporter: VideoExporter) {
+        init(id: UUID, exporter: VideoExporter, deliveryPolicy: ExportDeliveryPolicy) {
             self.id = id
             self.exporter = exporter
+            self.deliveryPolicy = deliveryPolicy
         }
 
         func isActive(for requestId: UUID) -> Bool {
@@ -162,8 +164,17 @@ final class EditorRuntime {
     /// they are no longer current.
     private(set) var backgroundImportGeneration: UInt = 0
 
+    /// Scope of the active background editor session.
+    enum BackgroundEditScope {
+        case project
+        case scene(instanceId: UUID)
+    }
+
     /// Whether a background editor is actively presented (defers store commits).
     private(set) var hasActiveBackgroundEditor: Bool = false
+
+    /// Active background edit scope — project or scene.
+    private var backgroundEditScope: BackgroundEditScope = .project
 
     /// Preset ID from the last background editor session (for texture cleanup on preset change).
     private var lastBackgroundPresetId: String?
@@ -226,7 +237,7 @@ final class EditorRuntime {
     /// Test seam: simulates exporter completion callback with a fake active request.
     func simulateHandleExportCompletion(result: Result<URL, Error>) {
         let exporter = VideoExporter(mediaLocator: session.mediaLocator)
-        let request = ActiveExportRequest(id: UUID(), exporter: exporter)
+        let request = ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: pendingDeliveryPolicy)
         activeExportRequest = request
         handleExportCompletion(result: result, requestId: request.id)
     }
@@ -383,10 +394,12 @@ final class EditorRuntime {
         self.backgroundTextureService = bgService
 
         let bgOverride = session.state?.draft.background
+        let sceneOverride = currentSceneBackgroundOverride()
         let templateBackground = compiled.runtime.scene.background
         let effState = EffectiveBackgroundBuilder.build(
             templateBackground: templateBackground,
             projectOverride: bgOverride,
+            sceneOverride: sceneOverride,
             presetLibrary: session.backgroundPresetProvider
         )
         self.effectiveBackgroundState = effState
@@ -697,6 +710,13 @@ final class EditorRuntime {
         currentCompressedFrame = compressedFrame
         activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
 
+        // Eagerly recompute background for the background-owning scene.
+        // For transitions, the outgoing scene (A) owns the background.
+        let bgOwnerId = backgroundOwnerInstanceId(at: compressedFrame, engine: engine)
+        if let bgOwnerId {
+            updatePreviewBackgroundForScene(bgOwnerId)
+        }
+
         lastRefreshTrigger = .playheadChanged
         resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: true)
     }
@@ -765,6 +785,11 @@ final class EditorRuntime {
                     )
                 } else {
                     overlayItems = []
+                }
+
+                // Resolve per-scene background for this frame's owner scene.
+                if let previewBgState = self.resolvePreviewBackgroundState(for: resolved) {
+                    self.effectiveBackgroundState = previewBgState
                 }
 
                 // Update render source
@@ -1003,7 +1028,9 @@ final class EditorRuntime {
 
     // MARK: - Export
 
-    func startExport() {
+    private var pendingDeliveryPolicy: ExportDeliveryPolicy = .photoLibraryOnly
+
+    func startExport(policy: ExportDeliveryPolicy) {
         guard state == .timelinePreview || {
             if case .sceneEdit = state { return true }
             return false
@@ -1015,6 +1042,7 @@ final class EditorRuntime {
             return
         }
 
+        pendingDeliveryPolicy = policy
         preExportState = state
         state = .exporting
         onOutput?(.exportStarted)
@@ -1087,7 +1115,102 @@ final class EditorRuntime {
         }
     }
 
+    // MARK: - Per-Scene Preview Background
+
+    /// Returns the scene instance that owns the background at a given compressed frame.
+    /// Uses `renderMode` as the single source of truth:
+    /// - `.single(sceneIndex, _)` → that scene
+    /// - `.transition(sceneAIndex, ..., ...)` → outgoing scene (A)
+    private func backgroundOwnerInstanceId(
+        at compressedFrame: Int,
+        engine: TimelineCompositionEngine
+    ) -> UUID? {
+        guard let math = engine.transitionMath else { return nil }
+        guard let mode = math.renderMode(for: compressedFrame) else { return nil }
+        let ownerIndex: Int = switch mode {
+        case .single(let sceneIndex, _): sceneIndex
+        case .transition(let sceneAIndex, _, _, _, _, _): sceneAIndex
+        }
+        guard ownerIndex < math.sceneItems.count else { return nil }
+        return math.sceneItems[ownerIndex].id
+    }
+
+    /// Builds effective background state for a specific scene instance.
+    private func buildPreviewBackgroundState(
+        for instanceId: UUID
+    ) -> EffectiveBackgroundState? {
+        let sceneOverride = session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
+        let projectOverride = session.state?.draft.background
+        let templateBg = timelineCompositionEngine?.runtime(for: instanceId)?
+            .resources.compiled.runtime.scene.background
+
+        return EffectiveBackgroundBuilder.build(
+            templateBackground: templateBg,
+            projectOverride: projectOverride,
+            sceneOverride: sceneOverride,
+            presetLibrary: session.backgroundPresetProvider
+        )
+    }
+
+    /// Recomputes and updates the global effective background state for a scene instance.
+    private func updatePreviewBackgroundForScene(_ instanceId: UUID) {
+        let newState = buildPreviewBackgroundState(for: instanceId)
+        if newState != effectiveBackgroundState {
+            effectiveBackgroundState = newState
+        }
+    }
+
+    /// Resolves the background-owning scene from a resolved frame and builds its state.
+    private func resolvePreviewBackgroundState(
+        for resolved: ResolvedTimelineFrame
+    ) -> EffectiveBackgroundState? {
+        let ownerId: UUID? = switch resolved {
+        case .single(let ctx): ctx.sceneInstanceId
+        case .transition(let ctx): ctx.sceneA.sceneInstanceId
+        }
+        guard let ownerId else { return nil }
+        return buildPreviewBackgroundState(for: ownerId)
+    }
+
     // MARK: - Export Private Methods
+
+    /// Resolves the current scene-level background override, if any.
+    /// Returns nil when no scene is being edited or the scene has no override.
+    private func currentSceneBackgroundOverride() -> ProjectBackgroundOverride? {
+        guard let instanceId = activeSceneInstanceId else { return nil }
+        return session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
+    }
+
+    /// Builds per-scene background data for all scenes with explicit overrides.
+    /// Scenes without overrides use the project-level fallback at render time.
+    /// Builds per-scene export background data for every scene in the export session.
+    /// Uses each scene's own template background (not the active editor scene's template).
+    private func buildPerSceneBackgrounds(
+        from exportSession: TimelineCompositionEngine.TimelineExportSession
+    ) -> [UUID: SceneExportBackgroundData] {
+        let allStates = session.state?.draft.sceneInstanceStates ?? [:]
+        let projectOverride = session.state?.draft.background
+        var result: [UUID: SceneExportBackgroundData] = [:]
+        for (instanceId, sceneSnapshot) in exportSession.scenesByInstanceId {
+            let sceneOverride = allStates[instanceId]?.backgroundOverride
+            let effState = EffectiveBackgroundBuilder.build(
+                templateBackground: sceneSnapshot.templateBackground,
+                projectOverride: projectOverride,
+                sceneOverride: sceneOverride,
+                presetLibrary: session.backgroundPresetProvider
+            )
+            let snapshot = ExportBackgroundSnapshot.build(
+                from: projectOverride,
+                sceneOverride: sceneOverride,
+                effectiveState: effState
+            )
+            result[instanceId] = SceneExportBackgroundData(
+                state: effState,
+                snapshot: snapshot
+            )
+        }
+        return result
+    }
 
     private func enterExportMode() {
         stopPlayback()
@@ -1119,9 +1242,12 @@ final class EditorRuntime {
     /// Re-preloads background textures after export teardown.
     /// Caller must verify `hasImageBackgroundRegions` before invoking.
     private func reloadBackgroundTextures() async {
-        guard let override = session.state?.draft.background,
-              let effState = effectiveBackgroundState else { return }
-        await preloadBackgroundTextures(from: override, effectiveState: effState)
+        let proj = session.state?.draft.background
+        let scene = currentSceneBackgroundOverride()
+        guard let effState = effectiveBackgroundState else { return }
+        await preloadBackgroundTexturesScoped(
+            projectOverride: proj, sceneOverride: scene, effectiveState: effState
+        )
     }
 
     /// Canonical terminal cleanup for export precondition failures.
@@ -1133,7 +1259,7 @@ final class EditorRuntime {
         preflightContinuation = nil
         clearActiveExportRequest()
         restorePreExportState()
-        onOutput?(.exportCompleted(.failure(ExportAbortError(message: message))))
+        onOutput?(.exportRenderFailed(ExportAbortError(message: message)))
     }
 
     /// Async abort for post-teardown paths — restores background textures before emitting error.
@@ -1143,7 +1269,7 @@ final class EditorRuntime {
         preflightContinuation = nil
         clearActiveExportRequest()
         await exitExportModeToIdle()
-        onOutput?(.exportCompleted(.failure(ExportAbortError(message: message))))
+        onOutput?(.exportRenderFailed(ExportAbortError(message: message)))
     }
 
     private func executeSingleSceneExport(ctx: EditorRuntimeMetalContext) async {
@@ -1155,7 +1281,7 @@ final class EditorRuntime {
         }
 
         let exporter = VideoExporter(mediaLocator: session.mediaLocator)
-        let request = ActiveExportRequest(id: UUID(), exporter: exporter)
+        let request = ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: pendingDeliveryPolicy)
         activeExportRequest = request
         let requestId = request.id
 
@@ -1263,12 +1389,13 @@ final class EditorRuntime {
             logger.error("[Export] Media snapshot error: \(error.localizedDescription)")
             await exitExportModeToIdle()
             clearActiveExportRequest()
-            onOutput?(.exportCompleted(.failure(error)))
+            onOutput?(.exportRenderFailed(error))
             return
         }
 
         let bgSnapshot = ExportBackgroundSnapshot.build(
             from: session.state?.draft.background,
+            sceneOverride: currentSceneBackgroundOverride(),
             effectiveState: effectiveBackgroundState
         )
 
@@ -1322,7 +1449,7 @@ final class EditorRuntime {
         }
 
         let exporter = VideoExporter(mediaLocator: session.mediaLocator)
-        let request = ActiveExportRequest(id: UUID(), exporter: exporter)
+        let request = ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: pendingDeliveryPolicy)
         activeExportRequest = request
         let requestId = request.id
 
@@ -1403,10 +1530,17 @@ final class EditorRuntime {
             audio: audioConfig
         )
 
-        let bgSnapshot = ExportBackgroundSnapshot.build(
-            from: session.state?.draft.background,
-            effectiveState: effectiveBackgroundState
-        )
+        // Build the export session first so we can resolve per-scene template backgrounds.
+        let tlSession: TimelineCompositionEngine.TimelineExportSession
+        do {
+            tlSession = try await engine.buildExportSession()
+        } catch {
+            await abortExportAfterTeardown(message: "Failed to build timeline export session: \(error.localizedDescription)")
+            return
+        }
+
+        // Build per-scene background data using each scene's own template background.
+        let sceneBackgrounds = buildPerSceneBackgrounds(from: tlSession)
 
         guard isActiveExportRequest(requestId) else {
             logger.info("[Export] Cancelled during preflight (stale request)")
@@ -1415,8 +1549,8 @@ final class EditorRuntime {
 
         exporter.exportTimeline(
             engine: engine,
-            backgroundState: effectiveBackgroundState,
-            backgroundSnapshot: bgSnapshot,
+            sceneBackgrounds: sceneBackgrounds,
+            preBuiltSession: tlSession,
             settings: settings,
             budget: budget,
             assetRegistry: selfHealedRegistry(),
@@ -1457,7 +1591,7 @@ final class EditorRuntime {
         case .success(let url):
             logger.info("[Export] SUCCESS: \(url.lastPathComponent)")
             Task { await session.commitAfterExportSuccess() }
-            onOutput?(.exportCompleted(.success(url)))
+            onOutput?(.exportRenderSucceeded(url))
             saveExportedVideoToPhotos(url, requestId: requestId)
 
         case .failure(let error as VideoExportError) where error.isCancelled:
@@ -1468,23 +1602,33 @@ final class EditorRuntime {
         case .failure(let error):
             logger.error("[Export] ERROR: \(error.localizedDescription)")
             clearActiveExportRequest()
-            onOutput?(.exportCompleted(.failure(error)))
+            onOutput?(.exportRenderFailed(error))
         }
     }
 
     private func saveExportedVideoToPhotos(_ url: URL, requestId: UUID) {
         let deliverer = makeDeliverer()
+        let policy = activeExportRequest?.deliveryPolicy ?? .photoLibraryOnly
+        let shareHandoff: ((URL) -> Void)? = policy == .photoLibraryThenShare
+            ? { [weak self] url in self?.onOutput?(.exportDeliveryShareHandoff(url)) }
+            : nil
         let flow = ExportDeliveryFlow(
             requestId: requestId,
             deliverer: deliverer,
+            policy: policy,
             isRequestActive: { [weak self] id in self?.isActiveExportRequest(id) ?? false },
             clearRequestIfCurrent: { [weak self] id in self?.clearExportRequestIfCurrent(id) },
             completion: { [weak self] outcome in
                 self?.onOutput?(.exportDeliveryCompleted(outcome))
-            }
+            },
+            shareHandoff: shareHandoff
         )
         activeExportRequest?.deliveryFlow = flow
         flow.start(fileURL: url, destination: .photoLibrary)
+    }
+
+    func confirmShareCompleted() {
+        activeExportRequest?.deliveryFlow?.finalizeAfterShare()
     }
 
     /// PR8: Builds AudioTrackConfig from the project's canonical timeline music item.
@@ -1849,13 +1993,60 @@ final class EditorRuntime {
         backgroundTextureService?.clearTexture(slotKey: slotKey)
     }
 
-    /// Preloads background textures for all image regions in the override.
-    func preloadBackgroundTextures(from override: ProjectBackgroundOverride, effectiveState: EffectiveBackgroundState?) async {
+    /// Clears all tracked background textures.
+    func clearAllBackgroundTextures() {
+        backgroundTextureService?.clearAllTrackedTextures()
+    }
+
+    /// Rebuilds effective background state from template + override and applies it.
+    /// Centralizes `EffectiveBackgroundBuilder.build(...)` so controller never calls it directly.
+    /// Resolves background inputs for render based on current edit scope.
+    /// Returns (projectOverride, sceneOverride) pair.
+    private func resolveBackgroundInputs(
+        previewOverride: ProjectBackgroundOverride? = nil
+    ) -> (projectOverride: ProjectBackgroundOverride?, sceneOverride: ProjectBackgroundOverride?) {
+        switch backgroundEditScope {
+        case .project:
+            return (
+                projectOverride: previewOverride ?? session.state?.draft.background,
+                sceneOverride: currentSceneBackgroundOverride()
+            )
+        case .scene(let instanceId):
+            return (
+                projectOverride: session.state?.draft.background,
+                sceneOverride: previewOverride ?? session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
+            )
+        }
+    }
+
+    /// Scope-aware effective background rebuild.
+    private func rebuildEffectiveBackgroundScoped(
+        projectOverride: ProjectBackgroundOverride?,
+        sceneOverride: ProjectBackgroundOverride?
+    ) {
+        let effState = EffectiveBackgroundBuilder.build(
+            templateBackground: compiledScene?.runtime.scene.background,
+            projectOverride: projectOverride,
+            sceneOverride: sceneOverride,
+            presetLibrary: session.backgroundPresetProvider
+        )
+        setEffectiveBackgroundState(effState)
+    }
+
+    /// Scope-aware texture preload: resolves image refs from the correct owner chain.
+    func preloadBackgroundTexturesScoped(
+        projectOverride: ProjectBackgroundOverride?,
+        sceneOverride: ProjectBackgroundOverride?,
+        effectiveState: EffectiveBackgroundState?
+    ) async {
         guard let service = backgroundTextureService, let state = effectiveState else { return }
         let registry = selfHealedRegistry()
         for (regionId, regionState) in state.regionStates {
-            if case .image(let imageSource) = regionState.source,
-               let mediaRef = override.regions[regionId]?.imageMediaRef {
+            if case .image(let imageSource) = regionState.source {
+                // Scene override region wins over project override region.
+                let mediaRef = sceneOverride?.regions[regionId]?.imageMediaRef
+                    ?? projectOverride?.regions[regionId]?.imageMediaRef
+                guard let mediaRef else { continue }
                 do {
                     try await service.loadTexture(
                         slotKey: imageSource.slotKey,
@@ -1870,37 +2061,47 @@ final class EditorRuntime {
         onOutput?(.renderSourceUpdated)
     }
 
-    /// Clears all tracked background textures.
-    func clearAllBackgroundTextures() {
-        backgroundTextureService?.clearAllTrackedTextures()
-    }
-
-    /// Rebuilds effective background state from template + override and applies it.
-    /// Centralizes `EffectiveBackgroundBuilder.build(...)` so controller never calls it directly.
-    func rebuildEffectiveBackground(override: ProjectBackgroundOverride, presetLibrary: BackgroundPresetProviding) {
-        let effState = EffectiveBackgroundBuilder.build(
-            templateBackground: compiledScene?.runtime.scene.background,
-            projectOverride: override,
-            presetLibrary: presetLibrary
-        )
-        setEffectiveBackgroundState(effState)
-    }
-
-    /// Rebuilds effective background and preloads textures for image regions.
-    func rebuildAndPreloadBackground(override: ProjectBackgroundOverride, presetLibrary: BackgroundPresetProviding) {
-        rebuildEffectiveBackground(override: override, presetLibrary: presetLibrary)
+    /// Applies a background preview override from the background editor.
+    /// Uses `backgroundEditScope` to determine whether the override applies to project or scene.
+    func applyBackgroundPreviewOverride(_ override: ProjectBackgroundOverride) {
+        let (proj, scene) = resolveBackgroundInputs(previewOverride: override)
+        rebuildEffectiveBackgroundScoped(projectOverride: proj, sceneOverride: scene)
         let effState = effectiveBackgroundState
+        let resolvedOverride = scene ?? proj
         Task { @MainActor in
-            await self.preloadBackgroundTextures(from: override, effectiveState: effState)
+            if let resolvedOverride {
+                await self.preloadBackgroundTexturesScoped(
+                    projectOverride: proj, sceneOverride: scene, effectiveState: effState
+                )
+            }
         }
+    }
+
+    /// Marks preview audio state as dirty (e.g. after timeline music changes).
+    /// Currently a no-op — audio preview is rebuilt on next export or playback start.
+    func markPreviewAudioDirty() {
+        // Intentional no-op: audio preview rebuild is deferred to next export/playback start.
+        // This method exists as a seam for future audio preview invalidation.
     }
 
     // MARK: - Background Editor Session
 
     /// Opens a background editor session — resets tracked intermediate imports.
-    func beginBackgroundEditorSession() {
+    func beginBackgroundEditorSession(scope: BackgroundEditScope = .project) {
         hasActiveBackgroundEditor = true
+        backgroundEditScope = scope
         backgroundEditorTrackedAssetIds.removeAll()
+    }
+
+    /// Returns the current override for the active background edit scope.
+    func currentOverrideForEditScope() -> ProjectBackgroundOverride {
+        switch backgroundEditScope {
+        case .project:
+            return session.state?.draft.background ?? .empty
+        case .scene(let instanceId):
+            return session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
+                ?? session.state?.draft.background ?? .empty
+        }
     }
 
     /// Handles preset change during active editor session.
@@ -1970,17 +2171,21 @@ final class EditorRuntime {
             if let oldId = oldBgAssetId, oldId != mediaRef.assetId {
                 session.unregisterAssetIfUnreferenced(oldId)
             }
-            rebuildEffectiveBackground(override: bg, presetLibrary: session.backgroundPresetProvider)
+            rebuildEffectiveBackgroundScoped(
+                projectOverride: bg,
+                sceneOverride: currentSceneBackgroundOverride()
+            )
             hasActiveBackgroundEditor = false
         }
     }
 
     /// Commits background editor dismiss: dispatch override, cleanup, rebuild.
-    /// Uses runtime-owned session state (tracked assets, last preset).
+    /// Branches by edit scope: project-level or scene-level.
     func commitBackgroundEditorDismiss(
         override: ProjectBackgroundOverride,
         presetId: String
     ) {
+        let scope = backgroundEditScope
         hasActiveBackgroundEditor = false
         incrementBackgroundImportGeneration()
 
@@ -1990,17 +2195,26 @@ final class EditorRuntime {
         }
         lastBackgroundPresetId = presetId
 
-        // Pre-capture old asset IDs
-        let oldBgAssetIds: Set<ProjectAssetID> = Set(
-            (session.state?.draft.background.regions.values ?? [:].values)
-                .compactMap { $0.imageMediaRef?.assetId }
-        )
+        switch scope {
+        case .project:
+            let oldBgAssetIds: Set<ProjectAssetID> = Set(
+                (session.state?.draft.background.regions.values ?? [:].values)
+                    .compactMap { $0.imageMediaRef?.assetId }
+            )
+            session.dispatch(.setBackground(override))
+            for oldAssetId in oldBgAssetIds {
+                session.unregisterAssetIfUnreferenced(oldAssetId)
+            }
 
-        session.dispatch(.setBackground(override))
-
-        // Post-dispatch: unregister old assets no longer referenced
-        for oldAssetId in oldBgAssetIds {
-            session.unregisterAssetIfUnreferenced(oldAssetId)
+        case .scene(let instanceId):
+            let oldBgAssetIds: Set<ProjectAssetID> = Set(
+                (session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride?.regions.values ?? [:].values)
+                    .compactMap { $0.imageMediaRef?.assetId }
+            )
+            session.setSceneBackgroundOverride(override, for: instanceId)
+            for oldAssetId in oldBgAssetIds {
+                session.unregisterAssetIfUnreferenced(oldAssetId)
+            }
         }
 
         // Sweep intermediate imports
@@ -2009,7 +2223,24 @@ final class EditorRuntime {
         }
         backgroundEditorTrackedAssetIds.removeAll()
 
-        rebuildAndPreloadBackground(override: override, presetLibrary: session.backgroundPresetProvider)
+        // Scope-correct rebuild: resolve project and scene inputs post-commit.
+        let projectOverride: ProjectBackgroundOverride?
+        let sceneOverride: ProjectBackgroundOverride?
+        switch scope {
+        case .project:
+            projectOverride = override
+            sceneOverride = currentSceneBackgroundOverride()
+        case .scene:
+            projectOverride = session.state?.draft.background
+            sceneOverride = override
+        }
+        rebuildEffectiveBackgroundScoped(projectOverride: projectOverride, sceneOverride: sceneOverride)
+        let effState = effectiveBackgroundState
+        Task { @MainActor in
+            await self.preloadBackgroundTexturesScoped(
+                projectOverride: projectOverride, sceneOverride: sceneOverride, effectiveState: effState
+            )
+        }
     }
 
     // MARK: - UI Queries

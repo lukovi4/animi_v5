@@ -342,13 +342,14 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         }
 
         // Preload textures explicitly to ensure they're loaded
-        await runtime.preloadBackgroundTextures(
-            from: ProjectBackgroundOverride(
+        await runtime.preloadBackgroundTexturesScoped(
+            projectOverride: ProjectBackgroundOverride(
                 selectedPresetId: testPresetId,
                 regions: [testRegionId: RegionOverride(source: .image(ImageOverride(
                     mediaRef: MediaRef(storagePath: "Media/Background/test_bg.png", mediaKind: .photo)
                 )))]
             ),
+            sceneOverride: nil,
             effectiveState: runtime.effectiveBackgroundState
         )
 
@@ -376,13 +377,14 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         }
 
         // Preload textures
-        await runtime.preloadBackgroundTextures(
-            from: ProjectBackgroundOverride(
+        await runtime.preloadBackgroundTexturesScoped(
+            projectOverride: ProjectBackgroundOverride(
                 selectedPresetId: testPresetId,
                 regions: [testRegionId: RegionOverride(source: .image(ImageOverride(
                     mediaRef: MediaRef(storagePath: "Media/Background/test_bg.png", mediaKind: .photo)
                 )))]
             ),
+            sceneOverride: nil,
             effectiveState: runtime.effectiveBackgroundState
         )
         XCTAssertTrue(service.isLoaded(testSlotKey), "Pre-condition: texture loaded")
@@ -413,13 +415,14 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         }
 
         // Preload
-        await runtime.preloadBackgroundTextures(
-            from: ProjectBackgroundOverride(
+        await runtime.preloadBackgroundTexturesScoped(
+            projectOverride: ProjectBackgroundOverride(
                 selectedPresetId: testPresetId,
                 regions: [testRegionId: RegionOverride(source: .image(ImageOverride(
                     mediaRef: MediaRef(storagePath: "Media/Background/test_bg.png", mediaKind: .photo)
                 )))]
             ),
+            sceneOverride: nil,
             effectiveState: runtime.effectiveBackgroundState
         )
 
@@ -461,13 +464,14 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         }
 
         // Preload
-        await runtime.preloadBackgroundTextures(
-            from: ProjectBackgroundOverride(
+        await runtime.preloadBackgroundTexturesScoped(
+            projectOverride: ProjectBackgroundOverride(
                 selectedPresetId: testPresetId,
                 regions: [testRegionId: RegionOverride(source: .image(ImageOverride(
                     mediaRef: MediaRef(storagePath: "Media/Background/test_bg.png", mediaKind: .photo)
                 )))]
             ),
+            sceneOverride: nil,
             effectiveState: runtime.effectiveBackgroundState
         )
 
@@ -557,13 +561,14 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         }
 
         // Preload
-        await runtime.preloadBackgroundTextures(
-            from: ProjectBackgroundOverride(
+        await runtime.preloadBackgroundTexturesScoped(
+            projectOverride: ProjectBackgroundOverride(
                 selectedPresetId: testPresetId,
                 regions: [testRegionId: RegionOverride(source: .image(ImageOverride(
                     mediaRef: MediaRef(storagePath: "Media/Background/test_bg.png", mediaKind: .photo)
                 )))]
             ),
+            sceneOverride: nil,
             effectiveState: runtime.effectiveBackgroundState
         )
         XCTAssertTrue(service.isLoaded(testSlotKey))
@@ -573,12 +578,12 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         runtime.simulateEnterExportMode()
         XCTAssertFalse(service.isLoaded(testSlotKey))
 
-        // Spy: at the moment .exportCompleted(.success) fires, texture must already be loaded
-        let successExpectation = expectation(description: "exportCompleted(.success) emitted")
+        // Spy: at the moment .exportRenderSucceeded fires, texture must already be loaded
+        let successExpectation = expectation(description: "exportRenderSucceeded emitted")
         runtime.onOutput = { output in
-            if case .exportCompleted(.success) = output {
+            if case .exportRenderSucceeded(_) = output {
                 XCTAssertTrue(service.isLoaded(testSlotKey),
-                              "Texture must be loaded when exportCompleted(.success) fires")
+                              "Texture must be loaded when exportRenderSucceeded fires")
                 successExpectation.fulfill()
             }
         }

@@ -13,23 +13,32 @@ public enum EffectiveBackgroundBuilder {
 
     // MARK: - Public API
 
-    /// Builds the effective background state for rendering.
+    /// Builds the effective background state for rendering with 3-tier scope resolution.
+    ///
+    /// Priority (highest to lowest):
+    /// 1. Scene override (full replacement — no merge with project)
+    /// 2. Project override
+    /// 3. Template defaults
+    /// 4. Fallback (solid black)
     ///
     /// - Parameters:
     ///   - templateBackground: Background configuration from scene.json (may be nil)
-    ///   - projectOverride: User's customizations (may be nil)
+    ///   - projectOverride: Project-level customizations (may be nil)
+    ///   - sceneOverride: Scene-level customizations (may be nil, full replacement semantics)
     ///   - presetLibrary: Library of available presets
     /// - Returns: EffectiveBackgroundState ready for rendering
     public static func build(
         templateBackground: Background?,
         projectOverride: ProjectBackgroundOverride?,
+        sceneOverride: ProjectBackgroundOverride?,
         presetLibrary: BackgroundPresetProviding
     ) -> EffectiveBackgroundState? {
 
         // 1. Determine effective preset ID
         let effectivePresetId = resolvePresetId(
             templateBackground: templateBackground,
-            projectOverride: projectOverride
+            projectOverride: projectOverride,
+            sceneOverride: sceneOverride
         )
 
         // 2. Get preset from library (with fallback)
@@ -50,7 +59,8 @@ public enum EffectiveBackgroundBuilder {
                 regionId: regionId,
                 presetId: preset.presetId,
                 templateBackground: templateBackground,
-                projectOverride: projectOverride
+                projectOverride: projectOverride,
+                sceneOverride: sceneOverride
             )
 
             regionStates[regionId] = BackgroundRegionState(
@@ -65,19 +75,39 @@ public enum EffectiveBackgroundBuilder {
         )
     }
 
+    /// Convenience: builds with project override only (no scene override).
+    public static func build(
+        templateBackground: Background?,
+        projectOverride: ProjectBackgroundOverride?,
+        presetLibrary: BackgroundPresetProviding
+    ) -> EffectiveBackgroundState? {
+        build(
+            templateBackground: templateBackground,
+            projectOverride: projectOverride,
+            sceneOverride: nil,
+            presetLibrary: presetLibrary
+        )
+    }
+
     // MARK: - Preset Resolution
 
-    /// Resolves the effective preset ID.
+    /// Resolves the effective preset ID with 3-tier priority.
     private static func resolvePresetId(
         templateBackground: Background?,
-        projectOverride: ProjectBackgroundOverride?
+        projectOverride: ProjectBackgroundOverride?,
+        sceneOverride: ProjectBackgroundOverride? = nil
     ) -> String {
-        // Priority 1: User override
+        // Priority 1: Scene override
+        if let scenePresetId = sceneOverride?.selectedPresetId {
+            return scenePresetId
+        }
+
+        // Priority 2: Project override
         if let overridePresetId = projectOverride?.selectedPresetId {
             return overridePresetId
         }
 
-        // Priority 2: Template background
+        // Priority 3: Template background
         if let background = templateBackground {
             return background.effectivePresetId
         }
@@ -88,20 +118,31 @@ public enum EffectiveBackgroundBuilder {
 
     // MARK: - Region Source Resolution
 
-    /// Resolves the source for a single region.
+    /// Resolves the source for a single region with 3-tier priority.
+    /// Scene override uses full replacement semantics (no merge with project).
     private static func resolveRegionSource(
         regionId: String,
         presetId: String,
         templateBackground: Background?,
-        projectOverride: ProjectBackgroundOverride?
+        projectOverride: ProjectBackgroundOverride?,
+        sceneOverride: ProjectBackgroundOverride? = nil
     ) -> RegionSource {
 
-        // Priority 1: User override
-        if let regionOverride = projectOverride?.regions[regionId] {
-            return convertOverrideToSource(regionOverride.source, presetId: presetId, regionId: regionId)
+        // Priority 1: Scene override (full replacement — only scene regions)
+        if let sceneOverride {
+            if let regionOverride = sceneOverride.regions[regionId] {
+                return convertOverrideToSource(regionOverride.source, presetId: presetId, regionId: regionId)
+            }
+            // Scene override exists but has no entry for this region — fall through to template/fallback
+            // (NOT to project override — full replacement semantics)
+        } else {
+            // Priority 2: Project override (only when no scene override)
+            if let regionOverride = projectOverride?.regions[regionId] {
+                return convertOverrideToSource(regionOverride.source, presetId: presetId, regionId: regionId)
+            }
         }
 
-        // Priority 2: Template defaults
+        // Priority 3: Template defaults
         if let defaults = templateBackground?.defaults,
            let regionDefault = defaults[regionId] {
             return convertDefaultToSource(regionDefault, presetId: presetId, regionId: regionId)
@@ -139,6 +180,27 @@ public enum EffectiveBackgroundBuilder {
             let slotKey = makeSlotKey(presetId: presetId, regionId: regionId)
             let transform = convertTransformOverride(imageOverride.transform)
             return .image(ImageConfig(slotKey: slotKey, transform: transform))
+
+        case .video(let videoOverride):
+            let slotKey = makeSlotKey(presetId: presetId, regionId: regionId)
+            return .video(VideoConfig(
+                slotKey: slotKey,
+                loop: videoOverride.loop,
+                trimStart: videoOverride.trimStart,
+                trimEnd: videoOverride.trimEnd,
+                startOffset: videoOverride.startOffset
+            ))
+
+        case .animated(let animOverride):
+            let slotKey = makeSlotKey(presetId: presetId, regionId: regionId)
+            return .animated(AnimatedConfig(
+                slotKey: slotKey,
+                frameRate: animOverride.frameRate,
+                loop: animOverride.loop,
+                trimStart: animOverride.trimStart,
+                trimEnd: animOverride.trimEnd,
+                startOffset: animOverride.startOffset
+            ))
         }
     }
 

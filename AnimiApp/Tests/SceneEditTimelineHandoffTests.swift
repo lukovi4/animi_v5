@@ -86,7 +86,7 @@ final class SceneEditTimelineHandoffTests: XCTestCase {
         let instanceId = UUID()
         let (_, runtime) = await makeBootedRuntime(state: .sceneEdit(instanceId: instanceId))
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         XCTAssertEqual(runtime.state, .exporting)
 
         runtime.cancelExport()
@@ -96,7 +96,7 @@ final class SceneEditTimelineHandoffTests: XCTestCase {
     func test_startExport_from_timelinePreview_restores_timelinePreview() async {
         let (_, runtime) = await makeBootedRuntime(state: .timelinePreview)
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         XCTAssertEqual(runtime.state, .exporting)
 
         runtime.cancelExport()

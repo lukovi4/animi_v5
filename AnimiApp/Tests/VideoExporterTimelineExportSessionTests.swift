@@ -131,7 +131,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
                 bindingAssetIds: res.compiled.bindingAssetIds,
                 pathRegistry: res.pathRegistry,
                 assetSizes: res.assetSizes,
-                sceneCanvasSize: res.canvasSize
+                sceneCanvasSize: res.canvasSize,
+                templateBackground: res.compiled.runtime.scene.background
             )
             snapshots[instanceId] = snapshot
             audioData.append(TimelineCompositionEngine.SceneAudioExportData(
@@ -451,7 +452,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             renderState: renderState, videoSelections: [:], mediaSnapshot: mediaSnapshot,
             assetIndex: res.compiled.mergedAssetIndex, resolver: res.resolver,
             bindingAssetIds: res.compiled.bindingAssetIds, pathRegistry: res.pathRegistry,
-            assetSizes: res.assetSizes, sceneCanvasSize: res.canvasSize
+            assetSizes: res.assetSizes, sceneCanvasSize: res.canvasSize,
+            templateBackground: res.compiled.runtime.scene.background
         )
         audioData.append(TimelineCompositionEngine.SceneAudioExportData(
             sceneIndex: 0, runtime: res.compiled.runtime, videoSelections: [:]
@@ -777,7 +779,6 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             renderer: renderer,
             transitionCompositor: compositor,
             canvasSize: SizeD(width: Double(width), height: Double(height)),
-            backgroundState: nil,
             backgroundTextureProvider: nil,
             clearColor: .opaqueBlack,
             renderDiagnosticsSink: nil,
@@ -870,7 +871,6 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             renderer: renderer,
             transitionCompositor: compositor,
             canvasSize: SizeD(width: Double(width), height: Double(height)),
-            backgroundState: nil,
             backgroundTextureProvider: nil,
             clearColor: .opaqueBlack,
             renderDiagnosticsSink: nil,
@@ -957,7 +957,6 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             renderer: renderer,
             transitionCompositor: compositor,
             canvasSize: SizeD(width: Double(width), height: Double(height)),
-            backgroundState: nil,
             backgroundTextureProvider: nil,
             clearColor: .opaqueBlack,
             renderDiagnosticsSink: nil,
@@ -1079,7 +1078,6 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
                 renderer: renderer,
                 transitionCompositor: compositor,
                 canvasSize: SizeD(width: Double(width), height: Double(height)),
-                backgroundState: nil,
                 backgroundTextureProvider: nil,
                 clearColor: .opaqueBlack,
                 renderDiagnosticsSink: nil,

@@ -139,6 +139,14 @@ final class EditorSession {
 
     var onOutput: ((EditorSessionOutput) -> Void)?
 
+    /// Sets the background override for a specific scene instance.
+    /// Persists into SceneState.backgroundOverride via the draft store.
+    func setSceneBackgroundOverride(_ override: ProjectBackgroundOverride?, for sceneInstanceId: UUID) {
+        store?.mutateCurrentDraftForBookkeeping { draft in
+            draft.sceneInstanceStates[sceneInstanceId, default: SceneState()].backgroundOverride = override
+        }
+    }
+
     init(intent: EditorLaunchIntent, dependencies: EditorSessionDependencies) {
         self.intent = intent
         self.deps = dependencies

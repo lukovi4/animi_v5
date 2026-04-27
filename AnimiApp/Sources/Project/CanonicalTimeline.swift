@@ -280,7 +280,49 @@ public extension TrackKind {
     }
 }
 
-// MARK: - Audio Track Accessors (PR8: Project Music)
+// MARK: - Generic Audio Accessors (PR3)
+
+public extension CanonicalTimeline {
+    /// Returns all audio tracks.
+    var audioTracks: [Track] {
+        tracks.filter { $0.kind == .audio }
+    }
+
+    /// Returns all audio items across all audio tracks.
+    var allAudioItems: [TimelineItem] {
+        audioTracks.flatMap { $0.items }
+    }
+
+    /// Returns the AudioPayload for a given item ID, searching all audio tracks.
+    func audioPayload(for itemId: UUID) -> AudioPayload? {
+        guard let item = allAudioItems.first(where: { $0.id == itemId }),
+              let payload = payloads[item.payloadId],
+              case .audio(let audioPayload) = payload else { return nil }
+        return audioPayload
+    }
+
+    /// Returns all audio items with the given role.
+    func audioItems(role: AudioRole) -> [TimelineItem] {
+        allAudioItems.filter { item in
+            guard let payload = payloads[item.payloadId],
+                  case .audio(let audioPayload) = payload else { return false }
+            return audioPayload.role == role
+        }
+    }
+
+    /// Returns the first audio item with the given role.
+    func primaryAudioItem(role: AudioRole) -> TimelineItem? {
+        audioItems(role: role).first
+    }
+
+    /// Returns the AudioPayload of the first audio item with the given role.
+    func primaryAudioPayload(role: AudioRole) -> AudioPayload? {
+        guard let item = primaryAudioItem(role: role) else { return nil }
+        return audioPayload(for: item.id)
+    }
+}
+
+// MARK: - Audio Track Accessors (PR8: Project Music — Compatibility)
 
 public extension CanonicalTimeline {
     /// Returns the first audio track, if any.
@@ -288,17 +330,14 @@ public extension CanonicalTimeline {
         tracks.first { $0.kind == .audio }
     }
 
-    /// Returns the single music item (first item in the audio track), if any.
+    /// Returns the single music item (compatibility wrapper).
     var musicItem: TimelineItem? {
-        audioTrack?.items.first
+        primaryAudioItem(role: .music)
     }
 
-    /// Returns the music AudioPayload, if a music item exists.
+    /// Returns the music AudioPayload (compatibility wrapper).
     func musicPayload() -> AudioPayload? {
-        guard let item = musicItem,
-              let payload = payloads[item.payloadId],
-              case .audio(let audioPayload) = payload else { return nil }
-        return audioPayload
+        primaryAudioPayload(role: .music)
     }
 }
 

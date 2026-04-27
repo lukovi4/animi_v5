@@ -252,6 +252,18 @@ final class BackgroundRenderer {
                 textureProvider: textureProvider,
                 bbox: bbox
             )
+
+        case .video, .animated:
+            // Stub: render solid black until video/animated playback backend is implemented
+            renderSolid(
+                config: SolidConfig(color: ClearColor(red: 0, green: 0, blue: 0, alpha: 1)),
+                encoder: encoder,
+                vertexBuffer: vertexBuffer,
+                maskTexture: maskTexture,
+                mvp: mvp,
+                targetSize: targetSizeF,
+                animToViewport: animToViewportF
+            )
         }
     }
 

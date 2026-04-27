@@ -12,8 +12,10 @@ enum EditorRuntimeOutput {
     case exportPreflightRecommendation(ExportPreflightResult)
     case exportProgress(Float)
     case exportFinishing
-    case exportCompleted(Result<URL, Error>)
+    case exportRenderSucceeded(URL)
+    case exportRenderFailed(Error)
     case exportCancelled
+    case exportDeliveryShareHandoff(URL)
     case exportDeliveryCompleted(ExportDeliveryOutcome)
 
     // Playback

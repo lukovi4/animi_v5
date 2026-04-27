@@ -145,7 +145,7 @@ final class EditorRuntimeMutationTests: XCTestCase {
         var outputs: [EditorRuntimeOutput] = []
         runtime.onOutput = { outputs.append($0) }
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         XCTAssertEqual(runtime.state, .exporting)
 
         // Execute without metal context → should abort
@@ -161,11 +161,6 @@ final class EditorRuntimeMutationTests: XCTestCase {
         let (_, runtime) = await makeBootedRuntime()
         // No background service — should not crash
         runtime.clearAllBackgroundTextures()
-    }
-
-    func test_preloadBackgroundTextures_doesNotCrash_withoutService() async {
-        let (_, runtime) = await makeBootedRuntime()
-        await runtime.preloadBackgroundTextures(from: .empty, effectiveState: nil)
     }
 
     // MARK: - Sealed Query Contract Tests

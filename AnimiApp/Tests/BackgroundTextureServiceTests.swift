@@ -332,12 +332,12 @@ private struct StubMediaWriter: ProjectMediaWriteGateway {
 private final class BackgroundEditorDelegateSpy: BackgroundEditorDelegate {
     var imagePickerRequestCount = 0
     var lastImagePickerRegionId: String?
-    var updateStateCount = 0
+    var updateOverrideCount = 0
     var presetChangeCount = 0
     var dismissCount = 0
 
-    func backgroundEditorDidUpdateState(_ state: EffectiveBackgroundState) {
-        updateStateCount += 1
+    func backgroundEditorDidUpdateOverride(_ override: ProjectBackgroundOverride) {
+        updateOverrideCount += 1
     }
 
     func backgroundEditorDidRequestImagePicker(for regionId: String) {

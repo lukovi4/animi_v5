@@ -64,7 +64,7 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
     public func assetIds(referencedBy draft: ProjectDraft) -> Set<ProjectAssetID> {
         var ids: Set<ProjectAssetID> = []
         for (_, region) in draft.background.regions {
-            if let ref = region.imageMediaRef {
+            if let ref = region.mediaRef {
                 ids.insert(ref.assetId)
             }
         }
@@ -72,6 +72,14 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
             if let slots = sceneState.mediaSlotsByBlockId {
                 for (_, slot) in slots {
                     ids.insert(slot.mediaRef.assetId)
+                }
+            }
+            // PR2: Walk scene-level background overrides
+            if let bgOverride = sceneState.backgroundOverride {
+                for (_, region) in bgOverride.regions {
+                    if let ref = region.mediaRef {
+                        ids.insert(ref.assetId)
+                    }
                 }
             }
         }
@@ -127,7 +135,7 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
 
         // Walk background regions for missing descriptors.
         for (_, region) in draft.background.regions {
-            guard let ref = region.imageMediaRef else { continue }
+            guard let ref = region.mediaRef else { continue }
             guard referencedIds.contains(ref.assetId) else { continue }
             guard healed.descriptors[ref.assetId] == nil else { continue }
             healed.descriptors[ref.assetId] = ProjectAssetDescriptor(
@@ -140,17 +148,32 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
 
         // Walk scene instance slots for missing descriptors.
         for (_, sceneState) in draft.sceneInstanceStates {
-            guard let slots = sceneState.mediaSlotsByBlockId else { continue }
-            for (_, slot) in slots {
-                let ref = slot.mediaRef
-                guard referencedIds.contains(ref.assetId) else { continue }
-                guard healed.descriptors[ref.assetId] == nil else { continue }
-                healed.descriptors[ref.assetId] = ProjectAssetDescriptor(
-                    assetId: ref.assetId,
-                    mediaKind: ref.mediaKind,
-                    storagePath: ref.storagePath
-                )
-                addedAny = true
+            if let slots = sceneState.mediaSlotsByBlockId {
+                for (_, slot) in slots {
+                    let ref = slot.mediaRef
+                    guard referencedIds.contains(ref.assetId) else { continue }
+                    guard healed.descriptors[ref.assetId] == nil else { continue }
+                    healed.descriptors[ref.assetId] = ProjectAssetDescriptor(
+                        assetId: ref.assetId,
+                        mediaKind: ref.mediaKind,
+                        storagePath: ref.storagePath
+                    )
+                    addedAny = true
+                }
+            }
+            // PR2: Walk scene-level background overrides for missing descriptors.
+            if let bgOverride = sceneState.backgroundOverride {
+                for (_, region) in bgOverride.regions {
+                    guard let ref = region.mediaRef else { continue }
+                    guard referencedIds.contains(ref.assetId) else { continue }
+                    guard healed.descriptors[ref.assetId] == nil else { continue }
+                    healed.descriptors[ref.assetId] = ProjectAssetDescriptor(
+                        assetId: ref.assetId,
+                        mediaKind: ref.mediaKind,
+                        storagePath: ref.storagePath
+                    )
+                    addedAny = true
+                }
             }
         }
 
@@ -182,7 +205,7 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
     public func storagePaths(referencedBy draft: ProjectDraft) -> Set<String> {
         var paths: Set<String> = []
         for (_, region) in draft.background.regions {
-            if let ref = region.imageMediaRef {
+            if let ref = region.mediaRef {
                 paths.insert(descriptors[ref.assetId]?.storagePath ?? ref.storagePath)
             }
         }
@@ -191,6 +214,14 @@ public struct ProjectAssetRegistry: Codable, Equatable, Sendable {
                 for (_, slot) in slots {
                     let ref = slot.mediaRef
                     paths.insert(descriptors[ref.assetId]?.storagePath ?? ref.storagePath)
+                }
+            }
+            // PR2: Walk scene-level background overrides
+            if let bgOverride = sceneState.backgroundOverride {
+                for (_, region) in bgOverride.regions {
+                    if let ref = region.mediaRef {
+                        paths.insert(descriptors[ref.assetId]?.storagePath ?? ref.storagePath)
+                    }
                 }
             }
         }

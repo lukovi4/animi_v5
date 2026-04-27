@@ -589,4 +589,55 @@ final class VideoExportSessionTests: XCTestCase {
         )
         return pixelBuffer!
     }
+
+    // MARK: - PR4 Regression: facade cancel propagates after runner extraction
+
+    /// Proves VideoExporter.cancel() still reaches a live activeSession
+    /// after the export loop was extracted into SingleSceneVideoExportRunner /
+    /// TimelineVideoExportRunner. Regression guard for facade decomposition.
+    func test_facadeCancelStillCancelsActiveSessionAfterRunnerExtraction() {
+        let exp = expectation(description: "completion")
+        var receivedResult: Result<URL, Error>?
+
+        let session = ExportSession { result in
+            receivedResult = result
+            exp.fulfill()
+        }
+
+        let exporter = VideoExporter(mediaLocator: StubMediaLocator())
+
+        // Inject a live session into the facade (simulates exportVideo/exportTimeline setup)
+        exporter.setActiveSession(session)
+
+        // Cancel through the public facade API
+        exporter.cancel()
+
+        // Session should now be cancelled
+        XCTAssertTrue(session.isCancelled)
+        XCTAssertTrue(session.shouldStop)
+
+        // Complete the session as the runner would
+        session.complete(with: .failure(VideoExportError.cancelled))
+
+        wait(for: [exp], timeout: 2.0)
+
+        if case .failure(let error) = receivedResult,
+           let exportError = error as? VideoExportError,
+           exportError.isCancelled {
+            // correct — cancel propagated through facade to live session
+        } else {
+            XCTFail("Expected .cancelled, got \(String(describing: receivedResult))")
+        }
+    }
+
+    /// Proves VideoExporter.TimelineExportSettings resolves through the
+    /// deprecated typealias after TimelineExportSettings was promoted to top-level.
+    func test_timelineExportSettingsCompileThroughRemainsValid() {
+        let settings = VideoExporter.TimelineExportSettings(
+            outputURL: URL(fileURLWithPath: "/tmp/test.mp4"),
+            sizePx: (width: 1920, height: 1080)
+        )
+        XCTAssertEqual(settings.fps, 30) // default
+        XCTAssertEqual(settings.sizePx.width, 1920)
+    }
 }

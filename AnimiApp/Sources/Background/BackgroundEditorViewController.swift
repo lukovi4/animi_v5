@@ -5,8 +5,8 @@ import TVECore
 
 /// Delegate protocol for background editor changes.
 protocol BackgroundEditorDelegate: AnyObject {
-    /// Called when the background state changes.
-    func backgroundEditorDidUpdateState(_ state: EffectiveBackgroundState)
+    /// Called when the background override changes (runtime recomputes effective state).
+    func backgroundEditorDidUpdateOverride(_ override: ProjectBackgroundOverride)
 
     /// Called when user selects an image for a region.
     func backgroundEditorDidRequestImagePicker(for regionId: String)
@@ -236,7 +236,7 @@ final class BackgroundEditorViewController: UIViewController {
                 sourceControl.selectedSegmentIndex = 0
             case .gradient:
                 sourceControl.selectedSegmentIndex = 1
-            case .image:
+            case .image, .video, .animated:
                 sourceControl.selectedSegmentIndex = 2
             }
         } else {
@@ -324,7 +324,7 @@ final class BackgroundEditorViewController: UIViewController {
                 presentColorPicker(for: regionId, isGradient: false, stopIndex: nil)
             case .gradient:
                 presentGradientEditor(for: regionId)
-            case .image:
+            case .image, .video, .animated:
                 guard !isImportInFlight else { return }
                 delegate?.backgroundEditorDidRequestImagePicker(for: regionId)
             }
@@ -379,7 +379,7 @@ final class BackgroundEditorViewController: UIViewController {
                         )
                     }
                 }
-            default:
+            case .image, .video, .animated:
                 break
             }
         }
@@ -425,13 +425,7 @@ final class BackgroundEditorViewController: UIViewController {
     // MARK: - State Updates
 
     private func notifyStateChanged() {
-        guard let state = EffectiveBackgroundBuilder.build(
-            templateBackground: templateBackground,
-            projectOverride: currentOverride,
-            presetLibrary: presetLibrary
-        ) else { return }
-
-        delegate?.backgroundEditorDidUpdateState(state)
+        delegate?.backgroundEditorDidUpdateOverride(currentOverride)
     }
 
     // MARK: - Done Action

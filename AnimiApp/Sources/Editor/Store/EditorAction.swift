@@ -192,20 +192,22 @@ public enum EditorAction: Sendable {
 
     // MARK: - Project Music (PR8)
 
-    /// Sets (or replaces) the project music track.
-    /// Creates/replaces the single audio clip in the audio track.
+    /// Sets (or replaces) the project music.
+    /// Removes all existing `.music` role items across audio tracks, then appends a new one.
+    /// Non-music audio items (voiceover, sfx) are preserved.
     /// Pushes undo snapshot.
     case setProjectMusic(assetRef: AudioAssetRef, sourceDurationUs: TimeUs)
 
-    /// Removes the project music track.
+    /// Removes all `.music` role audio items from the timeline.
+    /// Non-music audio items (voiceover, sfx) are preserved. Empty audio tracks are pruned.
     /// Pushes undo snapshot.
     case removeProjectMusic
 
-    /// Sets trim range for the project music clip.
+    /// Sets trim range for a `.music` audio item. No-op for non-music items.
     /// Pushes undo snapshot.
     case setProjectMusicTrim(itemId: UUID, trimStartUs: TimeUs, trimEndUs: TimeUs)
 
-    /// Sets volume for the project music clip.
+    /// Sets volume for a `.music` audio item. No-op for non-music items.
     /// Pushes undo snapshot.
     case setProjectMusicVolume(itemId: UUID, volume: Float)
 

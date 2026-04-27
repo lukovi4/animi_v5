@@ -34,10 +34,20 @@ public struct ExportBackgroundSnapshot: Sendable {
 
     // MARK: - Factory
 
-    /// Builds an ExportBackgroundSnapshot from project override and effective state.
+    /// Scene-aware factory: resolves scene override → project override for export.
+    public static func build(
+        from projectOverride: ProjectBackgroundOverride?,
+        sceneOverride: ProjectBackgroundOverride?,
+        effectiveState: EffectiveBackgroundState?
+    ) -> ExportBackgroundSnapshot? {
+        let resolvedOverride = sceneOverride ?? projectOverride
+        return build(from: resolvedOverride, effectiveState: effectiveState)
+    }
+
+    /// Builds an ExportBackgroundSnapshot from a resolved override and effective state.
     ///
     /// - Parameters:
-    ///   - override: Project background override with MediaRefs
+    ///   - override: Resolved background override with MediaRefs
     ///   - effectiveState: Effective background state with preset info
     /// - Returns: Snapshot with background region references, or nil if no backgrounds to load
     public static func build(
@@ -50,6 +60,9 @@ public struct ExportBackgroundSnapshot: Sendable {
         var regionRefs: [BackgroundRegionRef] = []
 
         for (regionId, regionOverride) in override.regions {
+            // Only image regions are supported by the export texture loader
+            // (DownsampledImageLoader). Video/animated are rendered as solid
+            // black by the background renderer and need no snapshot entry.
             guard let mediaRef = regionOverride.imageMediaRef else { continue }
 
             let slotKey = EffectiveBackgroundBuilder.makeSlotKey(

@@ -79,11 +79,21 @@ public struct ScenePayload: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Audio Role (PR3)
+
+/// Role of an audio item in the project timeline.
+public enum AudioRole: String, Codable, Sendable {
+    case music
+    case voiceover
+    case sfx
+}
+
 // MARK: - Audio Payload
 
 /// Payload for audio clip items.
 /// V1 (PR8): project-level music track with trim + volume.
-public struct AudioPayload: Codable, Equatable, Sendable {
+/// PR3: Added `role` field for multi-role audio support.
+public struct AudioPayload: Equatable, Sendable {
     /// Audio asset reference.
     public var assetRef: AudioAssetRef?
 
@@ -99,18 +109,51 @@ public struct AudioPayload: Codable, Equatable, Sendable {
     /// Volume level 0.0 - 1.0 (default: 1.0).
     public var volume: Float
 
+    /// Audio role (music, voiceover, sfx). Default: .music for backward compatibility.
+    public var role: AudioRole
+
     public init(
         assetRef: AudioAssetRef? = nil,
         sourceDurationUs: TimeUs = 0,
         trimStartUs: TimeUs = 0,
         trimEndUs: TimeUs = 0,
-        volume: Float = 1.0
+        volume: Float = 1.0,
+        role: AudioRole = .music
     ) {
         self.assetRef = assetRef
         self.sourceDurationUs = sourceDurationUs
         self.trimStartUs = trimStartUs
         self.trimEndUs = trimEndUs
         self.volume = volume
+        self.role = role
+    }
+}
+
+// MARK: - AudioPayload Codable (backward-compatible)
+
+extension AudioPayload: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case assetRef, sourceDurationUs, trimStartUs, trimEndUs, volume, role
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        assetRef = try container.decodeIfPresent(AudioAssetRef.self, forKey: .assetRef)
+        sourceDurationUs = try container.decode(TimeUs.self, forKey: .sourceDurationUs)
+        trimStartUs = try container.decode(TimeUs.self, forKey: .trimStartUs)
+        trimEndUs = try container.decode(TimeUs.self, forKey: .trimEndUs)
+        volume = try container.decode(Float.self, forKey: .volume)
+        role = try container.decodeIfPresent(AudioRole.self, forKey: .role) ?? .music
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(assetRef, forKey: .assetRef)
+        try container.encode(sourceDurationUs, forKey: .sourceDurationUs)
+        try container.encode(trimStartUs, forKey: .trimStartUs)
+        try container.encode(trimEndUs, forKey: .trimEndUs)
+        try container.encode(volume, forKey: .volume)
+        try container.encode(role, forKey: .role)
     }
 }
 

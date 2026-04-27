@@ -1,337 +1,15 @@
 import AVFoundation
 import CoreVideo
-import ImageIO
 import Metal
 import TVECore
-
-// MARK: - Audio Track Config (PR-E4)
-
-/// Configuration for a single audio track (music or voiceover).
-public struct AudioTrackConfig: Sendable {
-    /// Audio file URL
-    public let url: URL
-
-    /// Start time on project timeline in seconds
-    public let startTimeSeconds: Double
-
-    /// Volume (0...1)
-    public let volume: Float
-
-    /// Optional trim start in source audio (seconds)
-    public let trimStartSeconds: Double?
-
-    /// Optional trim end in source audio (seconds)
-    public let trimEndSeconds: Double?
-
-    /// Whether to loop audio to fill project duration (v1: false)
-    public let loopToFit: Bool
-
-    public init(
-        url: URL,
-        startTimeSeconds: Double = 0,
-        volume: Float = 1.0,
-        trimStartSeconds: Double? = nil,
-        trimEndSeconds: Double? = nil,
-        loopToFit: Bool = false
-    ) {
-        self.url = url
-        self.startTimeSeconds = startTimeSeconds
-        self.volume = volume
-        self.trimStartSeconds = trimStartSeconds
-        self.trimEndSeconds = trimEndSeconds
-        self.loopToFit = loopToFit
-    }
-}
-
-// MARK: - Audio Export Config (PR-E4)
-
-/// Configuration for audio export.
-public struct AudioExportConfig: Sendable {
-    /// Background music track (optional)
-    public let music: AudioTrackConfig?
-
-    /// Voiceover track (optional)
-    public let voiceover: AudioTrackConfig?
-
-    /// Whether to include original audio from video slots
-    public let includeOriginalFromVideoSlots: Bool
-
-    /// Default volume for original audio if not specified in VideoSelection
-    public let originalDefaultVolume: Float
-
-    public init(
-        music: AudioTrackConfig? = nil,
-        voiceover: AudioTrackConfig? = nil,
-        includeOriginalFromVideoSlots: Bool = true,
-        originalDefaultVolume: Float = 1.0
-    ) {
-        self.music = music
-        self.voiceover = voiceover
-        self.includeOriginalFromVideoSlots = includeOriginalFromVideoSlots
-        self.originalDefaultVolume = originalDefaultVolume
-    }
-}
-
-// MARK: - Video Quality Preset (B2)
-
-/// Preset quality levels for video export.
-///
-/// Maps to target bitrate based on canvas resolution.
-/// Use `.custom(bitrate:)` for explicit bitrate control.
-public enum VideoQualityPreset: Sendable {
-    /// Low quality: ~4 Mbps for 1080p (scaled by resolution)
-    case low
-
-    /// Medium quality: ~10 Mbps for 1080p (scaled by resolution)
-    case medium
-
-    /// High quality: ~15 Mbps for 1080p (scaled by resolution)
-    case high
-
-    /// Maximum quality: ~25 Mbps for 1080p (scaled by resolution)
-    case max
-
-    /// Custom bitrate (explicit override)
-    case custom(bitrate: Int)
-
-    /// Calculates bitrate for the given canvas size.
-    ///
-    /// Bitrate is scaled proportionally to pixel count relative to 1080p (1920x1080).
-    ///
-    /// - Parameter canvasSize: Canvas size in pixels
-    /// - Returns: Target bitrate in bits per second
-    public func bitrate(for canvasSize: (width: Int, height: Int)) -> Int {
-        let pixels = canvasSize.width * canvasSize.height
-        let referencePixels = 1920 * 1080  // 1080p baseline
-
-        let baseBitrate: Int
-        switch self {
-        case .low:
-            baseBitrate = 4_000_000      // 4 Mbps for 1080p
-        case .medium:
-            baseBitrate = 10_000_000     // 10 Mbps for 1080p
-        case .high:
-            baseBitrate = 15_000_000     // 15 Mbps for 1080p
-        case .max:
-            baseBitrate = 25_000_000     // 25 Mbps for 1080p
-        case .custom(let bitrate):
-            return bitrate
-        }
-
-        // Scale by pixel count, clamp to reasonable range
-        let scaledBitrate = baseBitrate * pixels / referencePixels
-        return Swift.max(2_000_000, Swift.min(50_000_000, scaledBitrate))
-    }
-}
-
-// MARK: - Video Export Settings
-
-/// Configuration for video export (PR-E2).
-///
-/// H.264 MP4 export, SDR + Rec.709 (sRGB), no alpha.
-public struct VideoExportSettings: Sendable {
-    /// Output file URL
-    public let outputURL: URL
-
-    /// Output size in pixels
-    public let sizePx: (width: Int, height: Int)
-
-    /// Frame rate (must match scene runtime fps)
-    public let fps: Int
-
-    /// Target average bitrate in bps
-    public let bitrate: Int
-
-    /// GOP length in seconds (default: 2)
-    public let gopSeconds: Int
-
-    /// Clear color for each frame (default: opaqueBlack for H.264)
-    public let clearColor: ClearColor
-
-    /// Audio export configuration (PR-E4). nil = video-only export.
-    public let audio: AudioExportConfig?
-
-    public init(
-        outputURL: URL,
-        sizePx: (width: Int, height: Int),
-        fps: Int,
-        bitrate: Int = 10_000_000,
-        gopSeconds: Int = 2,
-        clearColor: ClearColor = .opaqueBlack,
-        audio: AudioExportConfig? = nil
-    ) {
-        self.outputURL = outputURL
-        self.sizePx = sizePx
-        self.fps = fps
-        self.bitrate = bitrate
-        self.gopSeconds = gopSeconds
-        self.clearColor = clearColor
-        self.audio = audio
-    }
-}
-
-// MARK: - Video Export Error
-
-/// Errors that can occur during video export (PR-E2).
-public enum VideoExportError: Error, Sendable {
-    /// FPS mismatch between settings and scene runtime
-    case fpsMismatch(settingsFps: Int, runtimeFps: Int)
-
-    /// Failed to create AVAssetWriter
-    case failedToCreateWriter(Error?)
-
-    /// Cannot add video input to writer
-    case cannotAddVideoInput
-
-    /// Writer failed to start
-    case writerStartFailed(Error?)
-
-    /// Failed to create CVMetalTextureCache
-    case failedToCreateTextureCache
-
-    /// No pixel buffer pool available
-    case noPixelBufferPool
-
-    /// Failed to create pixel buffer from pool
-    case failedToCreatePixelBuffer(CVReturn)
-
-    /// Failed to create Metal texture from pixel buffer
-    case failedToCreateMetalTexture(CVReturn)
-
-    /// Append failed
-    case appendFailed(Error?)
-
-    /// Finish writing failed
-    case finishFailed(Error?)
-
-    /// Export was cancelled
-    case cancelled
-
-    /// Render error
-    case renderError(Error)
-
-    /// Failed to create command buffer
-    case failedToCreateCommandBuffer
-
-    // MARK: - Audio Errors (PR-E4)
-
-    /// Cannot add audio input to writer
-    case cannotAddAudioInput
-
-    /// Audio reader failed to start
-    case audioReaderStartFailed(Error?)
-
-    /// Audio append failed
-    case audioAppendFailed(Error?)
-
-    /// Missing audio track in source file
-    case missingAudioTrack(URL)
-
-    /// Failed to build audio pipeline
-    case failedToBuildAudioPipeline(Error)
-}
-
-extension VideoExportError: LocalizedError {
-    public var errorDescription: String? {
-        switch self {
-        case .fpsMismatch(let settingsFps, let runtimeFps):
-            return "FPS mismatch: settings=\(settingsFps), runtime=\(runtimeFps)"
-        case .failedToCreateWriter(let error):
-            return "Failed to create AVAssetWriter: \(error?.localizedDescription ?? "unknown")"
-        case .cannotAddVideoInput:
-            return "Cannot add video input to writer"
-        case .writerStartFailed(let error):
-            return "Writer failed to start: \(error?.localizedDescription ?? "unknown")"
-        case .failedToCreateTextureCache:
-            return "Failed to create CVMetalTextureCache"
-        case .noPixelBufferPool:
-            return "No pixel buffer pool available"
-        case .failedToCreatePixelBuffer(let status):
-            return "Failed to create pixel buffer: CVReturn \(status)"
-        case .failedToCreateMetalTexture(let status):
-            return "Failed to create Metal texture: CVReturn \(status)"
-        case .appendFailed(let error):
-            return "Append failed: \(error?.localizedDescription ?? "unknown")"
-        case .finishFailed(let error):
-            return "Finish writing failed: \(error?.localizedDescription ?? "unknown")"
-        case .cancelled:
-            return "Export was cancelled"
-        case .renderError(let error):
-            return "Render error: \(error.localizedDescription)"
-        case .failedToCreateCommandBuffer:
-            return "Failed to create Metal command buffer"
-        case .cannotAddAudioInput:
-            return "Cannot add audio input to writer"
-        case .audioReaderStartFailed(let error):
-            return "Audio reader failed to start: \(error?.localizedDescription ?? "unknown")"
-        case .audioAppendFailed(let error):
-            return "Audio append failed: \(error?.localizedDescription ?? "unknown")"
-        case .missingAudioTrack(let url):
-            return "Missing audio track in: \(url.lastPathComponent)"
-        case .failedToBuildAudioPipeline(let error):
-            return "Failed to build audio pipeline: \(error.localizedDescription)"
-        }
-    }
-
-    /// True if this error represents a user-initiated cancellation.
-    public var isCancelled: Bool {
-        if case .cancelled = self { return true }
-        return false
-    }
-}
-
-// MARK: - In-Flight Frame
-
-/// Holds resources for a frame that is currently being rendered/encoded.
-///
-/// Prevents premature deallocation of CVPixelBuffer and CVMetalTexture
-/// until GPU rendering completes and append is done.
-final class InFlightFrame: @unchecked Sendable {
-    let pixelBuffer: CVPixelBuffer
-    let cvMetalTexture: CVMetalTexture
-    let mtlTexture: MTLTexture
-    let presentationTime: CMTime
-
-    init(
-        pixelBuffer: CVPixelBuffer,
-        cvMetalTexture: CVMetalTexture,
-        mtlTexture: MTLTexture,
-        presentationTime: CMTime
-    ) {
-        self.pixelBuffer = pixelBuffer
-        self.cvMetalTexture = cvMetalTexture
-        self.mtlTexture = mtlTexture
-        self.presentationTime = presentationTime
-    }
-}
 
 // MARK: - Video Exporter
 
 /// GPU-only video exporter for scenes (PR-E2).
 ///
-/// Exports CompiledScene to H.264 MP4 using:
-/// - CVPixelBufferPool from AVAssetWriterInputPixelBufferAdaptor
-/// - CVMetalTextureCache for GPU-direct rendering
-/// - In-flight pipelining with completion handlers
-/// - DispatchGroup for correct append synchronization
-///
-/// No CPU readback (getBytes/CIContext) is used.
-///
-/// Usage:
-/// ```swift
-/// let exporter = VideoExporter()
-/// exporter.exportVideo(
-///     compiledScene: scene,
-///     scenePlayer: player,  // for snapshot only
-///     renderer: renderer,
-///     textureProvider: exportTextureProvider,
-///     pathRegistry: pathRegistry,
-///     assetSizes: scene.mergedAssetIndex.sizeById,
-///     settings: settings,
-///     progress: { print("Progress: \($0)") },
-///     completion: { result in ... }
-/// )
-/// ```
+/// Thin facade that owns the export queue and active session lifecycle.
+/// Frame rendering is delegated to `SingleSceneVideoExportRunner` and
+/// `TimelineVideoExportRunner`.
 public final class VideoExporter: @unchecked Sendable {
     // MARK: - Queues
 
@@ -343,7 +21,7 @@ public final class VideoExporter: @unchecked Sendable {
     private let sessionLock = NSLock()
     private var _activeSession: ExportSession?
 
-    private func setActiveSession(_ session: ExportSession?) {
+    internal func setActiveSession(_ session: ExportSession?) {
         sessionLock.lock()
         _activeSession = session
         sessionLock.unlock()
@@ -368,109 +46,21 @@ public final class VideoExporter: @unchecked Sendable {
         self.mediaLocator = mediaLocator
     }
 
-    // MARK: - Export-Owned Render Context
+    // MARK: - Shared Helpers
 
-    /// Single-scene export handoff for `exportQueue`.
-    /// Owns an export-only renderer plus immutable snapshots and a thread-safe texture provider.
-    private final class SingleSceneExportWorkItem: @unchecked Sendable {
-        let runtime: SceneRuntime
-        let snapshot: SceneRenderStateSnapshot
-        let renderer: MetalRenderer
-        let textureProvider: ExportTextureProvider
-        let pathRegistry: PathRegistry
-        let assetSizes: [String: AssetSize]
-        let videoSelections: [String: VideoSelection]
-        let settings: VideoExportSettings
-        let backgroundState: EffectiveBackgroundState?
-        let overlaySnapshot: OverlayExportSnapshot?
-        let mediaSnapshot: ExportMediaSnapshot?
-        let backgroundSnapshot: ExportBackgroundSnapshot?
-        let budget: ExportResourceBudget
-
-        init(
-            runtime: SceneRuntime,
-            snapshot: SceneRenderStateSnapshot,
-            renderer: MetalRenderer,
-            textureProvider: ExportTextureProvider,
-            pathRegistry: PathRegistry,
-            assetSizes: [String: AssetSize],
-            videoSelections: [String: VideoSelection],
-            settings: VideoExportSettings,
-            backgroundState: EffectiveBackgroundState?,
-            overlaySnapshot: OverlayExportSnapshot? = nil,
-            mediaSnapshot: ExportMediaSnapshot? = nil,
-            backgroundSnapshot: ExportBackgroundSnapshot? = nil,
-            budget: ExportResourceBudget = .default
-        ) {
-            self.runtime = runtime
-            self.snapshot = snapshot
-            self.renderer = renderer
-            self.textureProvider = textureProvider
-            self.pathRegistry = pathRegistry
-            self.assetSizes = assetSizes
-            self.videoSelections = videoSelections
-            self.settings = settings
-            self.backgroundState = backgroundState
-            self.overlaySnapshot = overlaySnapshot
-            self.mediaSnapshot = mediaSnapshot
-            self.backgroundSnapshot = backgroundSnapshot
-            self.budget = budget
-        }
-    }
-
-    /// Timeline export handoff for `exportQueue`.
-    /// Keeps preview and export isolated by owning a dedicated renderer/compositor pair.
-    private final class TimelineExportWorkItem: @unchecked Sendable {
-        let session: TimelineCompositionEngine.TimelineExportSession
-        let renderer: MetalRenderer
-        let transitionCompositor: TransitionCompositor
-        let totalFrames: Int
-        let canvasSize: SizeD
-        let backgroundState: EffectiveBackgroundState?
-        let backgroundSnapshot: ExportBackgroundSnapshot?
-        let settings: TimelineExportSettings
-        let budget: ExportResourceBudget
-        let renderDiagnosticsSink: RenderDiagnosticsSink?
-
-        init(
-            session: TimelineCompositionEngine.TimelineExportSession,
-            renderer: MetalRenderer,
-            transitionCompositor: TransitionCompositor,
-            totalFrames: Int,
-            canvasSize: SizeD,
-            backgroundState: EffectiveBackgroundState?,
-            backgroundSnapshot: ExportBackgroundSnapshot?,
-            settings: TimelineExportSettings,
-            budget: ExportResourceBudget,
-            renderDiagnosticsSink: RenderDiagnosticsSink?
-        ) {
-            self.session = session
-            self.renderer = renderer
-            self.transitionCompositor = transitionCompositor
-            self.totalFrames = totalFrames
-            self.canvasSize = canvasSize
-            self.backgroundState = backgroundState
-            self.backgroundSnapshot = backgroundSnapshot
-            self.settings = settings
-            self.budget = budget
-            self.renderDiagnosticsSink = renderDiagnosticsSink
-        }
-    }
-
-    private func makeExportRenderer(device: MTLDevice, maxFramesInFlight: Int = 3) throws -> MetalRenderer {
+    internal func makeExportRenderer(device: MTLDevice, maxFramesInFlight: Int = 3) throws -> MetalRenderer {
         let options = MetalRendererOptions(maxFramesInFlight: maxFramesInFlight)
         return try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm, options: options)
     }
 
-    private func makeExportTransitionCompositor(device: MTLDevice) throws -> TransitionCompositor {
+    internal func makeExportTransitionCompositor(device: MTLDevice) throws -> TransitionCompositor {
         try TransitionCompositor(device: device, colorPixelFormat: .bgra8Unorm)
     }
 
     /// Pre-resolves background media URLs from an ExportBackgroundSnapshot via
     /// the registry-backed media locator. Called in async context before
-    /// dispatching to the sync exportQueue. Registry snapshot is value-passed
-    /// by the caller — the exporter holds no current-project state.
-    private func resolveBackgroundURLs(
+    /// dispatching to the sync exportQueue.
+    internal func resolveBackgroundURLs(
         from snapshot: ExportBackgroundSnapshot?,
         registry: ProjectAssetRegistry
     ) async -> [MediaRef: URL] {
@@ -484,21 +74,8 @@ public final class VideoExporter: @unchecked Sendable {
         return resolved
     }
 
-    // MARK: - Public API
+    // MARK: - Public API: Single-Scene Export
 
-    /// Exports a compiled scene to video.
-    ///
-    /// - Parameters:
-    ///   - compiledScene: Scene to export (runtime + assets)
-    ///   - scenePlayer: ScenePlayer instance (MainActor) for state snapshot
-    ///   - device: Metal device used to build an export-owned renderer
-    ///   - textureProvider: Thread-safe export texture provider
-    ///   - pathRegistry: Path registry from compiled scene
-    ///   - assetSizes: Asset sizes from mergedAssetIndex.sizeById
-    ///   - settings: Export configuration
-    ///   - backgroundState: Background state for rendering (PR5)
-    ///   - progress: Progress callback (0.0 - 1.0), called on main queue
-    ///   - completion: Completion callback, called on main queue
     @MainActor
     internal func exportVideo(
         compiledScene: CompiledScene,
@@ -557,7 +134,7 @@ public final class VideoExporter: @unchecked Sendable {
             return
         }
 
-        let workItem = SingleSceneExportWorkItem(
+        let workItem = SingleSceneVideoExportRunner.WorkItem(
             runtime: runtime,
             snapshot: snapshot,
             renderer: exportRenderer,
@@ -578,354 +155,24 @@ public final class VideoExporter: @unchecked Sendable {
 
         // Run export on background queue
         let allAssetIds = Set(compiledScene.mergedAssetIndex.basenameById.keys)
-        exportQueue.async { [self, workItem, session, allAssetIds, resolvedBgURLs] in
-            // Warm all scene assets (unified API — same behavior as old preloadAll)
-            workItem.textureProvider.warm(assetIds: allAssetIds, commandQueue: workItem.renderer.commandQueue)
-
-            // Load user photos on export queue (not MainActor)
-            if let mediaSnapshot = workItem.mediaSnapshot {
-                let commandQueue = workItem.renderer.commandQueue
-                for imageRef in mediaSnapshot.imageRefs {
-                    if let texture = try? DownsampledImageLoader.loadTexture(
-                        from: imageRef.url,
-                        device: commandQueue.device,
-                        commandQueue: commandQueue,
-                        maxDimensionPx: workItem.budget.targetImageMaxDimensionPx
-                    ) {
-                        // PR-F: Probe original file size for display size metadata.
-                        // Export placement is resolved from file probe dimensions, so renderer
-                        // quad geometry must match. Using texture.width/height would mismatch
-                        // when the image is downsampled below source resolution.
-                        let probeSize = Self.probeImageSize(url: imageRef.url)
-                            ?? CGSize(width: texture.width, height: texture.height)
-
-                        for assetId in imageRef.bindingAssetIds {
-                            workItem.textureProvider.setTexture(texture, for: assetId)
-                            (workItem.textureProvider as? MutableAssetDisplaySizeProvider)?
-                                .setDisplaySize(probeSize, for: assetId)
-                        }
-                    }
-                }
-            }
-
-            // Load background textures on export queue (URLs pre-resolved above)
-            if let bgSnapshot = workItem.backgroundSnapshot {
-                let commandQueue = workItem.renderer.commandQueue
-                for ref in bgSnapshot.regionRefs {
-                    if let url = resolvedBgURLs[ref.mediaRef] {
-                        if let texture = try? DownsampledImageLoader.loadTexture(
-                            from: url,
-                            device: commandQueue.device,
-                            commandQueue: commandQueue,
-                            maxDimensionPx: workItem.budget.targetImageMaxDimensionPx
-                        ) {
-                            workItem.textureProvider.setTexture(texture, for: ref.slotKey)
-                        }
-                    }
-                }
-            }
-
-            guard !session.isCancelled else {
-                session.complete(with: .failure(VideoExportError.cancelled))
-                return
-            }
-
-            self.runExportLoop(
-                runtime: workItem.runtime,
-                snapshot: workItem.snapshot,
-                renderer: workItem.renderer,
-                textureProvider: workItem.textureProvider,
-                pathRegistry: workItem.pathRegistry,
-                assetSizes: workItem.assetSizes,
-                videoSelections: workItem.videoSelections,
-                settings: workItem.settings,
-                backgroundState: workItem.backgroundState,
-                overlaySnapshot: workItem.overlaySnapshot,
+        exportQueue.async { [workItem, session, allAssetIds, resolvedBgURLs] in
+            SingleSceneVideoExportRunner.run(
+                workItem: workItem,
                 session: session,
-                budget: workItem.budget,
+                allAssetIds: allAssetIds,
+                resolvedBgURLs: resolvedBgURLs,
                 progress: progress
             )
         }
     }
 
-    // MARK: - Export Loop
+    // MARK: - Public API: Timeline Export
 
-    private func runExportLoop(
-        runtime: SceneRuntime,
-        snapshot: SceneRenderStateSnapshot,
-        renderer: MetalRenderer,
-        textureProvider: MutableTextureProvider,
-        pathRegistry: PathRegistry,
-        assetSizes: [String: AssetSize],
-        videoSelections: [String: VideoSelection],
-        settings: VideoExportSettings,
-        backgroundState: EffectiveBackgroundState?,
-        overlaySnapshot: OverlayExportSnapshot?,
-        session: ExportSession,
-        budget: ExportResourceBudget = .default,
-        progress: @escaping (Double) -> Void
-    ) {
-        // Delete existing file if present
-        try? FileManager.default.removeItem(at: settings.outputURL)
-
-        // 1. Build audio pipeline (if configured)
-        var audioPipeline: BuiltAudioPipeline?
-
-        if let audioConfig = settings.audio {
-            let builder = AudioCompositionBuilder()
-            do {
-                audioPipeline = try builder.build(
-                    runtime: runtime,
-                    fps: settings.fps,
-                    videoSelectionsByBlockId: videoSelections,
-                    config: audioConfig
-                )
-            } catch {
-                session.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))
-                return
-            }
-        }
-
-        // 2. Create pipeline (replaces ~100 lines of writer setup)
-        let pipeline: ExportWriterPipeline
-        do {
-            pipeline = try ExportWriterPipeline(
-                outputURL: settings.outputURL,
-                video: .init(sizePx: settings.sizePx, fps: settings.fps,
-                             bitrate: settings.bitrate, gopSeconds: settings.gopSeconds),
-                audio: audioPipeline.map { .init(composition: $0.composition, audioMix: $0.audioMix) }
-            )
-            session.attachPipeline(pipeline)
-            try pipeline.startWriting()
-        } catch {
-            session.complete(with: .failure(error))
-            return
-        }
-
-        // 3. Create CVMetalTextureCache
-        let metalDevice = renderer.commandQueue.device
-        var textureCache: CVMetalTextureCache?
-        let cacheStatus = CVMetalTextureCacheCreate(
-            kCFAllocatorDefault,
-            nil,
-            metalDevice,
-            nil,
-            &textureCache
-        )
-
-        guard cacheStatus == kCVReturnSuccess, let textureCache else {
-            pipeline.cancel()
-            session.complete(with: .failure(VideoExportError.failedToCreateTextureCache))
-            return
-        }
-
-        // 4. Setup video slots coordinator
-        var videoSlotsCoordinator: ExportVideoSlotsCoordinator?
-        if !videoSelections.isEmpty {
-            let coordinator = ExportVideoSlotsCoordinator(
-                device: metalDevice,
-                textureCache: textureCache,
-                commandQueue: renderer.commandQueue,
-                runtime: runtime,
-                sceneFPS: Double(runtime.fps),
-                exportTextureProvider: textureProvider,
-                videoPrefetchFrames: budget.videoPrefetchFrames,
-                maxActiveProviders: budget.maxActiveVideoProviders
-            )
-            coordinator.configure(videoSelectionsByBlockId: videoSelections)
-            videoSlotsCoordinator = coordinator
-        }
-
-        session.setCleanup(
-            onSuccess: { videoSlotsCoordinator?.finish() },
-            onFailure: { videoSlotsCoordinator?.cancel() },
-            onCancel:  { videoSlotsCoordinator?.cancel() }
-        )
-        session.transitionToRendering()
-
-        // Export-owned overlay cache — lives for the duration of the export session.
-        let exportOverlayCache = OverlayRenderResourceCache()
-
-        // 5. Sync primitives — semaphore capped by budget
-        let semaphore = DispatchSemaphore(value: renderer.maxFramesInFlight)
-        let videoGroup = DispatchGroup()
-
-        // 6. Video export loop
-        let totalFrames = runtime.durationFrames
-
-        for frameIndex in 0..<totalFrames {
-            if session.shouldStop { break }
-
-            semaphore.wait()
-            videoGroup.enter()
-
-            autoreleasepool {
-                // Get pixel buffer from pool
-                guard let pool = pipeline.pixelBufferPool else {
-                    pipeline.setError(VideoExportError.noPixelBufferPool)
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                var pixelBuffer: CVPixelBuffer?
-                let pbStatus = CVPixelBufferPoolCreatePixelBuffer(
-                    kCFAllocatorDefault,
-                    pool,
-                    &pixelBuffer
-                )
-
-                guard pbStatus == kCVReturnSuccess, let pixelBuffer else {
-                    pipeline.setError(VideoExportError.failedToCreatePixelBuffer(pbStatus))
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                // Create Metal texture from pixel buffer
-                var cvMetalTexture: CVMetalTexture?
-                let texStatus = CVMetalTextureCacheCreateTextureFromImage(
-                    kCFAllocatorDefault,
-                    textureCache,
-                    pixelBuffer,
-                    nil,
-                    .bgra8Unorm,
-                    settings.sizePx.width,
-                    settings.sizePx.height,
-                    0,
-                    &cvMetalTexture
-                )
-
-                guard texStatus == kCVReturnSuccess,
-                      let cvMetalTexture,
-                      let targetTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
-                    pipeline.setError(VideoExportError.failedToCreateMetalTexture(texStatus))
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                // Update video textures before render
-                videoSlotsCoordinator?.updateTextures(forSceneFrameIndex: frameIndex)
-
-                if let error = videoSlotsCoordinator?.providerError {
-                    pipeline.setError(error)
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                let pts = CMTime(value: CMTimeValue(frameIndex), timescale: CMTimeScale(settings.fps))
-
-                do {
-                    _ = try Self.renderSingleSceneFrame(
-                        frameIndex: frameIndex,
-                        targetTexture: targetTexture,
-                        runtime: runtime,
-                        snapshot: snapshot,
-                        renderer: renderer,
-                        textureProvider: textureProvider,
-                        pathRegistry: pathRegistry,
-                        assetSizes: assetSizes,
-                        backgroundState: backgroundState,
-                        clearColor: settings.clearColor,
-                        overlaySnapshot: overlaySnapshot,
-                        overlayCache: exportOverlayCache
-                    )
-                } catch {
-                    pipeline.setError(VideoExportError.renderError(error))
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                guard !session.shouldStop else {
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                pipeline.enqueueVideoFrame(pixelBuffer, presentationTime: pts) {
-                    videoGroup.leave()
-                    semaphore.signal()
-                }
-            }
-
-            session.emitProgressIfActive(Double(frameIndex + 1) / Double(totalFrames), via: progress)
-        }
-
-        // 7. Wait for all enqueued frames to finish
-        videoGroup.wait()
-
-        // 8. Finish or cancel — cleanup closures fire inside complete()
-        if session.shouldStop {
-            if !session.isCancelled { pipeline.cancel() }
-            session.complete(with: .failure(session.terminalError ?? VideoExportError.cancelled))
-        } else {
-            session.finishWriting()
-        }
-    }
-
-    // MARK: - Timeline Export (v6 Schema)
-
-    /// Settings for timeline export with transitions.
-    public struct TimelineExportSettings: Sendable {
-        /// Output file URL
-        public let outputURL: URL
-
-        /// Output size in pixels
-        public let sizePx: (width: Int, height: Int)
-
-        /// Frame rate
-        public let fps: Int
-
-        /// Target average bitrate in bps
-        public let bitrate: Int
-
-        /// GOP length in seconds
-        public let gopSeconds: Int
-
-        /// Clear color for each frame
-        public let clearColor: ClearColor
-
-        /// Audio export configuration
-        public let audio: AudioExportConfig?
-
-        public init(
-            outputURL: URL,
-            sizePx: (width: Int, height: Int),
-            fps: Int = 30,
-            bitrate: Int = 10_000_000,
-            gopSeconds: Int = 2,
-            clearColor: ClearColor = .opaqueBlack,
-            audio: AudioExportConfig? = nil
-        ) {
-            self.outputURL = outputURL
-            self.sizePx = sizePx
-            self.fps = fps
-            self.bitrate = bitrate
-            self.gopSeconds = gopSeconds
-            self.clearColor = clearColor
-            self.audio = audio
-        }
-    }
-
-    /// Exports a multi-scene timeline with transitions to video.
-    ///
-    /// Uses TimelineCompositionEngine to resolve frames and TransitionCompositor
-    /// for transition effects. Produces frame-identical output to preview.
-    ///
-    /// - Parameters:
-    ///   - engine: TimelineCompositionEngine with configured timeline
-    ///   - backgroundState: Background state for rendering
-    ///   - settings: Export configuration
-    ///   - progress: Progress callback (0.0 - 1.0), called on main queue
-    ///   - completion: Completion callback, called on main queue
     @MainActor
-    public func exportTimeline(
+    internal func exportTimeline(
         engine: TimelineCompositionEngine,
-        backgroundState: EffectiveBackgroundState?,
-        backgroundSnapshot: ExportBackgroundSnapshot?,
+        sceneBackgrounds: [UUID: SceneExportBackgroundData],
+        preBuiltSession: TimelineCompositionEngine.TimelineExportSession? = nil,
         settings: TimelineExportSettings,
         budget: ExportResourceBudget = .default,
         renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
@@ -934,9 +181,6 @@ public final class VideoExporter: @unchecked Sendable {
         progress: @escaping (Double) -> Void,
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        // If caller didn't pass an explicit registry, use the engine's
-        // `currentAssetRegistry` (value-passed at `setTimeline` time). This
-        // keeps the registry instance-scoped; no global seam.
         let effectiveRegistry = assetRegistry ?? engine.currentAssetRegistry
         let exportSession = ExportSession(completion: completion)
         setActiveSession(exportSession)
@@ -955,7 +199,6 @@ public final class VideoExporter: @unchecked Sendable {
             return
         }
 
-        // TT-05: Build immutable export session on MainActor, then dispatch to background
         Task { @MainActor [weak self] in
             guard let self else {
                 exportSession.complete(with: .failure(VideoExportError.cancelled))
@@ -968,11 +211,15 @@ public final class VideoExporter: @unchecked Sendable {
             }
 
             let tlSession: TimelineCompositionEngine.TimelineExportSession
-            do {
-                tlSession = try await engine.buildExportSession()
-            } catch {
-                exportSession.complete(with: .failure(VideoExportError.renderError(error)))
-                return
+            if let preBuiltSession {
+                tlSession = preBuiltSession
+            } else {
+                do {
+                    tlSession = try await engine.buildExportSession()
+                } catch {
+                    exportSession.complete(with: .failure(VideoExportError.renderError(error)))
+                    return
+                }
             }
 
             guard !exportSession.isCancelled else {
@@ -993,314 +240,47 @@ public final class VideoExporter: @unchecked Sendable {
                 return
             }
 
-            let workItem = TimelineExportWorkItem(
+            let workItem = TimelineVideoExportRunner.WorkItem(
                 session: tlSession,
                 renderer: exportRenderer,
                 transitionCompositor: exportCompositor,
                 totalFrames: totalFrames,
                 canvasSize: canvasSize,
-                backgroundState: backgroundState,
-                backgroundSnapshot: backgroundSnapshot,
+                sceneBackgrounds: sceneBackgrounds,
                 settings: settings,
                 budget: budget,
                 renderDiagnosticsSink: renderDiagnosticsSink
             )
 
-            // Pre-resolve background media URLs in async context before dispatching to sync queue
-            let resolvedBgURLs = await self.resolveBackgroundURLs(from: backgroundSnapshot, registry: effectiveRegistry)
+            // Pre-resolve background media URLs from all scene snapshots
+            var resolvedBgURLs: [MediaRef: URL] = [:]
+            for (_, sceneBg) in sceneBackgrounds {
+                let sceneURLs = await self.resolveBackgroundURLs(from: sceneBg.snapshot, registry: effectiveRegistry)
+                resolvedBgURLs.merge(sceneURLs) { _, new in new }
+            }
 
-            self.exportQueue.async { [self, workItem, exportSession, resolvedBgURLs] in
-                // Load background textures on export queue (off MainActor)
-                let exportBackgroundProvider = ThreadSafeInMemoryTextureProvider()
-                if let bgSnapshot = workItem.backgroundSnapshot {
-                    let commandQueue = workItem.renderer.commandQueue
-                    for ref in bgSnapshot.regionRefs {
-                        if let url = resolvedBgURLs[ref.mediaRef],
-                           let texture = try? DownsampledImageLoader.loadTexture(
-                               from: url,
-                               device: commandQueue.device,
-                               commandQueue: commandQueue,
-                               maxDimensionPx: workItem.budget.targetImageMaxDimensionPx
-                           ) {
-                            exportBackgroundProvider.setTexture(texture, for: ref.slotKey)
-                        }
-                    }
-                }
-
-                var audioPipeline: BuiltAudioPipeline?
-                if let audioConfig = workItem.settings.audio {
-                    do {
-                        let builder = AudioCompositionBuilder()
-                        audioPipeline = try builder.buildTimeline(
-                            sceneData: workItem.session.audioSceneData,
-                            transitionMath: workItem.session.transitionMath,
-                            fps: workItem.settings.fps,
-                            config: audioConfig
-                        )
-                    } catch {
-                        exportSession.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))
-                        return
-                    }
-                }
-
-                self.runTimelineExportLoop(
-                    tlSession: workItem.session,
-                    renderer: workItem.renderer,
-                    transitionCompositor: workItem.transitionCompositor,
-                    totalFrames: workItem.totalFrames,
-                    canvasSize: workItem.canvasSize,
-                    backgroundState: workItem.backgroundState,
-                    backgroundTextureProvider: exportBackgroundProvider,
-                    audioPipeline: audioPipeline,
-                    settings: workItem.settings,
-                    budget: workItem.budget,
-                    renderDiagnosticsSink: workItem.renderDiagnosticsSink,
+            self.exportQueue.async { [workItem, exportSession, resolvedBgURLs] in
+                TimelineVideoExportRunner.run(
+                    workItem: workItem,
                     exportSession: exportSession,
+                    resolvedBgURLs: resolvedBgURLs,
                     progress: progress
                 )
             }
         }
     }
+}
 
-    // MARK: - Timeline Export Loop
+// MARK: - Compatibility: Deprecated Typealias
 
-    private func runTimelineExportLoop(
-        tlSession: TimelineCompositionEngine.TimelineExportSession,
-        renderer: MetalRenderer,
-        transitionCompositor: TransitionCompositor,
-        totalFrames: Int,
-        canvasSize: SizeD,
-        backgroundState: EffectiveBackgroundState?,
-        backgroundTextureProvider: TextureProvider,
-        audioPipeline: BuiltAudioPipeline?,
-        settings: TimelineExportSettings,
-        budget: ExportResourceBudget = .default,
-        renderDiagnosticsSink: RenderDiagnosticsSink? = nil,
-        exportSession: ExportSession,
-        progress: @escaping (Double) -> Void
-    ) {
-        // Delete existing file
-        try? FileManager.default.removeItem(at: settings.outputURL)
+extension VideoExporter {
+    @available(*, deprecated, renamed: "TimelineExportSettings")
+    public typealias TimelineExportSettings = AnimiApp.TimelineExportSettings
+}
 
-        // 1. Create pipeline (replaces writer/input/adaptor/audio setup)
-        let pipeline: ExportWriterPipeline
-        do {
-            pipeline = try ExportWriterPipeline(
-                outputURL: settings.outputURL,
-                video: .init(sizePx: settings.sizePx, fps: settings.fps,
-                             bitrate: settings.bitrate, gopSeconds: settings.gopSeconds),
-                audio: audioPipeline.map { .init(composition: $0.composition, audioMix: $0.audioMix) }
-            )
-            exportSession.attachPipeline(pipeline)
-            try pipeline.startWriting()
-        } catch {
-            exportSession.complete(with: .failure(error))
-            return
-        }
+// MARK: - Compatibility: Static Forwarding for Tests
 
-        // 2. Create CVMetalTextureCache
-        let metalDevice = renderer.commandQueue.device
-        var textureCache: CVMetalTextureCache?
-        let cacheStatus = CVMetalTextureCacheCreate(
-            kCFAllocatorDefault,
-            nil,
-            metalDevice,
-            nil,
-            &textureCache
-        )
-
-        guard cacheStatus == kCVReturnSuccess, let textureCache else {
-            pipeline.cancel()
-            exportSession.complete(with: .failure(VideoExportError.failedToCreateTextureCache))
-            return
-        }
-
-        // 3. Create residency controller + runtime on export queue
-        let residencyController = TimelineExportResidencyController(
-            session: tlSession,
-            budget: budget,
-            device: renderer.commandQueue.device,
-            commandQueue: renderer.commandQueue,
-            textureCache: textureCache
-        )
-
-        let exportRuntime = TimelineExportRuntime(
-            session: tlSession,
-            residencyController: residencyController
-        )
-
-        // Export-owned overlay cache — lives for the duration of the export session.
-        let exportOverlayCache = OverlayRenderResourceCache()
-
-        exportSession.setCleanup(
-            onSuccess: { exportRuntime.finish() },
-            onFailure: { exportRuntime.cancel() },
-            onCancel:  { exportRuntime.cancel() }
-        )
-        exportSession.transitionToRendering()
-
-        // 4. Video export loop (semaphore capped by budget)
-        let semaphore = DispatchSemaphore(value: budget.maxFramesInFlight)
-        let videoGroup = DispatchGroup()
-
-        for frameIndex in 0..<totalFrames {
-            if exportSession.shouldStop { break }
-
-            semaphore.wait()
-            videoGroup.enter()
-
-            autoreleasepool {
-                // Get pixel buffer from pool
-                guard let pool = pipeline.pixelBufferPool else {
-                    pipeline.setError(VideoExportError.noPixelBufferPool)
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                var pixelBuffer: CVPixelBuffer?
-                let pbStatus = CVPixelBufferPoolCreatePixelBuffer(
-                    kCFAllocatorDefault,
-                    pool,
-                    &pixelBuffer
-                )
-
-                guard pbStatus == kCVReturnSuccess, let pixelBuffer else {
-                    pipeline.setError(VideoExportError.failedToCreatePixelBuffer(pbStatus))
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                // Create Metal texture from pixel buffer
-                var cvMetalTexture: CVMetalTexture?
-                let texStatus = CVMetalTextureCacheCreateTextureFromImage(
-                    kCFAllocatorDefault,
-                    textureCache,
-                    pixelBuffer,
-                    nil,
-                    .bgra8Unorm,
-                    settings.sizePx.width,
-                    settings.sizePx.height,
-                    0,
-                    &cvMetalTexture
-                )
-
-                guard texStatus == kCVReturnSuccess,
-                      let cvMetalTexture,
-                      let targetTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
-                    pipeline.setError(VideoExportError.failedToCreateMetalTexture(texStatus))
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                // Resolve and render via extracted helper
-                do {
-                    _ = try Self.renderTimelineFrame(
-                        frameIndex: frameIndex,
-                        targetTexture: targetTexture,
-                        exportRuntime: exportRuntime,
-                        renderer: renderer,
-                        transitionCompositor: transitionCompositor,
-                        canvasSize: canvasSize,
-                        backgroundState: backgroundState,
-                        backgroundTextureProvider: backgroundTextureProvider,
-                        clearColor: settings.clearColor,
-                        renderDiagnosticsSink: renderDiagnosticsSink,
-                        overlayCache: exportOverlayCache
-                    )
-                } catch {
-                    pipeline.setError(VideoExportError.renderError(error))
-                    videoGroup.leave()
-                    semaphore.signal()
-                    return
-                }
-
-                // Enqueue via pipeline — no busy-wait, readiness-driven
-                let pts = CMTime(value: CMTimeValue(frameIndex), timescale: CMTimeScale(settings.fps))
-                pipeline.enqueueVideoFrame(pixelBuffer, presentationTime: pts) {
-                    videoGroup.leave()
-                    semaphore.signal()
-                }
-            }
-
-            exportSession.emitProgressIfActive(Double(frameIndex + 1) / Double(totalFrames), via: progress)
-        }
-
-        // 5. Wait for all video frames to finish
-        videoGroup.wait()
-
-        // 6. Finish or cancel — cleanup closures fire inside complete()
-        if exportSession.shouldStop {
-            if !exportSession.isCancelled { pipeline.cancel() }
-            exportSession.complete(with: .failure(exportSession.terminalError ?? VideoExportError.cancelled))
-        } else {
-            exportSession.finishWriting()
-        }
-    }
-
-    // MARK: - Extracted Frame Render Helper
-
-    /// Renders one timeline frame into a pre-allocated target texture.
-    /// Returns overlay count for debug probing.
-    internal static func renderTimelineFrame(
-        frameIndex: Int,
-        targetTexture: MTLTexture,
-        exportRuntime: TimelineExportRuntime,
-        renderer: MetalRenderer,
-        transitionCompositor: TransitionCompositor,
-        canvasSize: SizeD,
-        backgroundState: EffectiveBackgroundState?,
-        backgroundTextureProvider: TextureProvider?,
-        clearColor: ClearColor?,
-        renderDiagnosticsSink: RenderDiagnosticsSink?,
-        overlayCache: OverlayRenderResourceCache
-    ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
-        let resolved = try exportRuntime.resolveFrame(frameIndex)
-        let timeUs = exportRuntime.globalTimeUs(for: frameIndex)
-        let overlayItems = timeUs.map { OverlayResolver.resolve(from: exportRuntime.session.overlaySnapshot, at: $0) } ?? []
-
-        let request = TimelineRenderRequest(
-            resolved: resolved,
-            targetTexture: targetTexture,
-            drawableScale: 1.0,
-            timelineCanvasSize: canvasSize,
-            backgroundState: backgroundState,
-            backgroundTextureProvider: backgroundTextureProvider,
-            clearColorOverride: clearColor,
-            presentationDrawable: nil,
-            waitUntilCompleted: true,
-            diagnosticFrameTag: frameIndex,
-            overlayItems: overlayItems
-        )
-        do {
-            try TimelineRenderExecutor.render(
-                request, renderer: renderer,
-                commandQueue: renderer.commandQueue,
-                transitionCompositor: transitionCompositor,
-                completionQueue: nil,
-                overlayCache: overlayCache,
-                renderSink: renderDiagnosticsSink
-            )
-        } catch let error as TimelineRenderExecutorError {
-            switch error {
-            case .failedToCreateCommandBuffer:
-                throw VideoExportError.failedToCreateCommandBuffer
-            case .failedToAcquireOffscreenTexture:
-                throw TimelineExportError.failedToAcquireOffscreenTexture
-            case .missingTransitionCompositor,
-                 .missingCompletionQueueForAsyncTransition:
-                throw VideoExportError.renderError(error)
-            }
-        }
-        let textCount = overlayItems.filter { $0.kind == .text }.count
-        let stickerCount = overlayItems.filter { $0.kind == .sticker }.count
-        return (textOverlayCount: textCount, stickerOverlayCount: stickerCount)
-    }
-
-    /// Renders one single-scene export frame into a pre-allocated target texture.
-    /// Uses the unified timeline executor so single-scene export matches preview/export overlay behavior.
+extension VideoExporter {
     internal static func renderSingleSceneFrame(
         frameIndex: Int,
         targetTexture: MTLTexture,
@@ -1315,126 +295,54 @@ public final class VideoExporter: @unchecked Sendable {
         overlaySnapshot: OverlayExportSnapshot?,
         overlayCache: OverlayRenderResourceCache
     ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
-        let commands = SceneRenderPlan.renderCommands(
-            for: runtime,
-            sceneFrameIndex: frameIndex,
-            resolvedTransforms: snapshot.resolvedTransforms,
-            variantOverrides: snapshot.variantOverrides,
-            userMediaPresent: snapshot.userMediaPresent,
-            layerToggleState: snapshot.layerToggleState
-        )
-
-        let timeUs = frameToUs(frameIndex, fps: runtime.fps)
-        let overlayItems = overlaySnapshot.map { OverlayResolver.resolve(from: $0, at: timeUs) } ?? []
-
-        let renderContext = SceneRenderContext(
-            commands: commands,
+        try SingleSceneVideoExportRunner.renderSingleSceneFrame(
+            frameIndex: frameIndex,
+            targetTexture: targetTexture,
+            runtime: runtime,
+            snapshot: snapshot,
+            renderer: renderer,
             textureProvider: textureProvider,
             pathRegistry: pathRegistry,
             assetSizes: assetSizes,
-            localFrame: frameIndex,
-            canvasSize: runtime.canvasSize,
-            sceneInstanceId: UUID()
-        )
-
-        let request = TimelineRenderRequest(
-            resolved: .single(renderContext),
-            targetTexture: targetTexture,
-            drawableScale: 1.0,
-            timelineCanvasSize: runtime.canvasSize,
             backgroundState: backgroundState,
-            backgroundTextureProvider: textureProvider,
-            clearColorOverride: clearColor,
-            presentationDrawable: nil,
-            waitUntilCompleted: true,
-            diagnosticFrameTag: frameIndex,
-            overlayItems: overlayItems
+            clearColor: clearColor,
+            overlaySnapshot: overlaySnapshot,
+            overlayCache: overlayCache
         )
-
-        do {
-            try TimelineRenderExecutor.render(
-                request,
-                renderer: renderer,
-                commandQueue: renderer.commandQueue,
-                transitionCompositor: nil,
-                completionQueue: nil,
-                overlayCache: overlayCache
-            )
-        } catch let error as TimelineRenderExecutorError {
-            switch error {
-            case .failedToCreateCommandBuffer:
-                throw VideoExportError.failedToCreateCommandBuffer
-            case .failedToAcquireOffscreenTexture,
-                 .missingTransitionCompositor,
-                 .missingCompletionQueueForAsyncTransition:
-                throw VideoExportError.renderError(error)
-            }
-        }
-
-        let textCount = overlayItems.filter { $0.kind == .text }.count
-        let stickerCount = overlayItems.filter { $0.kind == .sticker }.count
-        return (textOverlayCount: textCount, stickerOverlayCount: stickerCount)
     }
 
-}
+    internal static func renderTimelineFrame(
+        frameIndex: Int,
+        targetTexture: MTLTexture,
+        exportRuntime: TimelineExportRuntime,
+        renderer: MetalRenderer,
+        transitionCompositor: TransitionCompositor,
+        canvasSize: SizeD,
+        backgroundTextureProvider: TextureProvider?,
+        clearColor: ClearColor?,
+        renderDiagnosticsSink: RenderDiagnosticsSink?,
+        overlayCache: OverlayRenderResourceCache,
+        sceneBackgrounds: [UUID: SceneExportBackgroundData] = [:]
+    ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
+        try TimelineVideoExportRunner.renderTimelineFrame(
+            frameIndex: frameIndex,
+            targetTexture: targetTexture,
+            exportRuntime: exportRuntime,
+            renderer: renderer,
+            transitionCompositor: transitionCompositor,
+            canvasSize: canvasSize,
+            backgroundTextureProvider: backgroundTextureProvider,
+            clearColor: clearColor,
+            renderDiagnosticsSink: renderDiagnosticsSink,
+            overlayCache: overlayCache,
+            sceneBackgrounds: sceneBackgrounds
+        )
+    }
 
-// MARK: - TT-02: Resolution to Export Error Mapping
-
-extension VideoExporter {
-    /// TT-02: Maps TimelineFrameResolution to export error (if any).
-    /// Extracted for unit testing without full export loop.
     internal static func mapResolutionToExportError(
         _ resolution: TimelineFrameResolution,
         frameIndex: Int
     ) -> TimelineExportError? {
-        switch resolution {
-        case .resolved:
-            return nil
-
-        case .hold:
-            return .frameHoldNotAllowed(frameIndex)
-
-        case .staleGeneration:
-            return .frameResolutionFailed(frame: frameIndex, reason: "stale_generation")
-
-        case .failed(let failure):
-            let reason: String
-            switch failure {
-            case .invalidTimeline:
-                reason = "invalid_timeline"
-            case .missingDependency(let id):
-                reason = "missing_dependency:\(id)"
-            case .dependencyFailed(let id, let r):
-                reason = "dependency_failed:\(id):\(r)"
-            case .dependencyTimedOut(let id):
-                reason = "dependency_timeout:\(id)"
-            }
-            return .frameResolutionFailed(frame: frameIndex, reason: reason)
-        }
-    }
-
-    // MARK: - PR-F: File Size Probe
-
-    /// Probes original image dimensions from file URL via ImageIO.
-    /// Returns EXIF-orientation-corrected size to match export placement resolution.
-    private static func probeImageSize(url: URL) -> CGSize? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let w = props[kCGImagePropertyPixelWidth] as? Double,
-              let h = props[kCGImagePropertyPixelHeight] as? Double else { return nil }
-        let orientation = props[kCGImagePropertyOrientation] as? UInt32 ?? 1
-        if orientation >= 5 && orientation <= 8 {
-            return CGSize(width: h, height: w)
-        }
-        return CGSize(width: w, height: h)
-    }
-}
-
-// MARK: - Empty Texture Provider
-
-/// Empty texture provider for background-only renders.
-private final class EmptyTextureProvider: TextureProvider {
-    func texture(for assetId: String) -> MTLTexture? {
-        nil
+        TimelineVideoExportRunner.mapResolutionToExportError(resolution, frameIndex: frameIndex)
     }
 }

@@ -75,20 +75,20 @@ final class MissingMediaExportGateTests: XCTestCase {
 
     func test_isActive_matchingId() {
         let exporter = VideoExporter(mediaLocator: StubMediaLocator())
-        let request = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporter)
+        let request = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: .photoLibraryOnly)
         XCTAssertTrue(request.isActive(for: request.id))
     }
 
     func test_isActive_nonMatchingId() {
         let exporter = VideoExporter(mediaLocator: StubMediaLocator())
-        let request = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporter)
+        let request = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: .photoLibraryOnly)
         XCTAssertFalse(request.isActive(for: UUID()))
     }
 
     func test_cancelA_startB_staleCompletionIgnored() {
-        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         let requestAId = requestA.id
-        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         XCTAssertFalse(requestB.isActive(for: requestAId))
         XCTAssertTrue(requestB.isActive(for: requestB.id))
     }
@@ -101,9 +101,9 @@ final class MissingMediaExportGateTests: XCTestCase {
     }
 
     func test_cancelClosure_onlyClears_matchingRequest() {
-        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         let requestAId = requestA.id
-        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         var activeRequest: EditorRuntime.ActiveExportRequest? = requestB
 
         if activeRequest?.isActive(for: requestAId) == true {
@@ -115,9 +115,9 @@ final class MissingMediaExportGateTests: XCTestCase {
     }
 
     func test_staleProgress_gatedByRequestId() {
-        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         let requestAId = requestA.id
-        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         let activeRequest: EditorRuntime.ActiveExportRequest? = requestB
 
         XCTAssertFalse(activeRequest?.isActive(for: requestAId) ?? false)
@@ -125,9 +125,9 @@ final class MissingMediaExportGateTests: XCTestCase {
     }
 
     func test_staleFinishing_gatedByRequestId() {
-        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         let requestAId = requestA.id
-        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         let activeRequest: EditorRuntime.ActiveExportRequest? = requestB
 
         XCTAssertFalse(activeRequest?.isActive(for: requestAId) ?? false)
@@ -139,7 +139,7 @@ final class MissingMediaExportGateTests: XCTestCase {
         var isExporting: Bool { activeRequest != nil }
 
         XCTAssertFalse(isExporting)
-        activeRequest = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        activeRequest = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         XCTAssertTrue(isExporting)
         activeRequest = nil
         XCTAssertFalse(isExporting)
@@ -155,7 +155,7 @@ final class MissingMediaExportGateTests: XCTestCase {
         // Inject missing media
         session.updateMissingMedia(for: UUID(), failures: ["block_1"])
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
 
         // State should NOT transition to exporting
         XCTAssertEqual(runtime.state, .timelinePreview)
@@ -170,7 +170,7 @@ final class MissingMediaExportGateTests: XCTestCase {
         var outputs: [EditorRuntimeOutput] = []
         runtime.onOutput = { outputs.append($0) }
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
 
         XCTAssertEqual(runtime.state, .exporting)
         XCTAssertTrue(outputs.contains(where: {
@@ -186,7 +186,7 @@ final class MissingMediaExportGateTests: XCTestCase {
         var outputs: [EditorRuntimeOutput] = []
         runtime.onOutput = { outputs.append($0) }
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         XCTAssertEqual(runtime.state, .exporting)
 
         runtime.cancelExport()
@@ -203,7 +203,7 @@ final class MissingMediaExportGateTests: XCTestCase {
         var outputs: [EditorRuntimeOutput] = []
         runtime.onOutput = { outputs.append($0) }
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         XCTAssertEqual(runtime.state, .exporting)
 
         runtime.cancelExport()
@@ -217,7 +217,7 @@ final class MissingMediaExportGateTests: XCTestCase {
             if case .exportCancelled = output { cancelCount += 1 }
         }
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         runtime.cancelExport()
         runtime.cancelExport() // second cancel — should be noop
 
@@ -233,7 +233,7 @@ final class MissingMediaExportGateTests: XCTestCase {
         runtime.onOutput = { outputs.append($0) }
 
         // Start export (sets state to .exporting) but no metal context booted
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         XCTAssertEqual(runtime.state, .exporting)
 
         // executeExport should detect missing metal context and abort
@@ -243,7 +243,7 @@ final class MissingMediaExportGateTests: XCTestCase {
         XCTAssertEqual(runtime.state, .timelinePreview)
         // Must emit terminal failure
         XCTAssertTrue(outputs.contains(where: {
-            if case .exportCompleted(.failure) = $0 { return true }
+            if case .exportRenderFailed(_) = $0 { return true }
             return false
         }))
     }
@@ -254,12 +254,12 @@ final class MissingMediaExportGateTests: XCTestCase {
         var outputs: [EditorRuntimeOutput] = []
         runtime.onOutput = { outputs.append($0) }
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         await runtime.executeExport()
 
         XCTAssertEqual(runtime.state, .sceneEdit(instanceId: instanceId))
         XCTAssertTrue(outputs.contains(where: {
-            if case .exportCompleted(.failure) = $0 { return true }
+            if case .exportRenderFailed(_) = $0 { return true }
             return false
         }))
     }
@@ -271,7 +271,7 @@ final class MissingMediaExportGateTests: XCTestCase {
             if case .exportCancelled = output { cancelCount += 1 }
         }
 
-        runtime.startExport()
+        runtime.startExport(policy: .photoLibraryOnly)
         XCTAssertEqual(runtime.state, .exporting)
 
         // Cancel (simulating cancel during preflight wait)

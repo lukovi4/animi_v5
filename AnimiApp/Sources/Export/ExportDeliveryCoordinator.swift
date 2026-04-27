@@ -4,6 +4,11 @@ enum ExportDeliveryDestination {
     case photoLibrary
 }
 
+enum ExportDeliveryPolicy {
+    case photoLibraryOnly
+    case photoLibraryThenShare
+}
+
 /// Delivery outcome for UI routing — no UIKit dependency.
 enum ExportDeliveryOutcome {
     case ignoredStale
@@ -33,9 +38,6 @@ final class ExportDeliveryCoordinator: ExportDelivering {
         switch destination {
         case .photoLibrary:
             saver.save(fileURL: fileURL) { result in
-                // Always clean up temp file regardless of outcome
-                try? FileManager.default.removeItem(at: fileURL)
-
                 DispatchQueue.main.async {
                     completion(result)
                 }
@@ -57,19 +59,26 @@ final class ExportDeliveryFlow {
     private var isRequestActive: ((UUID) -> Bool)?
     private var clearRequestIfCurrent: ((UUID) -> Void)?
     private var completion: ((ExportDeliveryOutcome) -> Void)?
+    private var shareHandoff: ((URL) -> Void)?
+    private var pendingShareURL: URL?
 
     private let requestId: UUID
+    private let policy: ExportDeliveryPolicy
 
     init(requestId: UUID,
          deliverer: ExportDelivering,
+         policy: ExportDeliveryPolicy,
          isRequestActive: @escaping (UUID) -> Bool,
          clearRequestIfCurrent: @escaping (UUID) -> Void,
-         completion: @escaping (ExportDeliveryOutcome) -> Void) {
+         completion: @escaping (ExportDeliveryOutcome) -> Void,
+         shareHandoff: ((URL) -> Void)? = nil) {
         self.requestId = requestId
         self.deliverer = deliverer
+        self.policy = policy
         self.isRequestActive = isRequestActive
         self.clearRequestIfCurrent = clearRequestIfCurrent
         self.completion = completion
+        self.shareHandoff = shareHandoff
     }
 
     /// Starts delivery. Must be called exactly once.
@@ -82,16 +91,51 @@ final class ExportDeliveryFlow {
             }
 
             guard isRequestActive(self.requestId) else {
+                try? FileManager.default.removeItem(at: fileURL)
                 self.tearDown()
                 completion(.ignoredStale)
                 return
             }
 
-            clearRequestIfCurrent(self.requestId)
             let outcome = Self.mapResult(result)
-            self.tearDown()
-            completion(outcome)
+            guard case .savedToPhotos = outcome else {
+                try? FileManager.default.removeItem(at: fileURL)
+                clearRequestIfCurrent(self.requestId)
+                self.tearDown()
+                completion(outcome)
+                return
+            }
+
+            switch self.policy {
+            case .photoLibraryOnly:
+                try? FileManager.default.removeItem(at: fileURL)
+                clearRequestIfCurrent(self.requestId)
+                self.tearDown()
+                completion(.savedToPhotos)
+
+            case .photoLibraryThenShare:
+                self.pendingShareURL = fileURL
+                if let shareHandoff = self.shareHandoff {
+                    shareHandoff(fileURL)
+                } else {
+                    self.finalizeAfterShare()
+                }
+            }
         }
+    }
+
+    func finalizeAfterShare() {
+        guard let url = pendingShareURL,
+              let clearRequestIfCurrent = self.clearRequestIfCurrent,
+              let completion = self.completion else {
+            return
+        }
+
+        try? FileManager.default.removeItem(at: url)
+        pendingShareURL = nil
+        clearRequestIfCurrent(self.requestId)
+        tearDown()
+        completion(.savedToPhotos)
     }
 
     private static func mapResult(_ result: Result<Void, ExportDeliveryError>) -> ExportDeliveryOutcome {
@@ -110,5 +154,13 @@ final class ExportDeliveryFlow {
         isRequestActive = nil
         clearRequestIfCurrent = nil
         completion = nil
+        shareHandoff = nil
+        pendingShareURL = nil
+    }
+
+    deinit {
+        if let pendingShareURL {
+            try? FileManager.default.removeItem(at: pendingShareURL)
+        }
     }
 }

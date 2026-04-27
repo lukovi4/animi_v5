@@ -655,7 +655,19 @@ private extension EditorReducer {
 
 private extension EditorReducer {
 
+    /// Finds an audio item by ID across all audio tracks.
+    /// Returns (trackIndex, itemIndex) or nil.
+    private static func findAudioItem(id: UUID, in timeline: CanonicalTimeline) -> (trackIndex: Int, itemIndex: Int)? {
+        for (tIdx, track) in timeline.tracks.enumerated() where track.kind == .audio {
+            if let iIdx = track.items.firstIndex(where: { $0.id == id }) {
+                return (tIdx, iIdx)
+            }
+        }
+        return nil
+    }
+
     /// Sets or replaces the project music track with a single audio clip.
+    /// PR3: Only removes `.music` items; non-music items are preserved.
     static func setProjectMusic(
         state: EditorState,
         assetRef: AudioAssetRef,
@@ -663,7 +675,36 @@ private extension EditorReducer {
     ) -> ReducerResult {
         var newState = state
 
-        // Find or create audio track
+        // 1. Collect music item IDs to remove across all audio tracks
+        var musicItemIds = Set<UUID>()
+        for track in newState.canonicalTimeline.tracks where track.kind == .audio {
+            for item in track.items {
+                if let payload = newState.canonicalTimeline.payloads[item.payloadId],
+                   case .audio(let ap) = payload, ap.role == .music {
+                    musicItemIds.insert(item.id)
+                }
+            }
+        }
+
+        // 2. Reset selection if it points to a music item being removed
+        if case .audio(let selectedId) = newState.selection, musicItemIds.contains(selectedId) {
+            newState.selection = .none
+        }
+
+        // 3. Remove all .music items and their payloads
+        for tIdx in newState.canonicalTimeline.tracks.indices {
+            guard newState.canonicalTimeline.tracks[tIdx].kind == .audio else { continue }
+            let removedItems = newState.canonicalTimeline.tracks[tIdx].items.filter { musicItemIds.contains($0.id) }
+            for item in removedItems {
+                newState.canonicalTimeline.payloads.removeValue(forKey: item.payloadId)
+            }
+            newState.canonicalTimeline.tracks[tIdx].items.removeAll { musicItemIds.contains($0.id) }
+        }
+
+        // 4. Prune empty audio tracks
+        newState.canonicalTimeline.tracks.removeAll { $0.kind == .audio && $0.items.isEmpty }
+
+        // 5. Find existing audio track or create new one
         var audioTrackIndex = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .audio })
         if audioTrackIndex == nil {
             let newTrack = Track(kind: .audio)
@@ -675,23 +716,19 @@ private extension EditorReducer {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
 
-        // Remove old item + payload if replacing
-        if let oldItem = newState.canonicalTimeline.tracks[trackIdx].items.first {
-            newState.canonicalTimeline.payloads.removeValue(forKey: oldItem.payloadId)
-        }
-
-        // Create new payload
+        // 6. Create new payload with role: .music
         let payloadId = UUID()
         let payload = AudioPayload(
             assetRef: assetRef,
             sourceDurationUs: sourceDurationUs,
             trimStartUs: 0,
             trimEndUs: sourceDurationUs,
-            volume: 1.0
+            volume: 1.0,
+            role: .music
         )
         newState.canonicalTimeline.payloads[payloadId] = .audio(payload)
 
-        // Create new item
+        // 7. Append new item to track (not replace entire array)
         let newItem = TimelineItem(
             id: UUID(),
             payloadId: payloadId,
@@ -699,40 +736,57 @@ private extension EditorReducer {
             startUs: 0,
             durationUs: sourceDurationUs
         )
-
-        // Replace track items with single new item
-        newState.canonicalTimeline.tracks[trackIdx].items = [newItem]
+        newState.canonicalTimeline.tracks[trackIdx].items.append(newItem)
 
         return ReducerResult(state: newState, shouldPushSnapshot: true)
     }
 
-    /// Removes the project music track entirely.
+    /// Removes only `.music` audio items from all audio tracks.
+    /// PR3: Non-music items are preserved; only empty tracks are pruned.
+    /// Selection is cleared only if the selected item was a removed music item.
     static func removeProjectMusic(
         state: EditorState
     ) -> ReducerResult {
         var newState = state
 
-        guard let trackIdx = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .audio }) else {
+        // 1. Collect .music item IDs across all audio tracks
+        var musicItemIds = Set<UUID>()
+        for track in newState.canonicalTimeline.tracks where track.kind == .audio {
+            for item in track.items {
+                if let payload = newState.canonicalTimeline.payloads[item.payloadId],
+                   case .audio(let ap) = payload, ap.role == .music {
+                    musicItemIds.insert(item.id)
+                }
+            }
+        }
+
+        guard !musicItemIds.isEmpty else {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
 
-        // Remove payload for each item
-        for item in newState.canonicalTimeline.tracks[trackIdx].items {
-            newState.canonicalTimeline.payloads.removeValue(forKey: item.payloadId)
-        }
-
-        // Remove the audio track
-        newState.canonicalTimeline.tracks.remove(at: trackIdx)
-
-        // Clear audio selection if active
-        if newState.selection.isAudioSelected {
+        // 2. Clear selection only if selected item is being removed
+        if case .audio(let selectedId) = newState.selection, musicItemIds.contains(selectedId) {
             newState.selection = .none
         }
+
+        // 3. Remove .music items and their payloads
+        for tIdx in newState.canonicalTimeline.tracks.indices {
+            guard newState.canonicalTimeline.tracks[tIdx].kind == .audio else { continue }
+            let removedItems = newState.canonicalTimeline.tracks[tIdx].items.filter { musicItemIds.contains($0.id) }
+            for item in removedItems {
+                newState.canonicalTimeline.payloads.removeValue(forKey: item.payloadId)
+            }
+            newState.canonicalTimeline.tracks[tIdx].items.removeAll { musicItemIds.contains($0.id) }
+        }
+
+        // 4. Prune empty audio tracks
+        newState.canonicalTimeline.tracks.removeAll { $0.kind == .audio && $0.items.isEmpty }
 
         return ReducerResult(state: newState, shouldPushSnapshot: true)
     }
 
     /// Sets trim range for the project music clip.
+    /// PR3: Uses cross-track lookup; no-op for non-.music items.
     static func setProjectMusicTrim(
         state: EditorState,
         itemId: UUID,
@@ -741,11 +795,14 @@ private extension EditorReducer {
     ) -> ReducerResult {
         var newState = state
 
-        // Find audio track and item
-        guard let trackIdx = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .audio }),
-              let itemIdx = newState.canonicalTimeline.tracks[trackIdx].items.firstIndex(where: { $0.id == itemId }),
+        guard let (trackIdx, itemIdx) = findAudioItem(id: itemId, in: newState.canonicalTimeline),
               let payloadId = Optional(newState.canonicalTimeline.tracks[trackIdx].items[itemIdx].payloadId),
               case .audio(var audioPayload) = newState.canonicalTimeline.payloads[payloadId] else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // No-op for non-music items
+        guard audioPayload.role == .music else {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
 
@@ -765,6 +822,7 @@ private extension EditorReducer {
     }
 
     /// Sets volume for the project music clip.
+    /// PR3: Uses cross-track lookup; no-op for non-.music items.
     static func setProjectMusicVolume(
         state: EditorState,
         itemId: UUID,
@@ -772,11 +830,14 @@ private extension EditorReducer {
     ) -> ReducerResult {
         var newState = state
 
-        // Find audio track and item
-        guard let trackIdx = newState.canonicalTimeline.tracks.firstIndex(where: { $0.kind == .audio }),
-              let itemIdx = newState.canonicalTimeline.tracks[trackIdx].items.firstIndex(where: { $0.id == itemId }),
+        guard let (trackIdx, itemIdx) = findAudioItem(id: itemId, in: newState.canonicalTimeline),
               let payloadId = Optional(newState.canonicalTimeline.tracks[trackIdx].items[itemIdx].payloadId),
               case .audio(var audioPayload) = newState.canonicalTimeline.payloads[payloadId] else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // No-op for non-music items
+        guard audioPayload.role == .music else {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
 

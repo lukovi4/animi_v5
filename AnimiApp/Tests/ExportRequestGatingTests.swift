@@ -16,13 +16,13 @@ final class ExportRequestGatingTests: XCTestCase {
 
     func test_isActive_matchingId() {
         let exporter = VideoExporter(mediaLocator: StubMediaLocator())
-        let request = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporter)
+        let request = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: .photoLibraryOnly)
         XCTAssertTrue(request.isActive(for: request.id))
     }
 
     func test_isActive_nonMatchingId() {
         let exporter = VideoExporter(mediaLocator: StubMediaLocator())
-        let request = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporter)
+        let request = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: .photoLibraryOnly)
         XCTAssertFalse(request.isActive(for: UUID()))
     }
 
@@ -31,12 +31,12 @@ final class ExportRequestGatingTests: XCTestCase {
     /// Simulate: cancel A, start B, A's stale completion arrives — gated by isActive
     func test_cancelA_startB_staleCompletionIgnored() {
         let exporterA = VideoExporter(mediaLocator: StubMediaLocator())
-        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterA)
+        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterA, deliveryPolicy: .photoLibraryOnly)
         let requestAId = requestA.id
 
         // Start request B
         let exporterB = VideoExporter(mediaLocator: StubMediaLocator())
-        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterB)
+        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterB, deliveryPolicy: .photoLibraryOnly)
 
         // Simulate activeExportRequest = requestB (A was cancelled, B is active)
         // A's completion guard checks requestB.isActive(for: requestAId)
@@ -60,11 +60,11 @@ final class ExportRequestGatingTests: XCTestCase {
     /// Rapid cancel+restart: A's cancel closure only clears if it matches current
     func test_cancelClosure_onlyClears_matchingRequest() {
         let exporterA = VideoExporter(mediaLocator: StubMediaLocator())
-        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterA)
+        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterA, deliveryPolicy: .photoLibraryOnly)
         let requestAId = requestA.id
 
         let exporterB = VideoExporter(mediaLocator: StubMediaLocator())
-        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterB)
+        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterB, deliveryPolicy: .photoLibraryOnly)
 
         // activeExportRequest is now B
         var activeRequest: EditorRuntime.ActiveExportRequest? = requestB
@@ -85,11 +85,11 @@ final class ExportRequestGatingTests: XCTestCase {
     /// If active request changed, stale progress must be dropped.
     func test_staleProgress_gatedByRequestId() {
         let exporterA = VideoExporter(mediaLocator: StubMediaLocator())
-        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterA)
+        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterA, deliveryPolicy: .photoLibraryOnly)
         let requestAId = requestA.id
 
         let exporterB = VideoExporter(mediaLocator: StubMediaLocator())
-        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterB)
+        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterB, deliveryPolicy: .photoLibraryOnly)
 
         // Active request is now B
         let activeRequest: EditorRuntime.ActiveExportRequest? = requestB
@@ -106,11 +106,11 @@ final class ExportRequestGatingTests: XCTestCase {
     /// Production contract: onFinishing closure gates by requestId.
     func test_staleFinishing_gatedByRequestId() {
         let exporterA = VideoExporter(mediaLocator: StubMediaLocator())
-        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterA)
+        let requestA = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterA, deliveryPolicy: .photoLibraryOnly)
         let requestAId = requestA.id
 
         let exporterB = VideoExporter(mediaLocator: StubMediaLocator())
-        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterB)
+        let requestB = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: exporterB, deliveryPolicy: .photoLibraryOnly)
 
         let activeRequest: EditorRuntime.ActiveExportRequest? = requestB
 
@@ -143,7 +143,7 @@ final class ExportRequestGatingTests: XCTestCase {
 
         XCTAssertFalse(isExporting)
 
-        activeRequest = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()))
+        activeRequest = EditorRuntime.ActiveExportRequest(id: UUID(), exporter: VideoExporter(mediaLocator: StubMediaLocator()), deliveryPolicy: .photoLibraryOnly)
         XCTAssertTrue(isExporting)
 
         activeRequest = nil

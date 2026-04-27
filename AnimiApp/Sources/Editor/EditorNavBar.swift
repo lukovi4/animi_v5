@@ -184,6 +184,8 @@ final class EditorNavBar: UIView {
         redoButton.alpha = enabled ? 1.0 : 0.4
     }
 
+    var exportPopoverAnchorView: UIView { exportButton }
+
     /// Sets the navigation bar mode (PR-C).
     /// - `timeline`: Shows Close, Undo, Redo, Export
     /// - `sceneEdit`: Shows Done, Undo, Redo (hides Close/Export)

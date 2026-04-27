@@ -129,11 +129,19 @@ final class FileProjectMediaStore: @unchecked Sendable {
         // descriptors are missing from the source registry (pre-registry drafts).
         var fallbackRefs: [ProjectAssetID: MediaRef] = [:]
         for (_, region) in sourceDraft.background.regions {
-            if let ref = region.imageMediaRef { fallbackRefs[ref.assetId] = ref }
+            if let ref = region.mediaRef { fallbackRefs[ref.assetId] = ref }
         }
         for (_, sceneState) in sourceDraft.sceneInstanceStates {
             if let slots = sceneState.mediaSlotsByBlockId {
                 for (_, slot) in slots { fallbackRefs[slot.mediaRef.assetId] = slot.mediaRef }
+            }
+        }
+        // PR2: Walk scene-level background overrides for fallback refs
+        for (_, sceneState) in sourceDraft.sceneInstanceStates {
+            if let bgOverride = sceneState.backgroundOverride {
+                for (_, region) in bgOverride.regions {
+                    if let ref = region.mediaRef { fallbackRefs[ref.assetId] = ref }
+                }
             }
         }
         // PR8: Walk audio payloads for imported asset fallback refs
@@ -306,7 +314,7 @@ final class FileProjectMediaStore: @unchecked Sendable {
 
         // Defense-in-depth: raw-path scan (keeps pre-registry / stale-registry drafts safe).
         for (_, regionOverride) in draft.background.regions {
-            if let mediaRef = regionOverride.imageMediaRef {
+            if let mediaRef = regionOverride.mediaRef {
                 paths.insert(mediaRef.storagePath)
             }
         }
@@ -314,6 +322,14 @@ final class FileProjectMediaStore: @unchecked Sendable {
             if let slots = sceneState.mediaSlotsByBlockId {
                 for (_, slot) in slots {
                     paths.insert(slot.mediaRef.storagePath)
+                }
+            }
+            // PR2: Walk scene-level background overrides
+            if let bgOverride = sceneState.backgroundOverride {
+                for (_, region) in bgOverride.regions {
+                    if let mediaRef = region.mediaRef {
+                        paths.insert(mediaRef.storagePath)
+                    }
                 }
             }
         }

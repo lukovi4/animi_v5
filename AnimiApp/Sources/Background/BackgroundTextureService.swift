@@ -78,11 +78,16 @@ public final class BackgroundTextureService {
     ///     `assetId` → descriptor → `storagePath`. The service holds no
     ///     current-project state.
     /// - Throws: BackgroundTextureError if loading fails (except missing file)
+    /// Loads a texture from a MediaRef and injects it into the provider.
+    /// Returns `true` if the texture was actually written to the provider,
+    /// `false` if skipped (missing file, stale guard).
+    @discardableResult
     public func loadTexture(
         slotKey: String,
         mediaRef: MediaRef,
-        assetRegistry: ProjectAssetRegistry
-    ) async throws {
+        assetRegistry: ProjectAssetRegistry,
+        isStale: (() -> Bool)? = nil
+    ) async throws -> Bool {
         // Resolve absolute path via registry-backed locator
         let fileURL = try await mediaLocator.absoluteURL(for: mediaRef, registry: assetRegistry)
 
@@ -91,13 +96,16 @@ public final class BackgroundTextureService {
             #if DEBUG
             print("[BackgroundTextureService] WARNING: File not found for slot '\(slotKey)': \(fileURL.path)")
             #endif
-            return
+            return false
         }
 
         // Load texture off-MainActor via DownsampledImageLoader
         let texture = try await Self.loadPreviewTexture(
             fileURL: fileURL, device: device, commandQueue: commandQueue
         )
+
+        // GUARD: check stale before writing to shared provider
+        if isStale?() == true { return false }
 
         // Inject into provider
         textureProvider.setTexture(texture, for: slotKey)
@@ -106,6 +114,7 @@ public final class BackgroundTextureService {
         #if DEBUG
         print("[BackgroundTextureService] Loaded texture for slot '\(slotKey)'")
         #endif
+        return true
     }
 
     /// Clears a single texture.
@@ -238,24 +247,28 @@ public final class BackgroundTextureService {
     public func preloadTextures(
         from override: ProjectBackgroundOverride,
         presetId: String,
-        assetRegistry: ProjectAssetRegistry
+        assetRegistry: ProjectAssetRegistry,
+        isStale: (() -> Bool)? = nil
     ) async -> Set<String> {
         var loadedKeys: Set<String> = []
 
         for (regionId, regionOverride) in override.regions {
             if case .image(let imageOverride) = regionOverride.source {
+                if isStale?() == true { return loadedKeys }
+
                 let slotKey = EffectiveBackgroundBuilder.makeSlotKey(
                     presetId: presetId,
                     regionId: regionId
                 )
 
                 do {
-                    try await loadTexture(
+                    let written = try await loadTexture(
                         slotKey: slotKey,
                         mediaRef: imageOverride.mediaRef,
-                        assetRegistry: assetRegistry
+                        assetRegistry: assetRegistry,
+                        isStale: isStale
                     )
-                    loadedKeys.insert(slotKey)
+                    if written { loadedKeys.insert(slotKey) }
                 } catch {
                     #if DEBUG
                     print("[BackgroundTextureService] Failed to preload texture for '\(slotKey)': \(error.localizedDescription)")
