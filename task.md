@@ -1,5 +1,33 @@
 С учетом принятых продуктовых решений целевой контракт теперь фиксируется жестко.
 
+**Текущее Состояние На 2026-04-27**
+- Зафиксирован integration milestone commit:
+  `a7c45b4` —
+  `integration: per-scene background domain, export runner extraction, preview background switching`.
+- Зафиксирован следующий structural export commit:
+  `1e17c58` —
+  `refactor(export): extract TimelineExportSessionBuilder from engine`.
+- Актуальный локальный gate:
+  `bash Scripts/run_animiapp_tests.sh`
+  ->
+  `1265 tests, 0 failures, 1 skipped`.
+- В committed production code закрыты:
+  `PR 1: Export Artifact And Delivery Policy Split`,
+  `PR 2: Background Domain Contract And Scope Resolution`,
+  `PR 4: VideoExporter Decomposition`,
+  `PR 5: Timeline Export Session Builder Extraction`.
+- Дополнительно внутри этого integration milestone закрыт integration tail между `PR1–PR4`:
+  delivery/runtime/output seam,
+  scene background production edit/persistence/export path,
+  per-scene timeline export background contract,
+  timeline preview background switching на first non-transition frame.
+- `PR 3` полностью не закрыт:
+  в дереве есть compatibility groundwork для audio,
+  но canonical contract `generic audio domain -> runtime/export audio snapshot/plan`
+  еще не доведен до финального accepted состояния.
+- Следующий канонический structural шаг по плану:
+  `PR 6: Playback Transport And Timebase Refactor`.
+
 **Финальная Цель Рефакторинга**
 - Не “уменьшить файлы” и не “разложить код по папкам”, а довести редактор до состояния, где текущий product contract выражен в явных domain boundaries и не держится на giant owner-типах.
 - После рефакторинга приложение должно поддерживать уже зафиксированный shipped/future-near scope без еще одного structural rewrite:
@@ -87,7 +115,7 @@
 - `VideoExporter` должен стать тонким export facade. Внутри не должно оставаться смешения config types, runner logic, audio assembly и timeline/single-scene orchestration в одном файле.
 
 **Канонический Порядок PR-Рефакторинга**
-1. `PR 1: Export Artifact And Delivery Policy Split`
+1. `PR 1: Export Artifact And Delivery Policy Split` — `DONE`
    Цель: разрезать `render success`, `artifact lifetime` и `delivery destination policy`.
    По коду: разрезать текущий hardcoded path в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` и `AnimiApp/Sources/Export/ExportDeliveryCoordinator.swift`.
    Вынести:
@@ -99,7 +127,7 @@
    social/share path формализован как `save to Photos -> share`;
    cleanup export file-а принадлежит delivery policy, а не render callback-у.
 
-2. `PR 2: Background Domain Contract And Scope Resolution`
+2. `PR 2: Background Domain Contract And Scope Resolution` — `DONE`
    Цель: зафиксировать правильный background contract раньше runtime extraction.
    По коду: разрезать current image-only assumptions в `AnimiApp/Sources/Project/ProjectBackgroundOverride.swift`, `AnimiApp/Sources/Background/EffectiveBackgroundBuilder.swift`, `AnimiApp/Sources/Export/ExportBackgroundSnapshot.swift`, `TVECore/Sources/TVECore/Models/Background/BackgroundRegionState.swift`, `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
    Acceptance:
@@ -107,15 +135,19 @@
    `scene override` полностью заменяет project background для сцены;
    source taxonomy больше не зафиксирована на `solid/gradient/image` как конечная модель.
 
-3. `PR 3: Audio Domain Contract And Compatibility Layer`
+3. `PR 3: Audio Domain Contract And Compatibility Layer` — `OPEN`
    Цель: убрать `project music` как canonical contract и перевести audio в generic timeline domain.
    По коду: разрезать special-case path в `AnimiApp/Sources/Project/CanonicalTimeline.swift`, `AnimiApp/Sources/Editor/Store/EditorReducer.swift`, `AnimiApp/Sources/Player/EditorViewController.swift`, `AnimiApp/Sources/Editor/TimelineView.swift`, `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
    Acceptance:
    audio model выражается через generic audio items + role metadata;
    runtime/export работают с audio snapshot/plan, а не с одним `musicConfig`;
    shipped behavior не ломается за счет compatibility layer.
+   Текущее состояние:
+   compatibility groundwork частично есть,
+   но production export/runtime path все еще живет через music bridge,
+   поэтому PR не считается завершенным.
 
-4. `PR 4: VideoExporter Decomposition`
+4. `PR 4: VideoExporter Decomposition` — `DONE`
    Цель: превратить `AnimiApp/Sources/Export/VideoExporter.swift` в фасад.
    Вынести:
    single-scene export runner,
@@ -125,13 +157,13 @@
    Acceptance:
    `VideoExporter` больше не смешивает orchestration, config types, audio assembly и two export modes в одном giant файле.
 
-5. `PR 5: Timeline Export Session Builder Extraction`
+5. `PR 5: Timeline Export Session Builder Extraction` — `DONE`
    Цель: вынести `buildExportSession()` из `AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift` в отдельный builder.
    Почему: export snapshot assembly уже является отдельным bounded context внутри engine.
    Acceptance:
    engine перестает содержать тяжелый export snapshot assembly code.
 
-6. `PR 6: Playback Transport And Timebase Refactor`
+6. `PR 6: Playback Transport And Timebase Refactor` — `NEXT`
    Цель: перевести editor preview/playback с `frame-driven UI loop` на `transport-driven playback` с единым owner-ом времени до runtime/engine thinning.
    Почему: текущая модель `displayLink -> currentFrame + 1 -> store playhead -> subsystem resync` не является устойчивой базой для audio, video, animated text, stickers, overlays и future timeline effects.
    По коду: разрезать playback-owner path в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`, `AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift`, `AnimiApp/Sources/Player/TimelineComposition/SceneInstanceRuntime.swift`, `AnimiApp/Sources/UserMedia/UserMediaService.swift`, `AnimiApp/Sources/UserMedia/VideoFrameProvider.swift`, `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift`.

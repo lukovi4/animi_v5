@@ -12,12 +12,34 @@
 
 ## 0. Baseline
 
-- На `2026-04-22` локальный baseline green:
+- Исторический baseline на `2026-04-22`:
   `bash Scripts/run_animiapp_tests.sh`
   ->
   `1219 tests, 0 failures`.
-- Дальнейшие PR не должны ломать этот baseline.
+- Актуальный integration baseline на `2026-04-27` после commit `a7c45b4`:
+  `bash Scripts/run_animiapp_tests.sh`
+  ->
+  `1265 tests, 0 failures, 1 skipped`.
+- Дальнейшие PR не должны ломать актуальный baseline `1265 / 0 / 1`.
 - Каждый PR должен быть behavior-preserving, если acceptance явно не требует смены контракта.
+
+## 0.1 Current Status
+
+- Закрыты:
+  - `PR 1: Export Artifact And Delivery Policy Split`
+  - `PR 2: Background Domain Contract And Scope Resolution`
+  - `PR 4: VideoExporter Facade`
+  - `PR 5: Timeline Export Session Builder Extraction`
+- Внутри integration milestone дополнительно закрыт integration tail между `PR1–PR4`:
+  - runtime/controller/output export delivery contract
+  - scene background production edit/persistence/export path
+  - per-scene timeline export background contract
+  - timeline preview background switching
+- `PR 3` не закрыт как canonical done:
+  - compatibility groundwork частично присутствует
+  - production runtime/export audio contract все еще опирается на music bridge
+- Следующий канонический PR по sequence:
+  - `PR 6: Playback Transport And Timebase Refactor`
 
 ## 1. Merge Rules
 
@@ -29,7 +51,7 @@
 
 ## 2. PR Sequence
 
-### PR 1: Export Artifact And Delivery Policy Split
+### PR 1: Export Artifact And Delivery Policy Split — DONE
 
 Scope:
 - `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`
@@ -55,7 +77,7 @@ Test gates:
 - update `ExportDeliveryPlayerFlowTests`
 - add tests на artifact retention/cleanup для share path
 
-### PR 2: Background Domain Contract And Scope Resolution
+### PR 2: Background Domain Contract And Scope Resolution — DONE
 
 Scope:
 - `AnimiApp/Sources/Project/ProjectBackgroundOverride.swift`
@@ -84,7 +106,7 @@ Test gates:
 - update `ExportBackgroundRestoreTests`
 - add tests на `scene override fully replaces project background`
 
-### PR 3: Audio Domain Contract And Compatibility Layer
+### PR 3: Audio Domain Contract And Compatibility Layer — OPEN
 
 Scope:
 - `AnimiApp/Sources/Project/CanonicalTimeline.swift`
@@ -105,6 +127,11 @@ Acceptance:
 - runtime/export принимают generic audio snapshot/plan
 - shipped v1 behavior не ломается
 
+Current status:
+- partial groundwork landed
+- canonical generic audio contract still not closed
+- current production bridge still treats music as the effective export/runtime path
+
 Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update `ProjectMusicTrackTests`
@@ -112,7 +139,7 @@ Test gates:
 - update `MusicExportBridgeTests`
 - add tests на role metadata и compatibility path
 
-### PR 4: VideoExporter Facade
+### PR 4: VideoExporter Facade — DONE
 
 Scope:
 - `AnimiApp/Sources/Export/VideoExporter.swift`
@@ -129,7 +156,7 @@ Test gates:
 - update `VideoExportSessionTests`
 - update `VideoExporterTimelineExportSessionTests`
 
-### PR 5: Timeline Export Session Builder Extraction
+### PR 5: Timeline Export Session Builder Extraction — DONE
 
 Scope:
 - `AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift`
@@ -144,7 +171,27 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update `TimelineCompositionEngineExportSessionTests`
 
-### PR 6: TimelineCompositionEngine Internal Split
+### PR 6: Playback Transport And Timebase Refactor — NEXT
+
+Scope:
+- `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`
+- `AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift`
+- `AnimiApp/Sources/Player/TimelineComposition/SceneInstanceRuntime.swift`
+- `AnimiApp/Sources/UserMedia/UserMediaService.swift`
+- `AnimiApp/Sources/UserMedia/VideoFrameProvider.swift`
+- `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift`
+
+Acceptance:
+- preview playback больше не двигается через `currentFrame + 1`
+- `CADisplayLink` больше не является source of truth для playback time
+- steady-state preview audio не держится на periodic corrective seek loop
+- video/audio/future animated elements читают общий project playback time
+
+Test gates:
+- `bash Scripts/run_animiapp_tests.sh`
+- update playback / audio preview / timeline runtime suites
+
+### PR 7: TimelineCompositionEngine Internal Split
 
 Scope:
 - `AnimiApp/Sources/Player/TimelineComposition/*`
@@ -157,7 +204,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update timeline composition / transition / exporter resolution suites
 
-### PR 7: Scene Edit Tool Architecture
+### PR 8: Scene Edit Tool Architecture
 
 Scope:
 - `AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift`
@@ -172,7 +219,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update scene-edit / trim / handoff tests
 
-### PR 8: EditorRuntime Thinning
+### PR 9: EditorRuntime Thinning
 
 Scope:
 - `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`
@@ -186,7 +233,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update runtime mutation / export restore / bridge suites
 
-### PR 9: EditorViewController Thinning
+### PR 10: EditorViewController Thinning
 
 Scope:
 - `AnimiApp/Sources/Player/EditorViewController.swift`
