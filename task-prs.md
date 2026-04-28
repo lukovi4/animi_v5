@@ -20,7 +20,11 @@
   `bash Scripts/run_animiapp_tests.sh`
   ->
   `1265 tests, 0 failures, 1 skipped`.
-- Дальнейшие PR не должны ломать актуальный baseline `1265 / 0 / 1`.
+- Актуальный playback-transport baseline на `2026-04-28` после commit `88e79c7`:
+  `bash Scripts/run_animiapp_tests.sh`
+  ->
+  `1275 tests, 0 failures, 1 skipped`.
+- Дальнейшие PR не должны ломать актуальный baseline `1275 / 0 / 1`.
 - Каждый PR должен быть behavior-preserving, если acceptance явно не требует смены контракта.
 
 ## 0.1 Current Status
@@ -30,16 +34,24 @@
   - `PR 2: Background Domain Contract And Scope Resolution`
   - `PR 4: VideoExporter Facade`
   - `PR 5: Timeline Export Session Builder Extraction`
+  - `PR 6: Playback Transport And Timebase Refactor`
 - Внутри integration milestone дополнительно закрыт integration tail между `PR1–PR4`:
   - runtime/controller/output export delivery contract
   - scene background production edit/persistence/export path
   - per-scene timeline export background contract
   - timeline preview background switching
+- Внутри committed `PR 6` закрыт transport/video playback-owner path:
+  - runtime-owned `PlaybackTransport`
+  - mirrored store playhead without runtime re-entry during playback
+  - shared host-time preview contract for timeline/video path
+- Preview audio transport integration не вошел в committed `PR 6`:
+  - untracked audio preview files explicitly future-work
+  - `markPreviewAudioDirty()` остается no-op seam вне scope принятого playback commit
 - `PR 3` не закрыт как canonical done:
   - compatibility groundwork частично присутствует
   - production runtime/export audio contract все еще опирается на music bridge
 - Следующий канонический PR по sequence:
-  - `PR 6: Playback Transport And Timebase Refactor`
+  - `PR 7: Preview Audio Transport Integration`
 
 ## 1. Merge Rules
 
@@ -171,7 +183,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update `TimelineCompositionEngineExportSessionTests`
 
-### PR 6: Playback Transport And Timebase Refactor — NEXT
+### PR 6: Playback Transport And Timebase Refactor — DONE
 
 Scope:
 - `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`
@@ -179,19 +191,45 @@ Scope:
 - `AnimiApp/Sources/Player/TimelineComposition/SceneInstanceRuntime.swift`
 - `AnimiApp/Sources/UserMedia/UserMediaService.swift`
 - `AnimiApp/Sources/UserMedia/VideoFrameProvider.swift`
-- `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift`
+- `AnimiApp/Sources/EditorRuntime/PlaybackTransport.swift`
+- relevant playback/video test suites
 
 Acceptance:
 - preview playback больше не двигается через `currentFrame + 1`
 - `CADisplayLink` больше не является source of truth для playback time
-- steady-state preview audio не держится на periodic corrective seek loop
-- video/audio/future animated elements читают общий project playback time
+- transport становится single owner timeline playback time
+- mirrored store playhead не re-enters runtime presentation path during playback
+- video/future animated visual consumers читают общий project playback time
+
+Out of committed scope:
+- `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift`
+- preview audio transport integration
+- `markPreviewAudioDirty()` can remain no-op seam until dedicated follow-up PR
 
 Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
-- update playback / audio preview / timeline runtime suites
+- update playback / timeline runtime suites
+- add regression tests for single-driver playback ownership
 
-### PR 7: TimelineCompositionEngine Internal Split
+### PR 7: Preview Audio Transport Integration — NEXT
+
+Scope:
+- `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift`
+- `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`
+- audio-preview runtime wiring/tests
+
+Acceptance:
+- preview audio starts from shared transport-owned playback time
+- steady-state preview audio не держится на periodic corrective seek loop
+- `markPreviewAudioDirty()` получает runtime-owned invalidation/rebuild contract
+- partial workspace-only audio preview seams становятся committed production code или удаляются
+
+Test gates:
+- `bash Scripts/run_animiapp_tests.sh`
+- add/update audio preview runtime suites
+- prove preview audio is compiled and wired through target, not only present in workspace
+
+### PR 8: TimelineCompositionEngine Internal Split
 
 Scope:
 - `AnimiApp/Sources/Player/TimelineComposition/*`
@@ -204,7 +242,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update timeline composition / transition / exporter resolution suites
 
-### PR 8: Scene Edit Tool Architecture
+### PR 9: Scene Edit Tool Architecture
 
 Scope:
 - `AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift`
@@ -219,7 +257,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update scene-edit / trim / handoff tests
 
-### PR 9: EditorRuntime Thinning
+### PR 10: EditorRuntime Thinning
 
 Scope:
 - `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`
@@ -233,7 +271,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update runtime mutation / export restore / bridge suites
 
-### PR 10: EditorViewController Thinning
+### PR 11: EditorViewController Thinning
 
 Scope:
 - `AnimiApp/Sources/Player/EditorViewController.swift`

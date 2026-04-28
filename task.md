@@ -1,32 +1,43 @@
 С учетом принятых продуктовых решений целевой контракт теперь фиксируется жестко.
 
-**Текущее Состояние На 2026-04-27**
+**Текущее Состояние На 2026-04-28**
 - Зафиксирован integration milestone commit:
   `a7c45b4` —
   `integration: per-scene background domain, export runner extraction, preview background switching`.
 - Зафиксирован следующий structural export commit:
   `1e17c58` —
   `refactor(export): extract TimelineExportSessionBuilder from engine`.
+- Зафиксирован playback transport commit:
+  `88e79c7` —
+  `refactor(playback): introduce PlaybackTransport as single timeline playback time owner`.
 - Актуальный локальный gate:
   `bash Scripts/run_animiapp_tests.sh`
   ->
-  `1265 tests, 0 failures, 1 skipped`.
+  `1275 tests, 0 failures, 1 skipped`.
 - В committed production code закрыты:
   `PR 1: Export Artifact And Delivery Policy Split`,
   `PR 2: Background Domain Contract And Scope Resolution`,
   `PR 4: VideoExporter Decomposition`,
-  `PR 5: Timeline Export Session Builder Extraction`.
+  `PR 5: Timeline Export Session Builder Extraction`,
+  `PR 6: Playback Transport And Timebase Refactor`.
 - Дополнительно внутри этого integration milestone закрыт integration tail между `PR1–PR4`:
   delivery/runtime/output seam,
   scene background production edit/persistence/export path,
   per-scene timeline export background contract,
   timeline preview background switching на first non-transition frame.
+- Внутри committed `PR 6` закрыт только transport/video playback ownership:
+  runtime-owned `PlaybackTransport`,
+  store playhead как mirrored UI state,
+  shared host-time contract для timeline/video preview path.
+- `Preview audio transport integration` сознательно не вошел в committed `PR 6`:
+  runtime seam оставлен future-work,
+  partial untracked audio preview files не считаются частью принятого production scope.
 - `PR 3` полностью не закрыт:
   в дереве есть compatibility groundwork для audio,
   но canonical contract `generic audio domain -> runtime/export audio snapshot/plan`
   еще не доведен до финального accepted состояния.
 - Следующий канонический structural шаг по плану:
-  `PR 6: Playback Transport And Timebase Refactor`.
+  `PR 7: Preview Audio Transport Integration`.
 
 **Финальная Цель Рефакторинга**
 - Не “уменьшить файлы” и не “разложить код по папкам”, а довести редактор до состояния, где текущий product contract выражен в явных domain boundaries и не держится на giant owner-типах.
@@ -107,6 +118,8 @@
 - Во время playback source of truth для текущего времени должен жить в runtime transport-е, а не в store playhead.
   Store playhead нужен для scrub/pause/stop/restore state и UI sync, но не как owner playback clock-а.
 - `TimelineCompositionEngine`, `UserMediaService`, `VideoFrameProvider`, preview audio и future animated overlays/text/stickers должны стать consumers одного `project playback time`, а не независимыми clock domains с последующим corrective resync.
+- После принятого `PR 6` transport/video часть этого контракта уже закрыта;
+  preview audio для того же контракта вынесен в отдельный follow-up PR, чтобы не принимать partial audio seam.
 - Перед playback должен собираться достаточно стабильный `playback snapshot / playback graph`, чтобы video/audio/overlay/background path читали уже готовую time-driven модель, а не каждый subsystem пересобирал свой contract на горячем пути.
 - `TimelineCompositionEngine` должен стать фасадом над 3 внутренними подсистемами:
   frame resolver,
@@ -163,24 +176,36 @@
    Acceptance:
    engine перестает содержать тяжелый export snapshot assembly code.
 
-6. `PR 6: Playback Transport And Timebase Refactor` — `NEXT`
+6. `PR 6: Playback Transport And Timebase Refactor` — `DONE`
    Цель: перевести editor preview/playback с `frame-driven UI loop` на `transport-driven playback` с единым owner-ом времени до runtime/engine thinning.
-   Почему: текущая модель `displayLink -> currentFrame + 1 -> store playhead -> subsystem resync` не является устойчивой базой для audio, video, animated text, stickers, overlays и future timeline effects.
-   По коду: разрезать playback-owner path в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`, `AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift`, `AnimiApp/Sources/Player/TimelineComposition/SceneInstanceRuntime.swift`, `AnimiApp/Sources/UserMedia/UserMediaService.swift`, `AnimiApp/Sources/UserMedia/VideoFrameProvider.swift`, `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift`.
-   Вынести/ввести:
-   `PlaybackTransport / PlaybackClock`,
+   Почему: текущая модель `displayLink -> currentFrame + 1 -> store playhead -> subsystem resync` не является устойчивой базой даже для video-first preview path.
+   По коду: разрезан playback-owner path в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`, `AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift`, `AnimiApp/Sources/Player/TimelineComposition/SceneInstanceRuntime.swift`, `AnimiApp/Sources/UserMedia/UserMediaService.swift`, `AnimiApp/Sources/UserMedia/VideoFrameProvider.swift`.
+   Вынесено/введено:
+   `PlaybackTransport`,
    runtime-owned playback cursor,
    time-driven `project time -> frame/localFrame/mediaTime` mapping,
    displayLink как render sampler, а не time owner,
-   shared preview playback contract для video/audio/future animated timeline elements.
+   single-driver timeline preview path без runtime re-entry через mirrored store playhead.
    Acceptance:
    preview playback больше не двигается через `currentFrame + 1`;
    `CADisplayLink` больше не является source of truth для playback time;
-   steady-state preview audio не держится на periodic corrective seek loop;
-   video и audio читают общий project playback time;
-   future animated text/stickers/overlay video могут подключаться как consumers transport-а без отдельного clock owner-а.
+   store playhead во время playback является mirrored UI state, а не owner времени;
+   video preview path читает общий project playback time;
+   per-scene preview background switching не регрессит.
+   Явно вне scope принятого PR:
+   `PreviewAudioPlaybackController.swift` и audio preview transport integration.
 
-7. `PR 7: TimelineCompositionEngine Internal Split`
+7. `PR 7: Preview Audio Transport Integration` — `NEXT`
+   Цель: довести editor preview audio до того же transport-driven contract, что уже принят для timeline/video preview path.
+   Почему: preview audio остается последним timeline playback consumer-ом, который нельзя оставлять на отдельном corrective-resync seam.
+   По коду: довести `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift` и audio-preview path-ы в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
+   Acceptance:
+   preview audio стартует от shared playback transport time;
+   steady-state preview audio не держится на periodic corrective seek loop;
+   `markPreviewAudioDirty()` получает честкий runtime-owned contract вместо no-op seam;
+   partial audio preview workspace files становятся либо committed production code, либо удаляются из future-work ветки.
+
+8. `PR 8: TimelineCompositionEngine Internal Split`
    Цель: после transport refactor разрезать `TimelineCompositionEngine` на:
    frame resolution,
    residency/budget,
@@ -188,18 +213,18 @@
    Acceptance:
    engine становится фасадом, а не owner-ом всех timeline concerns сразу.
 
-8. `PR 8: Scene Edit Tool Architecture`
+9. `PR 9: Scene Edit Tool Architecture`
    Цель: вынести из controller/runtime tool surface scene-edit.
    По коду: собрать единый scene-edit feature из `AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift`, `AnimiApp/Sources/Editor/SceneEdit/InlineVideoTrimCoordinator.swift`, scene-edit path-ов в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` и wiring в `AnimiApp/Sources/Player/EditorViewController.swift`.
    Acceptance:
    новый scene-edit tool добавляется в tool module, а не в giant controller/runtime.
 
-9. `PR 9: EditorRuntime Thinning`
+10. `PR 10: EditorRuntime Thinning`
    Цель: после extraction-ов довести `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` до facade/state machine.
    Acceptance:
    runtime в основном маршрутизирует state, output и orchestration между уже вынесенными доменами.
 
-10. `PR 10: EditorViewController Thinning`
+11. `PR 11: EditorViewController Thinning`
    Цель: последним довести `AnimiApp/Sources/Player/EditorViewController.swift` до реально thin UI shell.
    Acceptance:
    controller больше не является composition root для половины editor feature-flows.
