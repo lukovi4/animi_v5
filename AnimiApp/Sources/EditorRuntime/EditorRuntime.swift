@@ -127,6 +127,14 @@ final class EditorRuntime {
     private var playheadAsyncTask: Task<Void, Never>?
     private var playbackStartTask: Task<Void, Never>?
     private var lastStillSyncFrame: Int = -1
+    private let playbackTransport = PlaybackTransport()
+    private var playbackCurrentCompressedFrame: Int = 0
+    private var playbackCurrentProjectTimeUs: TimeUs = 0
+
+    #if DEBUG
+    /// Test-observable counter: incremented each time timeline presentation is resolved.
+    private(set) var timelinePresentResolveCount: Int = 0
+    #endif
 
     // MARK: - Scene Edit
 
@@ -210,6 +218,11 @@ final class EditorRuntime {
     #if DEBUG
     func bootForTesting(state: EditorRuntimeState = .timelinePreview) {
         self.state = state
+    }
+
+    /// Test seam: simulate playback active state without requiring CADisplayLink.
+    func setPlayingForTesting(_ playing: Bool) {
+        self.isPlaying = playing
     }
 
     /// Test seam: forwards to the private runtime-owned `handleMediaReadyForPlacement`.
@@ -694,6 +707,10 @@ final class EditorRuntime {
     // MARK: - Playhead Handling
 
     func handlePlayheadChanged(_ compressedFrame: Int) {
+        // During playback, transport drives presentation directly via displayLinkFired.
+        // Store playhead changes are UI-mirror only — must not re-enter presentation path.
+        guard !isPlaying else { return }
+
         switch state {
         case .timelinePreview, .exporting:
             handleTimelineModePlayheadChanged(compressedFrame)
@@ -732,6 +749,10 @@ final class EditorRuntime {
 
     private func resolveAndPresentTimelineFrame(compressedFrame: Int, invalidateScrub: Bool) {
         guard let engine = timelineCompositionEngine else { return }
+
+        #if DEBUG
+        timelinePresentResolveCount += 1
+        #endif
 
         var generation: UInt64?
         if invalidateScrub {
@@ -962,15 +983,28 @@ final class EditorRuntime {
                 return
             }
 
+            // Compute start project time from compressed frame
+            let mapper = self.session.state?.makePlayheadMapper() ?? .empty
+            let startProjectTimeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
+            let hostTime = CACurrentMediaTime()
+
+            self.playbackCurrentCompressedFrame = compressedFrame
+            self.playbackCurrentProjectTimeUs = startProjectTimeUs
+            self.playbackTransport.start(
+                atProjectTimeUs: startProjectTimeUs,
+                hostTime: hostTime,
+                fps: Int(self.sceneFPS)
+            )
+
             self.isPlaying = true
 
-            self.displayLink = CADisplayLink(target: DisplayLinkTarget { [weak self] in
-                self?.displayLinkFired()
+            self.displayLink = CADisplayLink(target: DisplayLinkTarget { [weak self] link in
+                self?.displayLinkFired(link)
             }, selector: #selector(DisplayLinkTarget.tick))
             self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
             self.displayLink?.add(to: .main, forMode: .common)
 
-            engine.startPlayback(at: compressedFrame)
+            engine.startPlayback(at: compressedFrame, hostTime: hostTime)
 
             self.onOutput?(.playbackStateChanged(isPlaying: true))
             self.playbackStartTask = nil
@@ -981,6 +1015,7 @@ final class EditorRuntime {
         playbackStartTask?.cancel()
         playbackStartTask = nil
 
+        playbackTransport.stop()
         isPlaying = false
         displayLink?.invalidate()
         displayLink = nil
@@ -994,24 +1029,32 @@ final class EditorRuntime {
         onOutput?(.playbackStateChanged(isPlaying: false))
     }
 
-    private func displayLinkFired() {
+    private func displayLinkFired(_ link: CADisplayLink) {
         guard let editorState = session.state else { return }
 
-        let currentFrame = editorState.playheadCompressedFrame
+        let hostTime = link.targetTimestamp
+        let mapper = editorState.makePlayheadMapper()
         let maxFrame = editorState.compressedDurationFrames - 1
-        let nextFrame = min(currentFrame + 1, maxFrame)
 
-        session.dispatch(.setPlayhead(compressedFrame: nextFrame))
+        guard let sample = playbackTransport.sample(
+            mapper: mapper,
+            maxCompressedFrame: maxFrame,
+            hostTime: hostTime
+        ) else { return }
+
+        let nextFrame = sample.compressedFrame
+        playbackCurrentCompressedFrame = nextFrame
+        playbackCurrentProjectTimeUs = sample.projectTimeUs
 
         let uiMode = editorState.uiMode
         switch uiMode {
         case .timeline:
-            timelineCompositionEngine?.syncPlaybackTick(nextFrame)
+            // Drive frame presentation directly from transport
+            handleTimelineModePlayheadChanged(nextFrame)
+            timelineCompositionEngine?.syncPlaybackTick(nextFrame, hostTime: hostTime)
         case .sceneEdit:
-            let mapper = editorState.makePlayheadMapper()
-            let nextTimeUs = mapper.nominalTimeUs(forCompressedFrame: nextFrame)
             let fps = editorState.templateFPS
-            let globalFrameIndex = Int(nextTimeUs * TimeUs(fps) / 1_000_000)
+            let globalFrameIndex = Int(sample.projectTimeUs * TimeUs(fps) / 1_000_000)
             let localFrame = playbackCoordinator?.currentLocalFrame ?? globalFrameIndex
             if let service = userMediaService,
                !service.blockIdsWithVideo.isEmpty,
@@ -1019,6 +1062,11 @@ final class EditorRuntime {
                 service.updateVideoFramesForPlayback(sceneFrameIndex: localFrame)
                 lastStillSyncFrame = localFrame
             }
+        }
+
+        // Mirror to store as compatibility projection (only if frame changed)
+        if nextFrame != editorState.playheadCompressedFrame {
+            session.dispatch(.setPlayhead(compressedFrame: nextFrame))
         }
 
         if nextFrame >= maxFrame {
@@ -2389,7 +2437,7 @@ final class EditorRuntime {
 
 /// Non-self target for CADisplayLink to avoid retain cycle with EditorRuntime.
 private final class DisplayLinkTarget {
-    let callback: () -> Void
-    init(callback: @escaping () -> Void) { self.callback = callback }
-    @objc func tick() { callback() }
+    let callback: (CADisplayLink) -> Void
+    init(callback: @escaping (CADisplayLink) -> Void) { self.callback = callback }
+    @objc func tick(_ link: CADisplayLink) { callback(link) }
 }

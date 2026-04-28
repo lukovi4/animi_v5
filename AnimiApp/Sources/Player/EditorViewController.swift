@@ -1039,7 +1039,11 @@ final class EditorViewController: UIViewController {
     private func wireStoreCallbacks() {
         var callbacks = EditorStoreCallbacks()
         callbacks.onPlayheadChanged = { [weak self] cf in
-            self?.runtime?.handlePlayheadChanged(cf)
+            // During playback, transport drives presentation directly via displayLinkFired.
+            // Store mirror is UI-only — do not re-enter runtime presentation path.
+            if self?.runtime?.isPlaying != true {
+                self?.runtime?.handlePlayheadChanged(cf)
+            }
             if let mapper = self?.session.state?.makePlayheadMapper() {
                 self?.editorLayoutContainer.setCurrentCompressedFrame(cf, mapper: mapper)
             }

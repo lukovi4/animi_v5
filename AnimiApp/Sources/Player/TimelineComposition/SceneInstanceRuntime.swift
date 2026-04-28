@@ -21,8 +21,8 @@ protocol SceneMediaSyncing: AnyObject {
 
     // MARK: TT-03 Budget-Aware APIs
     func playbackCandidates(sceneFrameIndex: Int) -> [PlaybackVideoCandidate]
-    func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>)
-    func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>)
+    func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
+    func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
 
     // MARK: TT-03 Completion: Soft-Stop for Warm Runtimes
     /// Stops all active video playback while preserving textures (hold-last).
@@ -571,10 +571,12 @@ public final class SceneInstanceRuntime {
     /// - Parameters:
     ///   - localFrame: Local frame to sync to (clamped to valid range)
     ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
-    func startPlayback(at localFrame: Int, grantedBlockIds: Set<String>) {
+    ///   - hostTime: Host time from transport (nil for legacy callers)
+    func startPlayback(at localFrame: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         mediaSyncing.startVideoPlayback(
             sceneFrameIndex: clampedLocalFrame(localFrame),
-            grantedBlockIds: grantedBlockIds
+            grantedBlockIds: grantedBlockIds,
+            hostTime: hostTime
         )
     }
 
@@ -583,10 +585,12 @@ public final class SceneInstanceRuntime {
     /// - Parameters:
     ///   - localFrame: Local frame for sync (clamped to valid range)
     ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
-    func syncPlaybackTick(_ localFrame: Int, grantedBlockIds: Set<String>) {
+    ///   - hostTime: Host time from transport (nil for legacy callers)
+    func syncPlaybackTick(_ localFrame: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         mediaSyncing.updateVideoFramesForPlayback(
             sceneFrameIndex: clampedLocalFrame(localFrame),
-            grantedBlockIds: grantedBlockIds
+            grantedBlockIds: grantedBlockIds,
+            hostTime: hostTime
         )
     }
 

@@ -872,7 +872,8 @@ public final class TimelineCompositionEngine {
         mode: TimelineTransitionMath.RenderMode,
         math: TimelineTransitionMath,
         grants: [UUID: Set<String>],
-        isStart: Bool
+        isStart: Bool,
+        hostTime: CFTimeInterval? = nil
     ) {
         // Step 1: Compute active instance IDs from current render mode
         var activeInstanceIds: Set<UUID> = []
@@ -903,9 +904,9 @@ public final class TimelineCompositionEngine {
             guard shouldSync else { continue }
 
             if isStart {
-                instanceRuntimes[instanceId]?.startPlayback(at: localFrame, grantedBlockIds: grantedBlockIds)
+                instanceRuntimes[instanceId]?.startPlayback(at: localFrame, grantedBlockIds: grantedBlockIds, hostTime: hostTime)
             } else {
-                instanceRuntimes[instanceId]?.syncPlaybackTick(localFrame, grantedBlockIds: grantedBlockIds)
+                instanceRuntimes[instanceId]?.syncPlaybackTick(localFrame, grantedBlockIds: grantedBlockIds, hostTime: hostTime)
             }
             syncedInstanceIds.insert(instanceId)
         }
@@ -918,43 +919,44 @@ public final class TimelineCompositionEngine {
     }
 
     /// Syncs video frames for playback tick (called from displayLinkFired).
-    /// Uses playback-gated video update (30Hz gate) instead of scrub-mode seeking.
-    /// TT-03: Uses budget-aware sync with engine-owned grants.
-    /// TT-03 Completion: Deactivates warm runtimes that were previously active.
-    /// - Parameter compressedFrame: Current compressed frame index.
+    /// Legacy wrapper without host time. For transport-driven playback use host-time aware variant.
     public func syncPlaybackTick(_ compressedFrame: Int) {
-        guard let math = transitionMath,
-              let mode = math.renderMode(for: compressedFrame) else { return }
-
-        // TT-03: Update budget and evict non-resident runtimes
-        budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
-        evictNonResidentRuntimes(math: math)
-
-        // TT-03: Compute budget grants
-        let grants = playbackBudgetGrants(math: math, mode: mode)
-
-        // TT-03 Completion: Apply budget to all resident runtimes
-        applyPlaybackBudget(mode: mode, math: math, grants: grants, isStart: false)
+        syncPlaybackTick(compressedFrame, hostTime: nil)
     }
 
-    /// Starts playback at the given compressed frame.
-    /// Determines active render mode and starts playback for active runtimes.
-    /// TT-03: Uses budget-aware start with engine-owned grants.
-    /// TT-03 Completion: Deactivates warm runtimes that were previously active.
-    /// - Parameter compressedFrame: Current compressed frame index.
-    public func startPlayback(at compressedFrame: Int) {
+    /// Host-time aware playback tick sync.
+    /// - Parameters:
+    ///   - compressedFrame: Current compressed frame index.
+    ///   - hostTime: Host time from transport/display link tick.
+    public func syncPlaybackTick(_ compressedFrame: Int, hostTime: CFTimeInterval?) {
         guard let math = transitionMath,
               let mode = math.renderMode(for: compressedFrame) else { return }
 
-        // TT-03: Update budget and evict non-resident runtimes
         budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
         evictNonResidentRuntimes(math: math)
 
-        // TT-03: Compute budget grants
         let grants = playbackBudgetGrants(math: math, mode: mode)
+        applyPlaybackBudget(mode: mode, math: math, grants: grants, isStart: false, hostTime: hostTime)
+    }
 
-        // TT-03 Completion: Apply budget to all resident runtimes
-        applyPlaybackBudget(mode: mode, math: math, grants: grants, isStart: true)
+    /// Legacy wrapper without host time. For transport-driven playback use host-time aware variant.
+    public func startPlayback(at compressedFrame: Int) {
+        startPlayback(at: compressedFrame, hostTime: nil)
+    }
+
+    /// Host-time aware playback start.
+    /// - Parameters:
+    ///   - compressedFrame: Starting compressed frame index.
+    ///   - hostTime: Host time from transport start.
+    public func startPlayback(at compressedFrame: Int, hostTime: CFTimeInterval?) {
+        guard let math = transitionMath,
+              let mode = math.renderMode(for: compressedFrame) else { return }
+
+        budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
+        evictNonResidentRuntimes(math: math)
+
+        let grants = playbackBudgetGrants(math: math, mode: mode)
+        applyPlaybackBudget(mode: mode, math: math, grants: grants, isStart: true, hostTime: hostTime)
     }
 
     /// PR-G: Stops playback for all loaded runtimes.

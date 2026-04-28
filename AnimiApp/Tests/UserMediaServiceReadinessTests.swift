@@ -129,9 +129,9 @@ final class UserMediaServiceReadinessTests: XCTestCase {
             pendingContinuation = nil
         }
 
-        func startPlayback(atVideoTime videoTimeSeconds: Double) {}
+        func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {}
         func stopPlayback(flush: Bool) {}
-        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
+        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? { nil }
         func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
             return try await createFakeTexture()
         }

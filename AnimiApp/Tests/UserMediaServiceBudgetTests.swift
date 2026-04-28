@@ -91,7 +91,7 @@ final class UserMediaServiceBudgetTests: XCTestCase {
             isPlaybackActive = false
         }
 
-        func startPlayback(atVideoTime videoTimeSeconds: Double) {
+        func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {
             startPlaybackCalls.append(videoTimeSeconds)
             isPlaybackActive = true
         }
@@ -101,7 +101,7 @@ final class UserMediaServiceBudgetTests: XCTestCase {
             isPlaybackActive = false
         }
 
-        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? {
+        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? {
             frameTextureForPlaybackCalls.append(videoTimeSeconds)
             return lastTexture
         }

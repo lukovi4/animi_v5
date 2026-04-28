@@ -24,10 +24,10 @@ protocol VideoSetupProviding: AnyObject {
     // Presentation metadata (orientation, size, UV transform)
     var presentationInfo: VideoPresentationInfo? { get }
 
-    // Playback (time-based — PR 4)
-    func startPlayback(atVideoTime videoTimeSeconds: Double)
+    // Playback (time-based — PR 4, host-time aware — PR 6)
+    func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval?)
     func stopPlayback(flush: Bool)
-    func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture?
+    func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval?) -> MTLTexture?
     func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture
 
     // Interactive trim preview (tolerant, reusable generator)
@@ -800,7 +800,7 @@ public final class UserMediaService {
     /// - Parameters:
     ///   - sceneFrameIndex: Current scene frame to sync to
     ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
-    func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>) {
+    func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         guard let player = activePlayer else { return }
 
         // Reset tick counter so first updateVideoFramesForPlayback() fires immediately
@@ -835,7 +835,7 @@ public final class UserMediaService {
                 blockId: blockId,
                 selection: selection
             )
-            provider.startPlayback(atVideoTime: videoTime)
+            provider.startPlayback(atVideoTime: videoTime, hostTime: hostTime)
         }
 
         // Update active set for diagnostics
@@ -850,7 +850,7 @@ public final class UserMediaService {
     /// - Parameters:
     ///   - sceneFrameIndex: Current scene frame for sync
     ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
-    func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>) {
+    func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         guard let player = activePlayer else { return }
 
         // Frame divider — skip video texture updates on non-update ticks
@@ -890,14 +890,14 @@ public final class UserMediaService {
 
             // Ensure playback is running
             if !provider.isPlaybackActive {
-                provider.startPlayback(atVideoTime: videoTime)
+                provider.startPlayback(atVideoTime: videoTime, hostTime: hostTime)
             }
 
             // Only update texture on divider ticks
             guard shouldUpdateTextures else { continue }
 
-            // Get frame texture using playback mode (drift correction, no seek per tick)
-            guard let texture = provider.frameTextureForPlayback(expectedVideoTime: videoTime) else { continue }
+            // Get frame texture using playback mode (host time from transport)
+            guard let texture = provider.frameTextureForPlayback(expectedVideoTime: videoTime, hostTime: hostTime) else { continue }
 
             // Update texture in all variant binding asset IDs
             let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)

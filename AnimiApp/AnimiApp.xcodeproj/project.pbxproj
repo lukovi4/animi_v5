@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		06F4BD64A3830B694451236C /* PlaybackTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C886CC5608D8B70F583C0D84 /* PlaybackTransport.swift */; };
+		257D15DD81464AC28113F216 /* PlaybackTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D503115D484FC2946FA51D9E /* PlaybackTransportTests.swift */; };
 		000310CC1CEBC4C70C362B60 /* PlacementGestureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84F06CD95A1FA8540DC0DBC3 /* PlacementGestureSession.swift */; };
 		003C1E5DD09CBF1E2AA0BD4A /* OverlayPresentationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5945A4C61EF117A13059ADB9 /* OverlayPresentationState.swift */; };
 		00ABBBDB7E78827E4D870F10 /* FileProjectMediaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 529DE8D8DEB4F9B6781AFD1D /* FileProjectMediaStore.swift */; };
@@ -336,6 +338,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C886CC5608D8B70F583C0D84 /* PlaybackTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackTransport.swift; sourceTree = "<group>"; };
+		D503115D484FC2946FA51D9E /* PlaybackTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackTransportTests.swift; sourceTree = "<group>"; };
 		008B456A6D18BC55E52A997F /* EditorReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerTests.swift; sourceTree = "<group>"; };
 		0093D3976ECB877F83A18053 /* VideoTrimSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTrimSession.swift; sourceTree = "<group>"; };
 		009C3BDF813882590A970479 /* AssetRegistryBookkeepingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetRegistryBookkeepingTests.swift; sourceTree = "<group>"; };
@@ -808,6 +812,7 @@
 				F217C91EDFFDAE0C8DD6F90D /* TimelineCompositionEngineExportSessionTests.swift */,
 				E5EBE43F440A0F041741913D /* TimelineCompositionEngineReadinessTests.swift */,
 				E56BFF2BB1A7C43D61EF8402 /* TimelineEngineLifecycleTests.swift */,
+				D503115D484FC2946FA51D9E /* PlaybackTransportTests.swift */,
 				CEFEE6F4025544E7BE2AAF4C /* TimelinePlayheadMapperTests.swift */,
 				FD3BB901AAEF5AABB661A7A5 /* TimelineRenderExecutorTests.swift */,
 				26D21003AD21EF39FBA7A299 /* TimelineTransitionIntegrationTests.swift */,
@@ -1161,6 +1166,7 @@
 				CDD2A43D1725E333350F3AE8 /* EditorRuntimeOutput.swift */,
 				EC988E2962541BF5A737F72D /* EditorRuntimeRenderSource.swift */,
 				1D2FED3CC56A1D3581FF8392 /* EditorRuntimeState.swift */,
+				C886CC5608D8B70F583C0D84 /* PlaybackTransport.swift */,
 			);
 			path = EditorRuntime;
 			sourceTree = "<group>";
@@ -1401,6 +1407,7 @@
 				456BC686C29BC069FF22A3A7 /* TimelineCompositionEngineExportSessionTests.swift in Sources */,
 				E7C2564BD2CE8B489A060A5D /* TimelineCompositionEngineReadinessTests.swift in Sources */,
 				DAB8BC7B970EFC30FAE8C8BC /* TimelineEngineLifecycleTests.swift in Sources */,
+				257D15DD81464AC28113F216 /* PlaybackTransportTests.swift in Sources */,
 				A3688DDDC19367EE6ADE92F7 /* TimelinePlayheadMapperTests.swift in Sources */,
 				1E823D7EF69EEE95F2772A1E /* TimelineRenderExecutorTests.swift in Sources */,
 				211311FBBE5B4AD0262FECCB /* TimelineTransitionIntegrationTests.swift in Sources */,
@@ -1460,6 +1467,7 @@
 				8B001DDCEB0C39A129EE2D87 /* EditorRenderCommandResolver.swift in Sources */,
 				FE30676DCE3F9DF63B5A23A2 /* EditorRenderContract.swift in Sources */,
 				9A264A03411AA7F7ABD22345 /* EditorRuntime.swift in Sources */,
+				06F4BD64A3830B694451236C /* PlaybackTransport.swift in Sources */,
 				84BC210E2D786C3B5B85AA1A /* EditorRuntimeOutput.swift in Sources */,
 				8B9DB9B318C4DCEB43084A99 /* EditorRuntimeRenderSource.swift in Sources */,
 				7DD71A383FF5DF545B1E272A /* EditorRuntimeState.swift in Sources */,

@@ -122,11 +122,11 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             playbackCandidatesByFrame[sceneFrameIndex] ?? []
         }
 
-        func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>) {
+        func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
             budgetedStartCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
         }
 
-        func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>) {
+        func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
             budgetedTickCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
         }
 

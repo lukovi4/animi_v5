@@ -170,12 +170,19 @@ public final class VideoFrameProvider {
     /// Frames are extracted via `frameTextureForPlayback()`.
     ///
     /// - Parameter videoTimeSeconds: Target video time in seconds (pre-computed by caller via shared mapper)
-    public func startPlayback(atVideoTime videoTimeSeconds: Double) {
+    public func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {
         guard isReady else { return }
 
         let targetTime = videoTime(seconds: videoTimeSeconds)
-        player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
-        player.rate = 1.0
+        if let hostTime {
+            player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
+            // Sync playback start to shared host time for A/V alignment
+            let hostCMTime = CMTime(seconds: hostTime, preferredTimescale: 1_000_000_000)
+            player.setRate(1.0, time: .invalid, atHostTime: hostCMTime)
+        } else {
+            player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
+            player.rate = 1.0
+        }
         isPlaybackActive = true
     }
 
@@ -211,7 +218,7 @@ public final class VideoFrameProvider {
     ///
     /// - Parameter videoTimeSeconds: Expected video time (for drift detection, not per-tick seek)
     /// - Returns: Metal texture, or nil if not available
-    public func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? {
+    public func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? {
         guard isReady, isPlaybackActive else { return lastPlaybackTexture }
 
         // Drift correction disabled for preview stability
@@ -219,9 +226,9 @@ public final class VideoFrameProvider {
             checkAndCorrectDrift(expectedVideoTime: videoTimeSeconds)
         }
 
-        // Host-time-based frame extraction (no seek per tick)
-        let hostTime = CACurrentMediaTime()
-        let itemTime = videoOutput.itemTime(forHostTime: hostTime)
+        // Host-time-based frame extraction — use shared transport host time when available
+        let effectiveHostTime = hostTime ?? CACurrentMediaTime()
+        let itemTime = videoOutput.itemTime(forHostTime: effectiveHostTime)
 
         // Clamp to hold-last
         let clampedTime = videoTime(seconds: itemTime.seconds)

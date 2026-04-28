@@ -142,9 +142,9 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
         }
 
         func release() {}
-        func startPlayback(atVideoTime videoTimeSeconds: Double) {}
+        func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {}
         func stopPlayback(flush: Bool) {}
-        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
+        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? { nil }
 
         func createFakeTexture() -> MTLTexture {
             let desc = MTLTextureDescriptor.texture2DDescriptor(
