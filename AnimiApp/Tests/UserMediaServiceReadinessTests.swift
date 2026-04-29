@@ -218,6 +218,36 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         try await super.tearDown()
     }
 
+    // MARK: - Timing Helper
+
+    func testScheduledHostClockTime_clampsPastTransportTimeIntoFuture() {
+        let nowMediaTime: CFTimeInterval = 100.0
+        let nowHostClockTime = CMTime(seconds: 500.0, preferredTimescale: 1_000_000_000)
+
+        let scheduled = VideoFrameProvider.scheduledHostClockTime(
+            forTransportHostTime: 99.0,
+            nowMediaTime: nowMediaTime,
+            nowHostClockTime: nowHostClockTime,
+            minimumLeadTime: 0.05
+        )
+
+        XCTAssertEqual(scheduled.seconds, 500.05, accuracy: 0.001)
+    }
+
+    func testScheduledHostClockTime_preservesFutureDeltaFromNow() {
+        let nowMediaTime: CFTimeInterval = 100.0
+        let nowHostClockTime = CMTime(seconds: 500.0, preferredTimescale: 1_000_000_000)
+
+        let scheduled = VideoFrameProvider.scheduledHostClockTime(
+            forTransportHostTime: 100.2,
+            nowMediaTime: nowMediaTime,
+            nowHostClockTime: nowHostClockTime,
+            minimumLeadTime: 0.05
+        )
+
+        XCTAssertEqual(scheduled.seconds, 500.2, accuracy: 0.001)
+    }
+
     // MARK: - Test: No Video → Ready
 
     /// Test: No video blocks means isSceneMediaReady == true, hasFailedMedia == false.
