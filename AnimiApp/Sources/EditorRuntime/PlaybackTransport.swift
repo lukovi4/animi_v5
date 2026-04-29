@@ -5,7 +5,9 @@ import Foundation
 /// A single time sample produced by PlaybackTransport.
 /// Contains all representations of the current playback position.
 public struct PlaybackTimeSample: Equatable, Sendable {
-    /// Host time (CACurrentMediaTime-based) at which this sample was produced.
+    /// Core Animation media time (seconds, from CACurrentMediaTime / CADisplayLink).
+    /// This is NOT an AVPlayer host-clock CMTime. Conversion to host-clock time
+    /// happens only at the AVPlayer boundary (VideoFrameProvider.scheduledHostClockTime).
     public let hostTime: CFTimeInterval
     /// Project time in microseconds (nominal timeline).
     public let projectTimeUs: TimeUs

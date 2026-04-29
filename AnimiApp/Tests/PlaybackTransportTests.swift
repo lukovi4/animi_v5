@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import TVECore
 @testable import AnimiApp
 
@@ -235,5 +236,72 @@ private struct StubPresetProviderForTransport: BackgroundPresetProviding {
     func presetOrFallback(for presetId: String) -> BackgroundPreset? { nil }
     var allPresets: [BackgroundPreset] { [] }
     var count: Int { 0 }
+}
+
+// MARK: - AVPlayer Host Clock Boundary Tests
+
+@MainActor
+final class VideoFrameProviderHostClockTests: XCTestCase {
+
+    // MARK: - scheduledHostClockTime
+
+    func testPastTransportTime_clampedToSafeFuture() {
+        // Transport host time is in the past relative to now
+        let nowMedia: CFTimeInterval = 1000.0
+        let pastTransport: CFTimeInterval = 999.5
+        let nowHostClock = CMTime(seconds: 500.0, preferredTimescale: 1_000_000_000)
+        let minLead: CFTimeInterval = 1.0 / 120.0
+
+        let result = VideoFrameProvider.scheduledHostClockTime(
+            forTransportHostTime: pastTransport,
+            nowMediaTime: nowMedia,
+            nowHostClockTime: nowHostClock,
+            minimumLeadTime: minLead
+        )
+
+        // Past time should be clamped: effectiveMediaTime = nowMedia + minLead
+        // delta = minLead, result = nowHostClock + minLead
+        let expected = CMTimeAdd(nowHostClock, CMTime(seconds: minLead, preferredTimescale: 1_000_000_000))
+        XCTAssertEqual(result.seconds, expected.seconds, accuracy: 1e-9,
+                       "Past transport time must be clamped to minimum lead from now")
+    }
+
+    func testFutureTransportTime_preservesRelativeDelta() {
+        // Transport host time is 0.1s in the future
+        let nowMedia: CFTimeInterval = 1000.0
+        let futureTransport: CFTimeInterval = 1000.1
+        let nowHostClock = CMTime(seconds: 500.0, preferredTimescale: 1_000_000_000)
+        let minLead: CFTimeInterval = 1.0 / 120.0
+
+        let result = VideoFrameProvider.scheduledHostClockTime(
+            forTransportHostTime: futureTransport,
+            nowMediaTime: nowMedia,
+            nowHostClockTime: nowHostClock,
+            minimumLeadTime: minLead
+        )
+
+        // Future time preserved: delta = 0.1s, result = nowHostClock + 0.1
+        let expected = CMTimeAdd(nowHostClock, CMTime(seconds: 0.1, preferredTimescale: 1_000_000_000))
+        XCTAssertEqual(result.seconds, expected.seconds, accuracy: 1e-9,
+                       "Future transport time must preserve relative delta")
+    }
+
+    func testExactlyNowTransportTime_getsMinimumLead() {
+        // Transport host time equals now — should get clamped to lead
+        let nowMedia: CFTimeInterval = 1000.0
+        let nowHostClock = CMTime(seconds: 500.0, preferredTimescale: 1_000_000_000)
+        let minLead: CFTimeInterval = 1.0 / 120.0
+
+        let result = VideoFrameProvider.scheduledHostClockTime(
+            forTransportHostTime: nowMedia,
+            nowMediaTime: nowMedia,
+            nowHostClockTime: nowHostClock,
+            minimumLeadTime: minLead
+        )
+
+        let expected = CMTimeAdd(nowHostClock, CMTime(seconds: minLead, preferredTimescale: 1_000_000_000))
+        XCTAssertEqual(result.seconds, expected.seconds, accuracy: 1e-9,
+                       "Exactly-now transport time must get minimum lead")
+    }
 }
 

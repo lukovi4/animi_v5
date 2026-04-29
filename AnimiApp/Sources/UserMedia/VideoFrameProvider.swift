@@ -149,6 +149,8 @@ public final class VideoFrameProvider {
         // Configure player (initially paused, muted)
         player.rate = 0
         player.isMuted = true
+        // Required precondition for setRate(_:time:atHostTime:) — must not wait for buffering.
+        player.automaticallyWaitsToMinimizeStalling = false
 
         // Start loading
         state = .loading
@@ -175,10 +177,10 @@ public final class VideoFrameProvider {
 
         let targetTime = videoTime(seconds: videoTimeSeconds)
         if let hostTime {
-            player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
-            // Sync playback start to shared host time for A/V alignment
-            let hostCMTime = CMTime(seconds: hostTime, preferredTimescale: 1_000_000_000)
-            player.setRate(1.0, time: .invalid, atHostTime: hostCMTime)
+            // AVPlayer expects host-clock CMTime here, not raw media-time seconds.
+            // Also never schedule at/behind "now" on device — AVPlayer can throw.
+            let hostClockTime = Self.scheduledHostClockTime(forTransportHostTime: hostTime)
+            player.setRate(1.0, time: targetTime, atHostTime: hostClockTime)
         } else {
             player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
             player.rate = 1.0
@@ -258,6 +260,23 @@ public final class VideoFrameProvider {
             player.seek(to: expectedTime, toleranceBefore: .zero, toleranceAfter: .zero)
             lastCorrectiveSeekTime = now
         }
+    }
+
+    /// Maps transport media-time seconds into a safe host-clock CMTime for AVPlayer scheduling.
+    ///
+    /// Transport currently carries Core Animation media time. Preserve the relative delta from
+    /// "now", convert into host-clock CMTime, and enforce a small lead time so device playback
+    /// never schedules exactly at or behind the current host clock.
+    internal static func scheduledHostClockTime(
+        forTransportHostTime transportHostTime: CFTimeInterval,
+        nowMediaTime: CFTimeInterval = CACurrentMediaTime(),
+        nowHostClockTime: CMTime = CMClockGetTime(CMClockGetHostTimeClock()),
+        minimumLeadTime: CFTimeInterval = 1.0 / 120.0
+    ) -> CMTime {
+        let effectiveMediaTime = max(transportHostTime, nowMediaTime + minimumLeadTime)
+        let deltaSeconds = effectiveMediaTime - nowMediaTime
+        let delta = CMTime(seconds: deltaSeconds, preferredTimescale: 1_000_000_000)
+        return CMTimeAdd(nowHostClockTime, delta)
     }
 
     // MARK: - Still Frame Extraction (PR2: Exact Still Pipeline)
