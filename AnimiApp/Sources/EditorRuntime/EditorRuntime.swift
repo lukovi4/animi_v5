@@ -131,6 +131,14 @@ final class EditorRuntime {
     private var playbackCurrentCompressedFrame: Int = 0
     private var playbackCurrentProjectTimeUs: TimeUs = 0
 
+    // MARK: - Preview Audio
+    private lazy var previewAudioController: PreviewAudioControlling = PreviewAudioPlaybackController()
+    private(set) var previewAudioDirty: Bool = true
+    private(set) var previewAudioGeneration: UInt = 0
+    private var previewAudioOrchestrationTask: Task<Void, Never>?
+    private var previewAudioBuildTask: Task<BuiltAudioPipeline?, Never>?
+    private var playbackCurrentHostTime: CFTimeInterval = 0
+
     #if DEBUG
     /// Test-observable counter: incremented each time timeline presentation is resolved.
     private(set) var timelinePresentResolveCount: Int = 0
@@ -253,6 +261,37 @@ final class EditorRuntime {
         let request = ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: pendingDeliveryPolicy)
         activeExportRequest = request
         handleExportCompletion(result: result, requestId: request.id)
+    }
+
+    /// Test seam: inject a mock preview audio controller.
+    func setPreviewAudioController(_ controller: PreviewAudioControlling) {
+        self.previewAudioController = controller
+    }
+
+    /// Test seam: override pipeline builder for controllable async builds.
+    var previewAudioPipelineBuilder: (() async -> BuiltAudioPipeline?)?
+
+    /// Test seam: gate that suspends production build before detached task launch.
+    var previewAudioBuildGate: (() async -> Void)?
+
+    /// Test seam: whether the detached audio build task or orchestration task is active.
+    var hasActivePreviewAudioBuildTask: Bool {
+        previewAudioBuildTask != nil
+    }
+
+    /// Test seam: whether orchestration or detached build is active.
+    var hasActivePreviewAudioOrchestration: Bool {
+        previewAudioOrchestrationTask != nil || previewAudioBuildTask != nil
+    }
+
+    /// Test seam: set isPlaying without full playback machinery.
+    func simulateSetPlaying(_ playing: Bool) {
+        setPlayingForTesting(playing)
+    }
+
+    /// Test seam: inject a timeline composition engine for playback tests.
+    func injectTimelineCompositionEngine(_ engine: TimelineCompositionEngine) {
+        self.timelineCompositionEngine = engine
     }
     #endif
 
@@ -987,6 +1026,7 @@ final class EditorRuntime {
             let mapper = self.session.state?.makePlayheadMapper() ?? .empty
             let startProjectTimeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
             let hostTime = CACurrentMediaTime()
+            self.playbackCurrentHostTime = hostTime
 
             self.playbackCurrentCompressedFrame = compressedFrame
             self.playbackCurrentProjectTimeUs = startProjectTimeUs
@@ -1007,6 +1047,7 @@ final class EditorRuntime {
             engine.startPlayback(at: compressedFrame, hostTime: hostTime)
 
             self.onOutput?(.playbackStateChanged(isPlaying: true))
+            self.startPreviewAudioForTimelinePlayback()
             self.playbackStartTask = nil
         }
     }
@@ -1014,6 +1055,9 @@ final class EditorRuntime {
     func stopPlayback() {
         playbackStartTask?.cancel()
         playbackStartTask = nil
+        previewAudioController.pause()
+        previewAudioGeneration &+= 1
+        cancelPreviewAudioBuild()
 
         playbackTransport.stop()
         isPlaying = false
@@ -1045,6 +1089,7 @@ final class EditorRuntime {
         let nextFrame = sample.compressedFrame
         playbackCurrentCompressedFrame = nextFrame
         playbackCurrentProjectTimeUs = sample.projectTimeUs
+        playbackCurrentHostTime = hostTime
 
         let uiMode = editorState.uiMode
         switch uiMode {
@@ -1262,6 +1307,8 @@ final class EditorRuntime {
 
     private func enterExportMode() {
         stopPlayback()
+        previewAudioController.teardown()
+        cancelPreviewAudioBuild()
         backgroundTextureService?.clearAllTrackedTextures()
         userMediaService?.releasePreviewResources()
         timelineCompositionEngine?.releaseForExport()
@@ -2126,10 +2173,121 @@ final class EditorRuntime {
     }
 
     /// Marks preview audio state as dirty (e.g. after timeline music changes).
-    /// Currently a no-op — audio preview is rebuilt on next export or playback start.
     func markPreviewAudioDirty() {
-        // Intentional no-op: audio preview rebuild is deferred to next export/playback start.
-        // This method exists as a seam for future audio preview invalidation.
+        previewAudioDirty = true
+        previewAudioGeneration &+= 1
+        if isPlaying && state == .timelinePreview {
+            startPreviewAudioForTimelinePlayback()
+        }
+    }
+
+    // MARK: - Preview Audio Pipeline
+
+    /// Returns true if the canonical timeline has a music item with an imported asset.
+    /// Pure state check — no async file resolution.
+    private var hasPreviewAudioContent: Bool {
+        guard let state = session.state,
+              let _ = state.canonicalTimeline.musicItem,
+              let payload = state.canonicalTimeline.musicPayload(),
+              case .imported = payload.assetRef else {
+            return false
+        }
+        return true
+    }
+
+    /// Builds an AudioExportConfig from the project's canonical timeline music.
+    func buildPreviewAudioConfig(includeOriginalFromVideoSlots: Bool) async -> AudioExportConfig? {
+        let music = await buildProjectMusicTrackConfig()
+        return AudioExportConfig(
+            music: music,
+            voiceover: nil,
+            includeOriginalFromVideoSlots: includeOriginalFromVideoSlots
+        )
+    }
+
+    private func buildPreviewAudioPipeline() async -> BuiltAudioPipeline? {
+        #if DEBUG
+        if let builder = previewAudioPipelineBuilder {
+            return await builder()
+        }
+        #endif
+
+        let config = await buildPreviewAudioConfig(includeOriginalFromVideoSlots: false)
+        guard let config, config.music != nil else { return nil }
+
+        #if DEBUG
+        if let gate = previewAudioBuildGate { await gate() }
+        #endif
+
+        guard !Task.isCancelled else { return nil }
+        guard let engine = timelineCompositionEngine,
+              let math = engine.transitionMath else { return nil }
+
+        let fps = Int(sceneFPS)
+        let buildTask = Task.detached { () -> BuiltAudioPipeline? in
+            let builder = AudioCompositionBuilder()
+            return try? builder.buildTimeline(
+                sceneData: [],
+                transitionMath: math,
+                fps: fps,
+                config: config
+            )
+        }
+        self.previewAudioBuildTask = buildTask
+        let result = await buildTask.value
+        self.previewAudioBuildTask = nil
+        return result
+    }
+
+    private func startPreviewAudioForTimelinePlayback() {
+        guard state == .timelinePreview else { return }
+
+        cancelPreviewAudioBuild()
+
+        if !previewAudioDirty {
+            if previewAudioController.hasActivePipeline {
+                // Clean resume: start from current transport position
+                let seconds = usToSeconds(playbackCurrentProjectTimeUs)
+                previewAudioController.startPlayback(
+                    fromSeconds: seconds, hostTime: playbackCurrentHostTime
+                )
+            }
+            // else: clean + no pipeline = no audio content, nothing to do
+            return
+        }
+
+        previewAudioController.teardown()
+        let generation = previewAudioGeneration
+
+        previewAudioOrchestrationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let pipeline = await self.buildPreviewAudioPipeline()
+            defer { self.previewAudioOrchestrationTask = nil }
+
+            guard self.previewAudioGeneration == generation else { return }
+            guard self.isPlaying else { return }
+
+            guard let pipeline else {
+                if !self.hasPreviewAudioContent {
+                    self.previewAudioDirty = false
+                }
+                return
+            }
+
+            self.previewAudioDirty = false
+            self.previewAudioController.replacePipeline(pipeline)
+            let seconds = usToSeconds(self.playbackCurrentProjectTimeUs)
+            self.previewAudioController.startPlayback(
+                fromSeconds: seconds, hostTime: self.playbackCurrentHostTime
+            )
+        }
+    }
+
+    private func cancelPreviewAudioBuild() {
+        previewAudioOrchestrationTask?.cancel()
+        previewAudioOrchestrationTask = nil
+        previewAudioBuildTask?.cancel()
+        previewAudioBuildTask = nil
     }
 
     // MARK: - Background Editor Session
