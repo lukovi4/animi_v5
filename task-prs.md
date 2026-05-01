@@ -24,7 +24,11 @@
   `bash Scripts/run_animiapp_tests.sh`
   ->
   `1275 tests, 0 failures, 1 skipped`.
-- Дальнейшие PR не должны ломать актуальный baseline `1275 / 0 / 1`.
+- Актуальный preview-audio baseline на `2026-05-01` после commit `e26e05e`:
+  `bash Scripts/run_animiapp_tests.sh`
+  ->
+  `1305 tests, 0 failures, 2 skipped`.
+- Дальнейшие PR не должны ломать актуальный baseline `1305 / 0 / 2`.
 - Каждый PR должен быть behavior-preserving, если acceptance явно не требует смены контракта.
 
 ## 0.1 Current Status
@@ -35,6 +39,7 @@
   - `PR 4: VideoExporter Facade`
   - `PR 5: Timeline Export Session Builder Extraction`
   - `PR 6: Playback Transport And Timebase Refactor`
+  - `PR 7: Preview Audio Transport Integration`
 - Внутри integration milestone дополнительно закрыт integration tail между `PR1–PR4`:
   - runtime/controller/output export delivery contract
   - scene background production edit/persistence/export path
@@ -44,14 +49,15 @@
   - runtime-owned `PlaybackTransport`
   - mirrored store playhead without runtime re-entry during playback
   - shared host-time preview contract for timeline/video path
-- Preview audio transport integration не вошел в committed `PR 6`:
-  - untracked audio preview files explicitly future-work
-  - `markPreviewAudioDirty()` остается no-op seam вне scope принятого playback commit
+- Preview audio transport integration доведен отдельной линией после `PR 6`:
+  - transport-driven preview music path committed в production code
+  - direct scheduled-start contract закрыт follow-up `PR7.1`
+  - readiness barrier и stale-host-time crash закрыты follow-up `PR7.2`
 - `PR 3` не закрыт как canonical done:
   - compatibility groundwork частично присутствует
   - production runtime/export audio contract все еще опирается на music bridge
 - Следующий канонический PR по sequence:
-  - `PR 7: Preview Audio Transport Integration`
+  - `PR 8: TimelineCompositionEngine Internal Split`
 
 ## 1. Merge Rules
 
@@ -211,7 +217,7 @@ Test gates:
 - update playback / timeline runtime suites
 - add regression tests for single-driver playback ownership
 
-### PR 7: Preview Audio Transport Integration — NEXT
+### PR 7: Preview Audio Transport Integration — DONE
 
 Scope:
 - `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift`
@@ -222,14 +228,16 @@ Acceptance:
 - preview audio starts from shared transport-owned playback time
 - steady-state preview audio не держится на periodic corrective seek loop
 - `markPreviewAudioDirty()` получает runtime-owned invalidation/rebuild contract
-- partial workspace-only audio preview seams становятся committed production code или удаляются
+- partial workspace-only audio preview seams становятся committed production code
+- device-only preview audio AVPlayer crashes закрыты readiness/start-contract follow-up fix-ами
 
 Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - add/update audio preview runtime suites
 - prove preview audio is compiled and wired through target, not only present in workspace
+- manual iPhone smoke for preview music start/pause/resume/dirty-rebuild passes
 
-### PR 8: TimelineCompositionEngine Internal Split
+### PR 8: TimelineCompositionEngine Internal Split — NEXT
 
 Scope:
 - `AnimiApp/Sources/Player/TimelineComposition/*`

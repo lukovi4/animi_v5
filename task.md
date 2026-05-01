@@ -1,6 +1,6 @@
 С учетом принятых продуктовых решений целевой контракт теперь фиксируется жестко.
 
-**Текущее Состояние На 2026-04-28**
+**Текущее Состояние На 2026-05-01**
 - Зафиксирован integration milestone commit:
   `a7c45b4` —
   `integration: per-scene background domain, export runner extraction, preview background switching`.
@@ -10,16 +10,23 @@
 - Зафиксирован playback transport commit:
   `88e79c7` —
   `refactor(playback): introduce PlaybackTransport as single timeline playback time owner`.
+- Зафиксирован preview-audio integration commit:
+  `a6e5dac` —
+  `feat(playback): integrate preview audio transport with generation-guarded orchestration`.
+- Зафиксирован preview-audio readiness barrier fix:
+  `e26e05e` —
+  `fix(playback): add preview audio readiness barrier`.
 - Актуальный локальный gate:
   `bash Scripts/run_animiapp_tests.sh`
   ->
-  `1275 tests, 0 failures, 1 skipped`.
+  `1305 tests, 0 failures, 2 skipped`.
 - В committed production code закрыты:
   `PR 1: Export Artifact And Delivery Policy Split`,
   `PR 2: Background Domain Contract And Scope Resolution`,
   `PR 4: VideoExporter Decomposition`,
   `PR 5: Timeline Export Session Builder Extraction`,
-  `PR 6: Playback Transport And Timebase Refactor`.
+  `PR 6: Playback Transport And Timebase Refactor`,
+  `PR 7: Preview Audio Transport Integration`.
 - Дополнительно внутри этого integration milestone закрыт integration tail между `PR1–PR4`:
   delivery/runtime/output seam,
   scene background production edit/persistence/export path,
@@ -29,15 +36,16 @@
   runtime-owned `PlaybackTransport`,
   store playhead как mirrored UI state,
   shared host-time contract для timeline/video preview path.
-- `Preview audio transport integration` сознательно не вошел в committed `PR 6`:
-  runtime seam оставлен future-work,
-  partial untracked audio preview files не считаются частью принятого production scope.
+- `Preview audio transport integration` больше не future-work относительно `PR 6`:
+  preview music в editor preview теперь идет через shared transport-owned playback time,
+  device-only AVPlayer start/readiness crashes закрыты follow-up fix-ами `PR7.1/PR7.2`,
+  `markPreviewAudioDirty()` получил runtime-owned invalidation/rebuild contract.
 - `PR 3` полностью не закрыт:
   в дереве есть compatibility groundwork для audio,
   но canonical contract `generic audio domain -> runtime/export audio snapshot/plan`
   еще не доведен до финального accepted состояния.
 - Следующий канонический structural шаг по плану:
-  `PR 7: Preview Audio Transport Integration`.
+  `PR 8: TimelineCompositionEngine Internal Split`.
 
 **Финальная Цель Рефакторинга**
 - Не “уменьшить файлы” и не “разложить код по папкам”, а довести редактор до состояния, где текущий product contract выражен в явных domain boundaries и не держится на giant owner-типах.
@@ -195,17 +203,18 @@
    Явно вне scope принятого PR:
    `PreviewAudioPlaybackController.swift` и audio preview transport integration.
 
-7. `PR 7: Preview Audio Transport Integration` — `NEXT`
+7. `PR 7: Preview Audio Transport Integration` — `DONE`
    Цель: довести editor preview audio до того же transport-driven contract, что уже принят для timeline/video preview path.
-   Почему: preview audio остается последним timeline playback consumer-ом, который нельзя оставлять на отдельном corrective-resync seam.
-   По коду: довести `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift` и audio-preview path-ы в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
+   Почему: preview audio оставался последним timeline playback consumer-ом, который нельзя было оставлять на отдельном corrective-resync seam.
+   По коду: доведены `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift` и audio-preview path-ы в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
    Acceptance:
    preview audio стартует от shared playback transport time;
    steady-state preview audio не держится на periodic corrective seek loop;
    `markPreviewAudioDirty()` получает честкий runtime-owned contract вместо no-op seam;
-   partial audio preview workspace files становятся либо committed production code, либо удаляются из future-work ветки.
+   partial audio preview workspace files становятся committed production code;
+   project-music preview path проходит device smoke без crash в `AVPlayer setRate:time:atHostTime:`.
 
-8. `PR 8: TimelineCompositionEngine Internal Split`
+8. `PR 8: TimelineCompositionEngine Internal Split` — `NEXT`
    Цель: после transport refactor разрезать `TimelineCompositionEngine` на:
    frame resolution,
    residency/budget,
