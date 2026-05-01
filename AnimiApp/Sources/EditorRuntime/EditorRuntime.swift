@@ -293,6 +293,12 @@ final class EditorRuntime {
     func injectTimelineCompositionEngine(_ engine: TimelineCompositionEngine) {
         self.timelineCompositionEngine = engine
     }
+
+    /// Test seam: inject known transport time for readiness tests.
+    func setPreviewAudioPlaybackTimeForTesting(projectTimeUs: TimeUs, hostTime: CFTimeInterval) {
+        playbackCurrentProjectTimeUs = projectTimeUs
+        playbackCurrentHostTime = hostTime
+    }
     #endif
 
     func boot(metalContext: EditorRuntimeMetalContext, library: SceneLibrarySnapshot) {
@@ -2239,13 +2245,30 @@ final class EditorRuntime {
         return result
     }
 
+    /// Installs an onReady callback on the preview audio controller that
+    /// starts playback with fresh transport time if guards pass.
+    private func installPreviewAudioOnReady(generation: UInt) {
+        previewAudioController.onReady = { [weak self] in
+            guard let self else { return }
+            guard self.previewAudioGeneration == generation else { return }
+            guard self.isPlaying else { return }
+            guard self.state == .timelinePreview else { return }
+            self.previewAudioDirty = false
+            let seconds = usToSeconds(self.playbackCurrentProjectTimeUs)
+            self.previewAudioController.startPlayback(
+                fromSeconds: seconds, hostTime: self.playbackCurrentHostTime
+            )
+        }
+    }
+
     private func startPreviewAudioForTimelinePlayback() {
         guard state == .timelinePreview else { return }
 
         cancelPreviewAudioBuild()
 
         if !previewAudioDirty {
-            if previewAudioController.hasActivePipeline {
+            if previewAudioController.hasActivePipeline,
+               previewAudioController.readiness == .ready {
                 // Clean resume: start from current transport position
                 let seconds = usToSeconds(playbackCurrentProjectTimeUs)
                 previewAudioController.startPlayback(
@@ -2274,12 +2297,10 @@ final class EditorRuntime {
                 return
             }
 
-            self.previewAudioDirty = false
+            self.installPreviewAudioOnReady(generation: generation)
             self.previewAudioController.replacePipeline(pipeline)
-            let seconds = usToSeconds(self.playbackCurrentProjectTimeUs)
-            self.previewAudioController.startPlayback(
-                fromSeconds: seconds, hostTime: self.playbackCurrentHostTime
-            )
+            // If readiness == .ready synchronously, onReady already fired above.
+            // If .preparing, onReady will fire async from KVO.
         }
     }
 
