@@ -59,15 +59,15 @@ public final class TimelineCompositionEngine {
     public private(set) var currentAssetRegistry: ProjectAssetRegistry = ProjectAssetRegistry()
 
     /// Loaded scene runtimes by instance ID.
-    private var instanceRuntimes: [UUID: SceneInstanceRuntime] = [:]
+    internal var instanceRuntimes: [UUID: SceneInstanceRuntime] = [:]
 
     /// Generation counter for scrub cancellation.
     /// Incremented on each playhead change to invalidate stale async results.
-    private var scrubGeneration: UInt64 = 0
+    internal private(set) var scrubGeneration: UInt64 = 0
 
     /// TT-02: Factory for creating SceneInstanceRuntime. Non-optional.
     /// Public init provides production closure, internal init for tests.
-    private let runtimeFactory: (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime
+    internal let runtimeFactory: (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime
 
     /// Diagnostics sink for runtime events (test-only, nil in production).
     internal private(set) var runtimeDiagnosticsSink: RuntimeDiagnosticsSink?
@@ -84,6 +84,12 @@ public final class TimelineCompositionEngine {
 
     /// PR10: Sticker provider for resolving sticker images. Set after init via setStickerProvider().
     private(set) var stickerProvider: StickerProviding?
+
+    // MARK: - Internal Owners
+
+    private var frameResolver: TimelineFrameResolver!
+    private var residencyController: TimelineResidencyController!
+    private var playbackSyncController: TimelinePlaybackSyncController!
 
     // MARK: - Init
 
@@ -115,6 +121,9 @@ public final class TimelineCompositionEngine {
                 mediaLocator: sharedLocator
             )
         }
+        self.frameResolver = TimelineFrameResolver(engine: self)
+        self.residencyController = TimelineResidencyController(engine: self)
+        self.playbackSyncController = TimelinePlaybackSyncController(engine: self)
     }
 
     /// TT-02: Internal init for tests with injected runtime factory.
@@ -138,6 +147,9 @@ public final class TimelineCompositionEngine {
         self.runtimeFactory = runtimeFactory
         self.runtimeDiagnosticsSink = runtimeDiagnosticsSink
         self.renderDiagnosticsSink = renderDiagnosticsSink
+        self.frameResolver = TimelineFrameResolver(engine: self)
+        self.residencyController = TimelineResidencyController(engine: self)
+        self.playbackSyncController = TimelinePlaybackSyncController(engine: self)
     }
 
     // MARK: - Configuration
@@ -351,19 +363,17 @@ public final class TimelineCompositionEngine {
         }
 
         // TT-03: Budget refresh for presentation policy only
-        // Export policy skips budget refresh and eviction
         if policy == .presentation {
-            refreshBudgetWindow(compressedFrame: compressedFrame, math: math)
+            residencyController.refreshBudgetWindow(compressedFrame: compressedFrame, math: math)
         }
 
-        // Get render mode (nil for empty timeline)
         guard let mode = math.renderMode(for: compressedFrame) else {
             return .failed(.invalidTimeline)
         }
 
         switch mode {
         case .single(let sceneIndex, let localFrame):
-            return await resolveSingleFrame(
+            return await frameResolver.resolveSingleFrame(
                 math: math,
                 sceneIndex: sceneIndex,
                 localFrame: localFrame,
@@ -372,7 +382,7 @@ public final class TimelineCompositionEngine {
             )
 
         case .transition(let aIndex, let frameA, let bIndex, let frameB, let transition, let progress):
-            return await resolveTransitionFrame(
+            return await frameResolver.resolveTransitionFrame(
                 math: math,
                 aIndex: aIndex, frameA: frameA,
                 bIndex: bIndex, frameB: frameB,
@@ -384,579 +394,48 @@ public final class TimelineCompositionEngine {
         }
     }
 
-    /// TT-02: Resolves single scene frame with explicit state branching.
-    private func resolveSingleFrame(
-        math: TimelineTransitionMath,
-        sceneIndex: Int,
-        localFrame: Int,
-        generation: UInt64?,
-        policy: TimelineResolvePolicy
-    ) async -> TimelineFrameResolution {
-        guard sceneIndex < math.sceneItems.count else {
-            return .failed(.invalidTimeline)
-        }
-
-        let instanceId = math.sceneItems[sceneIndex].id
-
-        guard let runtime = await getOrCreateRuntime(for: instanceId) else {
-            return .failed(.missingDependency(instanceId))
-        }
-
-        // Check generation after async create
-        if let gen = generation, gen != scrubGeneration {
-            return .staleGeneration
-        }
-
-        switch policy {
-        case .presentation:
-            // Explicit state branching
-            switch runtime.readinessState {
-            case .created:
-                runtime.startPreparingForPresentation(at: localFrame)
-                // Check generation before returning hold
-                if let gen = generation, gen != scrubGeneration {
-                    return .staleGeneration
-                }
-                return .hold
-
-            case .preparing:
-                if let gen = generation, gen != scrubGeneration {
-                    return .staleGeneration
-                }
-                return .hold
-
-            case .ready:
-                let context = runtime.makeRenderContext(localFrame: localFrame)
-                return .resolved(.single(context))
-
-            case .failed(let reason):
-                return .failed(.dependencyFailed(instanceId, reason: reason))
-
-            case .timedOut:
-                return .failed(.dependencyTimedOut(instanceId))
-            }
-
-        case .export:
-            let state = await runtime.waitUntilReadyForPresentation(at: localFrame)
-
-            // Check generation after async wait
-            if let gen = generation, gen != scrubGeneration {
-                return .staleGeneration
-            }
-
-            switch state {
-            case .ready:
-                let context = runtime.makeRenderContext(localFrame: localFrame)
-                return .resolved(.single(context))
-            case .failed(let reason):
-                return .failed(.dependencyFailed(instanceId, reason: reason))
-            case .timedOut:
-                return .failed(.dependencyTimedOut(instanceId))
-            case .created, .preparing:
-                // Contract violation
-                return .failed(.dependencyTimedOut(instanceId))
-            }
-        }
-    }
-
-    /// TT-02: Resolves transition frame - both scenes must be ready.
-    private func resolveTransitionFrame(
-        math: TimelineTransitionMath,
-        aIndex: Int, frameA: Int,
-        bIndex: Int, frameB: Int,
-        transition: SceneTransition,
-        progress: Double,
-        generation: UInt64?,
-        policy: TimelineResolvePolicy
-    ) async -> TimelineFrameResolution {
-        guard aIndex < math.sceneItems.count,
-              bIndex < math.sceneItems.count else {
-            return .failed(.invalidTimeline)
-        }
-
-        let instanceIdA = math.sceneItems[aIndex].id
-        let instanceIdB = math.sceneItems[bIndex].id
-
-        // Create both runtimes in parallel
-        async let runtimeATask = getOrCreateRuntime(for: instanceIdA)
-        async let runtimeBTask = getOrCreateRuntime(for: instanceIdB)
-
-        guard let runtimeA = await runtimeATask else {
-            return .failed(.missingDependency(instanceIdA))
-        }
-        guard let runtimeB = await runtimeBTask else {
-            return .failed(.missingDependency(instanceIdB))
-        }
-
-        // Check generation after async create
-        if let gen = generation, gen != scrubGeneration {
-            return .staleGeneration
-        }
-
-        switch policy {
-        case .presentation:
-            // Check both states, collect results
-            let stateA = runtimeA.readinessState
-            let stateB = runtimeB.readinessState
-
-            // Start preparing if needed
-            if case .created = stateA {
-                runtimeA.startPreparingForPresentation(at: frameA)
-            }
-            if case .created = stateB {
-                runtimeB.startPreparingForPresentation(at: frameB)
-            }
-
-            // Check for terminal failures first
-            if case .failed(let reason) = stateA {
-                return .failed(.dependencyFailed(instanceIdA, reason: reason))
-            }
-            if case .failed(let reason) = stateB {
-                return .failed(.dependencyFailed(instanceIdB, reason: reason))
-            }
-            if case .timedOut = stateA {
-                return .failed(.dependencyTimedOut(instanceIdA))
-            }
-            if case .timedOut = stateB {
-                return .failed(.dependencyTimedOut(instanceIdB))
-            }
-
-            // Check if both ready (re-check state after potential startPreparing)
-            guard case .ready = runtimeA.readinessState,
-                  case .ready = runtimeB.readinessState else {
-                // At least one is created/preparing
-                if let gen = generation, gen != scrubGeneration {
-                    return .staleGeneration
-                }
-                return .hold
-            }
-
-            // Both ready
-            runtimeDiagnosticsSink?.receive(.transitionPartnerReady(instanceIdA: instanceIdA, instanceIdB: instanceIdB))
-            let contextA = runtimeA.makeRenderContext(localFrame: frameA)
-            let contextB = runtimeB.makeRenderContext(localFrame: frameB)
-            let transitionContext = TransitionRenderContext(
-                sceneA: contextA,
-                sceneB: contextB,
-                transition: transition,
-                progress: progress
-            )
-            return .resolved(.transition(transitionContext))
-
-        case .export:
-            // Wait for both in parallel
-            async let stateATask = runtimeA.waitUntilReadyForPresentation(at: frameA)
-            async let stateBTask = runtimeB.waitUntilReadyForPresentation(at: frameB)
-
-            let resultA = await stateATask
-            let resultB = await stateBTask
-
-            // Check generation after async wait
-            if let gen = generation, gen != scrubGeneration {
-                return .staleGeneration
-            }
-
-            // Check A
-            switch resultA {
-            case .ready:
-                break
-            case .failed(let reason):
-                return .failed(.dependencyFailed(instanceIdA, reason: reason))
-            case .timedOut:
-                return .failed(.dependencyTimedOut(instanceIdA))
-            case .created, .preparing:
-                return .failed(.dependencyTimedOut(instanceIdA))
-            }
-
-            // Check B
-            switch resultB {
-            case .ready:
-                break
-            case .failed(let reason):
-                return .failed(.dependencyFailed(instanceIdB, reason: reason))
-            case .timedOut:
-                return .failed(.dependencyTimedOut(instanceIdB))
-            case .created, .preparing:
-                return .failed(.dependencyTimedOut(instanceIdB))
-            }
-
-            let contextA = runtimeA.makeRenderContext(localFrame: frameA)
-            let contextB = runtimeB.makeRenderContext(localFrame: frameB)
-            let transitionContext = TransitionRenderContext(
-                sceneA: contextA,
-                sceneB: contextB,
-                transition: transition,
-                progress: progress
-            )
-            return .resolved(.transition(transitionContext))
-        }
-    }
-
-    /// TT-02: Gets or creates a runtime for the given instance ID.
-    /// Does NOT wait for readiness - caller controls readiness via policy.
-    private func getOrCreateRuntime(for instanceId: UUID) async -> SceneInstanceRuntime? {
-        // Already loaded?
-        if let existing = instanceRuntimes[instanceId] {
-            return existing
-        }
-
-        // Need to load - find timeline item by instance ID, then get payload
-        guard let timeline = timeline,
-              let item = timeline.sceneItems.first(where: { $0.id == instanceId }),
-              let timelinePayload = timeline.payloads[item.payloadId] else {
-            #if DEBUG
-            print("[TimelineCompositionEngine] Failed to find item or payload for instanceId: \(instanceId)")
-            #endif
-            return nil
-        }
-
-        // Extract ScenePayload via pattern match (TimelinePayload is an enum)
-        guard case .scene(let scenePayload) = timelinePayload else {
-            #if DEBUG
-            print("[TimelineCompositionEngine] Payload is not a scene for instanceId: \(instanceId)")
-            #endif
-            return nil
-        }
-
-        let sceneTypeId = scenePayload.sceneTypeId
-
-        // Get resources from cache, or preload if not cached
-        let resources: SceneTypeResourcesCache.Resources
-        if let cached = resourcesCache.resources(for: sceneTypeId) {
-            resources = cached
-        } else {
-            // Preload fallback - load resources if not cached
-            runtimeDiagnosticsSink?.receive(.sceneTypePreloadStarted(sceneTypeId: sceneTypeId))
-            do {
-                resources = try await resourcesCache.preload(sceneTypeId: sceneTypeId)
-                runtimeDiagnosticsSink?.receive(.sceneTypePreloadCompleted(sceneTypeId: sceneTypeId))
-            } catch {
-                runtimeDiagnosticsSink?.receive(.sceneTypePreloadFailed(sceneTypeId: sceneTypeId, error: error.localizedDescription))
-                #if DEBUG
-                print("[TimelineCompositionEngine] Failed to preload resources for \(sceneTypeId): \(error.localizedDescription)")
-                #endif
-                return nil
-            }
-        }
-
-        // TT-02: Create instance runtime via factory
-        let runtime = runtimeFactory(instanceId, resources, device, commandQueue)
-
-        // Propagate diagnostics sink to runtime
-        runtime.runtimeDiagnosticsSink = runtimeDiagnosticsSink
-
-        // PR4: Forward runtime redraw requests to engine callback
-        runtime.onNeedsRedraw = { [weak self] in
-            self?.onNeedsRedraw?()
-        }
-
-        // Video selection persistence is handled by MediaIngestCoordinator (slot includes videoWindow).
-        // No runtime → persistence callback needed in the new architecture.
-
-        // Apply state if available, threading the current registry snapshot.
-        if let state = sceneStates[instanceId] {
-            await runtime.applyState(state, assetRegistry: currentAssetRegistry)
-        }
-
-        // TT-02: NO readiness wait here - caller controls via policy
-
-        // Cache it
-        instanceRuntimes[instanceId] = runtime
-
-        return runtime
-    }
-
-    // MARK: - TT-03 Budget Enforcement
-
-    /// Evicts non-resident runtimes based on budget coordinator state.
-    /// Only evicts `.evictable` tier runtimes; pinned and warm remain resident.
-    /// - Parameter math: Timeline transition math for scene items.
-    private func evictNonResidentRuntimes(math: TimelineTransitionMath) {
-        let loadedIds = Set(instanceRuntimes.keys)
-        let toEvict = budgetCoordinator.instancesToEvictOrdered(
-            from: loadedIds,
-            sceneItems: math.sceneItems
-        )
-
-        for instanceId in toEvict {
-            if let runtime = instanceRuntimes.removeValue(forKey: instanceId) {
-                runtime.pause()
-                runtimeDiagnosticsSink?.receive(.evictionDecision(instanceId: instanceId, tier: "evictable"))
-                #if DEBUG
-                print("[TimelineCompositionEngine] TT-03: Evicted non-resident runtime: \(instanceId)")
-                #endif
-            }
-        }
-        // Note: sceneStates NOT touched - preserved for recreate
-    }
-
-    /// Refreshes budget window: updates coordinator and evicts non-resident runtimes.
-    /// Called for `.presentation` policy only.
-    /// - Parameters:
-    ///   - compressedFrame: Current compressed frame.
-    ///   - math: Timeline transition math.
-    private func refreshBudgetWindow(compressedFrame: Int, math: TimelineTransitionMath) {
-        budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
-        evictNonResidentRuntimes(math: math)
-    }
-
-    /// Returns boundary-aligned local frames for warm scenes around the current render mode.
-    /// Previous warm scenes prepare at their last frame, next warm scenes at frame 0.
-    private func warmPresentationTargets(
-        math: TimelineTransitionMath,
-        mode: TimelineTransitionMath.RenderMode
-    ) -> [UUID: Int] {
-        var targets: [UUID: Int] = [:]
-
-        switch mode {
-        case .single(let sceneIndex, _):
-            if sceneIndex > 0 {
-                let prevIndex = sceneIndex - 1
-                targets[math.sceneItems[prevIndex].id] = max(0, math.durationFrames(forSceneAt: prevIndex) - 1)
-            }
-            if sceneIndex < math.sceneItems.count - 1 {
-                let nextIndex = sceneIndex + 1
-                targets[math.sceneItems[nextIndex].id] = 0
-            }
-
-        case .transition(let aIndex, _, let bIndex, _, _, _):
-            let minIndex = min(aIndex, bIndex)
-            let maxIndex = max(aIndex, bIndex)
-            if minIndex > 0 {
-                let prevIndex = minIndex - 1
-                targets[math.sceneItems[prevIndex].id] = max(0, math.durationFrames(forSceneAt: prevIndex) - 1)
-            }
-            if maxIndex < math.sceneItems.count - 1 {
-                let nextIndex = maxIndex + 1
-                targets[math.sceneItems[nextIndex].id] = 0
-            }
-        }
-
-        return targets
-    }
-
-    /// Returns local frames for every scene eligible for decoder allocation.
-    /// Includes pinned scenes from the current render mode and warm scenes at their boundary frames.
-    private func decoderAllocationLocalFrames(
-        math: TimelineTransitionMath,
-        mode: TimelineTransitionMath.RenderMode
-    ) -> [UUID: Int] {
-        var localFrames = warmPresentationTargets(math: math, mode: mode)
-
-        switch mode {
-        case .single(let sceneIndex, let localFrame):
-            guard sceneIndex < math.sceneItems.count else { return localFrames }
-            localFrames[math.sceneItems[sceneIndex].id] = localFrame
-
-        case .transition(let aIndex, let frameA, let bIndex, let frameB, _, _):
-            guard aIndex < math.sceneItems.count,
-                  bIndex < math.sceneItems.count else { return localFrames }
-            localFrames[math.sceneItems[aIndex].id] = frameA
-            localFrames[math.sceneItems[bIndex].id] = frameB
-        }
-
-        return localFrames
-    }
-
-    /// Computes playback budget grants for all decoder-allocation participants.
-    /// Returns mapping of instanceId -> granted blockIds.
-    /// - Parameters:
-    ///   - math: Timeline transition math.
-    ///   - mode: Current render mode (single or transition).
-    /// - Returns: Dictionary mapping instance ID to granted block IDs.
-    private func playbackBudgetGrants(
-        math: TimelineTransitionMath,
-        mode: TimelineTransitionMath.RenderMode
-    ) -> [UUID: Set<String>] {
-        let localFramesByInstanceId = decoderAllocationLocalFrames(math: math, mode: mode)
-        let allocationInstanceIds = localFramesByInstanceId.keys.filter {
-            budgetCoordinator.shouldHaveActiveDecoders(for: $0)
-        }
-
-        guard !allocationInstanceIds.isEmpty else {
-            return [:]
-        }
-
-        // 1. Get scene rank for prioritization
-        let sceneRank: [UUID: Int] = {
-            let prioritized = budgetCoordinator.prioritizedInstances(
-                from: Set(allocationInstanceIds),
-                sceneItems: math.sceneItems
-            )
-            var rank: [UUID: Int] = [:]
-            for (idx, id) in prioritized.enumerated() {
-                rank[id] = idx
-            }
-            return rank
-        }()
-
-        // 2. Collect candidates from all eligible runtimes
-        struct FlatCandidate {
-            let instanceId: UUID
-            let blockId: String
-            let priority: BlockPriorityInfo
-            let sceneRank: Int
-        }
-
-        var flatCandidates: [FlatCandidate] = []
-
-        for instanceId in allocationInstanceIds {
-            guard let localFrame = localFramesByInstanceId[instanceId] else { continue }
-            guard let runtime = instanceRuntimes[instanceId] else { continue }
-            let candidates = runtime.playbackCandidates(at: localFrame)
-            let rank = sceneRank[instanceId] ?? 0
-
-            for candidate in candidates {
-                flatCandidates.append(FlatCandidate(
-                    instanceId: instanceId,
-                    blockId: candidate.blockId,
-                    priority: candidate.priority,
-                    sceneRank: rank
-                ))
-            }
-        }
-
-        // 3. Sort globally: isVisible desc → area desc → zIndex desc → sceneRank asc → instanceId asc → blockId asc
-        flatCandidates.sort { a, b in
-            if a.priority.isVisible != b.priority.isVisible {
-                return a.priority.isVisible
-            }
-            if a.priority.area != b.priority.area {
-                return a.priority.area > b.priority.area
-            }
-            if a.priority.zIndex != b.priority.zIndex {
-                return a.priority.zIndex > b.priority.zIndex
-            }
-            if a.sceneRank != b.sceneRank {
-                return a.sceneRank < b.sceneRank
-            }
-            if a.instanceId != b.instanceId {
-                return a.instanceId.uuidString < b.instanceId.uuidString
-            }
-            return a.blockId < b.blockId
-        }
-
-        // 4. Take prefix(maxActiveDecoders)
-        let granted = flatCandidates.prefix(budgetCoordinator.maxActiveDecoders)
-
-        // 5. Group back into [UUID: Set<String>]
-        var result: [UUID: Set<String>] = [:]
-
-        // Initialize all eligible instances with empty sets
-        for instanceId in allocationInstanceIds {
-            result[instanceId] = []
-        }
-
-        // Fill with granted blocks
-        for candidate in granted {
-            result[candidate.instanceId, default: []].insert(candidate.blockId)
-        }
-
-        return result
-    }
-
     // MARK: - Playback Video Sync
 
-    /// TT-03 Completion: Applies playback budget to all resident runtimes.
-    ///
-    /// This is the core fix for the active->warm decoder leak:
-    /// - Active runtimes receive budget-aware playback calls
-    /// - Non-active resident runtimes (warm) receive deactivation calls
-    ///
-    /// - Parameters:
-    ///   - mode: Current render mode (single or transition)
-    ///   - math: Timeline math for scene items lookup
-    ///   - grants: Pre-computed budget grants per instance
-    ///   - isStart: true for startPlayback, false for syncPlaybackTick
-    private func applyPlaybackBudget(
-        mode: TimelineTransitionMath.RenderMode,
-        math: TimelineTransitionMath,
-        grants: [UUID: Set<String>],
-        isStart: Bool,
-        hostTime: CFTimeInterval? = nil
-    ) {
-        // Step 1: Compute active instance IDs from current render mode
-        var activeInstanceIds: Set<UUID> = []
-        let localFramesByInstanceId = decoderAllocationLocalFrames(math: math, mode: mode)
-        switch mode {
-        case .single(let sceneIndex, _):
-            guard sceneIndex < math.sceneItems.count else { return }
-            activeInstanceIds.insert(math.sceneItems[sceneIndex].id)
-
-        case .transition(let aIndex, _, let bIndex, _, _, _):
-            guard aIndex < math.sceneItems.count,
-                  bIndex < math.sceneItems.count else { return }
-            activeInstanceIds.insert(math.sceneItems[aIndex].id)
-            activeInstanceIds.insert(math.sceneItems[bIndex].id)
-        }
-
-        // Step 2: Compute resident loaded set = loaded runtimes ∩ (pinned ∪ warm)
-        let residentIds = Set(instanceRuntimes.keys).intersection(
-            budgetCoordinator.pinnedInstanceIds.union(budgetCoordinator.warmInstanceIds)
-        )
-
-        // Step 3: Update active scenes and warm scenes that actually received spare grants.
-        var syncedInstanceIds: Set<UUID> = []
-        for instanceId in residentIds {
-            guard let localFrame = localFramesByInstanceId[instanceId] else { continue }
-            let grantedBlockIds = grants[instanceId] ?? []
-            let shouldSync = activeInstanceIds.contains(instanceId) || !grantedBlockIds.isEmpty
-            guard shouldSync else { continue }
-
-            if isStart {
-                instanceRuntimes[instanceId]?.startPlayback(at: localFrame, grantedBlockIds: grantedBlockIds, hostTime: hostTime)
-            } else {
-                instanceRuntimes[instanceId]?.syncPlaybackTick(localFrame, grantedBlockIds: grantedBlockIds, hostTime: hostTime)
-            }
-            syncedInstanceIds.insert(instanceId)
-        }
-
-        // Step 4: Resident runtimes without active grants keep last texture but release decoder slots.
-        for instanceId in residentIds
-        where !activeInstanceIds.contains(instanceId) && !syncedInstanceIds.contains(instanceId) {
-            instanceRuntimes[instanceId]?.deactivatePlaybackPreservingTextures()
-        }
-    }
-
     /// Syncs video frames for playback tick (called from displayLinkFired).
-    /// Legacy wrapper without host time. For transport-driven playback use host-time aware variant.
     public func syncPlaybackTick(_ compressedFrame: Int) {
         syncPlaybackTick(compressedFrame, hostTime: nil)
     }
 
     /// Host-time aware playback tick sync.
-    /// - Parameters:
-    ///   - compressedFrame: Current compressed frame index.
-    ///   - hostTime: Host time from transport/display link tick.
     public func syncPlaybackTick(_ compressedFrame: Int, hostTime: CFTimeInterval?) {
         guard let math = transitionMath,
               let mode = math.renderMode(for: compressedFrame) else { return }
 
         budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
-        evictNonResidentRuntimes(math: math)
+        residencyController.evictNonResidentRuntimes(math: math)
 
-        let grants = playbackBudgetGrants(math: math, mode: mode)
-        applyPlaybackBudget(mode: mode, math: math, grants: grants, isStart: false, hostTime: hostTime)
+        let localFrames = residencyController.decoderAllocationLocalFrames(math: math, mode: mode)
+        let grants = residencyController.playbackBudgetGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
+        playbackSyncController.applyPlaybackBudget(
+            mode: mode, math: math, localFramesByInstanceId: localFrames,
+            grants: grants, isStart: false, hostTime: hostTime
+        )
     }
 
-    /// Legacy wrapper without host time. For transport-driven playback use host-time aware variant.
+    /// Legacy wrapper without host time.
     public func startPlayback(at compressedFrame: Int) {
         startPlayback(at: compressedFrame, hostTime: nil)
     }
 
     /// Host-time aware playback start.
-    /// - Parameters:
-    ///   - compressedFrame: Starting compressed frame index.
-    ///   - hostTime: Host time from transport start.
     public func startPlayback(at compressedFrame: Int, hostTime: CFTimeInterval?) {
         guard let math = transitionMath,
               let mode = math.renderMode(for: compressedFrame) else { return }
 
         budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
-        evictNonResidentRuntimes(math: math)
+        residencyController.evictNonResidentRuntimes(math: math)
 
-        let grants = playbackBudgetGrants(math: math, mode: mode)
-        applyPlaybackBudget(mode: mode, math: math, grants: grants, isStart: true, hostTime: hostTime)
+        let localFrames = residencyController.decoderAllocationLocalFrames(math: math, mode: mode)
+        let grants = residencyController.playbackBudgetGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
+        playbackSyncController.applyPlaybackBudget(
+            mode: mode, math: math, localFramesByInstanceId: localFrames,
+            grants: grants, isStart: true, hostTime: hostTime
+        )
     }
 
     /// PR-G: Stops playback for all loaded runtimes.
@@ -1003,7 +482,7 @@ public final class TimelineCompositionEngine {
         case .single(let sceneIndex, let localFrame):
             guard sceneIndex < math.sceneItems.count else { return }
             let instanceId = math.sceneItems[sceneIndex].id
-            if let runtime = await getOrCreateRuntime(for: instanceId) {
+            if let runtime = await frameResolver.getOrCreateRuntime(for: instanceId) {
                 _ = await runtime.waitUntilReadyForPresentation(at: localFrame)
             }
 
@@ -1013,14 +492,12 @@ public final class TimelineCompositionEngine {
             let instanceIdA = math.sceneItems[aIndex].id
             let instanceIdB = math.sceneItems[bIndex].id
 
-            // Create both runtimes in parallel
-            async let runtimeATask = getOrCreateRuntime(for: instanceIdA)
-            async let runtimeBTask = getOrCreateRuntime(for: instanceIdB)
+            async let runtimeATask = frameResolver.getOrCreateRuntime(for: instanceIdA)
+            async let runtimeBTask = frameResolver.getOrCreateRuntime(for: instanceIdB)
 
             let runtimeA = await runtimeATask
             let runtimeB = await runtimeBTask
 
-            // Wait for both readiness in parallel
             async let stateATask = runtimeA?.waitUntilReadyForPresentation(at: frameA)
             async let stateBTask = runtimeB?.waitUntilReadyForPresentation(at: frameB)
 
@@ -1028,21 +505,21 @@ public final class TimelineCompositionEngine {
             _ = await stateBTask
         }
 
-        // PHASE 2: Warm scenes must be ready before they can satisfy the first-correct-frame contract.
-        let warmTargets = warmPresentationTargets(math: math, mode: renderMode)
+        // PHASE 2: Warm scenes
+        let warmTargets = residencyController.warmPresentationTargets(math: math, mode: renderMode)
         let orderedWarmIds = budgetCoordinator.prioritizedInstances(
             from: budgetCoordinator.warmInstanceIds,
             sceneItems: math.sceneItems
         )
         for instanceId in orderedWarmIds {
             guard let targetFrame = warmTargets[instanceId] else { continue }
-            if let runtime = await getOrCreateRuntime(for: instanceId) {
+            if let runtime = await frameResolver.getOrCreateRuntime(for: instanceId) {
                 _ = await runtime.waitUntilReadyForPresentation(at: targetFrame)
             }
         }
 
-        // TT-03: PHASE 3: Evict non-resident runtimes
-        evictNonResidentRuntimes(math: math)
+        // PHASE 3: Evict non-resident runtimes
+        residencyController.evictNonResidentRuntimes(math: math)
     }
 
     /// Releases all scene resources.
@@ -1102,15 +579,14 @@ public final class TimelineCompositionEngine {
         guard let math = transitionMath,
               let renderMode = math.renderMode(for: compressedFrame) else { return nil }
 
-        // Update budget coordinator (determines pinned/warm sets)
         budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
 
-        // Compute grants using existing method (read-only w.r.t. runtimes)
-        let grants = playbackBudgetGrants(math: math, mode: renderMode)
+        let localFrames = residencyController.decoderAllocationLocalFrames(math: math, mode: renderMode)
+        let grants = residencyController.playbackBudgetGrants(math: math, mode: renderMode, localFramesByInstanceId: localFrames)
 
         let activeIds = budgetCoordinator.prioritizedInstances(
             from: Set(
-                decoderAllocationLocalFrames(math: math, mode: renderMode).keys.filter {
+                localFrames.keys.filter {
                     budgetCoordinator.shouldHaveActiveDecoders(for: $0)
                 }
             ),
