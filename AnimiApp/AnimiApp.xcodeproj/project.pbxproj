@@ -70,6 +70,9 @@
 		331800CDE8433BC1216EE58E /* VideoPosterCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6704D8395BED2D7804FD980D /* VideoPosterCache.swift */; };
 		338BC0927AA52CCD82641382 /* ActiveDraftSlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A2B083177B5FEF1FD7C1A9 /* ActiveDraftSlot.swift */; };
 		3467B52EF16555EC8E8BED35 /* SceneEditInteractionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 631D07258A72196FBA9F3CF5 /* SceneEditInteractionController.swift */; };
+		3468A11E0001AAAA00000001 /* SceneEditToolRuntimeControlling.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3468A11E0002AAAA00000001 /* SceneEditToolRuntimeControlling.swift */; };
+		3468A11E0001AAAA00000002 /* SceneEditToolModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3468A11E0002AAAA00000002 /* SceneEditToolModule.swift */; };
+		3468A11E0001AAAA00000003 /* SceneEditToolModuleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3468A11E0002AAAA00000003 /* SceneEditToolModuleTests.swift */; };
 		34CDFFD82D47B2ADCAD8B200 /* RecoveryPromptCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91744DD091F19D8EF8B5D446 /* RecoveryPromptCoordinator.swift */; };
 		3A1DE674543CB9BBCDE8E1EF /* EditorCanvasMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A929B98AF54DA5E1DF38755B /* EditorCanvasMapper.swift */; };
 		3C7997821877FDE22C5A7040 /* RuntimeDiagnosticsSinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8884C449BB00659A04764FEA /* RuntimeDiagnosticsSinkTests.swift */; };
@@ -480,6 +483,9 @@
 		6217BE444627EF27F393EA99 /* VideoTrimSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTrimSessionTests.swift; sourceTree = "<group>"; };
 		62B86D0621E024C2C3AA5296 /* ResolvedTimelineFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResolvedTimelineFrame.swift; sourceTree = "<group>"; };
 		631D07258A72196FBA9F3CF5 /* SceneEditInteractionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEditInteractionController.swift; sourceTree = "<group>"; };
+		3468A11E0002AAAA00000001 /* SceneEditToolRuntimeControlling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEditToolRuntimeControlling.swift; sourceTree = "<group>"; };
+		3468A11E0002AAAA00000002 /* SceneEditToolModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEditToolModule.swift; sourceTree = "<group>"; };
+		3468A11E0002AAAA00000003 /* SceneEditToolModuleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEditToolModuleTests.swift; sourceTree = "<group>"; };
 		63F5710AB20407511BC36B35 /* MediaPlacementState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlacementState.swift; sourceTree = "<group>"; };
 		64C6F939378043462D1C5A9E /* RecoveryPromptFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryPromptFlowTests.swift; sourceTree = "<group>"; };
 		654C1F795DDD30820DC9D106 /* ProjectStorageActor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStorageActor.swift; sourceTree = "<group>"; };
@@ -804,6 +810,7 @@
 				44EE94FB03769870D92C18AC /* SceneBackgroundDomainTests.swift */,
 				44EE94FCA3769870D92C18AC /* SceneEditIsolationTests.swift */,
 				D021C99C10DB0855254ACA28 /* SceneEditTargetInstanceTests.swift */,
+				3468A11E0002AAAA00000003 /* SceneEditToolModuleTests.swift */,
 				123BD64ECE23FA7F562A4AE4 /* SceneEditTimelineHandoffTests.swift */,
 				3EA2B59E6D4E7B5200DA2FAB /* SceneInstanceRuntimeHoldFrameTests.swift */,
 				1F8A65192D762DE89C5D164B /* SceneInstanceRuntimeReadinessTests.swift */,
@@ -1207,6 +1214,8 @@
 				0F338AC8C2192E9C93E78A28 /* MediaIngestStatusOverlayView.swift */,
 				84F06CD95A1FA8540DC0DBC3 /* PlacementGestureSession.swift */,
 				631D07258A72196FBA9F3CF5 /* SceneEditInteractionController.swift */,
+				3468A11E0002AAAA00000001 /* SceneEditToolRuntimeControlling.swift */,
+				3468A11E0002AAAA00000002 /* SceneEditToolModule.swift */,
 				602B4EE2465DBB0CD71D700D /* VideoTrimBarView.swift */,
 				30CC59FA6F398F868AA02669 /* VideoTrimFilmstripView.swift */,
 				0093D3976ECB877F83A18053 /* VideoTrimSession.swift */,
@@ -1400,6 +1409,7 @@
 				9D6CC0AFACE73ED9570FC35E /* SceneBackgroundDomainTests.swift in Sources */,
 				9D6CC0B0ECE73ED9570FC35E /* SceneEditIsolationTests.swift in Sources */,
 				5C00B3EEFE58A0C860BF5CB5 /* SceneEditTargetInstanceTests.swift in Sources */,
+				3468A11E0001AAAA00000003 /* SceneEditToolModuleTests.swift in Sources */,
 				CA141427E59926E854914502 /* SceneEditTimelineHandoffTests.swift in Sources */,
 				0F3D1E023B6DF715451929C2 /* SceneInstanceRuntimeHoldFrameTests.swift in Sources */,
 				CFA21B26DC5ED99D4D976271 /* SceneInstanceRuntimeReadinessTests.swift in Sources */,
@@ -1575,6 +1585,8 @@
 				6D8ECBA9A63E3BBE961807B1 /* SceneDelegate.swift in Sources */,
 				6CB2DC6FA01CA1A1308B6D11 /* SceneEditBar.swift in Sources */,
 				3467B52EF16555EC8E8BED35 /* SceneEditInteractionController.swift in Sources */,
+				3468A11E0001AAAA00000001 /* SceneEditToolRuntimeControlling.swift in Sources */,
+				3468A11E0001AAAA00000002 /* SceneEditToolModule.swift in Sources */,
 				3CB6D1380A2B6AA48F275BD4 /* SceneInstanceRuntime.swift in Sources */,
 				9679197E9E746DC549BDD438 /* SceneLibrary.swift in Sources */,
 				C4071986B9BC622B346488AB /* SceneLibraryModels.swift in Sources */,

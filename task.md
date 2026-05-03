@@ -1,6 +1,6 @@
 С учетом принятых продуктовых решений целевой контракт теперь фиксируется жестко.
 
-**Текущее Состояние На 2026-05-01**
+**Текущее Состояние На 2026-05-03**
 - Зафиксирован integration milestone commit:
   `a7c45b4` —
   `integration: per-scene background domain, export runner extraction, preview background switching`.
@@ -16,17 +16,22 @@
 - Зафиксирован preview-audio readiness barrier fix:
   `e26e05e` —
   `fix(playback): add preview audio readiness barrier`.
+- Зафиксирован split `TimelineCompositionEngine`:
+  `7f8807b` —
+  `refactor(engine): split TimelineCompositionEngine into 3 internal owners`.
 - Актуальный локальный gate:
   `bash Scripts/run_animiapp_tests.sh`
   ->
-  `1305 tests, 0 failures, 2 skipped`.
+  `1317 tests, 0 failures, 2 skipped`.
 - В committed production code закрыты:
   `PR 1: Export Artifact And Delivery Policy Split`,
   `PR 2: Background Domain Contract And Scope Resolution`,
   `PR 4: VideoExporter Decomposition`,
   `PR 5: Timeline Export Session Builder Extraction`,
   `PR 6: Playback Transport And Timebase Refactor`,
-  `PR 7: Preview Audio Transport Integration`.
+  `PR 7: Preview Audio Transport Integration`,
+  `PR 8: TimelineCompositionEngine Internal Split`,
+  `PR 9: Scene Edit Tool Architecture`.
 - Дополнительно внутри этого integration milestone закрыт integration tail между `PR1–PR4`:
   delivery/runtime/output seam,
   scene background production edit/persistence/export path,
@@ -45,7 +50,7 @@
   но canonical contract `generic audio domain -> runtime/export audio snapshot/plan`
   еще не доведен до финального accepted состояния.
 - Следующий канонический structural шаг по плану:
-  `PR 8: TimelineCompositionEngine Internal Split`.
+  `PR 10: EditorRuntime Thinning`.
 
 **Финальная Цель Рефакторинга**
 - Не “уменьшить файлы” и не “разложить код по папкам”, а довести редактор до состояния, где текущий product contract выражен в явных domain boundaries и не держится на giant owner-типах.
@@ -214,7 +219,7 @@
    partial audio preview workspace files становятся committed production code;
    project-music preview path проходит device smoke без crash в `AVPlayer setRate:time:atHostTime:`.
 
-8. `PR 8: TimelineCompositionEngine Internal Split` — `NEXT`
+8. `PR 8: TimelineCompositionEngine Internal Split` — `DONE`
    Цель: после transport refactor разрезать `TimelineCompositionEngine` на:
    frame resolution,
    residency/budget,
@@ -222,13 +227,13 @@
    Acceptance:
    engine становится фасадом, а не owner-ом всех timeline concerns сразу.
 
-9. `PR 9: Scene Edit Tool Architecture`
+9. `PR 9: Scene Edit Tool Architecture` — `DONE`
    Цель: вынести из controller/runtime tool surface scene-edit.
    По коду: собрать единый scene-edit feature из `AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift`, `AnimiApp/Sources/Editor/SceneEdit/InlineVideoTrimCoordinator.swift`, scene-edit path-ов в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` и wiring в `AnimiApp/Sources/Player/EditorViewController.swift`.
    Acceptance:
    новый scene-edit tool добавляется в tool module, а не в giant controller/runtime.
 
-10. `PR 10: EditorRuntime Thinning`
+10. `PR 10: EditorRuntime Thinning` — `NEXT`
    Цель: после extraction-ов довести `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` до facade/state machine.
    Acceptance:
    runtime в основном маршрутизирует state, output и orchestration между уже вынесенными доменами.

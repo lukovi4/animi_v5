@@ -8,12 +8,19 @@ final class InlineVideoTrimCoordinator {
     // MARK: - State
 
     private(set) var videoTrimSession: VideoTrimSession?
+
+    /// Test-only setter for videoTrimSession.
+    #if DEBUG
+    func setVideoTrimSessionForTesting(_ session: VideoTrimSession?) {
+        videoTrimSession = session
+    }
+    #endif
     private var trimThumbnailProvider: VideoTrimThumbnailProvider?
 
     // MARK: - Dependencies (closure DI)
 
-    /// Reads the current EditorRuntime (may be nil).
-    var getRuntime: (() -> EditorRuntime?)?
+    /// Reads the current runtime (may be nil).
+    var getRuntime: (() -> SceneEditToolRuntimeControlling?)?
     /// Reads the current EditorSession (may be nil if PVC deallocated).
     var getSession: (() -> EditorSession?)?
     /// Reads the scene instance ID being edited.

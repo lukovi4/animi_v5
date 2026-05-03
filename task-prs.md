@@ -28,7 +28,11 @@
   `bash Scripts/run_animiapp_tests.sh`
   ->
   `1305 tests, 0 failures, 2 skipped`.
-- Дальнейшие PR не должны ломать актуальный baseline `1305 / 0 / 2`.
+- Актуальный scene-edit/module baseline на `2026-05-03` после `PR8 + PR9`:
+  `bash Scripts/run_animiapp_tests.sh`
+  ->
+  `1317 tests, 0 failures, 2 skipped`.
+- Дальнейшие PR не должны ломать актуальный baseline `1317 / 0 / 2`.
 - Каждый PR должен быть behavior-preserving, если acceptance явно не требует смены контракта.
 
 ## 0.1 Current Status
@@ -40,6 +44,8 @@
   - `PR 5: Timeline Export Session Builder Extraction`
   - `PR 6: Playback Transport And Timebase Refactor`
   - `PR 7: Preview Audio Transport Integration`
+  - `PR 8: TimelineCompositionEngine Internal Split`
+  - `PR 9: Scene Edit Tool Architecture`
 - Внутри integration milestone дополнительно закрыт integration tail между `PR1–PR4`:
   - runtime/controller/output export delivery contract
   - scene background production edit/persistence/export path
@@ -57,7 +63,7 @@
   - compatibility groundwork частично присутствует
   - production runtime/export audio contract все еще опирается на music bridge
 - Следующий канонический PR по sequence:
-  - `PR 8: TimelineCompositionEngine Internal Split`
+  - `PR 10: EditorRuntime Thinning`
 
 ## 1. Merge Rules
 
@@ -237,7 +243,7 @@ Test gates:
 - prove preview audio is compiled and wired through target, not only present in workspace
 - manual iPhone smoke for preview music start/pause/resume/dirty-rebuild passes
 
-### PR 8: TimelineCompositionEngine Internal Split — NEXT
+### PR 8: TimelineCompositionEngine Internal Split — DONE
 
 Scope:
 - `AnimiApp/Sources/Player/TimelineComposition/*`
@@ -250,7 +256,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update timeline composition / transition / exporter resolution suites
 
-### PR 9: Scene Edit Tool Architecture
+### PR 9: Scene Edit Tool Architecture — DONE
 
 Scope:
 - `AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift`
@@ -265,7 +271,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update scene-edit / trim / handoff tests
 
-### PR 10: EditorRuntime Thinning
+### PR 10: EditorRuntime Thinning — NEXT
 
 Scope:
 - `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`

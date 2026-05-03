@@ -2612,6 +2612,15 @@ final class EditorRuntime {
     }
 }
 
+// MARK: - SceneEditToolRuntimeControlling
+
+extension EditorRuntime: SceneEditToolRuntimeControlling {
+    func reloadSceneEditState(instanceId: UUID) async {
+        resetRuntimeForSceneInstanceChange()
+        await applySceneInstanceState(instanceId: instanceId)
+    }
+}
+
 // MARK: - DisplayLinkTarget
 
 /// Non-self target for CADisplayLink to avoid retain cycle with EditorRuntime.

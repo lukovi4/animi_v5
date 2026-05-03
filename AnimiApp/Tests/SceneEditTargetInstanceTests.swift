@@ -4,6 +4,7 @@ import TVECore
 
 /// Regression tests for scene-edit write-target resolution.
 /// Verifies that persistence always targets the editor uiMode scene (not runtime tracking).
+@MainActor
 final class SceneEditTargetInstanceTests: XCTestCase {
 
     // MARK: - Unit: resolveWriteTargetForSceneEdit
@@ -11,7 +12,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
     func testWriteTarget_sceneEdit_returnsDuplicateId_evenWhenRuntimePointsToOriginal() {
         let originalId = UUID()
         let duplicateId = UUID()
-        let target = EditorViewController.resolveWriteTargetForSceneEdit(
+        let target = SceneEditToolModule.resolveWriteTargetForSceneEdit(
             uiMode: .sceneEdit(sceneInstanceId: duplicateId),
             activeSceneInstanceId: originalId
         )
@@ -21,7 +22,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
 
     func testWriteTarget_sceneEdit_ignoresNilRuntime() {
         let duplicateId = UUID()
-        let target = EditorViewController.resolveWriteTargetForSceneEdit(
+        let target = SceneEditToolModule.resolveWriteTargetForSceneEdit(
             uiMode: .sceneEdit(sceneInstanceId: duplicateId),
             activeSceneInstanceId: nil
         )
@@ -30,7 +31,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
 
     func testWriteTarget_timeline_returnsRuntimeId() {
         let runtimeId = UUID()
-        let target = EditorViewController.resolveWriteTargetForSceneEdit(
+        let target = SceneEditToolModule.resolveWriteTargetForSceneEdit(
             uiMode: .timeline,
             activeSceneInstanceId: runtimeId
         )
@@ -38,7 +39,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
     }
 
     func testWriteTarget_timeline_noRuntime_returnsNil() {
-        let target = EditorViewController.resolveWriteTargetForSceneEdit(
+        let target = SceneEditToolModule.resolveWriteTargetForSceneEdit(
             uiMode: .timeline,
             activeSceneInstanceId: nil
         )
@@ -50,7 +51,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
     func testWriteTarget_reset_usesEditorTarget() {
         let originalId = UUID()
         let duplicateId = UUID()
-        let target = EditorViewController.resolveWriteTargetForSceneEdit(
+        let target = SceneEditToolModule.resolveWriteTargetForSceneEdit(
             uiMode: .sceneEdit(sceneInstanceId: duplicateId),
             activeSceneInstanceId: originalId
         )
@@ -75,7 +76,7 @@ final class SceneEditTargetInstanceTests: XCTestCase {
         store.dispatch(.enterSceneEdit(sceneId: duplicateId))
 
         // Resolve write target (simulates what EditorViewController does)
-        let writeTarget = EditorViewController.resolveWriteTargetForSceneEdit(
+        let writeTarget = SceneEditToolModule.resolveWriteTargetForSceneEdit(
             uiMode: store.state.uiMode,
             activeSceneInstanceId: originalId // runtime still points to original!
         )

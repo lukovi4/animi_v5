@@ -117,55 +117,9 @@ final class EditorViewController: UIViewController {
     private var sceneLibrarySnapshot: SceneLibrarySnapshot?
     private var defaultSceneSequence: [SceneTypeDefault] = []
 
-    /// Write-target resolution: in scene-edit returns uiMode target;
-    /// otherwise returns runtime activeSceneInstanceId.
-    /// Production code and tests share this single implementation.
-    static func resolveWriteTargetForSceneEdit(
-        uiMode: EditorUIMode,
-        activeSceneInstanceId: UUID?
-    ) -> UUID? {
-        if case .sceneEdit(let id) = uiMode {
-            return id
-        }
-        return activeSceneInstanceId
-    }
-
-    /// Write-target for scene-edit persistence: delegates to the static resolver.
-    private var sceneEditTargetInstanceId: UUID? {
-        guard let uiMode = session.state?.uiMode else { return nil }
-        return Self.resolveWriteTargetForSceneEdit(
-            uiMode: uiMode,
-            activeSceneInstanceId: runtime?.currentActiveSceneInstanceId
-        )
-    }
-
-    private func assertSceneEditTargetMatchesRuntimeIfPossible() {
-        #if DEBUG
-        // Activation in progress — divergence is expected
-        guard runtime?.currentSceneEditReadyInstanceId != nil else { return }
-        guard let target = sceneEditTargetInstanceId,
-              let runtimeId = runtime?.currentActiveSceneInstanceId,
-              target != runtimeId else { return }
-        logger.debug("[BUG-GUARD] sceneEditTargetInstanceId (\(target)) != activeSceneInstanceId (\(runtimeId))")
-        assertionFailure("[BUG-GUARD] Scene edit target diverged from runtime active scene")
-        #endif
-    }
-
-    /// Inline video trim coordinator — owns trim state and methods.
-    private lazy var videoTrimCoordinator: InlineVideoTrimCoordinator = {
-        let coord = InlineVideoTrimCoordinator()
-        coord.getRuntime = { [weak self] in self?.runtime }
-        coord.getSession = { [weak self] in self?.session }
-        coord.getSceneEditTargetInstanceId = { [weak self] in self?.sceneEditTargetInstanceId }
-        coord.getEditorLayoutContainer = { [weak self] in self?.editorLayoutContainer }
-        coord.onSyncPausedVideoStill = { [weak self] force in self?.syncPausedVideoStill(force: force) }
-        coord.onUpdateSceneEditBottomBar = { [weak self] blockId in
-            self?.editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: blockId)
-        }
-        coord.onUpdateMediaBlockActionBar = { [weak self] in self?.updateMediaBlockActionBarForSelectedBlock() }
-        coord.onPresentAlert = { [weak self] alert in self?.present(alert, animated: true) }
-        return coord
-    }()
+    // resolveWriteTargetForSceneEdit, sceneEditTargetInstanceId,
+    // assertSceneEditTargetMatchesRuntimeIfPossible, videoTrimCoordinator
+    // moved to SceneEditToolModule
 
     // MARK: - PR2: Visual Editor Timeline
     /// Tracks whether user made explicit Save/Don't Save choice (prevents double-save in viewWillDisappear).
@@ -180,7 +134,7 @@ final class EditorViewController: UIViewController {
     private lazy var overlayPositionDrag = OverlayPositionDragView()
 
     // MARK: - Scene Edit Mode (PR-D)
-    private var sceneEditController: SceneEditInteractionController?
+    private var sceneEditModule: SceneEditToolModule?
 
     // MARK: - Background (PR3)
     private var currentProjectId: UUID?
@@ -189,10 +143,7 @@ final class EditorViewController: UIViewController {
     private weak var pendingBackgroundEditor: BackgroundEditorViewController?
     /// Media ingest coordinator — handles PHPicker → prepare → persist → bind pipeline.
     /// Initialized once on VC lifecycle, not lazily in delegate callback.
-    private var showsMediaIngestStatusOverlay = true
-    private var showsMediaIngestStatusInActionBar = true
     private lazy var ingestStatusOverlayView = MediaIngestStatusOverlayView()
-    private var ingestFailureAlertedKeys: Set<IngestSlotKey> = []
 
     // MARK: - PR5 Phase E: Asset Registry Bookkeeping Helper
 
@@ -258,16 +209,13 @@ final class EditorViewController: UIViewController {
             }
         }
         coordinator.onStatusChanged = { [weak self] key, status in
-            self?.handleIngestStatusChanged(key: key, status: status)
+            self?.sceneEditModule?.handleIngestStatusChanged(key: key, status: status)
         }
         _mediaIngestCoordinator = coordinator
         return coordinator
     }
 
-    /// Pending picker request — captures (sceneInstanceId, blockId) at picker open time.
-    /// Consumed in PHPickerDelegate. The sceneInstanceId is the source of truth for
-    /// which scene this media belongs to, NOT the current sceneEditTargetInstanceId at callback time.
-    private var pendingPickerRequest: IngestSlotKey?
+    // pendingPickerRequest moved to SceneEditToolModule
 
     // In-flight frame limiting (must match MetalRendererOptions.maxFramesInFlight)
     private static let maxFramesInFlight = 3
@@ -508,132 +456,10 @@ final class EditorViewController: UIViewController {
             self?.session.dispatch(.exitSceneEdit)
         }
 
-        // PR-E: SceneEditBar callbacks
-        editorLayoutContainer.onBackground = { [weak self] in
-            self?.backgroundTapped()
-        }
-
-        editorLayoutContainer.onResetScene = { [weak self] in
-            guard let self = self,
-                  let instanceId = self.sceneEditTargetInstanceId else { return }
-
-            // PR-F: Show confirmation only if scene has state to reset
-            let sceneState = self.session.state?.draft.sceneInstanceStates[instanceId]
-            guard sceneState != nil && sceneState != .empty else { return }
-
-            let alert = UIAlertController(
-                title: "Reset Scene",
-                message: "This will reset all changes to this scene. This action can be undone.",
-                preferredStyle: .alert
-            )
-
-            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-            alert.addAction(UIAlertAction(title: "Reset", style: .destructive) { [weak self] _ in
-                guard let self = self else { return }
-                // Cancel all in-flight ingests for this scene before resetting
-                self.mediaIngestCoordinator.cancelAll(for: instanceId)
-                self.session.dispatch(.resetSceneState(sceneInstanceId: instanceId))
-                // Phase D: reloadRuntimeState is async — refresh bars after reload completes.
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    await self.reloadRuntimeState(for: instanceId)
-                    self.refreshSceneEditBars()
-                }
-            })
-
-            self.present(alert, animated: true)
-        }
-
-        // PR-E: MediaBlockActionBar callbacks
-        editorLayoutContainer.onAddPhoto = { [weak self] blockId in
-            self?.presentMediaPicker(for: blockId, kind: .photo)
-        }
-
-        editorLayoutContainer.onAddVideo = { [weak self] blockId in
-            self?.presentMediaPicker(for: blockId, kind: .video)
-        }
-
-        editorLayoutContainer.onTrimVideo = { [weak self] blockId in
-            self?.enterVideoTrim(for: blockId)
-        }
-
-        editorLayoutContainer.onTrimCancel = { [weak self] in
-            self?.cancelVideoTrim()
-        }
-
-        editorLayoutContainer.onTrimDone = { [weak self] in
-            self?.commitVideoTrim()
-        }
-
-        // VideoTrimBar handle/cursor callbacks
-        editorLayoutContainer.videoTrimBar.onTrimStartChanged = { [weak self] fraction in
-            self?.handleTrimStartDrag(fraction)
-        }
-        editorLayoutContainer.videoTrimBar.onTrimEndChanged = { [weak self] fraction in
-            self?.handleTrimEndDrag(fraction)
-        }
-        editorLayoutContainer.videoTrimBar.onCursorChanged = { [weak self] fraction in
-            self?.handleTrimCursorDrag(fraction)
-        }
-        editorLayoutContainer.videoTrimBar.onDragEnded = { [weak self] in
-            self?.handleTrimDragEnded()
-        }
-
-        editorLayoutContainer.onAnimation = { [weak self] blockId in
-            self?.presentVariantPicker(blockId: blockId)
-        }
-
-        editorLayoutContainer.onToggleEnabled = { [weak self] blockId in
-            guard let self = self,
-                  let instanceId = self.sceneEditTargetInstanceId else { return }
-            // Toggle current state
-            let currentPresent = self.session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.visibility ?? true
-            self.session.dispatch(.setBlockMediaPresent(
-                sceneInstanceId: instanceId,
-                blockId: blockId,
-                present: !currentPresent
-            ))
-            // Update runtime via visibility fast-path
-            self.runtime?.applyMediaVisibilityChange(instanceId: instanceId, blockId: blockId, visible: !currentPresent)
-            // Refresh MediaBlockActionBar to update Disable/Enable button state
-            self.updateMediaBlockActionBarForSelectedBlock()
-        }
-
-        editorLayoutContainer.onRemove = { [weak self] blockId in
-            guard let self = self,
-                  let instanceId = self.sceneEditTargetInstanceId else { return }
-            // Cancel any in-flight ingest for this slot
-            self.mediaIngestCoordinator.cancelIngest(
-                for: IngestSlotKey(sceneInstanceId: instanceId, blockId: blockId)
-            )
-            // PR5 Phase E: Pre-capture the asset ID before dispatch so we can
-            // check if it is still referenced after the slot is cleared.
-            let oldAssetId = self.session.state?.draft
-                .sceneInstanceStates[instanceId]?
-                .mediaSlotsByBlockId?[blockId]?.mediaRef.assetId
-            // Clear runtime
-            self.runtime?.clearMediaSlot(blockId: blockId)
-            // Dispatch to store (removes slot)
-            self.session.dispatch(.setMediaSlot(
-                sceneInstanceId: instanceId,
-                blockId: blockId,
-                slot: nil
-            ))
-            // PR5 Phase E: Post-dispatch bookkeeping — re-read the fresh draft
-            // and unregister the old asset ID only if nothing else references it.
-            if let oldAssetId {
-                self.session.unregisterAssetIfUnreferenced(oldAssetId)
-            }
-            self.metalView.setNeedsDisplay()
-            // Refresh MediaBlockActionBar
-            self.updateMediaBlockActionBarForSelectedBlock()
-        }
-
-        editorLayoutContainer.onResetTransform = { [weak self] blockId in
-            guard let self, let instanceId = self.sceneEditTargetInstanceId else { return }
-            self.session.dispatch(.resetMediaPlacement(sceneInstanceId: instanceId, blockId: blockId))
-            self.updateMediaBlockActionBarForSelectedBlock()
-        }
+        // Scene-edit layout callbacks (onBackground, onResetScene, onAddPhoto/Video,
+        // onTrimVideo/Cancel/Done, videoTrimBar callbacks, onAnimation,
+        // onToggleEnabled, onRemove, onResetTransform) are wired by
+        // SceneEditToolModule.wireLayoutCallbacks() in setupSceneEditModule().
     }
 
     // MARK: - PR1 + PR2: Unified Timeline Event Handling
@@ -1030,10 +856,37 @@ final class EditorViewController: UIViewController {
         }
 
         wireStoreCallbacks()
-        setupSceneEditController(loadResult: loadResult)
         configureTimelineUI(state: state, fps: fps)
         bootRuntime(loadResult: loadResult, state: state)
+        // Module must be created after bootRuntime so self.runtime is non-nil.
+        setupSceneEditModule(loadResult: loadResult)
+
+        #if DEBUG
+        assertBootstrapInvariant_runtimeBeforeModule()
+        #endif
     }
+
+    #if DEBUG
+    /// Validates the bootstrap contract: runtime must exist before the scene-edit
+    /// module is wired. Exposed as a testable static helper so unit tests can
+    /// verify the invariant without full UIKit lifecycle.
+    static func validateBootstrapOrder(
+        runtimeIsNil: Bool,
+        sceneEditModuleIsNil: Bool
+    ) -> Bool {
+        // If module exists, runtime must also exist.
+        if !sceneEditModuleIsNil && runtimeIsNil { return false }
+        return true
+    }
+
+    private func assertBootstrapInvariant_runtimeBeforeModule() {
+        let valid = Self.validateBootstrapOrder(
+            runtimeIsNil: runtime == nil,
+            sceneEditModuleIsNil: sceneEditModule == nil
+        )
+        assert(valid, "[PR9] Bootstrap invariant violated: sceneEditModule exists but runtime is nil")
+    }
+    #endif
 
     /// Wires all store callbacks via EditorStoreCallbacks.
     private func wireStoreCallbacks() {
@@ -1055,65 +908,50 @@ final class EditorViewController: UIViewController {
         }
         callbacks.onTimelinePreviewChanged = { [weak self] st in self?.handleTimelinePreviewChanged(st) }
         callbacks.onUndoRedoChanged = { [weak self] canUndo, canRedo in self?.handleUndoRedoChanged(canUndo: canUndo, canRedo: canRedo) }
-        callbacks.onUIModeChanged = { [weak self] mode in self?.handleUIModeChanged(mode) }
-        callbacks.onSelectedBlockChanged = { [weak self] blockId in self?.handleSelectedBlockChanged(blockId) }
-        callbacks.onStateRestoredFromUndoRedo = { [weak self] in self?.handleStateRestoredFromUndoRedo() }
+        callbacks.onUIModeChanged = { [weak self] mode in self?.sceneEditModule?.handleUIModeChanged(mode) }
+        callbacks.onSelectedBlockChanged = { [weak self] blockId in self?.sceneEditModule?.handleSelectedBlockChanged(blockId) }
+        callbacks.onStateRestoredFromUndoRedo = { [weak self] in
+            self?.sceneEditModule?.handleStateRestoredFromUndoRedo(
+                cancelIngests: { self?.mediaIngestCoordinator.cancelAll() }
+            )
+        }
         callbacks.onSceneStateChanged = { [weak self] instanceId, sceneState in self?.handleSceneStateChanged(instanceId: instanceId, sceneState: sceneState) }
-        callbacks.onVideoSelectionChanged = { [weak self] instanceId, blockId, selection in self?.handleVideoSelectionChanged(instanceId: instanceId, blockId: blockId, selection: selection) }
-        callbacks.onMediaPlacementChanged = { [weak self] instanceId, blockId, placement in self?.handleMediaPlacementChanged(instanceId: instanceId, blockId: blockId, placement: placement) }
-        callbacks.onMediaVisibilityChanged = { [weak self] instanceId, blockId, visible in self?.handleMediaVisibilityChanged(instanceId: instanceId, blockId: blockId, visible: visible) }
-        callbacks.onMediaSlotChanged = { [weak self] instanceId, blockId, slot in self?.handleMediaSlotChanged(instanceId: instanceId, blockId: blockId, slot: slot) }
+        callbacks.onVideoSelectionChanged = { [weak self] instanceId, blockId, selection in
+            self?.sceneEditModule?.handleVideoSelectionChanged(instanceId: instanceId, blockId: blockId, selection: selection)
+        }
+        callbacks.onMediaPlacementChanged = { [weak self] instanceId, blockId, placement in
+            self?.sceneEditModule?.handleMediaPlacementChanged(instanceId: instanceId, blockId: blockId, placement: placement)
+        }
+        callbacks.onMediaVisibilityChanged = { [weak self] instanceId, blockId, visible in
+            self?.sceneEditModule?.handleMediaVisibilityChanged(instanceId: instanceId, blockId: blockId, visible: visible)
+        }
+        callbacks.onMediaSlotChanged = { [weak self] instanceId, blockId, slot in
+            self?.sceneEditModule?.handleMediaSlotChanged(instanceId: instanceId, blockId: blockId, slot: slot)
+        }
         callbacks.onNotice = { [weak self] notice in self?.handleEditorNotice(notice) }
         session.setStoreCallbacks(callbacks)
     }
 
-    /// Assembles the SceneEditInteractionController with all closure bindings.
-    private func setupSceneEditController(loadResult: EditorRuntime.InitialSceneLoadResult) {
-        let sceneEditCtrl = SceneEditInteractionController()
-        sceneEditCtrl.overlayView = overlayView
-        sceneEditCtrl.getOverlayProvider = { [weak self] in self?.runtime?.sceneEditOverlayProvider() }
-        sceneEditCtrl.getUIMode = { [weak self] in self?.session.state?.uiMode ?? .timeline }
-        sceneEditCtrl.getSelectedBlockId = { [weak self] in self?.session.state?.selectedBlockId }
-
-        sceneEditCtrl.onSelectBlock = { [weak self] blockId in
-            self?.session.dispatch(.selectBlock(blockId: blockId))
+    /// Initializes and wires the SceneEditToolModule.
+    /// Precondition: `bootRuntime` must have run first so `self.runtime` is non-nil.
+    private func setupSceneEditModule(loadResult: EditorRuntime.InitialSceneLoadResult) {
+        guard let rt = runtime else {
+            assertionFailure("[PR9] setupSceneEditModule called before runtime was created")
+            return
         }
-
-        sceneEditCtrl.getBaselinePlacement = { [weak self] blockId in
-            guard let self = self,
-                  let instanceId = self.sceneEditTargetInstanceId,
-                  let slot = self.session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else {
-                return .defaultCover
-            }
-            return slot.asset.placement
-        }
-
-        sceneEditCtrl.onPlacementChanged = { [weak self] blockId, placement, phase in
-            guard let self = self,
-                  let instanceId = self.sceneEditTargetInstanceId else { return }
-
-            self.runtime?.applyMediaPlacementChange(instanceId: instanceId, blockId: blockId, placement: placement)
-
-            self.session.dispatch(.setMediaPlacement(
-                sceneInstanceId: instanceId,
-                blockId: blockId,
-                placement: placement,
-                phase: phase
-            ))
-
-            if phase == .cancelled {
-                let restored = self.session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId]?.asset.placement ?? .defaultCover
-                self.runtime?.applyMediaPlacementChange(instanceId: instanceId, blockId: blockId, placement: restored)
-            }
-        }
-
-        sceneEditCtrl.ingestStatusOverlayView = ingestStatusOverlayView
-        sceneEditCtrl.showsIngestStatusOverlay = showsMediaIngestStatusOverlay
-        sceneEditCtrl.getIngestStatusesByBlockId = { [weak self] in
-            self?.currentIngestStatusesByBlockId() ?? [:]
-        }
-
-        self.sceneEditController = sceneEditCtrl
+        let module = SceneEditToolModule(
+            runtime: rt,
+            session: session,
+            overlayView: overlayView,
+            ingestStatusOverlayView: ingestStatusOverlayView
+        )
+        module.delegate = self
+        module.getRawIngestStatus = { [weak self] in self?.mediaIngestCoordinator.slotStatus ?? [:] }
+        module.cancelIngestForSlot = { [weak self] key in self?.mediaIngestCoordinator.cancelIngest(for: key) }
+        module.cancelAllIngestsForScene = { [weak self] id in self?.mediaIngestCoordinator.cancelAll(for: id) }
+        module.setupInteractionController(loadResult: loadResult)
+        module.wireLayoutCallbacks(container: editorLayoutContainer)
+        self.sceneEditModule = module
     }
 
     /// Configures timeline UI from current editor state.
@@ -1170,8 +1008,7 @@ final class EditorViewController: UIViewController {
             fullScreenPreviewVC?.setPlaying(isPlaying)
 
         case .sceneEditActivated:
-            refreshSceneEditBars()
-            sceneEditController?.updateOverlay()
+            sceneEditModule?.handleSceneEditActivated()
             requestMetalRender()
 
         case .sceneEditDeactivated:
@@ -1319,7 +1156,7 @@ final class EditorViewController: UIViewController {
         runtime?.syncCoordinatorTimeline(from: state)
 
         // PR-F: Refresh bottom bars if in Scene Edit mode
-        refreshSceneEditBars()
+        sceneEditModule?.refreshSceneEditBars()
 
         // PR-G: Refresh current frame to reflect timeline changes
         runtime?.refreshCurrentTimelineFrame()
@@ -1382,28 +1219,7 @@ final class EditorViewController: UIViewController {
         #endif
     }
 
-    // MARK: - PR4: Fast-Path Handlers
-
-    /// Fast-path: placement committed — apply to active scene without full reload.
-    private func handleMediaPlacementChanged(instanceId: UUID, blockId: String, placement: MediaPlacementState) {
-        let resolvedInstanceId = sceneEditTargetInstanceId ?? instanceId
-        runtime?.applyMediaPlacementChange(instanceId: resolvedInstanceId, blockId: blockId, placement: placement)
-    }
-
-    /// Fast-path: visibility toggled — apply to active scene without full reload.
-    private func handleMediaVisibilityChanged(instanceId: UUID, blockId: String, visible: Bool) {
-        let resolvedInstanceId = sceneEditTargetInstanceId ?? instanceId
-        runtime?.applyMediaVisibilityChange(instanceId: resolvedInstanceId, blockId: blockId, visible: visible)
-        refreshSceneEditBars()
-    }
-
-    /// Fast-path: slot changed (insert/replace/remove) — apply to active scene.
-    /// Slot changes use full engine update (media needs restore).
-    private func handleMediaSlotChanged(instanceId: UUID, blockId: String, slot: SceneMediaSlot?) {
-        let resolvedInstanceId = sceneEditTargetInstanceId ?? instanceId
-        runtime?.applyMediaSlotChange(instanceId: resolvedInstanceId, blockId: blockId, slot: slot)
-        refreshSceneEditBars()
-    }
+    // Fast-path handlers moved to SceneEditToolModule
 
     /// Called during live-trim preview (lightweight, frequent).
     /// Only updates UI, skips playback coordinator and persistence.
@@ -1435,280 +1251,9 @@ final class EditorViewController: UIViewController {
         #endif
     }
 
-    // MARK: - PR-D: Scene Edit Mode Handlers
-
-    /// Handles UI mode changes (timeline ↔ sceneEdit).
-    /// PR-D: Wires store.onUIModeChanged to layout and interaction controller.
-    private func handleUIModeChanged(_ mode: EditorUIMode) {
-        switch mode {
-        case .timeline:
-            // Exit Scene Edit: restore timeline UI via runtime
-            runtime?.deactivateSceneEdit()
-            editorLayoutContainer.setSceneEditMode(false, animated: true)
-            editorLayoutContainer.navBar.setMode(.timeline)
-            sceneEditController?.updateOverlay()
-
-        case .sceneEdit(let sceneId):
-            // TT-10: Isolate timeline activity unconditionally on scene edit entry.
-            // Stop playback via runtime
-            runtime?.stopPlayback()
-            editorLayoutContainer.setSceneEditMode(true, animated: true)
-            editorLayoutContainer.navBar.setMode(.sceneEdit)
-            sceneEditController?.updateOverlay()
-
-            // PR-F: Configure bottom bars state
-            refreshSceneEditBars()
-
-            // Activate target scene by instance ID via runtime (async, render-gated)
-            runtime?.activateSceneEditTarget(instanceId: sceneId)
-
-            #if DEBUG
-            log("[PR-D] Entered Scene Edit for scene: \(sceneId)")
-            #endif
-        }
-    }
-
-    /// Handles selected block changes in Scene Edit mode.
-    /// PR-D: Updates bottom bar and overlay when block selection changes.
-    /// PR-F: Uses refreshSceneEditBars() for consistent bar updates.
-    private func handleSelectedBlockChanged(_ blockId: String?) {
-        editorLayoutContainer.updateSceneEditBottomBar(selectedBlockId: blockId)
-        sceneEditController?.updateOverlay()
-
-        // PR-F: Refresh bottom bars state
-        refreshSceneEditBars()
-
-        #if DEBUG
-        log("[PR-D] Selected block changed: \(blockId ?? "nil")")
-        #endif
-    }
-
-    /// Updates MediaBlockActionBar configuration for currently selected block (PR-E).
-    private func updateMediaBlockActionBarForSelectedBlock() {
-        guard let blockId = session.state?.selectedBlockId,
-              let rt = runtime,
-              let instanceId = sceneEditTargetInstanceId else { return }
-
-        // Get sealed block capabilities from runtime
-        let ctx = rt.mediaActionBarContext(blockId: blockId)
-        let hasVariants = ctx.availableVariants.count > 1
-
-        // Check if block has media assigned (unified slots)
-        let sceneState = session.state?.draft.sceneInstanceStates[instanceId]
-        let slot = sceneState?.mediaSlotsByBlockId?[blockId]
-        var hasMedia = slot != nil
-
-        // Check if block is enabled (slot visibility)
-        let isEnabled = slot?.visibility ?? true
-
-        // Determine media kind and trim capability
-        var mediaKind = slot?.mediaRef.mediaKind
-        var canTrimVideo = ctx.canTrimVideo
-
-        // Phase 6: Restore-failed blocks treated as empty in scene-edit UI
-        if let instanceId = sceneEditTargetInstanceId,
-           session.missingMediaSummary?.isBlockFailed(sceneInstanceId: instanceId, blockId: blockId) == true {
-            hasMedia = false
-            mediaKind = nil
-            canTrimVideo = false
-        }
-
-        // Phase 6: Get ingest status for this block
-        let ingestKey = IngestSlotKey(sceneInstanceId: instanceId, blockId: blockId)
-        let ingestStatus = mediaIngestCoordinator.status(for: ingestKey)
-
-        // Check if placement is at default (for reset button visibility)
-        let isPlacementDefault = slot?.asset.placement.isNearDefault ?? true
-
-        editorLayoutContainer.configureMediaBlockActionBar(
-            blockId: blockId,
-            allowedMedia: ctx.allowedMedia,
-            hasVariants: hasVariants,
-            hasMedia: hasMedia,
-            isEnabled: isEnabled,
-            mediaKind: mediaKind,
-            canTrimVideo: canTrimVideo,
-            ingestStatus: ingestStatus,
-            showsIngestStatus: showsMediaIngestStatusInActionBar,
-            isPlacementDefault: isPlacementDefault
-        )
-    }
-
-    /// Refreshes SceneEditBar and MediaBlockActionBar states.
-    /// PR-F: Called after state changes to keep bottom bars in sync.
-    private func refreshSceneEditBars() {
-        guard let instanceId = sceneEditTargetInstanceId else { return }
-
-        // 1. Update SceneEditBar reset button state
-        let sceneState = session.state?.draft.sceneInstanceStates[instanceId]
-        let canReset = sceneState != nil && sceneState != .empty
-        editorLayoutContainer.configureSceneEditBar(canReset: canReset)
-
-        // 2. Update MediaBlockActionBar if block is selected
-        if session.state?.selectedBlockId != nil {
-            updateMediaBlockActionBarForSelectedBlock()
-        }
-    }
-
-    // MARK: - Phase 6: Ingest Status
-
-    /// Returns current ingest statuses keyed by blockId for the active scene-edit scene.
-    private func currentIngestStatusesByBlockId() -> [String: IngestSlotStatus] {
-        guard let instanceId = sceneEditTargetInstanceId else { return [:] }
-        var result: [String: IngestSlotStatus] = [:]
-        for (key, status) in mediaIngestCoordinator.slotStatus
-            where key.sceneInstanceId == instanceId {
-            result[key.blockId] = status
-        }
-        return result
-    }
-
-    /// Handles ingest status changes: updates overlay, action bar, and shows failure alerts.
-    private func handleIngestStatusChanged(key: IngestSlotKey, status: IngestSlotStatus) {
-        // Only update UI if this status change is for the active scene-edit scene
-        guard key.sceneInstanceId == sceneEditTargetInstanceId else { return }
-
-        // Update ingest status overlay
-        sceneEditController?.updateOverlay()
-
-        // Update action bar if this block is selected
-        if session.state?.selectedBlockId == key.blockId {
-            updateMediaBlockActionBarForSelectedBlock()
-        }
-
-        // Alert dedupe
-        switch status {
-        case .processing, .idle:
-            ingestFailureAlertedKeys.remove(key)
-
-        case .failed(let reason):
-            guard !ingestFailureAlertedKeys.contains(key) else { return }
-            ingestFailureAlertedKeys.insert(key)
-            let alert = UIAlertController(
-                title: "Media Import Failed",
-                message: reason,
-                preferredStyle: .alert
-            )
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
-            present(alert, animated: true)
-
-        case .ready:
-            break // Transient, no action
-        }
-    }
-
-    // MARK: - Inline Video Trim (PR 3+4) — delegated to InlineVideoTrimCoordinator
-
-    private func enterVideoTrim(for blockId: String) {
-        videoTrimCoordinator.enterVideoTrim(for: blockId)
-    }
-
-    private func handleTrimStartDrag(_ fraction: Double) {
-        videoTrimCoordinator.handleTrimStartDrag(fraction)
-    }
-
-    private func handleTrimEndDrag(_ fraction: Double) {
-        videoTrimCoordinator.handleTrimEndDrag(fraction)
-    }
-
-    private func handleTrimCursorDrag(_ fraction: Double) {
-        videoTrimCoordinator.handleTrimCursorDrag(fraction)
-    }
-
-    private func handleTrimDragEnded() {
-        videoTrimCoordinator.handleTrimDragEnded()
-    }
-
-    private func commitVideoTrim() {
-        videoTrimCoordinator.commitVideoTrim()
-    }
-
-    private func cancelVideoTrim() {
-        videoTrimCoordinator.cancelVideoTrim()
-    }
-
-    private func exitVideoTrim() {
-        videoTrimCoordinator.exitVideoTrim()
-    }
-
-    /// Handles committed video selection change from store callback.
-    private func handleVideoSelectionChanged(instanceId: UUID, blockId: String, selection: PersistedVideoSelection) {
-        runtime?.applyVideoSelectionToEngine(selection: selection, blockId: blockId, instanceId: instanceId)
-        refreshSceneEditBars()
-    }
-
-    /// Reloads runtime state for a given scene instance.
-    /// PR-F: Single sync-point for runtime reload after undo/redo or Reset Scene.
-    /// Order: resetForNewInstance -> clearAll -> applySceneInstanceState -> overlay/redraw -> video sync
-    ///
-    /// Phase D: async because `applySceneInstanceState` is async (pre-resolves
-    /// media URLs off the caller). Steps 5 and 6 run after the awaited apply
-    /// so overlay/redraw/video-still reflect restored state.
-    private func reloadRuntimeState(for instanceId: UUID) async {
-        // Delegate to runtime for reset + re-apply
-        runtime?.resetRuntimeForSceneInstanceChange()
-        await runtime?.applySceneInstanceState(instanceId: instanceId)
-
-        // Refresh overlay and redraw
-        sceneEditController?.updateOverlay()
-        metalView.setNeedsDisplay()
-
-        // Force video frame sync for already-ready providers
-        syncPausedVideoStill(force: true)
-
-        #if DEBUG
-        log("[PR-F] Runtime state reloaded for instance: \(instanceId)")
-        #endif
-    }
-
-    /// Syncs video frames to current playhead when paused.
-    /// PR-F: Used after runtime reload and when video providers become ready.
-    /// Suppressed during active trim session to prevent onNeedsDisplay events from
-    /// overwriting the trim preview with scene-frame stills.
-    /// - Parameter force: If true, bypasses lastStillSyncFrame gate
-    private func syncPausedVideoStill(force: Bool) {
-        guard !(runtime?.isPlaying ?? false) else { return }
-        // During active trim, preview is driven by previewExactVideoTrimFrame — don't stomp it
-        guard videoTrimCoordinator.videoTrimSession == nil else { return }
-
-        let localFrame = runtime?.bestLocalFrame ?? 0
-        runtime?.syncVideoStillFrames(sceneFrameIndex: localFrame)
-    }
-
-    /// Handles state restoration after undo/redo.
-    /// PR-D: Re-applies runtime state for active scene instance to sync with restored snapshot.
-    /// PR-F: Also refreshes bottom bars and syncs TimelineCompositionEngine.
-    ///
-    /// Phase D: `reloadRuntimeState` is now async, so the sequence runs inside
-    /// a single MainActor Task to preserve ordering:
-    ///   1. cancel ingests (sync)
-    ///   2. await reload of active instance
-    ///   3. refresh bars
-    ///   4. sync engine timeline (with asset registry) and re-apply scene states
-    private func handleStateRestoredFromUndoRedo() {
-        // Conservatively cancel all in-flight ingests before reloading restored state.
-        // Undo/redo may have reverted the scene structure, making ongoing ingests stale.
-        mediaIngestCoordinator.cancelAll()
-
-        let targetId = sceneEditTargetInstanceId
-        let runtimeId = runtime?.currentActiveSceneInstanceId
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            if let targetId = targetId {
-                await self.reloadRuntimeState(for: targetId)
-            } else if let runtimeId = runtimeId {
-                await self.reloadRuntimeState(for: runtimeId)
-            }
-            self.refreshSceneEditBars()
-
-            // PR-F: Sync TimelineCompositionEngine with restored state.
-            if let state = self.session.state {
-                self.runtime?.syncEngineAfterUndoRedo(state: state)
-            }
-        }
-    }
+    // Scene-edit mode handlers, ingest status, video trim wrappers,
+    // reloadRuntimeState, syncPausedVideoStill, handleStateRestoredFromUndoRedo
+    // moved to SceneEditToolModule
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -1764,8 +1309,8 @@ final class EditorViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         // PR-E: Update Scene Edit mapper with current canvas/view sizes
-        sceneEditController?.mapper.canvasSize = runtime?.queryCanvasSize ?? .zero
-        sceneEditController?.mapper.viewSize = metalView.bounds.size
+        sceneEditModule?.interactionController?.mapper.canvasSize = runtime?.queryCanvasSize ?? .zero
+        sceneEditModule?.interactionController?.mapper.viewSize = metalView.bounds.size
 
         // PR9: Update text position overlay canvas mapper
         let canvasSize = runtime?.queryCanvasSize ?? .zero
@@ -1778,7 +1323,7 @@ final class EditorViewController: UIViewController {
 
         // P1-2: Refresh Scene Edit overlay after layout change
         if case .sceneEdit = session.state?.uiMode {
-            sceneEditController?.updateOverlay()
+            sceneEditModule?.interactionController?.updateOverlay()
         }
     }
 
@@ -1991,22 +1536,22 @@ final class EditorViewController: UIViewController {
     @objc private func overlayViewTapped(_ recognizer: UITapGestureRecognizer) {
         guard case .sceneEdit = session.state?.uiMode else { return }
         let point = recognizer.location(in: overlayView)
-        sceneEditController?.handleTap(viewPoint: point)
+        sceneEditModule?.handleTap(viewPoint: point)
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
         guard case .sceneEdit = session.state?.uiMode else { return }
-        sceneEditController?.handlePan(recognizer)
+        sceneEditModule?.handlePan(recognizer)
     }
 
     @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
         guard case .sceneEdit = session.state?.uiMode else { return }
-        sceneEditController?.handlePinch(recognizer)
+        sceneEditModule?.handlePinch(recognizer)
     }
 
     @objc private func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
         guard case .sceneEdit = session.state?.uiMode else { return }
-        sceneEditController?.handleRotation(recognizer)
+        sceneEditModule?.handleRotation(recognizer)
     }
 
     // MARK: - User Media Actions (PR-32)
@@ -2122,85 +1667,8 @@ final class EditorViewController: UIViewController {
         present(picker, animated: true)
     }
 
-    // MARK: - PR-E: Scene Edit Media Picker
-
-    /// Presents media picker for Scene Edit with deterministic blockId tracking.
-    /// - Parameters:
-    ///   - blockId: The block ID for which media is being picked
-    ///   - kind: Whether to pick photo or video
-    private func presentMediaPicker(for blockId: String, kind: MediaKind) {
-        // Capture identity at picker-open time (not at callback time)
-        assertSceneEditTargetMatchesRuntimeIfPossible()
-        guard let instanceId = sceneEditTargetInstanceId else {
-            log("[UserMedia] No scene edit target, cannot open picker")
-            return
-        }
-        pendingPickerRequest = IngestSlotKey(sceneInstanceId: instanceId, blockId: blockId)
-
-        var config = PHPickerConfiguration()
-        config.filter = (kind == .photo) ? .images : .videos
-        config.selectionLimit = 1
-
-        let picker = PHPickerViewController(configuration: config)
-        picker.delegate = self
-        present(picker, animated: true)
-    }
-
-    /// Presents variant picker as action sheet for Scene Edit (PR-E).
-    /// - Parameter blockId: The block ID for which to show variants
-    private func presentVariantPicker(blockId: String) {
-        guard let rt = runtime else { return }
-
-        let ctx = rt.mediaActionBarContext(blockId: blockId)
-        let variants = ctx.availableVariants
-        guard !variants.isEmpty else { return }
-
-        // Get current variant for checkmark
-        let currentVariantId = ctx.selectedVariantId
-
-        let alert = UIAlertController(title: "Animation", message: nil, preferredStyle: .actionSheet)
-
-        for variant in variants {
-            let action = UIAlertAction(title: variant.id, style: .default) { [weak self] _ in
-                self?.applyVariant(blockId: blockId, variantId: variant.id)
-            }
-            // Show checkmark for current variant
-            if variant.id == currentVariantId {
-                action.setValue(true, forKey: "checked")
-            }
-            alert.addAction(action)
-        }
-
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-
-        // iPad support: configure popover
-        if let popover = alert.popoverPresentationController {
-            popover.sourceView = view
-            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
-            popover.permittedArrowDirections = []
-        }
-
-        present(alert, animated: true)
-    }
-
-    /// Applies variant selection to runtime and persists to store (PR-E).
-    private func applyVariant(blockId: String, variantId: String) {
-        // 1. Apply to runtime
-        runtime?.setSelectedVariant(blockId: blockId, variantId: variantId)
-        metalView.setNeedsDisplay()
-
-        // 2. Update overlay
-        sceneEditController?.updateOverlay()
-
-        // 3. Persist to store
-        assertSceneEditTargetMatchesRuntimeIfPossible()
-        guard let instanceId = sceneEditTargetInstanceId else { return }
-        session.dispatch(.setBlockVariant(
-            sceneInstanceId: instanceId,
-            blockId: blockId,
-            variantId: variantId
-        ))
-    }
+    // presentMediaPicker, presentVariantPicker, applyVariant
+    // moved to SceneEditToolModule
 
     // MARK: - Scene Catalog
 
@@ -2901,8 +2369,8 @@ extension EditorViewController: PHPickerViewControllerDelegate {
         picker.dismiss(animated: true)
 
         guard let result = results.first else {
-            // User cancelled - clear pending state
-            pendingPickerRequest = nil
+            // User cancelled - clear pending state (both background and scene-edit paths)
+            sceneEditModule?.consumePendingPickerRequest()
             return
         }
 
@@ -2915,11 +2383,10 @@ extension EditorViewController: PHPickerViewControllerDelegate {
 
         // Use the request captured at picker-open time — NOT current sceneEditTargetInstanceId.
         // This ensures the media is attributed to the scene that was active when the user opened the picker.
-        guard let key = pendingPickerRequest else {
+        guard let key = sceneEditModule?.consumePendingPickerRequest() else {
             log("[UserMedia] No pending picker request, skipping ingest")
             return
         }
-        pendingPickerRequest = nil
 
         mediaIngestCoordinator.ingest(pickerResult: result, key: key)
     }
@@ -2933,6 +2400,35 @@ extension EditorViewController: PHPickerViewControllerDelegate {
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+}
+
+// MARK: - SceneEditToolModuleDelegate
+
+extension EditorViewController: SceneEditToolModuleDelegate {
+    func sceneEditModuleNeedsRedraw() {
+        metalView.setNeedsDisplay()
+    }
+
+    func sceneEditModule(_ module: SceneEditToolModule, presentAlert alert: UIAlertController) {
+        present(alert, animated: true)
+    }
+
+    func sceneEditModule(_ module: SceneEditToolModule, presentPHPicker picker: PHPickerViewController) {
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+
+    func sceneEditModuleRequestBackgroundEditor() {
+        backgroundTapped()
+    }
+
+    var sceneEditLayoutContainer: EditorLayoutContainerView {
+        editorLayoutContainer
+    }
+
+    var sceneEditPopoverSourceView: UIView {
+        view
     }
 }
 
