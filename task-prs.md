@@ -32,7 +32,11 @@
   `bash Scripts/run_animiapp_tests.sh`
   ->
   `1317 tests, 0 failures, 2 skipped`.
-- Дальнейшие PR не должны ломать актуальный baseline `1317 / 0 / 2`.
+- Актуальный runtime-thinning baseline на `2026-05-04` после `PR10`:
+  `bash Scripts/run_animiapp_tests.sh`
+  ->
+  `1318 tests, 0 failures, 2 skipped`.
+- Дальнейшие PR не должны ломать актуальный baseline `1318 / 0 / 2`.
 - Каждый PR должен быть behavior-preserving, если acceptance явно не требует смены контракта.
 
 ## 0.1 Current Status
@@ -46,6 +50,7 @@
   - `PR 7: Preview Audio Transport Integration`
   - `PR 8: TimelineCompositionEngine Internal Split`
   - `PR 9: Scene Edit Tool Architecture`
+  - `PR 10: EditorRuntime Thinning`
 - Внутри integration milestone дополнительно закрыт integration tail между `PR1–PR4`:
   - runtime/controller/output export delivery contract
   - scene background production edit/persistence/export path
@@ -63,7 +68,7 @@
   - compatibility groundwork частично присутствует
   - production runtime/export audio contract все еще опирается на music bridge
 - Следующий канонический PR по sequence:
-  - `PR 10: EditorRuntime Thinning`
+  - `PR 11: EditorViewController Thinning`
 
 ## 1. Merge Rules
 
@@ -271,11 +276,14 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update scene-edit / trim / handoff tests
 
-### PR 10: EditorRuntime Thinning — NEXT
+### PR 10: EditorRuntime Thinning — DONE
 
 Scope:
 - `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`
-- new extracted runtime modules
+- `AnimiApp/Sources/EditorRuntime/EditorRuntimeBackgroundController.swift`
+- `AnimiApp/Sources/EditorRuntime/EditorRuntimePreviewAudioCoordinator.swift`
+- `AnimiApp/Sources/EditorRuntime/EditorRuntimeSceneEditController.swift`
+- `AnimiApp/Sources/EditorRuntime/EditorRuntimeExportController.swift`
 
 Acceptance:
 - runtime в основном маршрутизирует state/output
@@ -285,7 +293,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update runtime mutation / export restore / bridge suites
 
-### PR 11: EditorViewController Thinning
+### PR 11: EditorViewController Thinning — NEXT
 
 Scope:
 - `AnimiApp/Sources/Player/EditorViewController.swift`

@@ -1,6 +1,6 @@
 С учетом принятых продуктовых решений целевой контракт теперь фиксируется жестко.
 
-**Текущее Состояние На 2026-05-03**
+**Текущее Состояние На 2026-05-04**
 - Зафиксирован integration milestone commit:
   `a7c45b4` —
   `integration: per-scene background domain, export runner extraction, preview background switching`.
@@ -19,10 +19,13 @@
 - Зафиксирован split `TimelineCompositionEngine`:
   `7f8807b` —
   `refactor(engine): split TimelineCompositionEngine into 3 internal owners`.
+- Зафиксирован split `EditorRuntime`:
+  `PR10` —
+  `EditorRuntime Thinning` completed in committed production code.
 - Актуальный локальный gate:
   `bash Scripts/run_animiapp_tests.sh`
   ->
-  `1317 tests, 0 failures, 2 skipped`.
+  `1318 tests, 0 failures, 2 skipped`.
 - В committed production code закрыты:
   `PR 1: Export Artifact And Delivery Policy Split`,
   `PR 2: Background Domain Contract And Scope Resolution`,
@@ -31,7 +34,8 @@
   `PR 6: Playback Transport And Timebase Refactor`,
   `PR 7: Preview Audio Transport Integration`,
   `PR 8: TimelineCompositionEngine Internal Split`,
-  `PR 9: Scene Edit Tool Architecture`.
+  `PR 9: Scene Edit Tool Architecture`,
+  `PR 10: EditorRuntime Thinning`.
 - Дополнительно внутри этого integration milestone закрыт integration tail между `PR1–PR4`:
   delivery/runtime/output seam,
   scene background production edit/persistence/export path,
@@ -50,7 +54,7 @@
   но canonical contract `generic audio domain -> runtime/export audio snapshot/plan`
   еще не доведен до финального accepted состояния.
 - Следующий канонический structural шаг по плану:
-  `PR 10: EditorRuntime Thinning`.
+  `PR 11: EditorViewController Thinning`.
 
 **Финальная Цель Рефакторинга**
 - Не “уменьшить файлы” и не “разложить код по папкам”, а довести редактор до состояния, где текущий product contract выражен в явных domain boundaries и не держится на giant owner-типах.
@@ -233,12 +237,14 @@
    Acceptance:
    новый scene-edit tool добавляется в tool module, а не в giant controller/runtime.
 
-10. `PR 10: EditorRuntime Thinning` — `NEXT`
+10. `PR 10: EditorRuntime Thinning` — `DONE`
    Цель: после extraction-ов довести `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` до facade/state machine.
+   По коду: вынести `preview audio`, `scene edit runtime`, `background`, `export`
+   в internal owner-ы и оставить на runtime thin facade/test seams.
    Acceptance:
    runtime в основном маршрутизирует state, output и orchestration между уже вынесенными доменами.
 
-11. `PR 11: EditorViewController Thinning`
+11. `PR 11: EditorViewController Thinning` — `NEXT`
    Цель: последним довести `AnimiApp/Sources/Player/EditorViewController.swift` до реально thin UI shell.
    Acceptance:
    controller больше не является composition root для половины editor feature-flows.
