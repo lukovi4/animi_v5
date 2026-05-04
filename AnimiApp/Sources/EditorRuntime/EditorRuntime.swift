@@ -54,15 +54,15 @@ final class EditorRuntime {
 
     // MARK: - Dependencies
 
-    private let session: EditorSession
+    let session: EditorSession
 
     // MARK: - State
 
-    private(set) var state: EditorRuntimeState = .idle
+    internal(set) var state: EditorRuntimeState = .idle
 
     /// Current render source for the view layer.
     /// Every assignment increments `renderSourceRevision` for test observability.
-    private(set) var currentRenderSource: EditorRuntimeRenderSource = .none {
+    internal(set) var currentRenderSource: EditorRuntimeRenderSource = .none {
         didSet { renderSourceRevision &+= 1 }
     }
 
@@ -73,19 +73,19 @@ final class EditorRuntime {
     /// Tracks which codepath last triggered a timeline frame refresh.
     /// Read-only test seam — proves engine.onNeedsRedraw fired vs manual playhead change.
     enum RefreshTrigger: Equatable { case none, playheadChanged, engineRedraw, sceneEditMutation }
-    private(set) var lastRefreshTrigger: RefreshTrigger = .none
+    internal(set) var lastRefreshTrigger: RefreshTrigger = .none
 
     var onOutput: ((EditorRuntimeOutput) -> Void)?
 
     // MARK: - Metal Context
 
-    private var metalContext: EditorRuntimeMetalContext?
+    var metalContext: EditorRuntimeMetalContext?
 
     // MARK: - Subsystems (moved from PVC)
 
     private var sceneLibrarySnapshot: SceneLibrarySnapshot?
-    private var playbackCoordinator: TimelinePlaybackCoordinator?
-    private var timelineCompositionEngine: TimelineCompositionEngine?
+    var playbackCoordinator: TimelinePlaybackCoordinator?
+    internal var timelineCompositionEngine: TimelineCompositionEngine?
     private var transitionCompositor: TransitionCompositor?
 
     /// Per-owner overlay texture cache for the preview path.
@@ -93,32 +93,30 @@ final class EditorRuntime {
     let overlayRenderCache = OverlayRenderResourceCache()
     private var memoryWarningObserver: NSObjectProtocol?
 
-    private var scenePlayer: ScenePlayer?
-    private var compiledScene: CompiledScene?
-    private var textureProvider: (any MutableTextureProvider)?
-    private var assetResolver: CompositeAssetResolver?
+    var scenePlayer: ScenePlayer?
+    var compiledScene: CompiledScene?
+    var textureProvider: (any MutableTextureProvider)?
+    var assetResolver: CompositeAssetResolver?
 
-    private var userMediaService: UserMediaService?
-    private var backgroundTextureService: BackgroundTextureService?
-    private var backgroundTextureProvider: InMemoryTextureProvider?
-    private(set) var effectiveBackgroundState: EffectiveBackgroundState?
+    var userMediaService: UserMediaService?
 
-    /// True after enterExportMode() has torn down preview resources.
-    /// Cleared by restorePreExportState(). Guards reload to avoid
-    /// re-preloading when cancel fires before teardown.
-    private var exportTeardownOccurred = false
+    // MARK: - Background
+    private(set) lazy var background = EditorRuntimeBackgroundController(runtime: self)
 
-    private var canvasSize: SizeD = .zero
-    private var mergedAssetSizes: [String: AssetSize] = [:]
+    // MARK: - Export
+    private(set) lazy var exportController = EditorRuntimeExportController(runtime: self)
+
+    var canvasSize: SizeD = .zero
+    var mergedAssetSizes: [String: AssetSize] = [:]
 
     // MARK: - Frame State
 
     private var cachedTimelineFrame: ResolvedTimelineFrame?
     private var cachedTimelineCompressedFrame: Int?
     private var currentCompressedFrame: Int = 0
-    private var currentFrameIndex = 0
+    var currentFrameIndex = 0
     private var totalFrames = 0
-    private var sceneFPS = 30.0
+    var sceneFPS = 30.0
 
     // MARK: - Playback
 
@@ -126,18 +124,14 @@ final class EditorRuntime {
     private var displayLink: CADisplayLink?
     private var playheadAsyncTask: Task<Void, Never>?
     private var playbackStartTask: Task<Void, Never>?
-    private var lastStillSyncFrame: Int = -1
+    var lastStillSyncFrame: Int = -1
     private let playbackTransport = PlaybackTransport()
     private var playbackCurrentCompressedFrame: Int = 0
-    private var playbackCurrentProjectTimeUs: TimeUs = 0
+    var playbackCurrentProjectTimeUs: TimeUs = 0
 
     // MARK: - Preview Audio
-    private lazy var previewAudioController: PreviewAudioControlling = PreviewAudioPlaybackController()
-    private(set) var previewAudioDirty: Bool = true
-    private(set) var previewAudioGeneration: UInt = 0
-    private var previewAudioOrchestrationTask: Task<Void, Never>?
-    private var previewAudioBuildTask: Task<BuiltAudioPipeline?, Never>?
-    private var playbackCurrentHostTime: CFTimeInterval = 0
+    private(set) lazy var previewAudio = EditorRuntimePreviewAudioCoordinator(runtime: self)
+    var playbackCurrentHostTime: CFTimeInterval = 0
 
     #if DEBUG
     /// Test-observable counter: incremented each time timeline presentation is resolved.
@@ -145,59 +139,15 @@ final class EditorRuntime {
     #endif
 
     // MARK: - Scene Edit
+    private(set) lazy var sceneEdit = EditorRuntimeSceneEditController(runtime: self)
 
-    private var activeSceneInstanceId: UUID?
-    private var sceneEditReadyInstanceId: UUID?
-    private var sceneEditActivationTask: Task<Void, Never>?
-
-    // MARK: - Export
-
-    final class ActiveExportRequest {
-        let id: UUID
-        let exporter: VideoExporter
-        let deliveryPolicy: ExportDeliveryPolicy
-
-        /// Strongly retains the in-flight delivery operation until terminal completion.
-        var deliveryFlow: ExportDeliveryFlow?
-
-        init(id: UUID, exporter: VideoExporter, deliveryPolicy: ExportDeliveryPolicy) {
-            self.id = id
-            self.exporter = exporter
-            self.deliveryPolicy = deliveryPolicy
-        }
-
-        func isActive(for requestId: UUID) -> Bool {
-            id == requestId
-        }
-    }
-
-    private var activeExportRequest: ActiveExportRequest?
-    var isExporting: Bool { activeExportRequest != nil }
-    private var preExportState: EditorRuntimeState?
-
-    /// Generation counter for background image imports. Incremented on each new
-    /// picker request and on editor dismiss, so stale async completions detect
-    /// they are no longer current.
-    private(set) var backgroundImportGeneration: UInt = 0
+    typealias ActiveExportRequest = EditorRuntimeExportController.ActiveExportRequest
 
     /// Scope of the active background editor session.
     enum BackgroundEditScope {
         case project
         case scene(instanceId: UUID)
     }
-
-    /// Whether a background editor is actively presented (defers store commits).
-    private(set) var hasActiveBackgroundEditor: Bool = false
-
-    /// Active background edit scope — project or scene.
-    private var backgroundEditScope: BackgroundEditScope = .project
-
-    /// Preset ID from the last background editor session (for texture cleanup on preset change).
-    private var lastBackgroundPresetId: String?
-
-    /// Asset IDs registered during the current background editor session.
-    /// Swept on dismiss to unregister intermediate imports that didn't land in the final override.
-    private var backgroundEditorTrackedAssetIds: Set<ProjectAssetID> = []
 
     // MARK: - Init
 
@@ -233,55 +183,61 @@ final class EditorRuntime {
         self.isPlaying = playing
     }
 
-    /// Test seam: forwards to the private runtime-owned `handleMediaReadyForPlacement`.
+    /// Test seam: forwards to the production `handleMediaReadyForPlacement`.
     /// Exercises the exact same path that `UserMediaService.onMediaReady` invokes in production.
     func simulateMediaReadyCallback(blockId: String) {
-        handleMediaReadyForPlacement(blockId: blockId)
+        sceneEdit.handleMediaReadyForPlacement(blockId: blockId)
     }
 
     /// Test seam: exposes the timeline composition engine for cache pre-population.
     var testTimelineCompositionEngine: TimelineCompositionEngine? { timelineCompositionEngine }
 
     /// Test seam: exposes background texture service for export-restore verification.
-    var testBackgroundTextureService: BackgroundTextureService? { backgroundTextureService }
+    var testBackgroundTextureService: BackgroundTextureService? { background.backgroundTextureService }
 
     /// Test seam: triggers export teardown without starting actual export.
     func simulateEnterExportMode() {
-        enterExportMode()
+        exportController.enterExportMode()
     }
 
     /// Test seam: async exit-export-mode with background texture restore.
     func simulateExitExportModeToIdle() async {
-        await exitExportModeToIdle()
+        await exportController.exitExportModeToIdle()
     }
 
     /// Test seam: simulates exporter completion callback with a fake active request.
     func simulateHandleExportCompletion(result: Result<URL, Error>) {
-        let exporter = VideoExporter(mediaLocator: session.mediaLocator)
-        let request = ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: pendingDeliveryPolicy)
-        activeExportRequest = request
-        handleExportCompletion(result: result, requestId: request.id)
+        exportController.simulateHandleExportCompletion(result: result)
     }
 
     /// Test seam: inject a mock preview audio controller.
     func setPreviewAudioController(_ controller: PreviewAudioControlling) {
-        self.previewAudioController = controller
+        previewAudio.controller = controller
     }
 
+    var previewAudioDirty: Bool { previewAudio.dirty }
+    var previewAudioGeneration: UInt { previewAudio.generation }
+
     /// Test seam: override pipeline builder for controllable async builds.
-    var previewAudioPipelineBuilder: (() async -> BuiltAudioPipeline?)?
+    var previewAudioPipelineBuilder: (() async -> BuiltAudioPipeline?)? {
+        get { previewAudio.pipelineBuilder }
+        set { previewAudio.pipelineBuilder = newValue }
+    }
 
     /// Test seam: gate that suspends production build before detached task launch.
-    var previewAudioBuildGate: (() async -> Void)?
+    var previewAudioBuildGate: (() async -> Void)? {
+        get { previewAudio.buildGate }
+        set { previewAudio.buildGate = newValue }
+    }
 
     /// Test seam: whether the detached audio build task or orchestration task is active.
     var hasActivePreviewAudioBuildTask: Bool {
-        previewAudioBuildTask != nil
+        previewAudio.buildTask != nil
     }
 
     /// Test seam: whether orchestration or detached build is active.
     var hasActivePreviewAudioOrchestration: Bool {
-        previewAudioOrchestrationTask != nil || previewAudioBuildTask != nil
+        previewAudio.orchestrationTask != nil || previewAudio.buildTask != nil
     }
 
     /// Test seam: set isPlaying without full playback machinery.
@@ -381,7 +337,7 @@ final class EditorRuntime {
         boot(metalContext: metalContext, library: library)
         bootWithLoadedScene(player: loadResult.player, compiled: loadResult.compiled,
                             provider: loadResult.provider, resolver: loadResult.resolver)
-        setupBackground(compiled: loadResult.compiled)
+        background.setupBackground(compiled: loadResult.compiled)
         setupPlaybackCoordinator(library: library, state: editorState)
         setupTimelineCompositionEngine(state: editorState)
         transitionToTimelinePreview()
@@ -418,77 +374,16 @@ final class EditorRuntime {
             )
             ums.setSceneFPS(Double(compiled.runtime.fps))
             ums.onNeedsDisplay = { [weak self] in
-                self?.refreshSceneEditIfActive()
+                self?.sceneEdit.refreshSceneEditIfActive()
                 self?.syncPausedVideoStill(force: true)
             }
             ums.onStillFrameDelivered = { [weak self] in
-                self?.refreshSceneEditIfActive()
+                self?.sceneEdit.refreshSceneEditIfActive()
             }
             ums.onMediaReady = { [weak self] blockId in
-                self?.handleMediaReadyForPlacement(blockId: blockId)
+                self?.sceneEdit.handleMediaReadyForPlacement(blockId: blockId)
             }
             self.userMediaService = ums
-        }
-    }
-
-    /// Sets up background state from template and project override.
-    /// Creates BackgroundTextureService and InMemoryTextureProvider internally.
-    func setupBackground(compiled: CompiledScene) {
-        guard let ctx = metalContext else {
-            logger.info("[EditorRuntime] setupBackground skipped: no metal context")
-            return
-        }
-
-        let bgProvider = InMemoryTextureProvider()
-        self.backgroundTextureProvider = bgProvider
-
-        let bgService = BackgroundTextureService(
-            textureProvider: bgProvider,
-            device: ctx.device,
-            commandQueue: ctx.commandQueue,
-            mediaLocator: session.mediaLocator,
-            mediaWriter: session.mediaWriter
-        )
-        self.backgroundTextureService = bgService
-
-        let bgOverride = session.state?.draft.background
-        let sceneOverride = currentSceneBackgroundOverride()
-        let templateBackground = compiled.runtime.scene.background
-        let effState = EffectiveBackgroundBuilder.build(
-            templateBackground: templateBackground,
-            projectOverride: bgOverride,
-            sceneOverride: sceneOverride,
-            presetLibrary: session.backgroundPresetProvider
-        )
-        self.effectiveBackgroundState = effState
-
-        if let state = effState {
-            logger.info("[EditorRuntime] Background preset '\(state.preset.presetId)' with \(state.regionStates.count) regions")
-
-            if let override = bgOverride {
-                let registry = selfHealedRegistry()
-                Task { [weak self] in
-                    let loadedKeys = await bgService.preloadTextures(
-                        from: override,
-                        presetId: state.preset.presetId,
-                        assetRegistry: registry
-                    )
-                    if !loadedKeys.isEmpty {
-                        logger.info("[EditorRuntime] Preloaded \(loadedKeys.count) background textures")
-                    }
-                    self?.onOutput?(.renderSourceUpdated)
-                }
-            }
-        }
-
-        // Refresh render source with new background
-        switch self.state {
-        case .timelinePreview:
-            refreshCurrentTimelineFrame()
-        case .sceneEdit:
-            updateSceneEditRenderSource()
-        default:
-            break
         }
     }
 
@@ -660,14 +555,14 @@ final class EditorRuntime {
             )
             userMediaService?.setSceneFPS(Double(loadedScene.compiled.runtime.fps))
             userMediaService?.onNeedsDisplay = { [weak self] in
-                self?.refreshSceneEditIfActive()
+                self?.sceneEdit.refreshSceneEditIfActive()
                 self?.syncPausedVideoStill(force: true)
             }
             userMediaService?.onStillFrameDelivered = { [weak self] in
-                self?.refreshSceneEditIfActive()
+                self?.sceneEdit.refreshSceneEditIfActive()
             }
             userMediaService?.onMediaReady = { [weak self] blockId in
-                self?.handleMediaReadyForPlacement(blockId: blockId)
+                self?.sceneEdit.handleMediaReadyForPlacement(blockId: blockId)
             }
         }
 
@@ -679,16 +574,16 @@ final class EditorRuntime {
         logger.debug("[EditorRuntime] Coordinator loaded scene: \(loadedScene.sceneTypeId)")
 
         // Apply per-instance state after scene load (skip during scene-edit activation)
-        if sceneEditReadyInstanceId != nil, let instanceId = activeSceneInstanceId {
-            resetRuntimeForSceneInstanceChange()
+        if sceneEdit.sceneEditReadyInstanceId != nil, let instanceId = sceneEdit.activeSceneInstanceId {
+            sceneEdit.resetRuntimeForSceneInstanceChange()
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.applySceneInstanceState(instanceId: instanceId)
-                self.refreshSceneEditIfActive()
+                self.sceneEdit.refreshSceneEditIfActive()
             }
         }
 
-        refreshSceneEditIfActive()
+        sceneEdit.refreshSceneEditIfActive()
     }
 
     // MARK: - Active Scene Changed
@@ -697,56 +592,28 @@ final class EditorRuntime {
         // In timeline mode, engine is source of truth — ignore coordinator callback
         guard case .sceneEdit = state else { return }
 
-        let previousInstanceId = activeSceneInstanceId
-        activeSceneInstanceId = sceneInfo.sceneInstanceId
+        let previousInstanceId = sceneEdit.activeSceneInstanceId
+        sceneEdit.activeSceneInstanceId = sceneInfo.sceneInstanceId
 
-        guard sceneEditReadyInstanceId != nil else { return }
+        guard sceneEdit.sceneEditReadyInstanceId != nil else { return }
 
         if let coordinator = playbackCoordinator,
            coordinator.currentSceneTypeId == sceneInfo.sceneTypeId,
            scenePlayer != nil {
             if previousInstanceId != sceneInfo.sceneInstanceId {
-                resetRuntimeForSceneInstanceChange()
+                sceneEdit.resetRuntimeForSceneInstanceChange()
                 let newInstanceId = sceneInfo.sceneInstanceId
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     await self.applySceneInstanceState(instanceId: newInstanceId)
-                    self.refreshSceneEditIfActive()
+                    self.sceneEdit.refreshSceneEditIfActive()
                 }
             }
         }
     }
 
-    // MARK: - Scene Instance State
-
-    func resetRuntimeForSceneInstanceChange() {
-        scenePlayer?.resetForNewInstance()
-        userMediaService?.clearAll()
-        lastStillSyncFrame = -1
-    }
-
     func applySceneInstanceState(instanceId: UUID) async {
-        guard let sceneState = session.state?.draft.sceneInstanceStates[instanceId],
-              let player = scenePlayer,
-              let service = userMediaService else {
-            return
-        }
-
-        let registry = selfHealedRegistry()
-        let resolved = await ResolvedMediaMapBuilder.build(
-            slots: sceneState.mediaSlotsByBlockId,
-            locator: session.mediaLocator,
-            registry: registry
-        )
-
-        let deps = SceneRuntimeStateApplier.RestoreDependencies(
-            scenePlayer: player,
-            userMediaService: service,
-            resolvedMedia: resolved
-        )
-        let _ = SceneRuntimeStateApplier.apply(sceneState, deps: deps)
-
-        session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
+        await sceneEdit.applySceneInstanceState(instanceId: instanceId)
     }
 
     // MARK: - Playhead Handling
@@ -770,13 +637,13 @@ final class EditorRuntime {
         guard let engine = timelineCompositionEngine else { return }
 
         currentCompressedFrame = compressedFrame
-        activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
+        sceneEdit.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
 
         // Eagerly recompute background for the background-owning scene.
         // For transitions, the outgoing scene (A) owns the background.
-        let bgOwnerId = backgroundOwnerInstanceId(at: compressedFrame, engine: engine)
+        let bgOwnerId = background.backgroundOwnerInstanceId(at: compressedFrame, engine: engine)
         if let bgOwnerId {
-            updatePreviewBackgroundForScene(bgOwnerId)
+            background.updatePreviewBackgroundForScene(bgOwnerId)
         }
 
         lastRefreshTrigger = .playheadChanged
@@ -819,9 +686,9 @@ final class EditorRuntime {
 
                 switch resolved {
                 case .single(let ctx):
-                    self.activeSceneInstanceId = ctx.sceneInstanceId
+                    self.sceneEdit.activeSceneInstanceId = ctx.sceneInstanceId
                 case .transition:
-                    self.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
+                    self.sceneEdit.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
                 }
 
                 if !self.isPlaying {
@@ -854,15 +721,15 @@ final class EditorRuntime {
                 }
 
                 // Resolve per-scene background for this frame's owner scene.
-                if let previewBgState = self.resolvePreviewBackgroundState(for: resolved) {
-                    self.effectiveBackgroundState = previewBgState
+                if let previewBgState = self.background.resolvePreviewBackgroundState(for: resolved) {
+                    self.background.effectiveBackgroundState = previewBgState
                 }
 
                 // Update render source
                 self.currentRenderSource = .timeline(TimelineRenderSourcePayload(
                     resolvedFrame: resolved,
-                    backgroundState: self.effectiveBackgroundState,
-                    backgroundTextureProvider: self.backgroundTextureProvider,
+                    backgroundState: self.background.effectiveBackgroundState,
+                    backgroundTextureProvider: self.background.backgroundTextureProvider,
                     diagnosticFrameTag: compressedFrame,
                     overlayItems: overlayItems
                 ))
@@ -887,7 +754,7 @@ final class EditorRuntime {
     }
 
     private func handleSceneEditModePlayheadChanged(_ compressedFrame: Int) {
-        guard sceneEditReadyInstanceId != nil else { return }
+        guard sceneEdit.sceneEditReadyInstanceId != nil else { return }
         guard let coordinator = playbackCoordinator else { return }
 
         let mapper = session.state?.makePlayheadMapper() ?? TimelinePlayheadMapper.empty
@@ -898,7 +765,7 @@ final class EditorRuntime {
             playheadAsyncTask = nil
 
             currentFrameIndex = localFrame
-            updateSceneEditRenderSource()
+            sceneEdit.updateSceneEditRenderSource()
 
             if !isPlaying, localFrame != lastStillSyncFrame {
                 userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
@@ -912,7 +779,7 @@ final class EditorRuntime {
                 guard !Task.isCancelled else { return }
 
                 self.currentFrameIndex = localFrame
-                self.updateSceneEditRenderSource()
+                self.sceneEdit.updateSceneEditRenderSource()
 
                 if !self.isPlaying, localFrame != self.lastStillSyncFrame {
                     self.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
@@ -921,93 +788,12 @@ final class EditorRuntime {
             }
         }
     }
-
-    // MARK: - Scene Edit Render Source
-
-    /// Rebuilds render source if in scene-edit mode, otherwise emits bare event.
-    /// Consolidates the pattern of "if sceneEdit → rebuild, else → emit" used by fast-path mutations.
-    private func refreshSceneEditIfActive() {
-        if case .sceneEdit = state {
-            lastRefreshTrigger = .sceneEditMutation
-            updateSceneEditRenderSource()
-        } else {
-            onOutput?(.renderSourceUpdated)
-        }
-    }
-
-    private func updateSceneEditRenderSource() {
-        guard case .sceneEdit(let targetId) = state else { return }
-        guard sceneEditReadyInstanceId == targetId else { return }
-
-        let coordinator = playbackCoordinator
-        let player = scenePlayer
-        let frameIndex = currentFrameIndex
-
-        guard let resolved = EditorRenderCommandResolver.resolve(
-            uiMode: .sceneEdit(sceneInstanceId: targetId),
-            coordinatorLocalFrame: coordinator?.currentLocalFrame,
-            currentFrameIndex: frameIndex,
-            coordinatorCommands: { mode in
-                coordinator?.currentRenderCommands(mode: mode)
-            },
-            scenePlayerCommands: { mode, frame in
-                player?.renderCommands(mode: mode, sceneFrameIndex: frame)
-            }
-        ) else { return }
-
-        guard let compiled = compiledScene,
-              let provider = textureProvider else { return }
-
-        currentRenderSource = .sceneEdit(SceneEditRenderSourcePayload(
-            commands: resolved.commands,
-            textureProvider: provider,
-            pathRegistry: compiled.pathRegistry,
-            assetSizes: mergedAssetSizes,
-            canvasSize: canvasSize,
-            backgroundState: effectiveBackgroundState,
-            backgroundTextureProvider: backgroundTextureProvider
-        ))
-        onOutput?(.renderSourceUpdated)
-    }
-
-    // MARK: - Scene Edit Activation
-
     func activateSceneEditTarget(instanceId: UUID) {
-        sceneEditActivationTask?.cancel()
-        sceneEditReadyInstanceId = nil
-
-        sceneEditActivationTask = Task { @MainActor [weak self] in
-            guard let self, let coordinator = self.playbackCoordinator else { return }
-
-            guard let (_, localFrame) = await coordinator.activateSceneByInstanceId(instanceId) else {
-                return
-            }
-            guard !Task.isCancelled else { return }
-
-            self.activeSceneInstanceId = instanceId
-            self.currentFrameIndex = localFrame
-            self.resetRuntimeForSceneInstanceChange()
-            await self.applySceneInstanceState(instanceId: instanceId)
-
-            self.state = .sceneEdit(instanceId: instanceId)
-            self.sceneEditReadyInstanceId = instanceId
-
-            self.updateSceneEditRenderSource()
-            self.onOutput?(.sceneEditActivated(instanceId: instanceId))
-
-            if !self.isPlaying {
-                self.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
-                self.lastStillSyncFrame = localFrame
-            }
-        }
+        sceneEdit.activateSceneEditTarget(instanceId: instanceId)
     }
 
     func deactivateSceneEdit() {
-        sceneEditActivationTask?.cancel()
-        sceneEditReadyInstanceId = nil
-        state = .timelinePreview
-        onOutput?(.sceneEditDeactivated)
-        refreshCurrentTimelineFrame()
+        sceneEdit.deactivateSceneEdit()
     }
 
     // MARK: - Playback Control
@@ -1053,7 +839,7 @@ final class EditorRuntime {
             engine.startPlayback(at: compressedFrame, hostTime: hostTime)
 
             self.onOutput?(.playbackStateChanged(isPlaying: true))
-            self.startPreviewAudioForTimelinePlayback()
+            self.previewAudio.startForTimelinePlayback()
             self.playbackStartTask = nil
         }
     }
@@ -1061,9 +847,9 @@ final class EditorRuntime {
     func stopPlayback() {
         playbackStartTask?.cancel()
         playbackStartTask = nil
-        previewAudioController.pause()
-        previewAudioGeneration &+= 1
-        cancelPreviewAudioBuild()
+        previewAudio.controller.pause()
+        previewAudio.generation &+= 1
+        previewAudio.cancelBuild()
 
         playbackTransport.stop()
         isPlaying = false
@@ -1125,56 +911,7 @@ final class EditorRuntime {
         }
     }
 
-    // MARK: - Export
-
-    private var pendingDeliveryPolicy: ExportDeliveryPolicy = .photoLibraryOnly
-
-    func startExport(policy: ExportDeliveryPolicy) {
-        guard state == .timelinePreview || {
-            if case .sceneEdit = state { return true }
-            return false
-        }() else { return }
-
-        // Hard gate: missing media blocks export entirely
-        if let summary = session.missingMediaSummary, summary.hasFailedMedia {
-            onOutput?(.presentError("Export unavailable: some media files are missing."))
-            return
-        }
-
-        pendingDeliveryPolicy = policy
-        preExportState = state
-        state = .exporting
-        onOutput?(.exportStarted)
-    }
-
-    func cancelExport() {
-        guard state == .exporting else { return }
-        activeExportRequest?.exporter.cancel()
-        preflightContinuation?.resume(returning: .cancel)
-        preflightContinuation = nil
-        clearActiveExportRequest()
-        let needsReload = exportTeardownOccurred && hasImageBackgroundRegions
-        restorePreExportState()
-        if needsReload {
-            Task {
-                await reloadBackgroundTextures()
-                onOutput?(.exportCancelled)
-            }
-        } else {
-            onOutput?(.exportCancelled)
-        }
-    }
-
-    /// Returns true if `requestId` matches the currently active export request.
-    func isActiveExportRequest(_ requestId: UUID) -> Bool {
-        activeExportRequest?.isActive(for: requestId) ?? false
-    }
-
-    /// Clears activeExportRequest only if it matches `requestId`.
-    func clearExportRequestIfCurrent(_ requestId: UUID) {
-        guard isActiveExportRequest(requestId) else { return }
-        activeExportRequest = nil
-    }
+    // MARK: - Export Facade
 
     enum ExportPreflightChoice {
         case cancel
@@ -1182,562 +919,23 @@ final class EditorRuntime {
         case useRecommended(preset: VideoQualityPreset, sizePx: (width: Int, height: Int))
     }
 
-    /// Continuation for async preflight pause — resumed by `applyExportPreflightChoice`.
-    private var preflightContinuation: CheckedContinuation<ExportPreflightChoice, Never>?
+    var isExporting: Bool { exportController.isExporting }
 
-    /// Resumes the preflight continuation with the user's choice.
-    func applyExportPreflightChoice(_ choice: ExportPreflightChoice) {
-        preflightContinuation?.resume(returning: choice)
-        preflightContinuation = nil
+    var makeDeliverer: () -> ExportDelivering {
+        get { exportController.makeDeliverer }
+        set { exportController.makeDeliverer = newValue }
     }
 
-    /// Injectable deliverer factory. Tests can replace to inject a mock.
-    var makeDeliverer: () -> ExportDelivering = { ExportDeliveryCoordinator() }
+    func startExport(policy: ExportDeliveryPolicy) { exportController.startExport(policy: policy) }
+    func cancelExport() { exportController.cancelExport() }
+    func applyExportPreflightChoice(_ choice: ExportPreflightChoice) { exportController.applyExportPreflightChoice(choice) }
+    func executeExport() async { await exportController.executeExport() }
+    func confirmShareCompleted() { exportController.confirmShareCompleted() }
 
-    /// Full export orchestration — single-scene or timeline, preflight, delivery.
-    func executeExport() async {
-        guard state == .exporting else { return }
-        guard let ctx = metalContext else {
-            abortExport(message: "No Metal context available")
-            return
-        }
-
-        let isTimeline = (session.state?.sceneItems.count ?? 1) > 1
-
-        // Tear down preview resources to free GPU memory
-        enterExportMode()
-
-        if isTimeline {
-            await executeTimelineExport(ctx: ctx)
-        } else {
-            await executeSingleSceneExport(ctx: ctx)
-        }
-    }
-
-    // MARK: - Per-Scene Preview Background
-
-    /// Returns the scene instance that owns the background at a given compressed frame.
-    /// Uses `renderMode` as the single source of truth:
-    /// - `.single(sceneIndex, _)` → that scene
-    /// - `.transition(sceneAIndex, ..., ...)` → outgoing scene (A)
-    private func backgroundOwnerInstanceId(
-        at compressedFrame: Int,
-        engine: TimelineCompositionEngine
-    ) -> UUID? {
-        guard let math = engine.transitionMath else { return nil }
-        guard let mode = math.renderMode(for: compressedFrame) else { return nil }
-        let ownerIndex: Int = switch mode {
-        case .single(let sceneIndex, _): sceneIndex
-        case .transition(let sceneAIndex, _, _, _, _, _): sceneAIndex
-        }
-        guard ownerIndex < math.sceneItems.count else { return nil }
-        return math.sceneItems[ownerIndex].id
-    }
-
-    /// Builds effective background state for a specific scene instance.
-    private func buildPreviewBackgroundState(
-        for instanceId: UUID
-    ) -> EffectiveBackgroundState? {
-        let sceneOverride = session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
-        let projectOverride = session.state?.draft.background
-        let templateBg = timelineCompositionEngine?.runtime(for: instanceId)?
-            .resources.compiled.runtime.scene.background
-
-        return EffectiveBackgroundBuilder.build(
-            templateBackground: templateBg,
-            projectOverride: projectOverride,
-            sceneOverride: sceneOverride,
-            presetLibrary: session.backgroundPresetProvider
-        )
-    }
-
-    /// Recomputes and updates the global effective background state for a scene instance.
-    private func updatePreviewBackgroundForScene(_ instanceId: UUID) {
-        let newState = buildPreviewBackgroundState(for: instanceId)
-        if newState != effectiveBackgroundState {
-            effectiveBackgroundState = newState
-        }
-    }
-
-    /// Resolves the background-owning scene from a resolved frame and builds its state.
-    private func resolvePreviewBackgroundState(
-        for resolved: ResolvedTimelineFrame
-    ) -> EffectiveBackgroundState? {
-        let ownerId: UUID? = switch resolved {
-        case .single(let ctx): ctx.sceneInstanceId
-        case .transition(let ctx): ctx.sceneA.sceneInstanceId
-        }
-        guard let ownerId else { return nil }
-        return buildPreviewBackgroundState(for: ownerId)
-    }
-
-    // MARK: - Export Private Methods
-
-    /// Resolves the current scene-level background override, if any.
-    /// Returns nil when no scene is being edited or the scene has no override.
-    private func currentSceneBackgroundOverride() -> ProjectBackgroundOverride? {
-        guard let instanceId = activeSceneInstanceId else { return nil }
-        return session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
-    }
-
-    /// Builds per-scene background data for all scenes with explicit overrides.
-    /// Scenes without overrides use the project-level fallback at render time.
-    /// Builds per-scene export background data for every scene in the export session.
-    /// Uses each scene's own template background (not the active editor scene's template).
-    private func buildPerSceneBackgrounds(
-        from exportSession: TimelineCompositionEngine.TimelineExportSession
-    ) -> [UUID: SceneExportBackgroundData] {
-        let allStates = session.state?.draft.sceneInstanceStates ?? [:]
-        let projectOverride = session.state?.draft.background
-        var result: [UUID: SceneExportBackgroundData] = [:]
-        for (instanceId, sceneSnapshot) in exportSession.scenesByInstanceId {
-            let sceneOverride = allStates[instanceId]?.backgroundOverride
-            let effState = EffectiveBackgroundBuilder.build(
-                templateBackground: sceneSnapshot.templateBackground,
-                projectOverride: projectOverride,
-                sceneOverride: sceneOverride,
-                presetLibrary: session.backgroundPresetProvider
-            )
-            let snapshot = ExportBackgroundSnapshot.build(
-                from: projectOverride,
-                sceneOverride: sceneOverride,
-                effectiveState: effState
-            )
-            result[instanceId] = SceneExportBackgroundData(
-                state: effState,
-                snapshot: snapshot
-            )
-        }
-        return result
-    }
-
-    private func enterExportMode() {
-        stopPlayback()
-        previewAudioController.teardown()
-        cancelPreviewAudioBuild()
-        backgroundTextureService?.clearAllTrackedTextures()
-        userMediaService?.releasePreviewResources()
-        timelineCompositionEngine?.releaseForExport()
-        exportTeardownOccurred = true
-    }
-
-    private func exitExportModeToIdle() async {
-        let needsReload = exportTeardownOccurred && hasImageBackgroundRegions
-        restorePreExportState()
-        if needsReload {
-            await reloadBackgroundTextures()
-        }
-    }
-
-    /// True when the current background has at least one image region that would
-    /// need texture reload after export teardown. Used to avoid unnecessary async
-    /// deferral of terminal output for color-only backgrounds.
-    private var hasImageBackgroundRegions: Bool {
-        guard let effState = effectiveBackgroundState else { return false }
-        return effState.regionStates.values.contains(where: {
-            if case .image = $0.source { return true }
-            return false
-        })
-    }
-
-    /// Re-preloads background textures after export teardown.
-    /// Caller must verify `hasImageBackgroundRegions` before invoking.
-    private func reloadBackgroundTextures() async {
-        let proj = session.state?.draft.background
-        let scene = currentSceneBackgroundOverride()
-        guard let effState = effectiveBackgroundState else { return }
-        await preloadBackgroundTexturesScoped(
-            projectOverride: proj, sceneOverride: scene, effectiveState: effState
-        )
-    }
-
-    /// Canonical terminal cleanup for export precondition failures.
-    /// Restores runtime to pre-export state and emits a terminal error output
-    /// so the controller can dismiss any export UI.
-    private func abortExport(message: String) {
-        logger.error("[Export] Aborted: \(message)")
-        preflightContinuation?.resume(returning: .cancel)
-        preflightContinuation = nil
-        clearActiveExportRequest()
-        restorePreExportState()
-        onOutput?(.exportRenderFailed(ExportAbortError(message: message)))
-    }
-
-    /// Async abort for post-teardown paths — restores background textures before emitting error.
-    private func abortExportAfterTeardown(message: String) async {
-        logger.error("[Export] Aborted: \(message)")
-        preflightContinuation?.resume(returning: .cancel)
-        preflightContinuation = nil
-        clearActiveExportRequest()
-        await exitExportModeToIdle()
-        onOutput?(.exportRenderFailed(ExportAbortError(message: message)))
-    }
-
-    private func executeSingleSceneExport(ctx: EditorRuntimeMetalContext) async {
-        guard let compiled = compiledScene,
-              let player = scenePlayer,
-              let resolver = assetResolver else {
-            await abortExportAfterTeardown(message: "Missing dependencies for single-scene export")
-            return
-        }
-
-        let exporter = VideoExporter(mediaLocator: session.mediaLocator)
-        let request = ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: pendingDeliveryPolicy)
-        activeExportRequest = request
-        let requestId = request.id
-
-        // Build export texture provider
-        let exportTP = ExportTextureProvider(
-            device: ctx.device,
-            assetIndex: compiled.mergedAssetIndex,
-            resolver: resolver,
-            bindingAssetIds: compiled.bindingAssetIds
-        )
-
-        let sceneRuntime = compiled.runtime
-        let canvasSize = sceneRuntime.canvasSize
-
-        // Output URL
-        let outputURL = makeExportOutputURL(prefix: "export_\(sceneRuntime.scene.sceneId ?? "scene")")
-
-        // Audio config (PR8: bridge project music from canonical timeline)
-        let musicConfig = await buildProjectMusicTrackConfig()
-        let audioConfig = AudioExportConfig(
-            music: musicConfig,
-            voiceover: nil,
-            includeOriginalFromVideoSlots: true,
-            originalDefaultVolume: 1.0
-        )
-
-        // Preflight
-        let instanceId = activeSceneInstanceId
-        let mediaSlots: [String: SceneMediaSlot] = instanceId.flatMap {
-            session.state?.draft.sceneInstanceStates[$0]?.mediaSlotsByBlockId
-        } ?? [:]
-        let videoSlotCount = mediaSlots.values.filter { $0.mediaRef.mediaKind == .video }.count
-        let backgroundRegionCount = session.state?.draft.background.regions.count ?? 0
-
-        let preflightResult = ExportPreflightPlanner.plan(
-            sceneCount: 1,
-            canvasSize: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
-            videoSlotCount: videoSlotCount,
-            backgroundRegionCount: backgroundRegionCount,
-            currentPreset: .high,
-            fps: sceneRuntime.fps
-        )
-
-        let originalSizePx = (width: Int(canvasSize.width), height: Int(canvasSize.height))
-        let exportSizePx: (width: Int, height: Int)
-        let exportPreset: VideoQualityPreset
-
-        switch preflightResult {
-        case .recommendLowerPreset(_, let suggestedPreset, let suggestedSizePx):
-            onOutput?(.exportPreflightRecommendation(preflightResult))
-            let choice = await withCheckedContinuation { (cont: CheckedContinuation<ExportPreflightChoice, Never>) in
-                self.preflightContinuation = cont
-            }
-            guard isActiveExportRequest(requestId) else {
-                return
-            }
-            switch choice {
-            case .cancel:
-                await exitExportModeToIdle()
-                clearActiveExportRequest()
-                onOutput?(.exportCancelled)
-                return
-            case .continueOriginal:
-                exportSizePx = originalSizePx
-                exportPreset = .high
-            case .useRecommended(let preset, let sizePx):
-                exportSizePx = sizePx
-                exportPreset = preset
-                logger.info("[Export] User chose reduced quality: \(sizePx.width)x\(sizePx.height) preset=\(String(describing: preset))")
-            }
-        case .safe:
-            exportSizePx = originalSizePx
-            exportPreset = .high
-        }
-
-        // Recompute budget with final export parameters
-        let budget = ExportPreflightPlanner.plan(
-            sceneCount: 1,
-            canvasSize: exportSizePx,
-            videoSlotCount: videoSlotCount,
-            backgroundRegionCount: backgroundRegionCount,
-            currentPreset: exportPreset,
-            fps: sceneRuntime.fps
-        ).budget
-
-        let settings = makeSingleSceneExportSettings(
-            outputURL: outputURL,
-            sizePx: exportSizePx,
-            preset: exportPreset,
-            fps: sceneRuntime.fps,
-            audio: audioConfig
-        )
-
-        // Build media snapshot
-        let mediaSnapshot: ExportMediaSnapshot
-        do {
-            mediaSnapshot = try await ExportMediaSnapshot.build(
-                compiledScene: compiled,
-                mediaSlots: mediaSlots,
-                mediaLocator: session.mediaLocator,
-                assetRegistry: selfHealedRegistry(),
-                runtime: sceneRuntime
-            )
-        } catch {
-            logger.error("[Export] Media snapshot error: \(error.localizedDescription)")
-            await exitExportModeToIdle()
-            clearActiveExportRequest()
-            onOutput?(.exportRenderFailed(error))
-            return
-        }
-
-        let bgSnapshot = ExportBackgroundSnapshot.build(
-            from: session.state?.draft.background,
-            sceneOverride: currentSceneBackgroundOverride(),
-            effectiveState: effectiveBackgroundState
-        )
-
-        guard isActiveExportRequest(requestId) else {
-            logger.info("[Export] Cancelled during preflight (stale request)")
-            return
-        }
-
-        await exporter.exportVideo(
-            compiledScene: compiled,
-            scenePlayer: player,
-            device: ctx.device,
-            textureProvider: exportTP,
-            pathRegistry: compiled.pathRegistry,
-            assetSizes: compiled.mergedAssetIndex.sizeById,
-            settings: settings,
-            backgroundState: effectiveBackgroundState,
-            overlaySnapshot: session.state.map { state in
-                OverlayExportSnapshot.build(from: state.canonicalTimeline, stickerProvider: session.stickerProvider)
-            },
-            budget: budget,
-            mediaSnapshot: mediaSnapshot,
-            backgroundSnapshot: bgSnapshot,
-            assetRegistry: selfHealedRegistry(),
-            onFinishing: { [weak self] in
-                guard let self, self.isActiveExportRequest(requestId) else { return }
-                self.onOutput?(.exportFinishing)
-            },
-            progress: { [weak self] progress in
-                guard let self, self.isActiveExportRequest(requestId) else { return }
-                self.onOutput?(.exportProgress(Float(progress)))
-            },
-            completion: { [weak self] result in
-                guard let self else { return }
-                self.handleExportCompletion(result: result, requestId: requestId)
-            }
-        )
-    }
-
-    private func executeTimelineExport(ctx: EditorRuntimeMetalContext) async {
-        guard let engine = timelineCompositionEngine,
-              let transitionMath = engine.transitionMath else {
-            await abortExportAfterTeardown(message: "No timeline configured for timeline export")
-            return
-        }
-
-        let canvasSize = engine.canvasSize
-        guard canvasSize.width > 0, canvasSize.height > 0 else {
-            await abortExportAfterTeardown(message: "Invalid canvas size for timeline export")
-            return
-        }
-
-        let exporter = VideoExporter(mediaLocator: session.mediaLocator)
-        let request = ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: pendingDeliveryPolicy)
-        activeExportRequest = request
-        let requestId = request.id
-
-        let outputURL = makeExportOutputURL(prefix: "export_timeline")
-
-        // Audio config (PR8: bridge project music from canonical timeline)
-        let musicConfig = await buildProjectMusicTrackConfig()
-        let audioConfig = AudioExportConfig(
-            music: musicConfig,
-            voiceover: nil,
-            includeOriginalFromVideoSlots: true,
-            originalDefaultVolume: 1.0
-        )
-
-        // Preflight
-        let sceneCount = session.state?.sceneItems.count ?? 1
-        let allStates = session.state?.draft.sceneInstanceStates ?? [:]
-        let totalVideoSlots = allStates.values.reduce(0) { count, state in
-            count + (state.mediaSlotsByBlockId ?? [:]).values.filter { $0.mediaRef.mediaKind == .video }.count
-        }
-        let backgroundRegionCount = session.state?.draft.background.regions.count ?? 0
-
-        let preflightResult = ExportPreflightPlanner.plan(
-            sceneCount: sceneCount,
-            canvasSize: (width: Int(canvasSize.width), height: Int(canvasSize.height)),
-            videoSlotCount: totalVideoSlots,
-            backgroundRegionCount: backgroundRegionCount,
-            currentPreset: .high,
-            fps: engine.fps
-        )
-
-        let originalSizePx = (width: Int(canvasSize.width), height: Int(canvasSize.height))
-        let exportSizePx: (width: Int, height: Int)
-        let exportPreset: VideoQualityPreset
-
-        switch preflightResult {
-        case .recommendLowerPreset(_, let suggestedPreset, let suggestedSizePx):
-            onOutput?(.exportPreflightRecommendation(preflightResult))
-            let choice = await withCheckedContinuation { (cont: CheckedContinuation<ExportPreflightChoice, Never>) in
-                self.preflightContinuation = cont
-            }
-            guard isActiveExportRequest(requestId) else {
-                return
-            }
-            switch choice {
-            case .cancel:
-                await exitExportModeToIdle()
-                clearActiveExportRequest()
-                onOutput?(.exportCancelled)
-                return
-            case .continueOriginal:
-                exportSizePx = originalSizePx
-                exportPreset = .high
-            case .useRecommended(let preset, let sizePx):
-                exportSizePx = sizePx
-                exportPreset = preset
-                logger.info("[Export] User chose reduced quality: \(sizePx.width)x\(sizePx.height) preset=\(String(describing: preset))")
-            }
-        case .safe:
-            exportSizePx = originalSizePx
-            exportPreset = .high
-        }
-
-        let budget = ExportPreflightPlanner.plan(
-            sceneCount: sceneCount,
-            canvasSize: exportSizePx,
-            videoSlotCount: totalVideoSlots,
-            backgroundRegionCount: backgroundRegionCount,
-            currentPreset: exportPreset,
-            fps: engine.fps
-        ).budget
-
-        let settings = makeTimelineExportSettings(
-            outputURL: outputURL,
-            sizePx: exportSizePx,
-            preset: exportPreset,
-            fps: engine.fps,
-            audio: audioConfig
-        )
-
-        // Build the export session first so we can resolve per-scene template backgrounds.
-        let tlSession: TimelineCompositionEngine.TimelineExportSession
-        do {
-            tlSession = try await engine.buildExportSession()
-        } catch {
-            await abortExportAfterTeardown(message: "Failed to build timeline export session: \(error.localizedDescription)")
-            return
-        }
-
-        // Build per-scene background data using each scene's own template background.
-        let sceneBackgrounds = buildPerSceneBackgrounds(from: tlSession)
-
-        guard isActiveExportRequest(requestId) else {
-            logger.info("[Export] Cancelled during preflight (stale request)")
-            return
-        }
-
-        exporter.exportTimeline(
-            engine: engine,
-            sceneBackgrounds: sceneBackgrounds,
-            preBuiltSession: tlSession,
-            settings: settings,
-            budget: budget,
-            assetRegistry: selfHealedRegistry(),
-            onFinishing: { [weak self] in
-                guard let self, self.isActiveExportRequest(requestId) else { return }
-                self.onOutput?(.exportFinishing)
-            },
-            progress: { [weak self] progress in
-                guard let self, self.isActiveExportRequest(requestId) else { return }
-                self.onOutput?(.exportProgress(Float(progress)))
-            },
-            completion: { [weak self] result in
-                guard let self else { return }
-                self.handleExportCompletion(result: result, requestId: requestId)
-            }
-        )
-    }
-
-    private func handleExportCompletion(result: Result<URL, Error>, requestId: UUID) {
-        guard isActiveExportRequest(requestId) else {
-            logger.info("[Export] Ignoring stale completion")
-            return
-        }
-        let needsReload = exportTeardownOccurred && hasImageBackgroundRegions
-        restorePreExportState()
-        if needsReload {
-            Task {
-                await reloadBackgroundTextures()
-                self.emitExportCompletionOutput(result: result, requestId: requestId)
-            }
-        } else {
-            emitExportCompletionOutput(result: result, requestId: requestId)
-        }
-    }
-
-    private func emitExportCompletionOutput(result: Result<URL, Error>, requestId: UUID) {
-        switch result {
-        case .success(let url):
-            logger.info("[Export] SUCCESS: \(url.lastPathComponent)")
-            Task { await session.commitAfterExportSuccess() }
-            onOutput?(.exportRenderSucceeded(url))
-            saveExportedVideoToPhotos(url, requestId: requestId)
-
-        case .failure(let error as VideoExportError) where error.isCancelled:
-            logger.info("[Export] Cancelled")
-            clearActiveExportRequest()
-            onOutput?(.exportCancelled)
-
-        case .failure(let error):
-            logger.error("[Export] ERROR: \(error.localizedDescription)")
-            clearActiveExportRequest()
-            onOutput?(.exportRenderFailed(error))
-        }
-    }
-
-    private func saveExportedVideoToPhotos(_ url: URL, requestId: UUID) {
-        let deliverer = makeDeliverer()
-        let policy = activeExportRequest?.deliveryPolicy ?? .photoLibraryOnly
-        let shareHandoff: ((URL) -> Void)? = policy == .photoLibraryThenShare
-            ? { [weak self] url in self?.onOutput?(.exportDeliveryShareHandoff(url)) }
-            : nil
-        let flow = ExportDeliveryFlow(
-            requestId: requestId,
-            deliverer: deliverer,
-            policy: policy,
-            isRequestActive: { [weak self] id in self?.isActiveExportRequest(id) ?? false },
-            clearRequestIfCurrent: { [weak self] id in self?.clearExportRequestIfCurrent(id) },
-            completion: { [weak self] outcome in
-                self?.onOutput?(.exportDeliveryCompleted(outcome))
-            },
-            shareHandoff: shareHandoff
-        )
-        activeExportRequest?.deliveryFlow = flow
-        flow.start(fileURL: url, destination: .photoLibrary)
-    }
-
-    func confirmShareCompleted() {
-        activeExportRequest?.deliveryFlow?.finalizeAfterShare()
-    }
+    func isActiveExportRequest(_ requestId: UUID) -> Bool { exportController.isActiveExportRequest(requestId) }
+    func clearExportRequestIfCurrent(_ requestId: UUID) { exportController.clearExportRequestIfCurrent(requestId) }
 
     /// PR8: Builds AudioTrackConfig from the project's canonical timeline music item.
-    /// Returns nil if no music is set or resolution fails.
-    ///
-    /// - Note: `internal` visibility for `#if DEBUG` test access via
-    ///   `_testBuildProjectMusicTrackConfig()`. Production call sites remain
-    ///   the two export paths in this file.
     func buildProjectMusicTrackConfig() async -> AudioTrackConfig? {
         guard let state = session.state,
               let item = state.canonicalTimeline.musicItem,
@@ -1746,7 +944,6 @@ final class EditorRuntime {
             return nil
         }
 
-        // Resolve file URL through self-healed registry (covers undo-asymmetry / stale registry).
         let registry = selfHealedRegistry()
         let storagePath = registry.storagePath(for: assetId) ?? contentStoragePath
         guard !storagePath.isEmpty else {
@@ -1773,754 +970,170 @@ final class EditorRuntime {
         )
     }
 
-    private func makeExportOutputURL(prefix: String) -> URL {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
-        let timestamp = dateFormatter.string(from: Date())
-        let uuid8 = UUID().uuidString.prefix(8)
-        let filename = "\(prefix)_\(timestamp)_\(uuid8).mp4"
-        return FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-    }
-
-    private func makeSingleSceneExportSettings(
-        outputURL: URL,
-        sizePx: (width: Int, height: Int),
-        preset: VideoQualityPreset,
-        fps: Int,
-        audio: AudioExportConfig?
-    ) -> VideoExportSettings {
-        let bitrate = preset.bitrate(for: sizePx)
-        return VideoExportSettings(
-            outputURL: outputURL,
-            sizePx: sizePx,
-            fps: fps,
-            bitrate: bitrate,
-            clearColor: .opaqueBlack,
-            audio: audio
-        )
-    }
-
-    private func makeTimelineExportSettings(
-        outputURL: URL,
-        sizePx: (width: Int, height: Int),
-        preset: VideoQualityPreset,
-        fps: Int,
-        audio: AudioExportConfig?
-    ) -> VideoExporter.TimelineExportSettings {
-        let bitrate = preset.bitrate(for: sizePx)
-        return VideoExporter.TimelineExportSettings(
-            outputURL: outputURL,
-            sizePx: sizePx,
-            fps: fps,
-            bitrate: bitrate,
-            audio: audio
-        )
-    }
-
-    private func restorePreExportState() {
-        state = preExportState ?? .timelinePreview
-        preExportState = nil
-        exportTeardownOccurred = false
-    }
-
-    private func clearActiveExportRequest() {
-        activeExportRequest = nil
-    }
-
-    // MARK: - Video Trim (Runtime Input API)
+    // MARK: - Scene Edit Delegates
 
     func updateInteractiveTrimPreview(blockId: String, draftSelection: PersistedVideoSelection, previewTime: Double) {
-        userMediaService?.updateInteractiveTrimPreview(blockId: blockId, draftSelection: draftSelection, previewTime: previewTime)
+        sceneEdit.updateInteractiveTrimPreview(blockId: blockId, draftSelection: draftSelection, previewTime: previewTime)
     }
 
     func endInteractiveTrimPreview(blockId: String) {
-        userMediaService?.endInteractiveTrimPreview(blockId: blockId)
+        sceneEdit.endInteractiveTrimPreview(blockId: blockId)
     }
 
     func previewExactVideoTrimFrame(blockId: String, draftSelection: PersistedVideoSelection, previewTime: Double) {
-        userMediaService?.previewExactVideoTrimFrame(blockId: blockId, draftSelection: draftSelection, previewTime: previewTime)
+        sceneEdit.previewExactVideoTrimFrame(blockId: blockId, draftSelection: draftSelection, previewTime: previewTime)
     }
 
     func applyPersistedVideoSelection(blockId: String, _ selection: PersistedVideoSelection) throws {
-        try userMediaService?.applyPersistedVideoSelection(blockId: blockId, selection)
+        try sceneEdit.applyPersistedVideoSelection(blockId: blockId, selection)
     }
-
-    // MARK: - Media Slot Management
 
     func clearMediaSlot(blockId: String) {
-        userMediaService?.clear(blockId: blockId)
-    }
-
-    // MARK: - Scene Player State
-
-    func resetScenePlayerForNewInstance() {
-        scenePlayer?.resetForNewInstance()
+        sceneEdit.clearMediaSlot(blockId: blockId)
     }
 
     func setSelectedVariant(blockId: String, variantId: String) {
-        scenePlayer?.setSelectedVariant(blockId: blockId, variantId: variantId)
+        sceneEdit.setSelectedVariant(blockId: blockId, variantId: variantId)
     }
-
-    // MARK: - Background Texture Management
-
-    func clearBackgroundTextures(prefix: String) {
-        backgroundTextureService?.clearTextures(prefix: prefix)
-    }
-
-    func setEffectiveBackgroundState(_ state: EffectiveBackgroundState?) {
-        effectiveBackgroundState = state
-        // Refresh render source with new background
-        switch self.state {
-        case .timelinePreview:
-            refreshCurrentTimelineFrame()
-        case .sceneEdit:
-            updateSceneEditRenderSource()
-        default:
-            break
-        }
-    }
-
-    func incrementBackgroundImportGeneration() {
-        backgroundImportGeneration &+= 1
-    }
-
-    // MARK: - Video Still Frame Sync
 
     func syncVideoStillFrames(sceneFrameIndex: Int) {
-        guard !isPlaying else { return }
-        userMediaService?.updateVideoStillFrames(sceneFrameIndex: sceneFrameIndex)
-        lastStillSyncFrame = sceneFrameIndex
+        sceneEdit.syncVideoStillFrames(sceneFrameIndex: sceneFrameIndex)
     }
 
-    // MARK: - Media Fast-Path Mutations
-
-    /// Applies placement change to active scene player and timeline engine.
-    /// Returns true if the local scene-edit path was applied.
+    @discardableResult
     func applyMediaPlacementChange(instanceId: UUID, blockId: String, placement: MediaPlacementState) -> Bool {
-        var localApplied = false
-
-        // Scene-edit path: apply to local player (URL-free)
-        if let player = scenePlayer, let service = userMediaService,
-           activeSceneInstanceId == instanceId {
-            let deps = SceneRuntimeStateApplier.FastPathDependencies(scenePlayer: player, userMediaService: service)
-            SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
-            refreshSceneEditIfActive()
-            localApplied = true
-        }
-
-        // Timeline path: engine fast-path
-        timelineCompositionEngine?.applyPlacementChange(blockId: blockId, placement: placement, for: instanceId)
-        refreshCurrentTimelineFrame()
-
-        return localApplied
+        sceneEdit.applyMediaPlacementChange(instanceId: instanceId, blockId: blockId, placement: placement)
     }
 
-    /// Applies visibility change to active scene player and timeline engine.
-    /// Returns true if the local scene-edit path was applied.
+    @discardableResult
     func applyMediaVisibilityChange(instanceId: UUID, blockId: String, visible: Bool) -> Bool {
-        var localApplied = false
-
-        // Scene-edit path: apply to local player
-        if let player = scenePlayer, activeSceneInstanceId == instanceId {
-            SceneRuntimeStateApplier.applyVisibilityChange(blockId: blockId, visible: visible, player: player)
-            refreshSceneEditIfActive()
-            localApplied = true
-        }
-
-        // Timeline path: engine fast-path
-        timelineCompositionEngine?.applyVisibilityChange(blockId: blockId, visible: visible, for: instanceId)
-        refreshCurrentTimelineFrame()
-
-        return localApplied
+        sceneEdit.applyMediaVisibilityChange(instanceId: instanceId, blockId: blockId, visible: visible)
     }
 
-    /// Applies slot change (insert/replace/remove) to active scene and timeline engine.
-    /// For non-nil slots, resolves media URLs async before applying.
     func applyMediaSlotChange(instanceId: UUID, blockId: String, slot: SceneMediaSlot?) {
-        let isActiveScene = activeSceneInstanceId == instanceId
-
-        // Scene-edit path: apply directly (only for active scene)
-        if isActiveScene, let player = scenePlayer, let service = userMediaService {
-            if slot == nil {
-                // Remove is URL-free — sync fast path.
-                let deps = SceneRuntimeStateApplier.RestoreDependencies(
-                    scenePlayer: player,
-                    userMediaService: service,
-                    resolvedMedia: .empty
-                )
-                SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slot, deps: deps)
-                refreshSceneEditIfActive()
-                session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
-            } else {
-                // Insert/replace: resolve URL async, then apply
-                let registry = selfHealedRegistry()
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    let singleMap: [String: SceneMediaSlot] = [blockId: slot!]
-                    let resolved = await ResolvedMediaMapBuilder.build(
-                        slots: singleMap,
-                        locator: self.session.mediaLocator,
-                        registry: registry
-                    )
-                    let deps = SceneRuntimeStateApplier.RestoreDependencies(
-                        scenePlayer: player,
-                        userMediaService: service,
-                        resolvedMedia: resolved
-                    )
-                    SceneRuntimeStateApplier.applySlotChange(blockId: blockId, slot: slot, deps: deps)
-                    self.refreshSceneEditIfActive()
-                    self.session.updateMissingMedia(for: instanceId, failures: service.currentRestoreFailedBlockIds)
-                }
-            }
-        }
-
-        // Timeline path: full state update for any scene
-        if let sceneState = session.state?.draft.sceneInstanceStates[instanceId] {
-            Task { @MainActor in
-                await self.timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId, assetRegistry: self.selfHealedRegistry())
-                self.refreshCurrentTimelineFrame()
-            }
-        }
+        sceneEdit.applyMediaSlotChange(instanceId: instanceId, blockId: blockId, slot: slot)
     }
 
-    /// Re-resolves placement after async media load completes with actual dimensions.
-    /// Returns true if the placement was reapplied.
-    func reapplyPlacementAfterMediaReady(instanceId: UUID?, blockId: String, placement: MediaPlacementState) -> Bool {
-        guard let player = scenePlayer, let service = userMediaService else { return false }
-        let deps = SceneRuntimeStateApplier.FastPathDependencies(scenePlayer: player, userMediaService: service)
-        SceneRuntimeStateApplier.applyPlacementChange(blockId: blockId, placement: placement, deps: deps)
-        refreshSceneEditIfActive()
-        return true
-    }
-
-    /// Applies incremental scene state change to timeline engine.
     func applySceneStateChange(instanceId: UUID, sceneState: SceneState) {
-        Task { @MainActor in
-            await self.timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId, assetRegistry: self.selfHealedRegistry())
-            self.refreshCurrentTimelineFrame()
-        }
+        sceneEdit.applySceneStateChange(instanceId: instanceId, sceneState: sceneState)
     }
 
-    /// Applies persisted video selection to timeline engine.
     func applyVideoSelectionToEngine(selection: PersistedVideoSelection, blockId: String, instanceId: UUID) {
-        timelineCompositionEngine?.applyPersistedVideoSelection(selection, blockId: blockId, for: instanceId)
+        sceneEdit.applyVideoSelectionToEngine(selection: selection, blockId: blockId, instanceId: instanceId)
     }
 
-    /// Syncs full engine timeline after undo/redo — setTimeline + updateSceneState for all instances.
     func syncEngineAfterUndoRedo(state: EditorState) {
-        guard let engine = timelineCompositionEngine else { return }
-        engine.setTimeline(
-            state.canonicalTimeline,
-            sceneStates: state.draft.sceneInstanceStates,
-            assetRegistry: state.draft.assetRegistry.selfHealed(for: state.draft)
-        )
-        Task { @MainActor in
-            let registry = state.draft.assetRegistry.selfHealed(for: state.draft)
-            for (instanceId, sceneState) in state.draft.sceneInstanceStates {
-                await engine.updateSceneState(sceneState, for: instanceId, assetRegistry: registry)
-            }
-        }
+        sceneEdit.syncEngineAfterUndoRedo(state: state)
     }
 
-    // MARK: - Background Mutations
+    // MARK: - Background Facade
 
-    /// Persists background image to disk and returns the media ref.
-    /// Checks generation + preset guard; cleans up orphan if stale.
-    func persistBackgroundImage(
-        sourceFileURL: URL,
-        generation: UInt,
-        sessionPresetId: String
-    ) async throws -> MediaRef {
-        guard let service = backgroundTextureService else {
-            throw ExportAbortError(message: "Background texture service not available")
-        }
+    var effectiveBackgroundState: EffectiveBackgroundState? { background.effectiveBackgroundState }
+    var hasActiveBackgroundEditor: Bool { background.hasActiveBackgroundEditor }
+    var backgroundImportGeneration: UInt { background.backgroundImportGeneration }
 
-        let (mediaRef, _) = try await service.persistImage(from: sourceFileURL)
-        logger.info("[Background] Persisted image: \(mediaRef.storagePath)")
-
-        guard backgroundImportGeneration == generation,
-              effectiveBackgroundState?.preset.presetId == sessionPresetId else {
-            logger.info("[Background] Import generation stale after persist — cleaning up orphan")
-            try? await service.deleteMediaFile(mediaRef)
-            throw BackgroundImportStaleError()
-        }
-
-        return mediaRef
+    func persistBackgroundImage(sourceFileURL: URL, generation: UInt, sessionPresetId: String) async throws -> MediaRef {
+        try await background.persistBackgroundImage(sourceFileURL: sourceFileURL, generation: generation, sessionPresetId: sessionPresetId)
     }
 
-    /// Loads a background texture for a region. Must be called after asset registration.
-    /// Checks generation + preset guard after load; cleans up if stale.
-    func loadBackgroundTexture(
-        mediaRef: MediaRef,
-        regionId: String,
-        generation: UInt,
-        sessionPresetId: String
-    ) async throws -> String {
-        guard let service = backgroundTextureService else {
-            throw ExportAbortError(message: "Background texture service not available")
-        }
-
-        let slotKey = EffectiveBackgroundBuilder.makeSlotKey(
-            presetId: sessionPresetId,
-            regionId: regionId
-        )
-
-        let freshRegistry = selfHealedRegistry()
-        do {
-            try await service.loadTexture(slotKey: slotKey, mediaRef: mediaRef, assetRegistry: freshRegistry)
-        } catch {
-            try? await service.deleteMediaFile(mediaRef)
-            throw error
-        }
-
-        guard backgroundImportGeneration == generation,
-              effectiveBackgroundState?.preset.presetId == sessionPresetId else {
-            logger.info("[Background] Import generation stale after texture load — clearing stale texture")
-            service.clearTexture(slotKey: slotKey)
-            try? await service.deleteMediaFile(mediaRef)
-            throw BackgroundImportStaleError()
-        }
-
-        return slotKey
+    func loadBackgroundTexture(mediaRef: MediaRef, regionId: String, generation: UInt, sessionPresetId: String) async throws -> String {
+        try await background.loadBackgroundTexture(mediaRef: mediaRef, regionId: regionId, generation: generation, sessionPresetId: sessionPresetId)
     }
 
-    /// Deletes a media file via the background texture service.
     func deleteBackgroundMediaFile(_ mediaRef: MediaRef) async throws {
-        try await backgroundTextureService?.deleteMediaFile(mediaRef)
+        try await background.deleteBackgroundMediaFile(mediaRef)
     }
 
-    /// Clears a specific background texture slot.
-    func clearBackgroundTexture(slotKey: String) {
-        backgroundTextureService?.clearTexture(slotKey: slotKey)
+    func clearBackgroundTexture(slotKey: String) { background.clearBackgroundTexture(slotKey: slotKey) }
+    func clearAllBackgroundTextures() { background.clearAllBackgroundTextures() }
+    func incrementBackgroundImportGeneration() { background.incrementBackgroundImportGeneration() }
+
+    func applyBackgroundPreviewOverride(_ override: ProjectBackgroundOverride) {
+        background.applyBackgroundPreviewOverride(override)
     }
 
-    /// Clears all tracked background textures.
-    func clearAllBackgroundTextures() {
-        backgroundTextureService?.clearAllTrackedTextures()
+    func beginBackgroundEditorSession(scope: BackgroundEditScope = .project) {
+        background.beginBackgroundEditorSession(scope: scope)
     }
 
-    /// Rebuilds effective background state from template + override and applies it.
-    /// Centralizes `EffectiveBackgroundBuilder.build(...)` so controller never calls it directly.
-    /// Resolves background inputs for render based on current edit scope.
-    /// Returns (projectOverride, sceneOverride) pair.
-    private func resolveBackgroundInputs(
-        previewOverride: ProjectBackgroundOverride? = nil
-    ) -> (projectOverride: ProjectBackgroundOverride?, sceneOverride: ProjectBackgroundOverride?) {
-        switch backgroundEditScope {
-        case .project:
-            return (
-                projectOverride: previewOverride ?? session.state?.draft.background,
-                sceneOverride: currentSceneBackgroundOverride()
-            )
-        case .scene(let instanceId):
-            return (
-                projectOverride: session.state?.draft.background,
-                sceneOverride: previewOverride ?? session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
-            )
-        }
+    func currentOverrideForEditScope() -> ProjectBackgroundOverride {
+        background.currentOverrideForEditScope()
     }
 
-    /// Scope-aware effective background rebuild.
-    private func rebuildEffectiveBackgroundScoped(
-        projectOverride: ProjectBackgroundOverride?,
-        sceneOverride: ProjectBackgroundOverride?
-    ) {
-        let effState = EffectiveBackgroundBuilder.build(
-            templateBackground: compiledScene?.runtime.scene.background,
-            projectOverride: projectOverride,
-            sceneOverride: sceneOverride,
-            presetLibrary: session.backgroundPresetProvider
-        )
-        setEffectiveBackgroundState(effState)
+    func handleBackgroundPresetChange(oldPresetId: String, newPresetId: String) {
+        background.handleBackgroundPresetChange(oldPresetId: oldPresetId, newPresetId: newPresetId)
     }
 
-    /// Scope-aware texture preload: resolves image refs from the correct owner chain.
+    func importBackgroundImage(sourceFileURL: URL, regionId: String, setEditorImage: ((String, MediaRef) -> Void)?) async throws {
+        try await background.importBackgroundImage(sourceFileURL: sourceFileURL, regionId: regionId, setEditorImage: setEditorImage)
+    }
+
+    func commitBackgroundEditorDismiss(override: ProjectBackgroundOverride, presetId: String) {
+        background.commitBackgroundEditorDismiss(override: override, presetId: presetId)
+    }
+
     func preloadBackgroundTexturesScoped(
         projectOverride: ProjectBackgroundOverride?,
         sceneOverride: ProjectBackgroundOverride?,
         effectiveState: EffectiveBackgroundState?
     ) async {
-        guard let service = backgroundTextureService, let state = effectiveState else { return }
-        let registry = selfHealedRegistry()
-        for (regionId, regionState) in state.regionStates {
-            if case .image(let imageSource) = regionState.source {
-                // Scene override region wins over project override region.
-                let mediaRef = sceneOverride?.regions[regionId]?.imageMediaRef
-                    ?? projectOverride?.regions[regionId]?.imageMediaRef
-                guard let mediaRef else { continue }
-                do {
-                    try await service.loadTexture(
-                        slotKey: imageSource.slotKey,
-                        mediaRef: mediaRef,
-                        assetRegistry: registry
-                    )
-                } catch {
-                    logger.error("[Background] Failed to preload texture: \(error.localizedDescription)")
-                }
-            }
-        }
-        onOutput?(.renderSourceUpdated)
+        await background.preloadBackgroundTexturesScoped(
+            projectOverride: projectOverride, sceneOverride: sceneOverride, effectiveState: effectiveState
+        )
     }
 
-    /// Applies a background preview override from the background editor.
-    /// Uses `backgroundEditScope` to determine whether the override applies to project or scene.
-    func applyBackgroundPreviewOverride(_ override: ProjectBackgroundOverride) {
-        let (proj, scene) = resolveBackgroundInputs(previewOverride: override)
-        rebuildEffectiveBackgroundScoped(projectOverride: proj, sceneOverride: scene)
-        let effState = effectiveBackgroundState
-        let resolvedOverride = scene ?? proj
-        Task { @MainActor in
-            if let resolvedOverride {
-                await self.preloadBackgroundTexturesScoped(
-                    projectOverride: proj, sceneOverride: scene, effectiveState: effState
-                )
-            }
-        }
+    @discardableResult
+    func reapplyPlacementAfterMediaReady(instanceId: UUID?, blockId: String, placement: MediaPlacementState) -> Bool {
+        sceneEdit.reapplyPlacementAfterMediaReady(instanceId: instanceId, blockId: blockId, placement: placement)
     }
 
     /// Marks preview audio state as dirty (e.g. after timeline music changes).
     func markPreviewAudioDirty() {
-        previewAudioDirty = true
-        previewAudioGeneration &+= 1
-        if isPlaying && state == .timelinePreview {
-            startPreviewAudioForTimelinePlayback()
-        }
-    }
-
-    // MARK: - Preview Audio Pipeline
-
-    /// Returns true if the canonical timeline has a music item with an imported asset.
-    /// Pure state check — no async file resolution.
-    private var hasPreviewAudioContent: Bool {
-        guard let state = session.state,
-              let _ = state.canonicalTimeline.musicItem,
-              let payload = state.canonicalTimeline.musicPayload(),
-              case .imported = payload.assetRef else {
-            return false
-        }
-        return true
+        previewAudio.markDirty()
     }
 
     /// Builds an AudioExportConfig from the project's canonical timeline music.
     func buildPreviewAudioConfig(includeOriginalFromVideoSlots: Bool) async -> AudioExportConfig? {
-        let music = await buildProjectMusicTrackConfig()
-        return AudioExportConfig(
-            music: music,
-            voiceover: nil,
-            includeOriginalFromVideoSlots: includeOriginalFromVideoSlots
-        )
-    }
-
-    private func buildPreviewAudioPipeline() async -> BuiltAudioPipeline? {
-        #if DEBUG
-        if let builder = previewAudioPipelineBuilder {
-            return await builder()
-        }
-        #endif
-
-        let config = await buildPreviewAudioConfig(includeOriginalFromVideoSlots: false)
-        guard let config, config.music != nil else { return nil }
-
-        #if DEBUG
-        if let gate = previewAudioBuildGate { await gate() }
-        #endif
-
-        guard !Task.isCancelled else { return nil }
-        guard let engine = timelineCompositionEngine,
-              let math = engine.transitionMath else { return nil }
-
-        let fps = Int(sceneFPS)
-        let buildTask = Task.detached { () -> BuiltAudioPipeline? in
-            let builder = AudioCompositionBuilder()
-            return try? builder.buildTimeline(
-                sceneData: [],
-                transitionMath: math,
-                fps: fps,
-                config: config
-            )
-        }
-        self.previewAudioBuildTask = buildTask
-        let result = await buildTask.value
-        self.previewAudioBuildTask = nil
-        return result
-    }
-
-    /// Installs an onReady callback on the preview audio controller that
-    /// starts playback with fresh transport time if guards pass.
-    private func installPreviewAudioOnReady(generation: UInt) {
-        previewAudioController.onReady = { [weak self] in
-            guard let self else { return }
-            guard self.previewAudioGeneration == generation else { return }
-            guard self.isPlaying else { return }
-            guard self.state == .timelinePreview else { return }
-            self.previewAudioDirty = false
-            let seconds = usToSeconds(self.playbackCurrentProjectTimeUs)
-            self.previewAudioController.startPlayback(
-                fromSeconds: seconds, hostTime: self.playbackCurrentHostTime
-            )
-        }
-    }
-
-    private func startPreviewAudioForTimelinePlayback() {
-        guard state == .timelinePreview else { return }
-
-        cancelPreviewAudioBuild()
-
-        if !previewAudioDirty {
-            if previewAudioController.hasActivePipeline,
-               previewAudioController.readiness == .ready {
-                // Clean resume: start from current transport position
-                let seconds = usToSeconds(playbackCurrentProjectTimeUs)
-                previewAudioController.startPlayback(
-                    fromSeconds: seconds, hostTime: playbackCurrentHostTime
-                )
-            }
-            // else: clean + no pipeline = no audio content, nothing to do
-            return
-        }
-
-        previewAudioController.teardown()
-        let generation = previewAudioGeneration
-
-        previewAudioOrchestrationTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let pipeline = await self.buildPreviewAudioPipeline()
-            defer { self.previewAudioOrchestrationTask = nil }
-
-            guard self.previewAudioGeneration == generation else { return }
-            guard self.isPlaying else { return }
-
-            guard let pipeline else {
-                if !self.hasPreviewAudioContent {
-                    self.previewAudioDirty = false
-                }
-                return
-            }
-
-            self.installPreviewAudioOnReady(generation: generation)
-            self.previewAudioController.replacePipeline(pipeline)
-            // If readiness == .ready synchronously, onReady already fired above.
-            // If .preparing, onReady will fire async from KVO.
-        }
-    }
-
-    private func cancelPreviewAudioBuild() {
-        previewAudioOrchestrationTask?.cancel()
-        previewAudioOrchestrationTask = nil
-        previewAudioBuildTask?.cancel()
-        previewAudioBuildTask = nil
-    }
-
-    // MARK: - Background Editor Session
-
-    /// Opens a background editor session — resets tracked intermediate imports.
-    func beginBackgroundEditorSession(scope: BackgroundEditScope = .project) {
-        hasActiveBackgroundEditor = true
-        backgroundEditScope = scope
-        backgroundEditorTrackedAssetIds.removeAll()
-    }
-
-    /// Returns the current override for the active background edit scope.
-    func currentOverrideForEditScope() -> ProjectBackgroundOverride {
-        switch backgroundEditScope {
-        case .project:
-            return session.state?.draft.background ?? .empty
-        case .scene(let instanceId):
-            return session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
-                ?? session.state?.draft.background ?? .empty
-        }
-    }
-
-    /// Handles preset change during active editor session.
-    func handleBackgroundPresetChange(oldPresetId: String, newPresetId: String) {
-        clearBackgroundTextures(prefix: "bg/\(oldPresetId)/")
-        lastBackgroundPresetId = newPresetId
-    }
-
-    /// Full background image import: persist → register → load texture → commit.
-    /// All bookkeeping and controller-state branching is runtime-internal.
-    /// - Parameter setEditorImage: closure to update the live editor VC (if active).
-    func importBackgroundImage(
-        sourceFileURL: URL,
-        regionId: String,
-        setEditorImage: ((String, MediaRef) -> Void)?
-    ) async throws {
-        guard let bgState = effectiveBackgroundState else { return }
-
-        let capturedGeneration = backgroundImportGeneration
-        let sessionPresetId = bgState.preset.presetId
-
-        // 1. Persist
-        let mediaRef = try await persistBackgroundImage(
-            sourceFileURL: sourceFileURL,
-            generation: capturedGeneration,
-            sessionPresetId: sessionPresetId
-        )
-
-        // 2. Register asset (before texture load so registry resolves)
-        session.registerAssetBookkeeping(ProjectAssetDescriptor(
-            assetId: mediaRef.assetId,
-            mediaKind: mediaRef.mediaKind,
-            storagePath: mediaRef.storagePath
-        ))
-        if hasActiveBackgroundEditor {
-            backgroundEditorTrackedAssetIds.insert(mediaRef.assetId)
-        }
-
-        // 3. Load texture
-        do {
-            _ = try await loadBackgroundTexture(
-                mediaRef: mediaRef,
-                regionId: regionId,
-                generation: capturedGeneration,
-                sessionPresetId: sessionPresetId
-            )
-        } catch is BackgroundImportStaleError {
-            session.unregisterAssetBookkeeping(mediaRef.assetId)
-            backgroundEditorTrackedAssetIds.remove(mediaRef.assetId)
-            throw BackgroundImportStaleError()
-        } catch {
-            session.unregisterAssetBookkeeping(mediaRef.assetId)
-            backgroundEditorTrackedAssetIds.remove(mediaRef.assetId)
-            throw error
-        }
-
-        // 4. Commit
-        if hasActiveBackgroundEditor, let setImage = setEditorImage {
-            setImage(regionId, mediaRef)
-        } else {
-            let oldBgAssetId = session.state?.draft.background.regions[regionId]?.imageMediaRef?.assetId
-            var bg = session.state?.draft.background ?? .empty
-            bg.regions[regionId] = RegionOverride(
-                source: .image(ImageOverride(mediaRef: mediaRef, transform: .identity))
-            )
-            session.dispatch(.setBackground(bg))
-            if let oldId = oldBgAssetId, oldId != mediaRef.assetId {
-                session.unregisterAssetIfUnreferenced(oldId)
-            }
-            rebuildEffectiveBackgroundScoped(
-                projectOverride: bg,
-                sceneOverride: currentSceneBackgroundOverride()
-            )
-            hasActiveBackgroundEditor = false
-        }
-    }
-
-    /// Commits background editor dismiss: dispatch override, cleanup, rebuild.
-    /// Branches by edit scope: project-level or scene-level.
-    func commitBackgroundEditorDismiss(
-        override: ProjectBackgroundOverride,
-        presetId: String
-    ) {
-        let scope = backgroundEditScope
-        hasActiveBackgroundEditor = false
-        incrementBackgroundImportGeneration()
-
-        // Cleanup textures for old preset if changed
-        if let oldPresetId = lastBackgroundPresetId, oldPresetId != presetId {
-            clearBackgroundTextures(prefix: "bg/\(oldPresetId)/")
-        }
-        lastBackgroundPresetId = presetId
-
-        switch scope {
-        case .project:
-            let oldBgAssetIds: Set<ProjectAssetID> = Set(
-                (session.state?.draft.background.regions.values ?? [:].values)
-                    .compactMap { $0.imageMediaRef?.assetId }
-            )
-            session.dispatch(.setBackground(override))
-            for oldAssetId in oldBgAssetIds {
-                session.unregisterAssetIfUnreferenced(oldAssetId)
-            }
-
-        case .scene(let instanceId):
-            let oldBgAssetIds: Set<ProjectAssetID> = Set(
-                (session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride?.regions.values ?? [:].values)
-                    .compactMap { $0.imageMediaRef?.assetId }
-            )
-            session.setSceneBackgroundOverride(override, for: instanceId)
-            for oldAssetId in oldBgAssetIds {
-                session.unregisterAssetIfUnreferenced(oldAssetId)
-            }
-        }
-
-        // Sweep intermediate imports
-        for trackedAssetId in backgroundEditorTrackedAssetIds {
-            session.unregisterAssetIfUnreferenced(trackedAssetId)
-        }
-        backgroundEditorTrackedAssetIds.removeAll()
-
-        // Scope-correct rebuild: resolve project and scene inputs post-commit.
-        let projectOverride: ProjectBackgroundOverride?
-        let sceneOverride: ProjectBackgroundOverride?
-        switch scope {
-        case .project:
-            projectOverride = override
-            sceneOverride = currentSceneBackgroundOverride()
-        case .scene:
-            projectOverride = session.state?.draft.background
-            sceneOverride = override
-        }
-        rebuildEffectiveBackgroundScoped(projectOverride: projectOverride, sceneOverride: sceneOverride)
-        let effState = effectiveBackgroundState
-        Task { @MainActor in
-            await self.preloadBackgroundTexturesScoped(
-                projectOverride: projectOverride, sceneOverride: sceneOverride, effectiveState: effState
-            )
-        }
+        await previewAudio.buildConfig(includeOriginalFromVideoSlots: includeOriginalFromVideoSlots)
     }
 
     // MARK: - UI Queries
 
     func videoTrimContext(blockId: String) -> VideoTrimContext? {
-        userMediaService?.videoTrimContext(blockId: blockId)
+        sceneEdit.videoTrimContext(blockId: blockId)
     }
 
-    /// Whether the runtime can commit a video trim (user media service available).
     var canCommitVideoTrim: Bool { userMediaService != nil }
 
-    /// Current video time for a block at a given scene frame index.
     func currentVideoTime(blockId: String, sceneFrameIndex: Int) -> Double {
-        userMediaService?.currentVideoTime(blockId: blockId, sceneFrameIndex: sceneFrameIndex) ?? 0
+        sceneEdit.currentVideoTime(blockId: blockId, sceneFrameIndex: sceneFrameIndex)
     }
 
-    /// Best estimate of the current local frame for paused video sync.
     var bestLocalFrame: Int {
         playbackCoordinator?.currentLocalFrame ?? currentFrameIndex
     }
 
-    /// Sealed context for media block action bar UI.
     func mediaActionBarContext(blockId: String) -> MediaActionBarContext {
-        MediaActionBarContext(
-            allowedMedia: scenePlayer?.allowedMedia(blockId: blockId),
-            availableVariants: scenePlayer?.availableVariants(blockId: blockId) ?? [],
-            selectedVariantId: scenePlayer?.selectedVariantId(blockId: blockId),
-            canTrimVideo: userMediaService?.videoTrimContext(blockId: blockId) != nil
-        )
+        sceneEdit.mediaActionBarContext(blockId: blockId)
     }
 
-    /// Resolves default fit mode for a scene type + block via the timeline engine cache.
     func resolveDefaultFitMode(sceneTypeId: String, blockId: String) async -> FitMode {
         guard let cache = timelineCompositionEngine?.resourcesCache else { return .cover }
         return await DefaultFitResolver.resolve(sceneTypeId: sceneTypeId, blockId: blockId, cache: cache)
     }
 
-    /// Template background definition from the compiled scene.
     var templateBackground: Background? {
         compiledScene?.runtime.scene.background
     }
 
-    /// Canvas size for the scene-edit interaction mapper.
     var queryCanvasSize: SizeD { canvasSize }
 
-    /// Sync coordinator timeline after structure change (scene add/remove/trim).
     func syncCoordinatorTimeline(from state: EditorState) {
         playbackCoordinator?.updateSceneTimeline(from: state)
     }
 
-    /// Sealed overlay/hit-test adapter for scene-edit interaction controller.
     func sceneEditOverlayProvider() -> SceneEditOverlayProviding? {
-        scenePlayer
+        sceneEdit.sceneEditOverlayProvider()
     }
 
     /// Whether the runtime has a transition compositor available for render.
@@ -2554,14 +1167,14 @@ final class EditorRuntime {
 
     // MARK: - Scene Edit State Queries
 
-    var currentActiveSceneInstanceId: UUID? { activeSceneInstanceId }
-    var currentSceneEditReadyInstanceId: UUID? { sceneEditReadyInstanceId }
+    var currentActiveSceneInstanceId: UUID? { sceneEdit.activeSceneInstanceId }
+    var currentSceneEditReadyInstanceId: UUID? { sceneEdit.sceneEditReadyInstanceId }
 
     /// DEBUG: Verifies boot invariants after initial timeline configuration.
     #if DEBUG
     func assertBootInvariants(uiMode: EditorUIMode) {
-        if activeSceneInstanceId == nil {
-            assertionFailure("[PR10] configureEditorTimeline: activeSceneInstanceId is nil after initial apply")
+        if sceneEdit.activeSceneInstanceId == nil {
+            assertionFailure("[PR10] configureEditorTimeline: sceneEdit.activeSceneInstanceId is nil after initial apply")
         }
         if scenePlayer == nil {
             assertionFailure("[PR10] configureEditorTimeline: scenePlayer is nil after initial apply")
@@ -2581,7 +1194,7 @@ final class EditorRuntime {
 
     // MARK: - Private Helpers
 
-    private func selfHealedRegistry() -> ProjectAssetRegistry {
+    func selfHealedRegistry() -> ProjectAssetRegistry {
         guard let draft = session.state?.draft else { return ProjectAssetRegistry() }
         return draft.assetRegistry.selfHealed(for: draft)
     }
@@ -2602,21 +1215,13 @@ final class EditorRuntime {
         }
     }
 
-    private func handleMediaReadyForPlacement(blockId: String) {
-        guard let instanceId = activeSceneInstanceId,
-              let slot = session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId] else {
-            onOutput?(.renderSourceUpdated)
-            return
-        }
-        let _ = reapplyPlacementAfterMediaReady(instanceId: instanceId, blockId: blockId, placement: slot.asset.placement)
-    }
 }
 
 // MARK: - SceneEditToolRuntimeControlling
 
 extension EditorRuntime: SceneEditToolRuntimeControlling {
     func reloadSceneEditState(instanceId: UUID) async {
-        resetRuntimeForSceneInstanceChange()
+        sceneEdit.resetRuntimeForSceneInstanceChange()
         await applySceneInstanceState(instanceId: instanceId)
     }
 }
