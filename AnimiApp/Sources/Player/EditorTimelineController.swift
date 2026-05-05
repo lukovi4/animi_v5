@@ -1,0 +1,241 @@
+import UIKit
+import TVECore
+import os.log
+
+private let logger = Logger(subsystem: "com.animi.app", category: "EditorTimeline")
+
+/// Owns timeline UI/events, selection, and overlay sync.
+@MainActor
+internal final class EditorTimelineController {
+    unowned let viewController: EditorViewController
+
+    init(viewController: EditorViewController) {
+        self.viewController = viewController
+    }
+
+    private func log(_ message: String) {
+        logger.info("\(message)")
+    }
+
+    // MARK: - Timeline Event Handling
+
+    func handleTimelineEvent(_ event: TimelineEvent) {
+        let vc = viewController
+        switch event {
+        case .scrub(let compressedFrame, let phase):
+            handleTimelineScrub(compressedFrame: compressedFrame, phase: phase)
+
+        case .selection(let selection):
+            handleTimelineSelectionChanged(selection)
+
+        case .scroll:
+            break
+
+        case .trimScene(let sceneId, let newDurationUs, let edge, let phase):
+            handleTrimScene(sceneId: sceneId, newDurationUs: newDurationUs, edge: edge, phase: phase)
+
+        case .reorderScene(let sceneId, let toIndex, let phase):
+            handleReorderScene(sceneId: sceneId, toIndex: toIndex, phase: phase)
+
+        case .editBoundaryTransition(let fromId, let toId, let anchorRect):
+            vc.presentationController_.presentTransitionPicker(fromSceneId: fromId, toSceneId: toId, anchorRect: anchorRect)
+
+        case .focusScene(let sceneId):
+            vc.session.dispatch(.focusScene(sceneId: sceneId))
+
+        case .moveOverlayItem(let itemId, let newStartUs, let phase):
+            vc.session.dispatch(.moveItem(itemId: itemId, newStartUs: newStartUs, phase: phase))
+
+        case .trimOverlayItem(let itemId, let newDurationUs, _, let phase):
+            vc.session.dispatch(.trimItem(itemId: itemId, newDurationUs: newDurationUs, phase: phase))
+        }
+    }
+
+    // MARK: - Trim Scene
+
+    func handleTrimScene(sceneId: UUID, newDurationUs: TimeUs, edge: TrimEdge, phase: InteractionPhase) {
+        let vc = viewController
+        if phase == .began && (vc.runtime?.isPlaying ?? false) {
+            vc.runtime?.stopPlayback()
+        }
+        vc.session.dispatch(.trimScene(sceneId: sceneId, phase: phase, newDurationUs: newDurationUs, edge: edge))
+    }
+
+    // MARK: - Reorder Scene
+
+    func handleReorderScene(sceneId: UUID, toIndex: Int, phase: InteractionPhase) {
+        let vc = viewController
+        guard phase == .ended else { return }
+        guard toIndex >= 0 else { return }
+
+        guard let sceneItems = vc.session.state?.sceneItems else { return }
+        guard let fromIndex = sceneItems.firstIndex(where: { $0.id == sceneId }) else {
+            log("[PR3.2] handleReorderScene: scene not found")
+            return
+        }
+
+        let count = sceneItems.count
+        var destIndex = toIndex
+
+        if toIndex > fromIndex {
+            destIndex -= 1
+        }
+
+        destIndex = max(0, min(destIndex, count - 1))
+
+        guard destIndex != fromIndex else { return }
+
+        vc.session.dispatch(.reorderScene(sceneId: sceneId, toIndex: destIndex))
+    }
+
+    // MARK: - Scrub
+
+    func handleTimelineScrub(compressedFrame: Int, phase: InteractionPhase) {
+        let vc = viewController
+        switch phase {
+        case .began:
+            vc.isScrubDragging = true
+        case .ended, .cancelled:
+            vc.isScrubDragging = false
+            if vc.pendingScrubRender {
+                vc.requestRender()
+                vc.pendingScrubRender = false
+            }
+        case .changed:
+            break
+        }
+
+        if vc.runtime?.isPlaying ?? false {
+            vc.runtime?.stopPlayback()
+        }
+
+        vc.session.dispatch(.setPlayhead(compressedFrame: compressedFrame))
+    }
+
+    func handleTimelineSelectionChanged(_ selection: TimelineSelection) {
+        let vc = viewController
+        if vc.session.state?.uiMode == .timeline, case .scene = selection {
+            return
+        }
+        vc.session.dispatch(.select(selection: selection))
+    }
+
+    // MARK: - Selection Changed
+
+    func handleSelectionChanged(_ selection: TimelineSelection?) {
+        let vc = viewController
+        let sel = selection ?? .none
+        let sceneCount = vc.session.state?.sceneItems.count ?? 1
+        vc.editorLayoutContainer.setTimelineSelection(sel, sceneCount: sceneCount)
+        updateOverlayPositionDrag(selection: sel)
+    }
+
+    func updateOverlayPositionDrag(selection: TimelineSelection) {
+        let vc = viewController
+        guard vc.session.state?.uiMode == .timeline else {
+            vc.overlayPositionDrag.clearSelection()
+            vc.overlayPositionDrag.isHidden = true
+            return
+        }
+
+        switch selection {
+        case .text(let itemId):
+            if let payload = vc.session.state?.canonicalTimeline.textPayload(for: itemId) {
+                vc.overlayPositionDrag.isHidden = false
+                vc.overlayPositionDrag.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
+            } else {
+                vc.overlayPositionDrag.clearSelection()
+                vc.overlayPositionDrag.isHidden = true
+            }
+        case .sticker(let itemId):
+            if let payload = vc.session.state?.canonicalTimeline.stickerPayload(for: itemId) {
+                vc.overlayPositionDrag.isHidden = false
+                vc.overlayPositionDrag.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
+            } else {
+                vc.overlayPositionDrag.clearSelection()
+                vc.overlayPositionDrag.isHidden = true
+            }
+        default:
+            vc.overlayPositionDrag.clearSelection()
+            vc.overlayPositionDrag.isHidden = true
+        }
+    }
+
+    // MARK: - Overlay Track
+
+    func updateOverlayTrack(state: EditorState) {
+        let vc = viewController
+        let (textItems, stickerItems) = EditorViewController.extractOverlayLaneItems(from: state.canonicalTimeline)
+
+        let selectedTextId: UUID? = if case .text(let id) = state.selection { id } else { nil }
+        let selectedStickerId: UUID? = if case .sticker(let id) = state.selection { id } else { nil }
+
+        vc.editorLayoutContainer.timelineView.setTextOverlayItems(textItems, selectedItemId: selectedTextId)
+        vc.editorLayoutContainer.timelineView.setStickerOverlayItems(stickerItems, selectedItemId: selectedStickerId)
+    }
+
+    // MARK: - Supplemental UI Sync
+
+    func syncTimelineSupplementalUI(state: EditorState) {
+        let vc = viewController
+        vc.editorLayoutContainer.timelineView.setMusicItem(
+            state.canonicalTimeline.musicItem,
+            payload: state.canonicalTimeline.musicPayload()
+        )
+        updateOverlayTrack(state: state)
+        vc.editorLayoutContainer.setMapper(state.makePlayheadMapper())
+        handleSelectionChanged(state.selection)
+    }
+
+    // MARK: - Timeline Changed
+
+    func handleTimelineChanged(_ state: EditorState) {
+        let vc = viewController
+        let scenes = state.canonicalTimeline.toSceneDrafts()
+        let boundaries = state.canonicalTimeline.toSceneBoundaryDrafts()
+        vc.editorLayoutContainer.updateScenes(scenes, boundaries: boundaries)
+
+        syncTimelineSupplementalUI(state: state)
+
+        vc.runtime?.syncCoordinatorTimeline(from: state)
+
+        vc.sceneEditModule?.refreshSceneEditBars()
+
+        vc.runtime?.refreshCurrentTimelineFrame()
+
+        vc.runtime?.markPreviewAudioDirty()
+    }
+
+    func handleTimelinePreviewChanged(_ state: EditorState) {
+        let vc = viewController
+        let scenes = state.canonicalTimeline.toSceneDrafts()
+        let boundaries = state.canonicalTimeline.toSceneBoundaryDrafts()
+        vc.editorLayoutContainer.updateScenes(scenes, boundaries: boundaries)
+
+        let mapper = state.makePlayheadMapper()
+        vc.editorLayoutContainer.setMapper(mapper)
+    }
+
+    // MARK: - Undo/Redo
+
+    func handleUndoRedoChanged(canUndo: Bool, canRedo: Bool) {
+        let vc = viewController
+        vc.editorLayoutContainer.navBar.setUndoEnabled(canUndo)
+        vc.editorLayoutContainer.navBar.setRedoEnabled(canRedo)
+
+        #if DEBUG
+        log("[PR-F] Undo/Redo changed: canUndo=\(canUndo), canRedo=\(canRedo)")
+        #endif
+    }
+
+    // MARK: - Scene State Changed
+
+    func handleSceneStateChanged(instanceId: UUID, sceneState: SceneState) {
+        let vc = viewController
+        vc.runtime?.applySceneStateChange(instanceId: instanceId, sceneState: sceneState)
+
+        #if DEBUG
+        logger.debug("[PR-F] Scene state changed: instanceId=\(instanceId)")
+        #endif
+    }
+}

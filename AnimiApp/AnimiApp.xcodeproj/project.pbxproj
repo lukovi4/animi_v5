@@ -337,6 +337,12 @@
 		FE30676DCE3F9DF63B5A23A2 /* EditorRenderContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59971755844E2F253995D2F /* EditorRenderContract.swift */; };
 		FEA3B952EB2396459C5CB527 /* VideoPreparePipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04CC127539762D4EA003D344 /* VideoPreparePipelineTests.swift */; };
 		FEE30DB449CB4F7E914422E0 /* EditorSessionDirtyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A635AE6ACD0FFBF6E898B7D /* EditorSessionDirtyState.swift */; };
+		18ED739170A81C1C97F8AAC6 /* EditorBootstrapController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C4CABC060FB199217B2EB2F /* EditorBootstrapController.swift */; };
+		F1FC70990C7CE7C556DF63D1 /* EditorTimelineController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54D6AC399A325E67AB5CBAD7 /* EditorTimelineController.swift */; };
+		2E4F6B6FB62A5C76C2EC6FC2 /* EditorExportFlowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADC7A453014F6A8D546D5058 /* EditorExportFlowController.swift */; };
+		20808CC7C46CAD1F2FF6AA04 /* EditorBackgroundFlowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CAF65F44E3C0E6C71EA48C /* EditorBackgroundFlowController.swift */; };
+		EC25BDCDA761C9D1A48AC935 /* EditorMediaFlowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EF8428669CB875489517C7B /* EditorMediaFlowController.swift */; };
+		79D69E10A0E883E7F30A98CD /* EditorPresentationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 270B5C22045E3051A7E6EE28 /* EditorPresentationController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -683,6 +689,12 @@
 		FE26B706F8C892ADD55A1177 /* MediaAssetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaAssetStore.swift; sourceTree = "<group>"; };
 		FEF36B30392BA04B17DD2F4F /* RenderSourceSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderSourceSelectionTests.swift; sourceTree = "<group>"; };
 		FFCE62B62C430828423FC8DB /* ProjectPreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPreviewCell.swift; sourceTree = "<group>"; };
+		1C4CABC060FB199217B2EB2F /* EditorBootstrapController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorBootstrapController.swift; sourceTree = "<group>"; };
+		54D6AC399A325E67AB5CBAD7 /* EditorTimelineController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorTimelineController.swift; sourceTree = "<group>"; };
+		ADC7A453014F6A8D546D5058 /* EditorExportFlowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorExportFlowController.swift; sourceTree = "<group>"; };
+		58CAF65F44E3C0E6C71EA48C /* EditorBackgroundFlowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorBackgroundFlowController.swift; sourceTree = "<group>"; };
+		4EF8428669CB875489517C7B /* EditorMediaFlowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorMediaFlowController.swift; sourceTree = "<group>"; };
+		270B5C22045E3051A7E6EE28 /* EditorPresentationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorPresentationController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -723,6 +735,12 @@
 				797FEE14029DDD1E23F49456 /* EditorRenderCommandResolver.swift */,
 				D59971755844E2F253995D2F /* EditorRenderContract.swift */,
 				9408C2D971CB73BEA5A5F52B /* EditorViewController.swift */,
+				1C4CABC060FB199217B2EB2F /* EditorBootstrapController.swift */,
+				54D6AC399A325E67AB5CBAD7 /* EditorTimelineController.swift */,
+				ADC7A453014F6A8D546D5058 /* EditorExportFlowController.swift */,
+				58CAF65F44E3C0E6C71EA48C /* EditorBackgroundFlowController.swift */,
+				4EF8428669CB875489517C7B /* EditorMediaFlowController.swift */,
+				270B5C22045E3051A7E6EE28 /* EditorPresentationController.swift */,
 				85271CBA652BF18E5476B593 /* PreparingOverlayView.swift */,
 				FE0AE21B0D44860C1F1503BB /* SceneRuntimeStateApplier.swift */,
 				DE5E9CF111CD6CF5A6213688 /* TimelinePlaybackCoordinator.swift */,
@@ -1521,6 +1539,12 @@
 				70B4C549F74311F52D1CDA70 /* EditorState.swift in Sources */,
 				0402365D45452BE0FFA85FE7 /* EditorStore.swift in Sources */,
 				990E1CC1FBE09E5FF0710687 /* EditorViewController.swift in Sources */,
+				18ED739170A81C1C97F8AAC6 /* EditorBootstrapController.swift in Sources */,
+				F1FC70990C7CE7C556DF63D1 /* EditorTimelineController.swift in Sources */,
+				2E4F6B6FB62A5C76C2EC6FC2 /* EditorExportFlowController.swift in Sources */,
+				20808CC7C46CAD1F2FF6AA04 /* EditorBackgroundFlowController.swift in Sources */,
+				EC25BDCDA761C9D1A48AC935 /* EditorMediaFlowController.swift in Sources */,
+				79D69E10A0E883E7F30A98CD /* EditorPresentationController.swift in Sources */,
 				83D31A071A2AE1D9DAAEAF33 /* EffectiveBackgroundBuilder.swift in Sources */,
 				4E8B6713DA4061865A1F298A /* ExportBackgroundSnapshot.swift in Sources */,
 				6CD2F5635CB51654B8F404D3 /* ExportDeliveryCoordinator.swift in Sources */,
