@@ -74,10 +74,6 @@ final class EditorViewController: UIViewController {
         }
     }
 
-    // MARK: - Export State (owned by EditorRuntime)
-
-    private var isExporting: Bool { runtime?.isExporting ?? false }
-
     // MARK: - Metal View
 
     private lazy var metalView: MTKView = {

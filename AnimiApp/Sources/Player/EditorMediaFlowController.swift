@@ -121,19 +121,6 @@ internal final class EditorMediaFlowController {
         vc.present(picker, animated: true)
     }
 
-    // MARK: - Media Type Mismatch
-
-    func showMediaTypeMismatchAlert() {
-        let vc = viewController
-        let alert = UIAlertController(
-            title: "Wrong Media Type",
-            message: "Please select the correct type of media.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        vc.present(alert, animated: true)
-    }
-
     // MARK: - Music Import
 
     func importProjectMusic(tempURL: URL, originalExtension: String) {
