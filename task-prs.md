@@ -36,6 +36,10 @@
   `bash Scripts/run_animiapp_tests.sh`
   ->
   `1318 tests, 0 failures, 2 skipped`.
+- Актуальный controller-thinning baseline на `2026-05-05` после `PR11`:
+  `bash Scripts/run_animiapp_tests.sh`
+  ->
+  `1318 tests, 0 failures, 2 skipped`.
 - Дальнейшие PR не должны ломать актуальный baseline `1318 / 0 / 2`.
 - Каждый PR должен быть behavior-preserving, если acceptance явно не требует смены контракта.
 
@@ -51,6 +55,7 @@
   - `PR 8: TimelineCompositionEngine Internal Split`
   - `PR 9: Scene Edit Tool Architecture`
   - `PR 10: EditorRuntime Thinning`
+  - `PR 11: EditorViewController Thinning`
 - Внутри integration milestone дополнительно закрыт integration tail между `PR1–PR4`:
   - runtime/controller/output export delivery contract
   - scene background production edit/persistence/export path
@@ -68,7 +73,7 @@
   - compatibility groundwork частично присутствует
   - production runtime/export audio contract все еще опирается на music bridge
 - Следующий канонический PR по sequence:
-  - `PR 11: EditorViewController Thinning`
+  - `PR 3: Audio Domain Contract And Compatibility Layer`
 
 ## 1. Merge Rules
 
@@ -293,7 +298,7 @@ Test gates:
 - `bash Scripts/run_animiapp_tests.sh`
 - update runtime mutation / export restore / bridge suites
 
-### PR 11: EditorViewController Thinning — NEXT
+### PR 11: EditorViewController Thinning — DONE
 
 Scope:
 - `AnimiApp/Sources/Player/EditorViewController.swift`

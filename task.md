@@ -1,6 +1,6 @@
 С учетом принятых продуктовых решений целевой контракт теперь фиксируется жестко.
 
-**Текущее Состояние На 2026-05-04**
+**Текущее Состояние На 2026-05-05**
 - Зафиксирован integration milestone commit:
   `a7c45b4` —
   `integration: per-scene background domain, export runner extraction, preview background switching`.
@@ -22,6 +22,9 @@
 - Зафиксирован split `EditorRuntime`:
   `PR10` —
   `EditorRuntime Thinning` completed in committed production code.
+- Зафиксирован split `EditorViewController`:
+  `PR11` —
+  `EditorViewController Thinning` completed in committed production code.
 - Актуальный локальный gate:
   `bash Scripts/run_animiapp_tests.sh`
   ->
@@ -35,7 +38,8 @@
   `PR 7: Preview Audio Transport Integration`,
   `PR 8: TimelineCompositionEngine Internal Split`,
   `PR 9: Scene Edit Tool Architecture`,
-  `PR 10: EditorRuntime Thinning`.
+  `PR 10: EditorRuntime Thinning`,
+  `PR 11: EditorViewController Thinning`.
 - Дополнительно внутри этого integration milestone закрыт integration tail между `PR1–PR4`:
   delivery/runtime/output seam,
   scene background production edit/persistence/export path,
@@ -54,7 +58,7 @@
   но canonical contract `generic audio domain -> runtime/export audio snapshot/plan`
   еще не доведен до финального accepted состояния.
 - Следующий канонический structural шаг по плану:
-  `PR 11: EditorViewController Thinning`.
+  `PR 3: Audio Domain Contract And Compatibility Layer`.
 
 **Финальная Цель Рефакторинга**
 - Не “уменьшить файлы” и не “разложить код по папкам”, а довести редактор до состояния, где текущий product contract выражен в явных domain boundaries и не держится на giant owner-типах.
@@ -244,7 +248,7 @@
    Acceptance:
    runtime в основном маршрутизирует state, output и orchestration между уже вынесенными доменами.
 
-11. `PR 11: EditorViewController Thinning` — `NEXT`
+11. `PR 11: EditorViewController Thinning` — `DONE`
    Цель: последним довести `AnimiApp/Sources/Player/EditorViewController.swift` до реально thin UI shell.
    Acceptance:
    controller больше не является composition root для половины editor feature-flows.
