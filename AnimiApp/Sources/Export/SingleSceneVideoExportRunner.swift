@@ -143,17 +143,17 @@ internal final class SingleSceneVideoExportRunner {
         // Delete existing file if present
         try? FileManager.default.removeItem(at: settings.outputURL)
 
-        // 1. Build audio pipeline (if configured)
+        // 1. Build audio pipeline (prefer plan, fallback to legacy config)
         var audioPipeline: BuiltAudioPipeline?
 
-        if let audioConfig = settings.audio {
+        if let plan = settings.audioPlan ?? settings.audio?.toPlan() {
             let builder = AudioCompositionBuilder()
             do {
                 audioPipeline = try builder.build(
                     runtime: runtime,
                     fps: settings.fps,
                     videoSelectionsByBlockId: videoSelections,
-                    config: audioConfig
+                    plan: plan
                 )
             } catch {
                 session.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))

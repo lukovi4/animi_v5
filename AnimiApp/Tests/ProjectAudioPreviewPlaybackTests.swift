@@ -1108,4 +1108,43 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         XCTAssertEqual(mock.readiness, .idle, "teardown must reset readiness to .idle")
         XCTAssertFalse(callbackFired, "onReady must not fire during teardown")
     }
+
+    // MARK: - Test 26: PR3 unresolved import clears dirty (no churn)
+
+    func testPreviewNoChurn_unresolvedImportClearsDirty() async {
+        guard let (session, runtime) = await makePlayableRuntime() else {
+            return // Metal unavailable — skip
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+
+        // Add music with an unresolvable asset (empty storage path, no file seeded)
+        session.dispatch(.setProjectMusic(
+            assetRef: .imported(assetId: ProjectAssetID(), storagePath: ""),
+            sourceDurationUs: 5_000_000
+        ))
+
+        XCTAssertTrue(runtime.previewAudioDirty)
+
+        // First play — unresolvable audio → .noResolvableAudio → clears dirty
+        runtime.startPlayback()
+        // Let orchestrationTask complete
+        for _ in 0..<20 { await Task.yield() }
+
+        XCTAssertFalse(runtime.previewAudioDirty,
+                       "Unresolvable audio should clear dirty to prevent rebuild churn")
+        XCTAssertEqual(mock.replacePipelineCallCount, 0,
+                       "No pipeline should be installed for unresolvable audio")
+
+        // Second play — should NOT trigger a rebuild since dirty is false
+        runtime.stopPlayback()
+        let buildCountBefore = mock.replacePipelineCallCount
+        runtime.startPlayback()
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertEqual(mock.replacePipelineCallCount, buildCountBefore,
+                       "Second play should not trigger rebuild when dirty is false")
+
+        runtime.stopPlayback()
+    }
 }

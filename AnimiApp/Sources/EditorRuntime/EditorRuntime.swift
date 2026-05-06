@@ -935,39 +935,90 @@ final class EditorRuntime {
     func isActiveExportRequest(_ requestId: UUID) -> Bool { exportController.isActiveExportRequest(requestId) }
     func clearExportRequestIfCurrent(_ requestId: UUID) { exportController.clearExportRequestIfCurrent(requestId) }
 
-    /// PR8: Builds AudioTrackConfig from the project's canonical timeline music item.
-    func buildProjectMusicTrackConfig() async -> AudioTrackConfig? {
-        guard let state = session.state,
-              let item = state.canonicalTimeline.musicItem,
-              let payload = state.canonicalTimeline.musicPayload(),
-              case .imported(let assetId, let contentStoragePath) = payload.assetRef else {
-            return nil
+    /// PR3: Builds AudioExportPlan from ALL audio items in canonical timeline.
+    func buildAudioExportPlan(
+        includeOriginalFromVideoSlots: Bool = true,
+        originalDefaultVolume: Float = 1.0
+    ) async -> AudioExportPlan {
+        guard let state = session.state else {
+            return AudioExportPlan(
+                items: [],
+                includeOriginalFromVideoSlots: includeOriginalFromVideoSlots,
+                originalDefaultVolume: originalDefaultVolume
+            )
         }
 
+        let timeline = state.canonicalTimeline
         let registry = selfHealedRegistry()
-        let storagePath = registry.storagePath(for: assetId) ?? contentStoragePath
-        guard !storagePath.isEmpty else {
-            #if DEBUG
-            logger.warning("[PR8] Music asset has no resolvable storage path: \(assetId.rawValue.uuidString)")
-            #endif
-            return nil
+
+        // Collect candidates: (startUs, trackIndex, itemIndex, item, payload)
+        var candidates: [(startUs: TimeUs, trackIndex: Int, itemIndex: Int, item: TimelineItem, payload: AudioPayload)] = []
+        for (trackIndex, track) in timeline.audioTracks.enumerated() {
+            for (itemIndex, item) in track.items.enumerated() {
+                guard let tlPayload = timeline.payloads[item.payloadId],
+                      case .audio(let payload) = tlPayload else { continue }
+                candidates.append((startUs: item.startUs ?? 0, trackIndex: trackIndex, itemIndex: itemIndex, item: item, payload: payload))
+            }
         }
 
-        let mediaRef = MediaRef(storagePath: storagePath, mediaKind: .audio, assetId: assetId)
-        guard let fileURL = try? await session.mediaLocator.absoluteURL(for: mediaRef, registry: registry) else {
-            #if DEBUG
-            logger.warning("[PR8] Failed to resolve music asset URL")
-            #endif
-            return nil
+        // Sort deterministically by (startUs, trackIndex, itemIndex)
+        candidates.sort {
+            if $0.startUs != $1.startUs { return $0.startUs < $1.startUs }
+            if $0.trackIndex != $1.trackIndex { return $0.trackIndex < $1.trackIndex }
+            return $0.itemIndex < $1.itemIndex
         }
 
-        return AudioTrackConfig(
-            url: fileURL,
-            startTimeSeconds: usToSeconds(item.startUs ?? 0),
-            volume: payload.volume,
-            trimStartSeconds: usToSeconds(payload.trimStartUs),
-            trimEndSeconds: usToSeconds(payload.trimEndUs)
+        var planItems: [AudioExportItemPlan] = []
+        for c in candidates {
+            guard let assetRef = c.payload.assetRef else { continue }
+
+            switch assetRef {
+            case .bundled:
+                #if DEBUG
+                logger.info("[PR3] Skipping bundled audio item: \(c.item.id)")
+                #endif
+                continue
+
+            case .imported(let assetId, let contentStoragePath):
+                let storagePath = registry.storagePath(for: assetId) ?? contentStoragePath
+                guard !storagePath.isEmpty else {
+                    #if DEBUG
+                    logger.warning("[PR3] Audio asset has no resolvable storage path: \(assetId.rawValue.uuidString)")
+                    #endif
+                    continue
+                }
+
+                let mediaRef = MediaRef(storagePath: storagePath, mediaKind: .audio, assetId: assetId)
+                guard let fileURL = try? await session.mediaLocator.absoluteURL(for: mediaRef, registry: registry) else {
+                    #if DEBUG
+                    logger.warning("[PR3] Failed to resolve audio asset URL: \(assetId.rawValue.uuidString)")
+                    #endif
+                    continue
+                }
+
+                planItems.append(AudioExportItemPlan(
+                    itemId: c.item.id,
+                    role: c.payload.role,
+                    url: fileURL,
+                    startTimeSeconds: usToSeconds(c.startUs),
+                    volume: c.payload.volume,
+                    trimStartSeconds: usToSeconds(c.payload.trimStartUs),
+                    trimEndSeconds: usToSeconds(c.payload.trimEndUs)
+                ))
+            }
+        }
+
+        return AudioExportPlan(
+            items: planItems,
+            includeOriginalFromVideoSlots: includeOriginalFromVideoSlots,
+            originalDefaultVolume: originalDefaultVolume
         )
+    }
+
+    /// PR8 compatibility: thin wrapper over buildAudioExportPlan().
+    func buildProjectMusicTrackConfig() async -> AudioTrackConfig? {
+        let plan = await buildAudioExportPlan()
+        return plan.items.first { $0.role == .music }?.toTrackConfig()
     }
 
     // MARK: - Scene Edit Delegates

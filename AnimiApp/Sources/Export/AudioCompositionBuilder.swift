@@ -75,58 +75,38 @@ public final class AudioCompositionBuilder {
 
     // MARK: - Build
 
-    /// Builds audio composition from configuration.
-    ///
-    /// - Parameters:
-    ///   - runtime: Scene runtime (for duration and block timing)
-    ///   - fps: Scene FPS
-    ///   - videoSelectionsByBlockId: Video selections snapshot (for original audio)
-    ///   - config: Audio export configuration
-    ///   - transitionMath: Timeline transition math for multi-scene export (optional)
-    ///   - sceneIndex: Index of this scene in timeline (required if transitionMath provided)
-    /// - Returns: Built audio pipeline with composition and optional mix
+    /// Builds audio composition from plan (N items, any role).
     public func build(
         runtime: SceneRuntime,
         fps: Int,
         videoSelectionsByBlockId: [String: VideoSelection],
-        config: AudioExportConfig,
+        plan: AudioExportPlan,
         transitionMath: TimelineTransitionMath? = nil,
         sceneIndex: Int = 0
     ) throws -> BuiltAudioPipeline {
         let composition = AVMutableComposition()
         var mixParameters: [AVMutableAudioMixInputParameters] = []
 
-        // For multi-scene export with transitions, use compressed duration
         let projectDuration: Double
         if let math = transitionMath {
             projectDuration = Double(math.compressedDurationFrames) / Double(fps)
         } else {
             projectDuration = Double(runtime.durationFrames) / Double(fps)
         }
-        // 1. Add music track (if configured)
-        if let musicConfig = config.music {
+
+        // 1. Add all audio items from plan
+        for item in plan.items {
             let params = try insertAudioTrack(
-                config: musicConfig,
+                config: item.toTrackConfig(),
                 into: composition,
                 projectDuration: projectDuration,
-                label: "music"
+                label: item.role.rawValue
             )
             if let params { mixParameters.append(params) }
         }
 
-        // 2. Add voiceover track (if configured)
-        if let voiceoverConfig = config.voiceover {
-            let params = try insertAudioTrack(
-                config: voiceoverConfig,
-                into: composition,
-                projectDuration: projectDuration,
-                label: "voiceover"
-            )
-            if let params { mixParameters.append(params) }
-        }
-
-        // 3. Add original audio from video slots (if enabled)
-        if config.includeOriginalFromVideoSlots {
+        // 2. Add original audio from video slots (if enabled)
+        if plan.includeOriginalFromVideoSlots {
             for block in runtime.blocks {
                 guard let selection = videoSelectionsByBlockId[block.blockId] else { continue }
                 guard selection.isValid else { continue }
@@ -138,7 +118,7 @@ public final class AudioCompositionBuilder {
                     into: composition,
                     fps: fps,
                     projectDuration: projectDuration,
-                    defaultVolume: config.originalDefaultVolume,
+                    defaultVolume: plan.originalDefaultVolume,
                     transitionMath: transitionMath,
                     sceneIndex: sceneIndex
                 )
@@ -146,7 +126,6 @@ public final class AudioCompositionBuilder {
             }
         }
 
-        // 4. Build audio mix (if we have any volume parameters)
         var audioMix: AVAudioMix?
         if !mixParameters.isEmpty {
             let mix = AVMutableAudioMix()
@@ -155,6 +134,24 @@ public final class AudioCompositionBuilder {
         }
 
         return BuiltAudioPipeline(composition: composition, audioMix: audioMix)
+    }
+
+    /// Legacy config-based build — delegates to plan-based overload.
+    public func build(
+        runtime: SceneRuntime,
+        fps: Int,
+        videoSelectionsByBlockId: [String: VideoSelection],
+        config: AudioExportConfig,
+        transitionMath: TimelineTransitionMath? = nil,
+        sceneIndex: Int = 0
+    ) throws -> BuiltAudioPipeline {
+        try build(
+            runtime: runtime, fps: fps,
+            videoSelectionsByBlockId: videoSelectionsByBlockId,
+            plan: config.toPlan(),
+            transitionMath: transitionMath,
+            sceneIndex: sceneIndex
+        )
     }
 
     // MARK: - Private: Insert Audio Track
@@ -305,55 +302,32 @@ public final class AudioCompositionBuilder {
 
     // MARK: - Timeline Build (Multi-Scene)
 
-    /// Builds audio composition for multi-scene timeline export.
-    ///
-    /// Uses hard-cut semantics (no audio crossfade during transitions).
-    /// Each scene's audio is placed at its compressed start time.
-    ///
-    /// - Parameters:
-    ///   - sceneData: Audio export data for each scene (from TimelineCompositionEngine)
-    ///   - transitionMath: Timeline transition math for compressed timing
-    ///   - fps: Timeline FPS
-    ///   - config: Audio export configuration
-    /// - Returns: Built audio pipeline with composition and optional mix
+    /// Builds audio composition for multi-scene timeline export (plan-based).
     public func buildTimeline(
         sceneData: [TimelineCompositionEngine.SceneAudioExportData],
         transitionMath: TimelineTransitionMath,
         fps: Int,
-        config: AudioExportConfig
+        plan: AudioExportPlan
     ) throws -> BuiltAudioPipeline {
         let composition = AVMutableComposition()
         var mixParameters: [AVMutableAudioMixInputParameters] = []
 
         let projectDuration = Double(transitionMath.compressedDurationFrames) / Double(fps)
-        let projectDurationTime = CMTime(seconds: projectDuration, preferredTimescale: Self.timescale)
 
-        // 1. Add music track (if configured) - spans entire project
-        if let musicConfig = config.music {
+        // 1. Add all audio items from plan
+        for item in plan.items {
             let params = try insertAudioTrack(
-                config: musicConfig,
+                config: item.toTrackConfig(),
                 into: composition,
                 projectDuration: projectDuration,
-                label: "music"
+                label: item.role.rawValue
             )
             if let params { mixParameters.append(params) }
         }
 
-        // 2. Add voiceover track (if configured) - spans entire project
-        if let voiceoverConfig = config.voiceover {
-            let params = try insertAudioTrack(
-                config: voiceoverConfig,
-                into: composition,
-                projectDuration: projectDuration,
-                label: "voiceover"
-            )
-            if let params { mixParameters.append(params) }
-        }
-
-        // 3. Add original audio from video slots for each scene (if enabled)
-        if config.includeOriginalFromVideoSlots {
+        // 2. Add original audio from video slots for each scene (if enabled)
+        if plan.includeOriginalFromVideoSlots {
             for data in sceneData {
-                // Process each block in this scene
                 for block in data.runtime.blocks {
                     guard let selection = data.videoSelections[block.blockId] else { continue }
                     guard selection.isValid else { continue }
@@ -365,7 +339,7 @@ public final class AudioCompositionBuilder {
                         into: composition,
                         fps: fps,
                         projectDuration: projectDuration,
-                        defaultVolume: config.originalDefaultVolume,
+                        defaultVolume: plan.originalDefaultVolume,
                         transitionMath: transitionMath,
                         sceneIndex: data.sceneIndex
                     )
@@ -374,7 +348,6 @@ public final class AudioCompositionBuilder {
             }
         }
 
-        // 4. Build audio mix (if we have any volume parameters)
         var audioMix: AVAudioMix?
         if !mixParameters.isEmpty {
             let mix = AVMutableAudioMix()
@@ -383,5 +356,20 @@ public final class AudioCompositionBuilder {
         }
 
         return BuiltAudioPipeline(composition: composition, audioMix: audioMix)
+    }
+
+    /// Legacy config-based buildTimeline — delegates to plan-based overload.
+    public func buildTimeline(
+        sceneData: [TimelineCompositionEngine.SceneAudioExportData],
+        transitionMath: TimelineTransitionMath,
+        fps: Int,
+        config: AudioExportConfig
+    ) throws -> BuiltAudioPipeline {
+        try buildTimeline(
+            sceneData: sceneData,
+            transitionMath: transitionMath,
+            fps: fps,
+            plan: config.toPlan()
+        )
     }
 }

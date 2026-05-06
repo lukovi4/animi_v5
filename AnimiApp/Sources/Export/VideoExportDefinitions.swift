@@ -71,6 +71,36 @@ public struct AudioExportConfig: Sendable {
     }
 }
 
+// MARK: - AudioExportConfig → AudioExportPlan Bridge
+
+extension AudioExportConfig {
+    /// Converts legacy config to AudioExportPlan. Used by config-based callers/tests.
+    func toPlan() -> AudioExportPlan {
+        var items: [AudioExportItemPlan] = []
+        if let m = music {
+            items.append(AudioExportItemPlan(
+                itemId: UUID(), role: .music, url: m.url,
+                startTimeSeconds: m.startTimeSeconds, volume: m.volume,
+                trimStartSeconds: m.trimStartSeconds, trimEndSeconds: m.trimEndSeconds,
+                loopToFit: m.loopToFit
+            ))
+        }
+        if let v = voiceover {
+            items.append(AudioExportItemPlan(
+                itemId: UUID(), role: .voiceover, url: v.url,
+                startTimeSeconds: v.startTimeSeconds, volume: v.volume,
+                trimStartSeconds: v.trimStartSeconds, trimEndSeconds: v.trimEndSeconds,
+                loopToFit: v.loopToFit
+            ))
+        }
+        return AudioExportPlan(
+            items: items,
+            includeOriginalFromVideoSlots: includeOriginalFromVideoSlots,
+            originalDefaultVolume: originalDefaultVolume
+        )
+    }
+}
+
 // MARK: - Video Quality Preset (B2)
 
 /// Preset quality levels for video export.
@@ -150,6 +180,9 @@ public struct VideoExportSettings: Sendable {
     /// Audio export configuration (PR-E4). nil = video-only export.
     public let audio: AudioExportConfig?
 
+    /// Plan-based audio export (PR3). Preferred over `audio` when non-nil.
+    public let audioPlan: AudioExportPlan?
+
     public init(
         outputURL: URL,
         sizePx: (width: Int, height: Int),
@@ -157,7 +190,8 @@ public struct VideoExportSettings: Sendable {
         bitrate: Int = 10_000_000,
         gopSeconds: Int = 2,
         clearColor: ClearColor = .opaqueBlack,
-        audio: AudioExportConfig? = nil
+        audio: AudioExportConfig? = nil,
+        audioPlan: AudioExportPlan? = nil
     ) {
         self.outputURL = outputURL
         self.sizePx = sizePx
@@ -166,6 +200,7 @@ public struct VideoExportSettings: Sendable {
         self.gopSeconds = gopSeconds
         self.clearColor = clearColor
         self.audio = audio
+        self.audioPlan = audioPlan
     }
 }
 
@@ -304,6 +339,9 @@ public struct TimelineExportSettings: Sendable {
     /// Audio export configuration
     public let audio: AudioExportConfig?
 
+    /// Plan-based audio export (PR3). Preferred over `audio` when non-nil.
+    public let audioPlan: AudioExportPlan?
+
     public init(
         outputURL: URL,
         sizePx: (width: Int, height: Int),
@@ -311,7 +349,8 @@ public struct TimelineExportSettings: Sendable {
         bitrate: Int = 10_000_000,
         gopSeconds: Int = 2,
         clearColor: ClearColor = .opaqueBlack,
-        audio: AudioExportConfig? = nil
+        audio: AudioExportConfig? = nil,
+        audioPlan: AudioExportPlan? = nil
     ) {
         self.outputURL = outputURL
         self.sizePx = sizePx
@@ -320,5 +359,6 @@ public struct TimelineExportSettings: Sendable {
         self.gopSeconds = gopSeconds
         self.clearColor = clearColor
         self.audio = audio
+        self.audioPlan = audioPlan
     }
 }

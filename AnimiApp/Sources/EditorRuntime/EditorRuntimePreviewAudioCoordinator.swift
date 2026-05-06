@@ -43,6 +43,14 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         buildTask = nil
     }
 
+    // MARK: - Preview Audio Build Result
+
+    enum PreviewAudioBuildResult {
+        case noResolvableAudio
+        case failed
+        case pipeline(BuiltAudioPipeline)
+    }
+
     // MARK: - Playback Integration
 
     func startForTimelinePlayback() {
@@ -66,35 +74,25 @@ internal final class EditorRuntimePreviewAudioCoordinator {
 
         orchestrationTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            let pipeline = await self.buildPipeline()
+            let buildResult = await self.buildPipeline()
             defer { self.orchestrationTask = nil }
 
             guard self.generation == gen else { return }
             guard self.runtime.isPlaying else { return }
 
-            guard let pipeline else {
-                if !self.hasContent {
-                    self.dirty = false
-                }
-                return
+            switch buildResult {
+            case .noResolvableAudio:
+                self.dirty = false
+            case .failed:
+                break
+            case .pipeline(let pipeline):
+                self.installOnReady(generation: gen)
+                self.controller.replacePipeline(pipeline)
             }
-
-            self.installOnReady(generation: gen)
-            self.controller.replacePipeline(pipeline)
         }
     }
 
     // MARK: - Private
-
-    private var hasContent: Bool {
-        guard let state = runtime.session.state,
-              let _ = state.canonicalTimeline.musicItem,
-              let payload = state.canonicalTimeline.musicPayload(),
-              case .imported = payload.assetRef else {
-            return false
-        }
-        return true
-    }
 
     func buildConfig(includeOriginalFromVideoSlots: Bool) async -> AudioExportConfig? {
         let music = await runtime.buildProjectMusicTrackConfig()
@@ -105,23 +103,24 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         )
     }
 
-    private func buildPipeline() async -> BuiltAudioPipeline? {
+    private func buildPipeline() async -> PreviewAudioBuildResult {
         #if DEBUG
         if let builder = pipelineBuilder {
-            return await builder()
+            if let p = await builder() { return .pipeline(p) }
+            return .noResolvableAudio
         }
         #endif
 
-        let config = await buildConfig(includeOriginalFromVideoSlots: false)
-        guard let config, config.music != nil else { return nil }
+        let plan = await runtime.buildAudioExportPlan(includeOriginalFromVideoSlots: false)
+        guard !plan.items.isEmpty else { return .noResolvableAudio }
 
         #if DEBUG
         if let gate = buildGate { await gate() }
         #endif
 
-        guard !Task.isCancelled else { return nil }
+        guard !Task.isCancelled else { return .failed }
         guard let engine = runtime.timelineCompositionEngine,
-              let math = engine.transitionMath else { return nil }
+              let math = engine.transitionMath else { return .failed }
 
         let fps = Int(runtime.sceneFPS)
         let task = Task.detached { () -> BuiltAudioPipeline? in
@@ -130,13 +129,15 @@ internal final class EditorRuntimePreviewAudioCoordinator {
                 sceneData: [],
                 transitionMath: math,
                 fps: fps,
-                config: config
+                plan: plan
             )
         }
         self.buildTask = task
         let result = await task.value
         self.buildTask = nil
-        return result
+
+        if let result { return .pipeline(result) }
+        return .failed
     }
 
     private func installOnReady(generation gen: UInt) {

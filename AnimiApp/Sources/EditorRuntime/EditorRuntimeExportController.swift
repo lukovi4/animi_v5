@@ -207,12 +207,8 @@ internal final class EditorRuntimeExportController {
 
         let outputURL = makeExportOutputURL(prefix: "export_\(sceneRuntime.scene.sceneId ?? "scene")")
 
-        let musicConfig = await runtime.buildProjectMusicTrackConfig()
-        let audioConfig = AudioExportConfig(
-            music: musicConfig,
-            voiceover: nil,
-            includeOriginalFromVideoSlots: true,
-            originalDefaultVolume: 1.0
+        let audioPlan = await runtime.buildAudioExportPlan(
+            includeOriginalFromVideoSlots: true, originalDefaultVolume: 1.0
         )
 
         let instanceId = runtime.sceneEdit.activeSceneInstanceId
@@ -277,7 +273,7 @@ internal final class EditorRuntimeExportController {
             sizePx: exportSizePx,
             preset: exportPreset,
             fps: sceneRuntime.fps,
-            audio: audioConfig
+            audioPlan: audioPlan
         )
 
         let mediaSnapshot: ExportMediaSnapshot
@@ -361,12 +357,8 @@ internal final class EditorRuntimeExportController {
 
         let outputURL = makeExportOutputURL(prefix: "export_timeline")
 
-        let musicConfig = await runtime.buildProjectMusicTrackConfig()
-        let audioConfig = AudioExportConfig(
-            music: musicConfig,
-            voiceover: nil,
-            includeOriginalFromVideoSlots: true,
-            originalDefaultVolume: 1.0
+        let audioPlan = await runtime.buildAudioExportPlan(
+            includeOriginalFromVideoSlots: true, originalDefaultVolume: 1.0
         )
 
         let sceneCount = runtime.session.state?.sceneItems.count ?? 1
@@ -431,7 +423,7 @@ internal final class EditorRuntimeExportController {
             sizePx: exportSizePx,
             preset: exportPreset,
             fps: engine.fps,
-            audio: audioConfig
+            audioPlan: audioPlan
         )
 
         let tlSession: TimelineCompositionEngine.TimelineExportSession
@@ -578,7 +570,7 @@ internal final class EditorRuntimeExportController {
         sizePx: (width: Int, height: Int),
         preset: VideoQualityPreset,
         fps: Int,
-        audio: AudioExportConfig?
+        audioPlan: AudioExportPlan
     ) -> VideoExportSettings {
         let bitrate = preset.bitrate(for: sizePx)
         return VideoExportSettings(
@@ -587,7 +579,7 @@ internal final class EditorRuntimeExportController {
             fps: fps,
             bitrate: bitrate,
             clearColor: .opaqueBlack,
-            audio: audio
+            audioPlan: audioPlan
         )
     }
 
@@ -596,7 +588,7 @@ internal final class EditorRuntimeExportController {
         sizePx: (width: Int, height: Int),
         preset: VideoQualityPreset,
         fps: Int,
-        audio: AudioExportConfig?
+        audioPlan: AudioExportPlan
     ) -> VideoExporter.TimelineExportSettings {
         let bitrate = preset.bitrate(for: sizePx)
         return VideoExporter.TimelineExportSettings(
@@ -604,7 +596,7 @@ internal final class EditorRuntimeExportController {
             sizePx: sizePx,
             fps: fps,
             bitrate: bitrate,
-            audio: audio
+            audioPlan: audioPlan
         )
     }
 }

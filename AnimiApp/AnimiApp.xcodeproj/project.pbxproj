@@ -121,6 +121,7 @@
 		5D1EAB0A11774675AA58B727 /* SceneTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4613B149DEB66964BDE84F9 /* SceneTrackView.swift */; };
 		5E91A339DCEC55969A328712 /* RuntimeStorageBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD61CC6D977DA6AD6CF1760 /* RuntimeStorageBoundaryTests.swift */; };
 		602F7872F888469035DDAD7A /* AudioCompositionBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21BCAE9CA856E61018333E4F /* AudioCompositionBuilder.swift */; };
+		D2C1B0A98170F6E5D4C3B2A1 /* AudioExportPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718A9B0C1D2 /* AudioExportPlan.swift */; };
 		604BC9DBCF8875F1757D6D44 /* MediaPlacementReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37AEF46D9F1BE61E14F9D382 /* MediaPlacementReducerTests.swift */; };
 		61449617A8E8AEAFB164B454 /* EditorSessionLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15149D15AF406D217E7B2E61 /* EditorSessionLifecycleTests.swift */; };
 		61F7B551A3D283FED525FB00 /* SceneRuntimeStateApplier.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0AE21B0D44860C1F1503BB /* SceneRuntimeStateApplier.swift */; };
@@ -153,6 +154,7 @@
 		8071D9F6B0509820F37B64FF /* TransitionBoundaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09294B94FC6996907B241426 /* TransitionBoundaryView.swift */; };
 		81903D4914988F07E62B9861 /* EditorSessionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B83EF0C1EF4FB00069A3D46 /* EditorSessionState.swift */; };
 		8343A747BFFF1CD837FDC8CE /* MusicExportBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFA612729229AC5D7117B3B5 /* MusicExportBridgeTests.swift */; };
+		D2C1B0A98970A6B5C4D3E2F1 /* AudioDomainContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E2D3C4B5A60798A9B0C1D2 /* AudioDomainContractTests.swift */; };
 		83727A605F081B559554DD8E /* EditorAutosaveCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A1F518B19296CD8D232688 /* EditorAutosaveCoordinator.swift */; };
 		83ACAE38F6E500470C944653 /* VideoSelectionFastPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C3EF8701FE43C71E34328DE /* VideoSelectionFastPathTests.swift */; };
 		83D31A071A2AE1D9DAAEAF33 /* EffectiveBackgroundBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F32D1C7C5D29936244DF41F /* EffectiveBackgroundBuilder.swift */; };
@@ -404,6 +406,7 @@
 		209BCAB68281911CA5160D19 /* ProjectOrigin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectOrigin.swift; sourceTree = "<group>"; };
 		212495D3F0034E5DF8679EAE /* AnimiAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AnimiAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		21BCAE9CA856E61018333E4F /* AudioCompositionBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCompositionBuilder.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718A9B0C1D2 /* AudioExportPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioExportPlan.swift; sourceTree = "<group>"; };
 		21D30F4AD7074A5CDEBC16BE /* BundleSceneLibraryLoaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleSceneLibraryLoaderTests.swift; sourceTree = "<group>"; };
 		224CA4FC373A64400D8C84BB /* TemplateCatalogRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateCatalogRepository.swift; sourceTree = "<group>"; };
 		2406DC94C43C3102F21C74B2 /* SceneCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneCatalogTests.swift; sourceTree = "<group>"; };
@@ -613,6 +616,7 @@
 		BE555E6A0E60C9501F521ACB /* ExportResourceBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportResourceBudgetTests.swift; sourceTree = "<group>"; };
 		BE83C97F893ECB40F45E4309 /* UserMediaServiceReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaServiceReadinessTests.swift; sourceTree = "<group>"; };
 		BFA612729229AC5D7117B3B5 /* MusicExportBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicExportBridgeTests.swift; sourceTree = "<group>"; };
+		F1E2D3C4B5A60798A9B0C1D2 /* AudioDomainContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDomainContractTests.swift; sourceTree = "<group>"; };
 		C0CE9CAB4B84AE0BD77F768F /* MusicTimelineInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicTimelineInteractionTests.swift; sourceTree = "<group>"; };
 		C1244C22C36801F4B52AFE62 /* ExportVideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProvider.swift; sourceTree = "<group>"; };
 		C25FDDDA3FE43A3C49259142 /* OverlayCompositor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayCompositor.swift; sourceTree = "<group>"; };
@@ -804,6 +808,7 @@
 				BADE2C25A73924C2B3793A4D /* MediaRestoreHelperVideoSelectionTests.swift */,
 				1EDE2C4C01F67B216C0DE1B6 /* MissingMediaExportGateTests.swift */,
 				ADF645C1611DAFB9D8C3019F /* MissingMediaSessionNoticeTests.swift */,
+				F1E2D3C4B5A60798A9B0C1D2 /* AudioDomainContractTests.swift */,
 				BFA612729229AC5D7117B3B5 /* MusicExportBridgeTests.swift */,
 				C0CE9CAB4B84AE0BD77F768F /* MusicTimelineInteractionTests.swift */,
 				0FB4FBB474041B3F916DE23D /* MyProjectsViewControllerTests.swift */,
@@ -896,6 +901,7 @@
 		174A8C02D785B7926CEE2F64 /* Export */ = {
 			isa = PBXGroup;
 			children = (
+				A1B2C3D4E5F60718A9B0C1D2 /* AudioExportPlan.swift */,
 				21BCAE9CA856E61018333E4F /* AudioCompositionBuilder.swift */,
 				931F43B88D909958DFAB035F /* AudioWriterPump.swift */,
 				DE03E0013BB58940F881C463 /* ExportBackgroundSnapshot.swift */,
@@ -1408,6 +1414,7 @@
 				F6AC83B484ABBE744C991938 /* MediaRestoreHelperVideoSelectionTests.swift in Sources */,
 				F5C9214DA6FEF8359BBA1886 /* MissingMediaExportGateTests.swift in Sources */,
 				7C6478FC1AFEC70DDFF27E03 /* MissingMediaSessionNoticeTests.swift in Sources */,
+				D2C1B0A98970A6B5C4D3E2F1 /* AudioDomainContractTests.swift in Sources */,
 				8343A747BFFF1CD837FDC8CE /* MusicExportBridgeTests.swift in Sources */,
 				209C8E56B1A3AEB4F3E3BF5E /* MusicTimelineInteractionTests.swift in Sources */,
 				10E9A0D781743AD0E1A00644 /* MyProjectsViewControllerTests.swift in Sources */,
@@ -1495,6 +1502,7 @@
 				CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */,
 				FA1007519BC5D22D30B7BA29 /* AppLaunchRouter.swift in Sources */,
 				602F7872F888469035DDAD7A /* AudioCompositionBuilder.swift in Sources */,
+				D2C1B0A98170F6E5D4C3B2A1 /* AudioExportPlan.swift in Sources */,
 				57C23E798E20C6709A23C537 /* AudioTrackView.swift in Sources */,
 				CC20D98CF2C2D50F0579DDAF /* AudioWriterPump.swift in Sources */,
 				BB56874175D0D84955195BB6 /* BackgroundEditorViewController.swift in Sources */,

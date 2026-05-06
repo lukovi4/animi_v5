@@ -243,4 +243,139 @@ final class MusicExportBridgeTests: XCTestCase {
         // V1: music starts at 0
         XCTAssertEqual(config.startTimeSeconds, 0.0, accuracy: 0.001)
     }
+
+    // MARK: - PR3: buildAudioExportPlan Tests
+
+    func testBuildAudioExportPlan_musicOnly_returnsOneMusicItem() async throws {
+        let assetId = ProjectAssetID()
+        let storagePath = "Media/UserMedia/\(UUID().uuidString).mp3"
+        try seedAudioFile(storagePath: storagePath)
+
+        var draft = makeDraft(sceneDurations: [5_000_000])
+        addMusicToDraft(&draft, assetId: assetId, storagePath: storagePath, volume: 0.7)
+
+        let runtime = await makeRuntime(draft: draft)
+        let plan = await runtime.buildAudioExportPlan()
+
+        XCTAssertEqual(plan.items.count, 1)
+        XCTAssertEqual(plan.items[0].role, .music)
+        XCTAssertEqual(plan.items[0].volume, 0.7)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: plan.items[0].url.path))
+    }
+
+    func testBuildAudioExportPlan_noAudio_returnsEmptyPlan() async {
+        let runtime = await makeRuntime(draft: makeDraft(sceneDurations: [3_000_000]))
+        let plan = await runtime.buildAudioExportPlan()
+        XCTAssertTrue(plan.items.isEmpty)
+    }
+
+    func testBuildProjectMusicTrackConfig_matchesPlanFirstMusic() async throws {
+        let assetId = ProjectAssetID()
+        let storagePath = "Media/UserMedia/\(UUID().uuidString).mp3"
+        try seedAudioFile(storagePath: storagePath)
+
+        var draft = makeDraft(sceneDurations: [5_000_000])
+        addMusicToDraft(&draft, assetId: assetId, storagePath: storagePath,
+                        trimStartUs: 1_000_000, trimEndUs: 6_000_000, volume: 0.8)
+
+        let runtime = await makeRuntime(draft: draft)
+        let config = await runtime.buildProjectMusicTrackConfig()
+        let plan = await runtime.buildAudioExportPlan()
+        let planFirstMusic = plan.items.first { $0.role == .music }
+
+        XCTAssertNotNil(config)
+        XCTAssertNotNil(planFirstMusic)
+        XCTAssertEqual(config?.url, planFirstMusic?.url)
+        XCTAssertEqual(config?.volume, planFirstMusic?.volume)
+        XCTAssertEqual(config?.trimStartSeconds, planFirstMusic?.trimStartSeconds)
+        XCTAssertEqual(config?.trimEndSeconds, planFirstMusic?.trimEndSeconds)
+    }
+
+    func testBuildAudioExportPlan_unresolvedImport_skipped() async {
+        var draft = makeDraft(sceneDurations: [5_000_000])
+        // Add music but do NOT register asset or seed file
+        let audioPid = UUID()
+        draft.canonicalTimeline.payloads[audioPid] = .audio(AudioPayload(
+            assetRef: .imported(assetId: ProjectAssetID(), storagePath: ""),
+            sourceDurationUs: 10_000_000, trimStartUs: 0, trimEndUs: 10_000_000, volume: 1.0
+        ))
+        var audioTrack = Track(kind: .audio)
+        audioTrack.items.append(TimelineItem(
+            payloadId: audioPid, kind: .audioClip, startUs: 0, durationUs: 10_000_000
+        ))
+        draft.canonicalTimeline.tracks.append(audioTrack)
+
+        let runtime = await makeRuntime(draft: draft)
+        let plan = await runtime.buildAudioExportPlan()
+        XCTAssertTrue(plan.items.isEmpty, "Unresolved import should be skipped from plan")
+    }
+
+    func testBuildAudioExportPlan_bundledAsset_skipped() async {
+        var draft = makeDraft(sceneDurations: [5_000_000])
+        let audioPid = UUID()
+        draft.canonicalTimeline.payloads[audioPid] = .audio(AudioPayload(
+            assetRef: .bundled(id: "bundled_track"),
+            sourceDurationUs: 5_000_000, trimStartUs: 0, trimEndUs: 5_000_000, volume: 1.0
+        ))
+        var audioTrack = Track(kind: .audio)
+        audioTrack.items.append(TimelineItem(
+            payloadId: audioPid, kind: .audioClip, startUs: 0, durationUs: 5_000_000
+        ))
+        draft.canonicalTimeline.tracks.append(audioTrack)
+
+        let runtime = await makeRuntime(draft: draft)
+        let plan = await runtime.buildAudioExportPlan()
+        XCTAssertTrue(plan.items.isEmpty, "Bundled assets should be skipped from plan")
+    }
+
+    func testBuildAudioExportPlan_multiRole_ordering() async throws {
+        let musicAssetId = ProjectAssetID()
+        let musicStorage = "Media/UserMedia/\(UUID().uuidString).mp3"
+        try seedAudioFile(storagePath: musicStorage)
+
+        let voAssetId = ProjectAssetID()
+        let voStorage = "Media/UserMedia/\(UUID().uuidString).mp3"
+        try seedAudioFile(storagePath: voStorage)
+
+        var draft = makeDraft(sceneDurations: [10_000_000])
+
+        // Music at startUs=5_000_000
+        draft.assetRegistry.register(ProjectAssetDescriptor(
+            assetId: musicAssetId, mediaKind: .audio, storagePath: musicStorage
+        ))
+        let musicPid = UUID()
+        draft.canonicalTimeline.payloads[musicPid] = .audio(AudioPayload(
+            assetRef: .imported(assetId: musicAssetId, storagePath: musicStorage),
+            sourceDurationUs: 10_000_000, trimStartUs: 0, trimEndUs: 10_000_000, volume: 1.0, role: .music
+        ))
+        var musicTrack = Track(kind: .audio)
+        musicTrack.items.append(TimelineItem(
+            payloadId: musicPid, kind: .audioClip, startUs: 5_000_000, durationUs: 5_000_000
+        ))
+        draft.canonicalTimeline.tracks.append(musicTrack)
+
+        // Voiceover at startUs=0
+        draft.assetRegistry.register(ProjectAssetDescriptor(
+            assetId: voAssetId, mediaKind: .audio, storagePath: voStorage
+        ))
+        let voPid = UUID()
+        draft.canonicalTimeline.payloads[voPid] = .audio(AudioPayload(
+            assetRef: .imported(assetId: voAssetId, storagePath: voStorage),
+            sourceDurationUs: 5_000_000, trimStartUs: 0, trimEndUs: 5_000_000, volume: 0.8, role: .voiceover
+        ))
+        var voTrack = Track(kind: .audio)
+        voTrack.items.append(TimelineItem(
+            payloadId: voPid, kind: .audioClip, startUs: 0, durationUs: 5_000_000
+        ))
+        draft.canonicalTimeline.tracks.append(voTrack)
+
+        let runtime = await makeRuntime(draft: draft)
+        let plan = await runtime.buildAudioExportPlan()
+
+        XCTAssertEqual(plan.items.count, 2)
+        XCTAssertEqual(plan.items[0].role, .voiceover, "Voiceover at startUs=0 should come first")
+        XCTAssertEqual(plan.items[1].role, .music, "Music at startUs=5s should come second")
+        XCTAssertEqual(plan.items[0].startTimeSeconds, 0.0, accuracy: 0.001)
+        XCTAssertEqual(plan.items[1].startTimeSeconds, 5.0, accuracy: 0.001)
+    }
 }

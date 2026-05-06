@@ -87,14 +87,14 @@ internal final class TimelineVideoExportRunner {
         }
 
         var audioPipeline: BuiltAudioPipeline?
-        if let audioConfig = workItem.settings.audio {
+        if let plan = workItem.settings.audioPlan ?? workItem.settings.audio?.toPlan() {
             do {
                 let builder = AudioCompositionBuilder()
                 audioPipeline = try builder.buildTimeline(
                     sceneData: workItem.session.audioSceneData,
                     transitionMath: workItem.session.transitionMath,
                     fps: workItem.settings.fps,
-                    config: audioConfig
+                    plan: plan
                 )
             } catch {
                 exportSession.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))
