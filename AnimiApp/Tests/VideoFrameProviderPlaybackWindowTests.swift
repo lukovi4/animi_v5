@@ -277,6 +277,10 @@ final class VideoFrameProviderPlaybackWindowTests: XCTestCase {
             "Hold state must clear when returning inside window")
         XCTAssertFalse(provider.debugIsPlaybackHoldLoading,
             "Hold loading must clear when returning inside window")
+
+        for _ in 0..<10 where provider.debugPlayerRate != 1.0 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
         XCTAssertEqual(provider.debugPlayerRate, 1.0,
             "AVPlayer must resume at rate=1 after exiting hold")
 

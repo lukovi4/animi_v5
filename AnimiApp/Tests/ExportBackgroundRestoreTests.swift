@@ -186,6 +186,82 @@ private func makeSessionWithImageBackground(imageFileURL: URL) async -> (EditorS
 }
 
 @MainActor
+private func makeSessionWithSceneImageBackground(imageFileURL: URL) async -> (EditorSession, EditorRuntime)? {
+    let mediaRef = MediaRef(storagePath: "Media/Background/test_scene_bg.png", mediaKind: .photo)
+    let override = ProjectBackgroundOverride(
+        selectedPresetId: testPresetId,
+        regions: [
+            testRegionId: RegionOverride(
+                source: .image(ImageOverride(mediaRef: mediaRef))
+            )
+        ]
+    )
+
+    let deps = EditorSessionDependencies(
+        saveActiveDraft: { _ in },
+        loadActiveDraft: { nil },
+        deleteActiveDraft: {},
+        loadSavedProject: { _ in nil },
+        materializeSavedProject: { $0 },
+        mediaLocator: TestMediaLocator(resolvedURL: imageFileURL),
+        mediaWriter: TestMediaWriter(),
+        loadSceneLibrary: {
+            SceneLibrarySnapshot(
+                fps: 30,
+                canvas: CanvasConfig(width: 1080, height: 1920),
+                scenes: [
+                    SceneTypeDescriptor(id: "scene_1", order: 0, title: "Test", baseDurationUs: 3_000_000)
+                ]
+            )
+        },
+        sceneTypeDefaults: { _, _ in
+            [SceneTypeDefault(sceneTypeId: "scene_1", baseDurationUs: 3_000_000)]
+        },
+        loadTemplateCatalog: {
+            .success(TemplateCatalogSnapshot(categories: [], templates: []))
+        },
+        backgroundPresetProvider: ImageBackgroundPresetProvider()
+    )
+
+    let session = EditorSession(intent: .template(templateId: "tpl_1"), dependencies: deps)
+    await session.bootstrap()
+
+    guard let sceneId = session.state?.draft.canonicalTimeline.sceneItems.first?.id else { return nil }
+    session.setSceneBackgroundOverride(override, for: sceneId)
+
+    guard let editorState = session.state else { return nil }
+    guard let device = MTLCreateSystemDefaultDevice(),
+          let commandQueue = device.makeCommandQueue() else { return nil }
+
+    let runtime = EditorRuntime(session: session)
+    let metalContext = EditorRuntimeMetalContext(
+        device: device,
+        commandQueue: commandQueue,
+        colorPixelFormat: .bgra8Unorm
+    )
+    let library = SceneLibrarySnapshot(
+        fps: 30,
+        canvas: CanvasConfig(width: 1080, height: 1920),
+        scenes: [
+            SceneTypeDescriptor(id: "scene_1", order: 0, title: "Test", baseDurationUs: 3_000_000)
+        ]
+    )
+
+    let loadResult = makeLoadResult(device: device)
+    runtime.configureAndBoot(
+        metalContext: metalContext,
+        library: library,
+        loadResult: loadResult,
+        editorState: editorState
+    )
+
+    await Task.yield()
+    await Task.yield()
+
+    return (session, runtime)
+}
+
+@MainActor
 private func makeSessionWithColorBackground() async -> (EditorSession, EditorRuntime)? {
     let override = ProjectBackgroundOverride(
         selectedPresetId: testPresetId,
@@ -312,6 +388,20 @@ private let testSlotKey = EffectiveBackgroundBuilder.makeSlotKey(
     regionId: testRegionId
 )
 
+@MainActor
+private func waitForLoadedTexture(
+    _ service: BackgroundTextureService,
+    slotKey: String,
+    timeoutNanoseconds: UInt64 = 2_000_000_000
+) async -> Bool {
+    let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+        if service.isLoaded(slotKey) { return true }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+    return service.isLoaded(slotKey)
+}
+
 // MARK: - Tests
 
 @MainActor
@@ -397,6 +487,32 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         // Restore
         await runtime.simulateExitExportModeToIdle()
         XCTAssertTrue(service.isLoaded(testSlotKey), "Texture should be reloaded after exit export mode")
+    }
+
+    func test_bootWithSceneImageBackground_preloadsSceneTexture() async throws {
+        let imageURL = try createTestImageFile()
+        tempImageURL = imageURL
+
+        guard let (session, runtime) = await makeSessionWithSceneImageBackground(imageFileURL: imageURL) else {
+            throw XCTSkip("Metal or session not available")
+        }
+
+        guard let sceneId = session.state?.draft.canonicalTimeline.sceneItems.first?.id,
+              session.state?.draft.sceneInstanceStates[sceneId]?.backgroundOverride != nil else {
+            XCTFail("Test session must contain a scene-level background override")
+            return
+        }
+
+        guard let service = runtime.testBackgroundTextureService else {
+            XCTFail("Background texture service not available")
+            return
+        }
+
+        let loaded = await waitForLoadedTexture(service, slotKey: testSlotKey)
+        XCTAssertTrue(
+            loaded,
+            "Scene-level background image must be preloaded after boot/open so My Projects reopen renders the saved scene background"
+        )
     }
 
     // MARK: 3. Cancel export after teardown emits output after reload

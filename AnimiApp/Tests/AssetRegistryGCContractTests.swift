@@ -147,4 +147,76 @@ final class AssetRegistryGCContractTests: XCTestCase {
             "Plain orphan (unregistered + unreferenced) must be deleted"
         )
     }
+
+    /// Saved projects must pin scene-level background files even after the
+    /// active draft is removed. This is the storage-side contract behind
+    /// "export then open from My Projects": GC must not physically delete the
+    /// image referenced only by `SceneState.backgroundOverride`.
+    func test_gc_preservesSavedProjectSceneBackgroundAfterActiveDraftDeleted() async throws {
+        let rootDir = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let media = FileProjectMediaStore(rootDirectoryURL: rootDir)
+        let persistence = FileProjectPersistenceStore(rootDirectoryURL: rootDir)
+
+        let bgRelPath = "Media/Background/saved_scene_bg.jpg"
+        let bgURL = rootDir.appendingPathComponent(bgRelPath)
+        try writeStubFile(at: bgURL)
+
+        let assetId = ProjectAssetID()
+        let mediaRef = MediaRef(storagePath: bgRelPath, mediaKind: .photo, assetId: assetId)
+        var registry = ProjectAssetRegistry()
+        registry.register(ProjectAssetDescriptor(
+            assetId: assetId,
+            mediaKind: .photo,
+            storagePath: bgRelPath
+        ))
+
+        var draft = ProjectDraft.create(origin: .template(templateId: "tpl_1"))
+        draft.canonicalTimeline = .makeWithSingleScene(sceneTypeId: "scene_1", durationUs: 3_000_000)
+        guard let sceneId = draft.canonicalTimeline.sceneItems.first?.id else {
+            XCTFail("Test timeline must contain one scene")
+            return
+        }
+        draft.sceneInstanceStates[sceneId] = SceneState(
+            backgroundOverride: ProjectBackgroundOverride(
+                selectedPresetId: "test_preset",
+                regions: [
+                    "full": RegionOverride(
+                        source: .image(ImageOverride(mediaRef: mediaRef, transform: .identity))
+                    )
+                ]
+            )
+        )
+        draft.assetRegistry = registry
+
+        let activeSlot = ActiveDraftSlot(
+            entryContext: .newProject(origin: .template(templateId: "tpl_1")),
+            linkedSavedProjectId: nil,
+            draft: draft
+        )
+        try persistence.saveActiveDraft(activeSlot)
+        let savedSlot = try persistence.materializeSavedProject(activeSlot)
+        try persistence.saveActiveDraft(savedSlot)
+        try persistence.deleteActiveDraft()
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: bgURL.path),
+            "Precondition: scene background file must exist before GC"
+        )
+
+        await media.collectOrphanMediaFiles(persistence: persistence)
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: bgURL.path),
+            "Saved project scene-level background file must survive GC after active draft deletion"
+        )
+
+        let savedRecord = persistence.loadSavedProject(projectId: draft.id)
+        XCTAssertEqual(
+            savedRecord?.draft.sceneInstanceStates[sceneId]?.backgroundOverride?.regions["full"]?.imageMediaRef,
+            mediaRef,
+            "Saved project must retain the scene-level background reference used to pin the file"
+        )
+    }
 }

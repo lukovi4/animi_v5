@@ -45,7 +45,7 @@ internal final class EditorRuntimeBackgroundController {
         self.backgroundTextureService = bgService
 
         let bgOverride = runtime.session.state?.draft.background
-        let sceneOverride = currentSceneBackgroundOverride()
+        let sceneOverride = initialPreviewSceneBackgroundOverride()
         let templateBackground = compiled.runtime.scene.background
         let effState = EffectiveBackgroundBuilder.build(
             templateBackground: templateBackground,
@@ -58,20 +58,14 @@ internal final class EditorRuntimeBackgroundController {
         if let state = effState {
             logger.info("[EditorRuntime] Background preset '\(state.preset.presetId)' with \(state.regionStates.count) regions")
 
-            if let override = bgOverride {
-                let registry = runtime.selfHealedRegistry()
-                Task { [weak runtime] in
-                    guard let runtime else { return }
-                    let loadedKeys = await bgService.preloadTextures(
-                        from: override,
-                        presetId: state.preset.presetId,
-                        assetRegistry: registry
-                    )
-                    if !loadedKeys.isEmpty {
-                        logger.info("[EditorRuntime] Preloaded \(loadedKeys.count) background textures")
-                    }
-                    runtime.onOutput?(.renderSourceUpdated)
-                }
+            let runtime = runtime
+            Task { @MainActor [weak runtime] in
+                guard let runtime else { return }
+                await runtime.background.preloadBackgroundTexturesScoped(
+                    projectOverride: bgOverride,
+                    sceneOverride: sceneOverride,
+                    effectiveState: state
+                )
             }
         }
 
@@ -120,7 +114,32 @@ internal final class EditorRuntimeBackgroundController {
         let newState = buildPreviewBackgroundState(for: instanceId)
         if newState != effectiveBackgroundState {
             effectiveBackgroundState = newState
+            let runtime = runtime
+            Task { @MainActor [weak runtime] in
+                guard let runtime else { return }
+                await runtime.background.preloadBackgroundTexturesScoped(
+                    projectOverride: runtime.session.state?.draft.background,
+                    sceneOverride: runtime.session.state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride,
+                    effectiveState: newState
+                )
+            }
         }
+    }
+
+    private func initialPreviewSceneBackgroundOverride() -> ProjectBackgroundOverride? {
+        let state = runtime.session.state
+        if let instanceId = runtime.sceneEdit.activeSceneInstanceId {
+            return state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
+        }
+        if let compressedFrame = state?.playheadCompressedFrame,
+           let engine = runtime.timelineCompositionEngine,
+           let instanceId = engine.sceneInstanceId(at: compressedFrame) {
+            return state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
+        }
+        if let instanceId = state?.draft.canonicalTimeline.sceneItems.first?.id {
+            return state?.draft.sceneInstanceStates[instanceId]?.backgroundOverride
+        }
+        return nil
     }
 
     func resolvePreviewBackgroundState(for resolved: ResolvedTimelineFrame) -> EffectiveBackgroundState? {
@@ -237,6 +256,7 @@ internal final class EditorRuntimeBackgroundController {
     ) async {
         guard let service = backgroundTextureService, let state = effectiveState else { return }
         let registry = runtime.selfHealedRegistry()
+        var loadedCount = 0
         for (regionId, regionState) in state.regionStates {
             if case .image(let imageSource) = regionState.source {
                 let mediaRef = sceneOverride?.regions[regionId]?.imageMediaRef
@@ -248,10 +268,14 @@ internal final class EditorRuntimeBackgroundController {
                         mediaRef: mediaRef,
                         assetRegistry: registry
                     )
+                    loadedCount += 1
                 } catch {
                     logger.error("[Background] Failed to preload texture: \(error.localizedDescription)")
                 }
             }
+        }
+        if loadedCount > 0 {
+            logger.info("[Background] Preloaded \(loadedCount) scoped background texture(s)")
         }
         runtime.onOutput?(.renderSourceUpdated)
     }
@@ -308,10 +332,11 @@ internal final class EditorRuntimeBackgroundController {
         let (proj, scene) = resolveBackgroundInputs(previewOverride: override)
         rebuildEffectiveBackgroundScoped(projectOverride: proj, sceneOverride: scene)
         let effState = effectiveBackgroundState
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        let runtime = runtime
+        Task { @MainActor [weak runtime] in
+            guard let runtime else { return }
             if scene != nil || proj != nil {
-                await self.preloadBackgroundTexturesScoped(
+                await runtime.background.preloadBackgroundTexturesScoped(
                     projectOverride: proj, sceneOverride: scene, effectiveState: effState
                 )
             }
@@ -455,9 +480,10 @@ internal final class EditorRuntimeBackgroundController {
         }
         rebuildEffectiveBackgroundScoped(projectOverride: projectOverride, sceneOverride: sceneOverride)
         let effState = effectiveBackgroundState
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.preloadBackgroundTexturesScoped(
+        let runtime = runtime
+        Task { @MainActor [weak runtime] in
+            guard let runtime else { return }
+            await runtime.background.preloadBackgroundTexturesScoped(
                 projectOverride: projectOverride, sceneOverride: sceneOverride, effectiveState: effState
             )
         }
