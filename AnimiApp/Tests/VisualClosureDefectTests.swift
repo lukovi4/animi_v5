@@ -731,6 +731,52 @@ final class MusicLaneGeometryTests: XCTestCase {
         XCTAssertEqual(constant!, 100, accuracy: 0.01,
             "Default clipOffset=0 → leading = leftPadding only")
     }
+
+    @MainActor
+    func test_configureBeforeSetHasClip_appliesGeometryWhenClipBecomesVisible() {
+        let track = AudioTrackView(frame: CGRect(x: 0, y: 0, width: 600, height: 40))
+
+        // Configure while hasClip is still false (production order: configure first, then setHasClip)
+        track.configure(durationUs: 5_000_000, pxPerSecond: 100, leftPadding: 100, clipOffsetPx: 50)
+
+        // Now make clip visible — this must trigger layout update
+        track.setHasClip(true)
+
+        let constant = leadingConstraintConstant(track)
+        XCTAssertNotNil(constant, "Leading constraint must exist")
+        XCTAssertEqual(constant!, 150, accuracy: 0.01,
+            "Leading = leftPadding(100) + clipOffset(50) = 150 after setHasClip(true)")
+
+        // Verify track width: 5s * 100px/s = 500px
+        var trackWidth: CGFloat?
+        for constraint in track.constraints {
+            if constraint.firstAttribute == .width,
+               let first = constraint.firstItem as? UIView,
+               first !== track {
+                trackWidth = constraint.constant
+                break
+            }
+        }
+        // Also check subview constraints
+        if trackWidth == nil {
+            for sub in track.subviews {
+                for constraint in sub.constraints {
+                    if constraint.firstAttribute == .width {
+                        trackWidth = constraint.constant
+                        break
+                    }
+                }
+                if trackWidth != nil { break }
+            }
+        }
+        XCTAssertNotNil(trackWidth, "Width constraint must exist")
+        XCTAssertEqual(trackWidth!, 500, accuracy: 0.01,
+            "Width = 5s * 100px/s = 500")
+
+        // Verify visibility
+        let trackBg = track.subviews.first(where: { !($0 is UILabel) })
+        XCTAssertEqual(trackBg?.isHidden, false, "Track background must be visible")
+    }
 }
 
 

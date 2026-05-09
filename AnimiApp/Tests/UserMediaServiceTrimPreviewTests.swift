@@ -54,6 +54,13 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
         var state: VideoProviderState { .ready }
         private(set) var isPlaybackActive: Bool = false
         var duration: CMTime = CMTime(seconds: 10.0, preferredTimescale: 600)
+
+        var playbackWindowStart: Double?
+        var playbackWindowEnd: Double?
+        func setPlaybackWindow(start: Double, end: Double) {
+            playbackWindowStart = start
+            playbackWindowEnd = end
+        }
         var presentationInfo: VideoPresentationInfo? = VideoPresentationInfo(
             rawTrackSize: CGSize(width: 64, height: 64),
             preferredTransform: .identity
@@ -62,6 +69,9 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
         private let device: MTLDevice
         var stillRequestCount: Int = 0
         var stillRequestTimes: [Double] = []
+        var posterRequestTimes: [Double] = []
+        var shouldBlockPoster: Bool = false
+        private var posterContinuation: CheckedContinuation<MTLTexture, Error>?
 
         /// When true, requestStillTexture blocks until `releaseStill()` is called.
         var shouldBlockStill: Bool = false
@@ -75,7 +85,23 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
         }
 
         func requestPoster(at time: Double) async throws -> MTLTexture {
+            posterRequestTimes.append(time)
+            if shouldBlockPoster {
+                return try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        self.posterContinuation = continuation
+                    }
+                } onCancel: {
+                    self.posterContinuation?.resume(throwing: CancellationError())
+                    self.posterContinuation = nil
+                }
+            }
             return createFakeTexture()
+        }
+
+        func releasePoster() {
+            posterContinuation?.resume(returning: createFakeTexture())
+            posterContinuation = nil
         }
 
         func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
@@ -466,5 +492,60 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
 
         XCTAssertEqual(provider.stillRequestCount, 1,
                         "Exact path should use requestStillTexture")
+    }
+
+    // MARK: - Playback Window
+
+    func testApplyPersistedVideoSelection_updatesPlaybackWindow() async throws {
+        await setupVideoBlock()
+
+        // Initial window from setVideo
+        XCTAssertEqual(provider.playbackWindowStart, 0.0)
+        XCTAssertEqual(provider.playbackWindowEnd, 10.0)
+
+        // Apply new selection
+        let newSelection = PersistedVideoSelection(trimStart: 1.0, trimEnd: 3.0)
+        try sut.applyPersistedVideoSelection(blockId: "block_01", newSelection)
+
+        XCTAssertEqual(provider.playbackWindowStart, 1.0,
+            "applyPersistedVideoSelection must update playback window start")
+        XCTAssertEqual(provider.playbackWindowEnd, 3.0,
+            "applyPersistedVideoSelection must update playback window end")
+    }
+
+    func testSetVideoAsyncCommit_preservesTrimAppliedWhileSetupIsPending() async throws {
+        let url = URL(fileURLWithPath: "/tmp/test.mov")
+
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: url,
+            presentOnReady: true,
+            persistedSelection: PersistedVideoSelection(trimStart: 0.0, trimEnd: 10.0)
+        )
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(sut.videoTrimContext(blockId: "block_01")?.currentSelection.trimEnd, 10.0)
+
+        provider.shouldBlockPoster = true
+        _ = sut.setVideo(
+            blockId: "block_01",
+            url: url,
+            presentOnReady: true,
+            persistedSelection: PersistedVideoSelection(trimStart: 0.0, trimEnd: 10.0)
+        )
+
+        try sut.applyPersistedVideoSelection(
+            blockId: "block_01",
+            PersistedVideoSelection(trimStart: 0.0, trimEnd: 4.0)
+        )
+        XCTAssertEqual(provider.playbackWindowEnd, 4.0)
+
+        provider.releasePoster()
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let context = sut.videoTrimContext(blockId: "block_01")
+        XCTAssertEqual(context?.currentSelection.trimEnd, 4.0,
+            "Late setVideo completion must not overwrite a trim committed while setup was pending")
+        XCTAssertEqual(provider.playbackWindowEnd, 4.0,
+            "Late setVideo completion must preserve the committed playback window")
     }
 }

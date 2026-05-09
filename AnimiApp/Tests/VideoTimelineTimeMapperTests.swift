@@ -134,4 +134,16 @@ final class VideoTimelineTimeMapperTests: XCTestCase {
     func testEpsilonValue() {
         XCTAssertEqual(VideoTimelineTimeMapper.epsilon, 1.0 / 600.0)
     }
+
+    /// 9. Media frame beyond native duration produces correct video time (stretched scene fix).
+    func testMediaFrameBeyondNativeDuration_producesCorrectVideoTime() {
+        let sel = makeSelection(trimStart: 0, trimEnd: 10)
+        let result = VideoTimelineTimeMapper.targetVideoTime(
+            sceneFrameIndex: 180,    // unclamped media frame
+            blockStartFrame: 0,
+            sceneFPS: 30.0,
+            selection: sel
+        )
+        XCTAssertEqual(result.targetVideoTimeSeconds, 6.0, accuracy: 1e-9)
+    }
 }

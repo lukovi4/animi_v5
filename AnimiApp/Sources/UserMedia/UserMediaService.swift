@@ -1,3 +1,4 @@
+import Foundation
 import Metal
 import AVFoundation
 import TVECore
@@ -5,6 +6,34 @@ import ImageIO
 import os.log
 
 private let logger = Logger(subsystem: "com.animi.app", category: "UserMediaService")
+
+#if DEBUG
+private enum VideoPlaybackTrace {
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")
+    }
+
+    static func log(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        print("[VideoPlaybackTrace] \(message())")
+    }
+
+    static func fmt(_ value: Double?) -> String {
+        guard let value else { return "nil" }
+        return String(format: "%.6f", value)
+    }
+
+    static func fmt(_ value: Bool?) -> String {
+        guard let value else { return "nil" }
+        return value ? "true" : "false"
+    }
+
+    static func textureIdentifier(_ texture: MTLTexture?) -> String {
+        guard let texture else { return "nil" }
+        return String(ObjectIdentifier(texture as AnyObject).hashValue)
+    }
+}
+#endif
 
 // MARK: - Video Setup Provider Protocol (P0 Testing Seam)
 
@@ -29,6 +58,9 @@ protocol VideoSetupProviding: AnyObject {
     func stopPlayback(flush: Bool)
     func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval?) -> MTLTexture?
     func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture
+
+    // Playback window (trim clamp for AVPlayer overshoot)
+    func setPlaybackWindow(start: Double, end: Double)
 
     // Interactive trim preview (tolerant, reusable generator)
     func requestInteractiveStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture
@@ -666,11 +698,17 @@ public final class UserMediaService {
                 // Get duration after provider is ready
                 let duration = provider.duration.seconds
 
+                let latestPersistedSelection = self.currentPersistedVideoSelection(
+                    blockId: blockId,
+                    matching: url,
+                    fallback: persistedSelection
+                )
+
                 // Validate video window via shared validator
                 let selection: VideoSelection
                 do {
                     selection = try VideoWindowValidator.validate(
-                        selection: persistedSelection,
+                        selection: latestPersistedSelection,
                         url: url,
                         actualDuration: duration,
                         blockId: blockId
@@ -695,6 +733,10 @@ public final class UserMediaService {
 
                 // Update state with selection built from persisted params
                 self.mediaState[blockId] = .video(selection)
+                provider.setPlaybackWindow(start: selection.trimStart, end: selection.trimEnd)
+                #if DEBUG
+                VideoPlaybackTrace.log("setVideo.commit blockId=\(blockId) selection=[\(VideoPlaybackTrace.fmt(selection.trimStart)),\(VideoPlaybackTrace.fmt(selection.trimEnd))] duration=\(VideoPlaybackTrace.fmt(duration)) providerReady=\(provider.isReady)")
+                #endif
 
                 // Inject poster texture + presentation metadata into all variant binding asset IDs
                 let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
@@ -800,7 +842,7 @@ public final class UserMediaService {
     /// - Parameters:
     ///   - sceneFrameIndex: Current scene frame to sync to
     ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
-    func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
+    func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         guard let player = activePlayer else { return }
 
         // Reset tick counter so first updateVideoFramesForPlayback() fires immediately
@@ -831,7 +873,7 @@ public final class UserMediaService {
 
             // Compute target video time and start playback
             let videoTime = computeTargetVideoTime(
-                sceneFrameIndex: sceneFrameIndex,
+                sceneFrameIndex: mediaFrameIndex,
                 blockId: blockId,
                 selection: selection
             )
@@ -850,7 +892,7 @@ public final class UserMediaService {
     /// - Parameters:
     ///   - sceneFrameIndex: Current scene frame for sync
     ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
-    func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
+    func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         guard let player = activePlayer else { return }
 
         // Frame divider — skip video texture updates on non-update ticks
@@ -864,6 +906,9 @@ public final class UserMediaService {
 
             // Non-granted ready providers: soft-stop (hold-last), preserve texture
             guard grantedBlockIds.contains(blockId) else {
+                #if DEBUG
+                VideoPlaybackTrace.log("tick.skip blockId=\(blockId) reason=notGranted sceneFrame=\(sceneFrameIndex) mediaFrame=\(mediaFrameIndex) providerActive=\(provider.isPlaybackActive)")
+                #endif
                 if provider.isPlaybackActive {
                     provider.stopPlayback(flush: false)
                 }
@@ -875,6 +920,9 @@ public final class UserMediaService {
                 ?? BlockPriorityInfo(isVisible: false, area: 0, zIndex: 0)
 
             if !priority.isVisible {
+                #if DEBUG
+                VideoPlaybackTrace.log("tick.skip blockId=\(blockId) reason=notVisible sceneFrame=\(sceneFrameIndex) mediaFrame=\(mediaFrameIndex) providerActive=\(provider.isPlaybackActive)")
+                #endif
                 if provider.isPlaybackActive {
                     provider.stopPlayback(flush: false)
                 }
@@ -883,7 +931,7 @@ public final class UserMediaService {
 
             // Compute target video time
             let videoTime = computeTargetVideoTime(
-                sceneFrameIndex: sceneFrameIndex,
+                sceneFrameIndex: mediaFrameIndex,
                 blockId: blockId,
                 selection: selection
             )
@@ -894,13 +942,27 @@ public final class UserMediaService {
             }
 
             // Only update texture on divider ticks
-            guard shouldUpdateTextures else { continue }
+            guard shouldUpdateTextures else {
+                #if DEBUG
+                VideoPlaybackTrace.log("tick.skip blockId=\(blockId) reason=divider sceneFrame=\(sceneFrameIndex) mediaFrame=\(mediaFrameIndex) expected=\(VideoPlaybackTrace.fmt(videoTime))")
+                #endif
+                continue
+            }
 
             // Get frame texture using playback mode (host time from transport)
-            guard let texture = provider.frameTextureForPlayback(expectedVideoTime: videoTime, hostTime: hostTime) else { continue }
+            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+            let texture = provider.frameTextureForPlayback(expectedVideoTime: videoTime, hostTime: hostTime)
+            #if DEBUG
+            if VideoPlaybackTrace.isEnabled {
+                let snapshot = (provider as? VideoFrameProvider)?.debugPlaybackSnapshot
+                VideoPlaybackTrace.log(
+                    "tick blockId=\(blockId) sceneFrame=\(sceneFrameIndex) mediaFrame=\(mediaFrameIndex) selection=[\(VideoPlaybackTrace.fmt(selection.trimStart)),\(VideoPlaybackTrace.fmt(selection.trimEnd))] providerWindow=[\(VideoPlaybackTrace.fmt(snapshot?.playbackWindowStart)),\(VideoPlaybackTrace.fmt(snapshot?.playbackWindowEnd))] expected=\(VideoPlaybackTrace.fmt(videoTime)) clampedExpected=\(VideoPlaybackTrace.fmt(snapshot?.clampedExpectedTimeSeconds)) itemTime=\(VideoPlaybackTrace.fmt(snapshot?.itemTimeSeconds)) clampedOutput=\(VideoPlaybackTrace.fmt(snapshot?.clampedOutputTimeSeconds)) hasNew=\(VideoPlaybackTrace.fmt(snapshot?.hasNewPixelBuffer)) copy=\(VideoPlaybackTrace.fmt(snapshot?.copySucceeded)) hold=\(snapshot?.holdState ?? "unknown") rate=\(snapshot.map { String(format: "%.3f", $0.playerRate) } ?? "nil") holdTexture=\(snapshot?.hasHoldTexture == true ? "true" : "false") texture=\(VideoPlaybackTrace.textureIdentifier(texture)) providerTexture=\(snapshot?.textureIdentifier ?? "nil") assets=\(assetIds.values.sorted().joined(separator: ","))"
+                )
+            }
+            #endif
+            guard let texture else { continue }
 
             // Update texture in all variant binding asset IDs
-            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
             for (_, assetId) in assetIds {
                 textureProvider.setTexture(texture, for: assetId)
             }
@@ -918,11 +980,11 @@ public final class UserMediaService {
     /// Used by scene edit path and non-engine callers.
     ///
     /// - Parameter sceneFrameIndex: Current scene frame to sync to
-    public func startVideoPlayback(sceneFrameIndex: Int) {
+    public func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int) {
         // Build local grant set from top candidates
         let candidates = playbackCandidates(sceneFrameIndex: sceneFrameIndex)
         let grantedBlockIds = Set(candidates.prefix(budgetPolicy.maxActiveProviders).map(\.blockId))
-        startVideoPlayback(sceneFrameIndex: sceneFrameIndex, grantedBlockIds: grantedBlockIds)
+        startVideoPlayback(sceneFrameIndex: sceneFrameIndex, mediaFrameIndex: mediaFrameIndex, grantedBlockIds: grantedBlockIds)
     }
 
     /// Updates video textures for playback mode.
@@ -931,11 +993,11 @@ public final class UserMediaService {
     /// Used by scene edit path and non-engine callers.
     ///
     /// - Parameter sceneFrameIndex: Current scene frame (for drift detection)
-    public func updateVideoFramesForPlayback(sceneFrameIndex: Int) {
+    public func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int) {
         // Build local grant set from top candidates
         let candidates = playbackCandidates(sceneFrameIndex: sceneFrameIndex)
         let grantedBlockIds = Set(candidates.prefix(budgetPolicy.maxActiveProviders).map(\.blockId))
-        updateVideoFramesForPlayback(sceneFrameIndex: sceneFrameIndex, grantedBlockIds: grantedBlockIds)
+        updateVideoFramesForPlayback(sceneFrameIndex: sceneFrameIndex, mediaFrameIndex: mediaFrameIndex, grantedBlockIds: grantedBlockIds)
     }
 
     /// Stops video playback for all video providers.
@@ -980,7 +1042,7 @@ public final class UserMediaService {
     /// Uses AVAssetImageGenerator for exact frame extraction with per-block latest-wins.
     ///
     /// - Parameter sceneFrameIndex: Target scene frame
-    public func updateVideoStillFrames(sceneFrameIndex: Int) {
+    public func updateVideoStillFrames(sceneFrameIndex: Int, mediaFrameIndex: Int) {
         guard let player = activePlayer else { return }
 
         #if DEBUG
@@ -994,7 +1056,7 @@ public final class UserMediaService {
                   provider.isReady else { continue }
 
             let videoTime = computeTargetVideoTime(
-                sceneFrameIndex: sceneFrameIndex,
+                sceneFrameIndex: mediaFrameIndex,
                 blockId: blockId,
                 selection: selection
             )
@@ -1203,6 +1265,21 @@ public final class UserMediaService {
         if let provider = videoProviders.removeValue(forKey: blockId) {
             provider.release()
         }
+    }
+
+    /// Returns the latest committed video selection for this block when it still targets the
+    /// same file. This keeps async `setVideo` completion from overwriting a trim edit that
+    /// landed while poster/provider setup was in flight.
+    private func currentPersistedVideoSelection(
+        blockId: String,
+        matching url: URL,
+        fallback: PersistedVideoSelection
+    ) -> PersistedVideoSelection {
+        guard case .video(let currentSelection) = mediaState[blockId],
+              currentSelection.url == url else {
+            return fallback
+        }
+        return PersistedVideoSelection(from: currentSelection)
     }
 
     /// Marks video setup as failed for a block.
@@ -1496,6 +1573,10 @@ public final class UserMediaService {
             throw VideoSelectionApplyError.validationFailed(underlying: error)
         }
         mediaState[blockId] = .video(validated)
+        provider.setPlaybackWindow(start: validated.trimStart, end: validated.trimEnd)
+        #if DEBUG
+        VideoPlaybackTrace.log("applySelection.commit blockId=\(blockId) selection=[\(VideoPlaybackTrace.fmt(validated.trimStart)),\(VideoPlaybackTrace.fmt(validated.trimEnd))] providerReady=\(provider.isReady)")
+        #endif
     }
 
     // MARK: - Interactive Trim Preview (Coalescing)

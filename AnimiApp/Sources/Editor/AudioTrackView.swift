@@ -149,6 +149,9 @@ final class AudioTrackView: UIView {
         hasClip = has
         trackBackground.isHidden = !has
         emptyLabel.isHidden = has
+        if has {
+            updateTrackLayout()
+        }
     }
 
     // MARK: - Private

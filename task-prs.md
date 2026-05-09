@@ -40,7 +40,11 @@
   `bash Scripts/run_animiapp_tests.sh`
   ->
   `1318 tests, 0 failures, 2 skipped`.
-- Дальнейшие PR не должны ломать актуальный baseline `1318 / 0 / 2`.
+- Актуальный audio-domain baseline на `2026-05-06` после `PR3`:
+  `bash Scripts/run_animiapp_tests.sh`
+  ->
+  `1344 tests, 0 failures, 2 skipped`.
+- Дальнейшие PR не должны ломать актуальный baseline `1344 / 0 / 2`.
 - Каждый PR должен быть behavior-preserving, если acceptance явно не требует смены контракта.
 
 ## 0.1 Current Status
@@ -48,6 +52,7 @@
 - Закрыты:
   - `PR 1: Export Artifact And Delivery Policy Split`
   - `PR 2: Background Domain Contract And Scope Resolution`
+  - `PR 3: Audio Domain Contract And Compatibility Layer`
   - `PR 4: VideoExporter Facade`
   - `PR 5: Timeline Export Session Builder Extraction`
   - `PR 6: Playback Transport And Timebase Refactor`
@@ -69,11 +74,10 @@
   - transport-driven preview music path committed в production code
   - direct scheduled-start contract закрыт follow-up `PR7.1`
   - readiness barrier и stale-host-time crash закрыты follow-up `PR7.2`
-- `PR 3` не закрыт как canonical done:
-  - compatibility groundwork частично присутствует
-  - production runtime/export audio contract все еще опирается на music bridge
-- Следующий канонический PR по sequence:
-  - `PR 3: Audio Domain Contract And Compatibility Layer`
+- Все canonical PR по sequence закрыты.
+- Следующий канонический шаг:
+  - полный branch-wide cross-audit `PR0–PR11`
+  - финальная stabilization review перед merge/release
 
 ## 1. Merge Rules
 
@@ -140,7 +144,7 @@ Test gates:
 - update `ExportBackgroundRestoreTests`
 - add tests на `scene override fully replaces project background`
 
-### PR 3: Audio Domain Contract And Compatibility Layer — OPEN
+### PR 3: Audio Domain Contract And Compatibility Layer — DONE
 
 Scope:
 - `AnimiApp/Sources/Project/CanonicalTimeline.swift`
@@ -160,11 +164,6 @@ Acceptance:
 - canonical audio contract больше не выражается через `musicItem`/`musicPayload`
 - runtime/export принимают generic audio snapshot/plan
 - shipped v1 behavior не ломается
-
-Current status:
-- partial groundwork landed
-- canonical generic audio contract still not closed
-- current production bridge still treats music as the effective export/runtime path
 
 Test gates:
 - `bash Scripts/run_animiapp_tests.sh`

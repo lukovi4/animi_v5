@@ -45,7 +45,7 @@ internal final class EditorRuntimeSceneEditController {
             self.runtime.onOutput?(.sceneEditActivated(instanceId: instanceId))
 
             if !self.runtime.isPlaying {
-                self.runtime.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
+                self.runtime.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame, mediaFrameIndex: localFrame)
                 self.runtime.lastStillSyncFrame = localFrame
             }
         }
@@ -278,7 +278,7 @@ internal final class EditorRuntimeSceneEditController {
 
     func syncVideoStillFrames(sceneFrameIndex: Int) {
         guard !runtime.isPlaying else { return }
-        runtime.userMediaService?.updateVideoStillFrames(sceneFrameIndex: sceneFrameIndex)
+        runtime.userMediaService?.updateVideoStillFrames(sceneFrameIndex: sceneFrameIndex, mediaFrameIndex: sceneFrameIndex)
         runtime.lastStillSyncFrame = sceneFrameIndex
     }
 

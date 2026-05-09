@@ -64,6 +64,13 @@ final class UserMediaDisplaySizeTests: XCTestCase {
     final class FakeVideoProvider: VideoSetupProviding {
         let posterSize: CGSize
         var releaseCallCount = 0
+
+        var playbackWindowStart: Double?
+        var playbackWindowEnd: Double?
+        func setPlaybackWindow(start: Double, end: Double) {
+            playbackWindowStart = start
+            playbackWindowEnd = end
+        }
         private var pendingContinuation: CheckedContinuation<MTLTexture, Error>?
 
         init(posterSize: CGSize = CGSize(width: 64, height: 64)) {

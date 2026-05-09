@@ -65,6 +65,13 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         var state: VideoProviderState { isReady ? .ready : .loading }
         private(set) var isPlaybackActive: Bool = false
         var duration: CMTime = CMTime(seconds: 5.0, preferredTimescale: 600)
+
+        var playbackWindowStart: Double?
+        var playbackWindowEnd: Double?
+        func setPlaybackWindow(start: Double, end: Double) {
+            playbackWindowStart = start
+            playbackWindowEnd = end
+        }
         var presentationInfo: VideoPresentationInfo? = VideoPresentationInfo(
             rawTrackSize: CGSize(width: 64, height: 64),
             preferredTransform: .identity
@@ -312,7 +319,7 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         try await setupVideoBlocks(configs)
 
         // When: Start playback with only block_a and block_c granted
-        sut.startVideoPlayback(sceneFrameIndex: 0, grantedBlockIds: ["block_a", "block_c"])
+        sut.startVideoPlayback(sceneFrameIndex: 0, mediaFrameIndex: 0, grantedBlockIds: ["block_a", "block_c"])
 
         // Then: Only granted blocks started
         XCTAssertTrue(providers["block_a"]?.startPlaybackCalls.count ?? 0 > 0, "block_a should be started")
@@ -357,7 +364,7 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         XCTAssertTrue(providerB.isPlaybackActive)
 
         // When: Start with only block_a granted
-        sut.startVideoPlayback(sceneFrameIndex: 10, grantedBlockIds: ["block_a"])
+        sut.startVideoPlayback(sceneFrameIndex: 10, mediaFrameIndex: 10, grantedBlockIds: ["block_a"])
 
         // Then: block_b should be soft-stopped (flush: false)
         XCTAssertTrue(providerB.stopPlaybackCalls.contains { $0 == false },

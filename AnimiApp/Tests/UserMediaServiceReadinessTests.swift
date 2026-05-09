@@ -82,6 +82,13 @@ final class UserMediaServiceReadinessTests: XCTestCase {
         var mode: Mode = .success(CMTime(seconds: 5.0, preferredTimescale: 600))
         var releaseCallCount = 0
         var posterRequestCallCount = 0
+
+        var playbackWindowStart: Double?
+        var playbackWindowEnd: Double?
+        func setPlaybackWindow(start: Double, end: Double) {
+            playbackWindowStart = start
+            playbackWindowEnd = end
+        }
         var lastPosterRequestTime: Double?
 
         private var pendingContinuation: CheckedContinuation<MTLTexture, Error>?

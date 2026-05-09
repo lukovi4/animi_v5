@@ -44,6 +44,13 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
     final class FakeVideoSetupProvider: VideoSetupProviding {
         var mode: Mode = .success(CMTime(seconds: 10.0, preferredTimescale: 600))
 
+        var playbackWindowStart: Double?
+        var playbackWindowEnd: Double?
+        func setPlaybackWindow(start: Double, end: Double) {
+            playbackWindowStart = start
+            playbackWindowEnd = end
+        }
+
         enum Mode {
             case success(CMTime)
         }

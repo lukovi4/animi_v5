@@ -97,6 +97,17 @@ internal final class EditorRuntimeExportController {
         preflightContinuation = nil
     }
 
+    // MARK: - Export Route Resolution
+
+    enum ExportRoute: Equatable {
+        case timeline
+        case singleScene
+    }
+
+    func resolveExportRoute() -> ExportRoute {
+        runtime.timelineCompositionEngine != nil ? .timeline : .singleScene
+    }
+
     func executeExport() async {
         guard runtime.state == .exporting else { return }
         guard let ctx = runtime.metalContext else {
@@ -104,13 +115,14 @@ internal final class EditorRuntimeExportController {
             return
         }
 
-        let isTimeline = (runtime.session.state?.sceneItems.count ?? 1) > 1
+        let route = resolveExportRoute()
 
         enterExportMode()
 
-        if isTimeline {
+        switch route {
+        case .timeline:
             await executeTimelineExport(ctx: ctx)
-        } else {
+        case .singleScene:
             await executeSingleSceneExport(ctx: ctx)
         }
     }
@@ -122,6 +134,10 @@ internal final class EditorRuntimeExportController {
     // MARK: - Test Seams
 
     #if DEBUG
+    func exportRouteForCurrentState() -> ExportRoute {
+        resolveExportRoute()
+    }
+
     func simulateHandleExportCompletion(result: Result<URL, Error>) {
         let exporter = VideoExporter(mediaLocator: runtime.session.mediaLocator)
         let request = ActiveExportRequest(id: UUID(), exporter: exporter, deliveryPolicy: pendingDeliveryPolicy)

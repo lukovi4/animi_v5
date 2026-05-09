@@ -26,7 +26,7 @@ import TVECore
 /// coordinator.configure(videoSelectionsByBlockId: selections)
 ///
 /// for frame in 0..<totalFrames {
-///     coordinator.updateTextures(forSceneFrameIndex: frame)
+///     coordinator.updateTextures(visibilityFrameIndex: frame, mediaFrameIndex: frame)
 ///     // render frame...
 /// }
 ///
@@ -184,7 +184,8 @@ public final class ExportVideoSlotsCoordinator {
     /// 3. Injects texture into all binding asset IDs
     ///
     /// - Parameter sceneFrameIndex: Scene frame index
-    public func updateTextures(forSceneFrameIndex sceneFrameIndex: Int) {
+    public func updateTextures(visibilityFrameIndex: Int, mediaFrameIndex: Int) {
+        let sceneFrameIndex = visibilityFrameIndex
         let prefetchFrames = videoPrefetchFrames
         let suspendMargin = prefetchFrames * 2
 
@@ -226,7 +227,7 @@ public final class ExportVideoSlotsCoordinator {
 
                 // Coordinator owns time mapping via shared mapper
                 let mapped = VideoTimelineTimeMapper.targetVideoTime(
-                    sceneFrameIndex: sceneFrameIndex,
+                    sceneFrameIndex: mediaFrameIndex,
                     blockStartFrame: slot.startFrame,
                     sceneFPS: sceneFPS,
                     selection: slot.provider.config.selection

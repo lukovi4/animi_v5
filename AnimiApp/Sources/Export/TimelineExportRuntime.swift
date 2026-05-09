@@ -7,7 +7,7 @@ import TVECore
 /// Testability seam for video slot coordination in timeline export.
 internal protocol TimelineExportVideoCoordinating: AnyObject {
     var providerError: ExportVideoFrameProviderError? { get }
-    func updateTextures(forSceneFrameIndex: Int)
+    func updateTextures(visibilityFrameIndex: Int, mediaFrameIndex: Int)
     func finish()
     func cancel()
 }
@@ -130,12 +130,14 @@ internal final class TimelineExportRuntime {
                 throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot:\(instanceId)")
             }
 
+            let clampedFrame = ExportFrameClamping.sceneFrame(localFrame, nativeDurationFrames: snapshot.runtime.durationFrames)
+
             if let coordinator = residency.primary.videoCoordinator {
-                coordinator.updateTextures(forSceneFrameIndex: localFrame)
+                coordinator.updateTextures(visibilityFrameIndex: clampedFrame, mediaFrameIndex: max(localFrame, 0))
                 if let error = coordinator.providerError { throw error }
             }
 
-            let context = makeRenderContext(snapshot: snapshot, textureProvider: residency.primary.textureProvider, localFrame: localFrame)
+            let context = makeRenderContext(snapshot: snapshot, textureProvider: residency.primary.textureProvider, localFrame: clampedFrame)
             return .single(context)
 
         case .transition(let aIndex, let frameA, let bIndex, let frameB, let transition, let progress):
@@ -150,17 +152,20 @@ internal final class TimelineExportRuntime {
                 throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot")
             }
 
+            let clampedFrameA = ExportFrameClamping.sceneFrame(frameA, nativeDurationFrames: snapshotA.runtime.durationFrames)
+            let clampedFrameB = ExportFrameClamping.sceneFrame(frameB, nativeDurationFrames: snapshotB.runtime.durationFrames)
+
             if let coordA = residency.primary.videoCoordinator {
-                coordA.updateTextures(forSceneFrameIndex: frameA)
+                coordA.updateTextures(visibilityFrameIndex: clampedFrameA, mediaFrameIndex: max(frameA, 0))
                 if let error = coordA.providerError { throw error }
             }
             if let coordB = secondary.videoCoordinator {
-                coordB.updateTextures(forSceneFrameIndex: frameB)
+                coordB.updateTextures(visibilityFrameIndex: clampedFrameB, mediaFrameIndex: max(frameB, 0))
                 if let error = coordB.providerError { throw error }
             }
 
-            let contextA = makeRenderContext(snapshot: snapshotA, textureProvider: residency.primary.textureProvider, localFrame: frameA)
-            let contextB = makeRenderContext(snapshot: snapshotB, textureProvider: secondary.textureProvider, localFrame: frameB)
+            let contextA = makeRenderContext(snapshot: snapshotA, textureProvider: residency.primary.textureProvider, localFrame: clampedFrameA)
+            let contextB = makeRenderContext(snapshot: snapshotB, textureProvider: secondary.textureProvider, localFrame: clampedFrameB)
 
             return .transition(TransitionRenderContext(
                 sceneA: contextA, sceneB: contextB,
@@ -198,12 +203,14 @@ internal final class TimelineExportRuntime {
             throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot:\(instanceId)")
         }
 
+        let clampedFrame = ExportFrameClamping.sceneFrame(localFrame, nativeDurationFrames: snapshot.runtime.durationFrames)
+
         if let coordinator = videoCoordinatorsByInstanceId[instanceId] {
-            coordinator.updateTextures(forSceneFrameIndex: localFrame)
+            coordinator.updateTextures(visibilityFrameIndex: clampedFrame, mediaFrameIndex: max(localFrame, 0))
             if let error = coordinator.providerError { throw error }
         }
 
-        let context = makeRenderContextLegacy(snapshot: snapshot, localFrame: localFrame)
+        let context = makeRenderContextLegacy(snapshot: snapshot, localFrame: clampedFrame)
         return .single(context)
     }
 
@@ -224,17 +231,20 @@ internal final class TimelineExportRuntime {
             throw TimelineExportError.frameResolutionFailed(frame: compressedFrame, reason: "missing_snapshot")
         }
 
+        let clampedFrameA = ExportFrameClamping.sceneFrame(frameA, nativeDurationFrames: snapshotA.runtime.durationFrames)
+        let clampedFrameB = ExportFrameClamping.sceneFrame(frameB, nativeDurationFrames: snapshotB.runtime.durationFrames)
+
         if let coordA = videoCoordinatorsByInstanceId[instanceIdA] {
-            coordA.updateTextures(forSceneFrameIndex: frameA)
+            coordA.updateTextures(visibilityFrameIndex: clampedFrameA, mediaFrameIndex: max(frameA, 0))
             if let error = coordA.providerError { throw error }
         }
         if let coordB = videoCoordinatorsByInstanceId[instanceIdB] {
-            coordB.updateTextures(forSceneFrameIndex: frameB)
+            coordB.updateTextures(visibilityFrameIndex: clampedFrameB, mediaFrameIndex: max(frameB, 0))
             if let error = coordB.providerError { throw error }
         }
 
-        let contextA = makeRenderContextLegacy(snapshot: snapshotA, localFrame: frameA)
-        let contextB = makeRenderContextLegacy(snapshot: snapshotB, localFrame: frameB)
+        let contextA = makeRenderContextLegacy(snapshot: snapshotA, localFrame: clampedFrameA)
+        let contextB = makeRenderContextLegacy(snapshot: snapshotB, localFrame: clampedFrameB)
 
         return .transition(TransitionRenderContext(
             sceneA: contextA, sceneB: contextB,

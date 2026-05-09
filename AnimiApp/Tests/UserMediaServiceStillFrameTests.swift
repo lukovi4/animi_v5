@@ -54,6 +54,13 @@ final class UserMediaServiceStillFrameTests: XCTestCase {
         var state: VideoProviderState { .ready }
         private(set) var isPlaybackActive: Bool = false
         var duration: CMTime = CMTime(seconds: 5.0, preferredTimescale: 600)
+
+        var playbackWindowStart: Double?
+        var playbackWindowEnd: Double?
+        func setPlaybackWindow(start: Double, end: Double) {
+            playbackWindowStart = start
+            playbackWindowEnd = end
+        }
         var presentationInfo: VideoPresentationInfo? = VideoPresentationInfo(
             rawTrackSize: CGSize(width: 64, height: 64),
             preferredTransform: .identity
@@ -197,7 +204,7 @@ final class UserMediaServiceStillFrameTests: XCTestCase {
         stillDeliveredCount = 0
 
         // Trigger still frame update
-        sut.updateVideoStillFrames(sceneFrameIndex: 0)
+        sut.updateVideoStillFrames(sceneFrameIndex: 0, mediaFrameIndex: 0)
 
         // Wait for async still task to complete
         try await Task.sleep(nanoseconds: 200_000_000) // 200ms
@@ -220,7 +227,7 @@ final class UserMediaServiceStillFrameTests: XCTestCase {
         await setupVideoBlock()
 
         // Trigger still frame update (will block in provider)
-        sut.updateVideoStillFrames(sceneFrameIndex: 0)
+        sut.updateVideoStillFrames(sceneFrameIndex: 0, mediaFrameIndex: 0)
 
         // Start awaiting in background
         var awaitCompleted = false
@@ -252,7 +259,7 @@ final class UserMediaServiceStillFrameTests: XCTestCase {
         await setupVideoBlock()
 
         // Trigger still frame update (will block in provider)
-        sut.updateVideoStillFrames(sceneFrameIndex: 0)
+        sut.updateVideoStillFrames(sceneFrameIndex: 0, mediaFrameIndex: 0)
 
         // Give the task time to start
         try await Task.sleep(nanoseconds: 50_000_000) // 50ms
@@ -264,5 +271,15 @@ final class UserMediaServiceStillFrameTests: XCTestCase {
         await sut.awaitPendingStillFrames()
 
         // If we get here without hanging, cleanup works correctly
+    }
+
+    // MARK: - Playback Window
+
+    func testSetVideo_setsPlaybackWindowOnProvider() async throws {
+        await setupVideoBlock()
+        XCTAssertEqual(provider.playbackWindowStart, 0.0,
+            "setVideo must set playback window start to trimStart")
+        XCTAssertEqual(provider.playbackWindowEnd, 5.0,
+            "setVideo must set playback window end to trimEnd")
     }
 }

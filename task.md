@@ -1,6 +1,6 @@
 С учетом принятых продуктовых решений целевой контракт теперь фиксируется жестко.
 
-**Текущее Состояние На 2026-05-05**
+**Текущее Состояние На 2026-05-06**
 - Зафиксирован integration milestone commit:
   `a7c45b4` —
   `integration: per-scene background domain, export runner extraction, preview background switching`.
@@ -25,13 +25,17 @@
 - Зафиксирован split `EditorViewController`:
   `PR11` —
   `EditorViewController Thinning` completed in committed production code.
+- Зафиксирован generic audio contract split:
+  `PR3` —
+  `Audio Domain Contract And Compatibility Layer` completed in local production code.
 - Актуальный локальный gate:
   `bash Scripts/run_animiapp_tests.sh`
   ->
-  `1318 tests, 0 failures, 2 skipped`.
+  `1344 tests, 0 failures, 2 skipped`.
 - В committed production code закрыты:
   `PR 1: Export Artifact And Delivery Policy Split`,
   `PR 2: Background Domain Contract And Scope Resolution`,
+  `PR 3: Audio Domain Contract And Compatibility Layer`,
   `PR 4: VideoExporter Decomposition`,
   `PR 5: Timeline Export Session Builder Extraction`,
   `PR 6: Playback Transport And Timebase Refactor`,
@@ -53,12 +57,9 @@
   preview music в editor preview теперь идет через shared transport-owned playback time,
   device-only AVPlayer start/readiness crashes закрыты follow-up fix-ами `PR7.1/PR7.2`,
   `markPreviewAudioDirty()` получил runtime-owned invalidation/rebuild contract.
-- `PR 3` полностью не закрыт:
-  в дереве есть compatibility groundwork для audio,
-  но canonical contract `generic audio domain -> runtime/export audio snapshot/plan`
-  еще не доведен до финального accepted состояния.
-- Следующий канонический structural шаг по плану:
-  `PR 3: Audio Domain Contract And Compatibility Layer`.
+- Все canonical PR по sequence `PR1–PR11` закрыты в production code или текущем рабочем дереве.
+- Следующий канонический шаг по плану:
+  полный branch-wide cross-audit `PR0–PR11` и финальная stabilization review перед merge/release.
 
 **Финальная Цель Рефакторинга**
 - Не “уменьшить файлы” и не “разложить код по папкам”, а довести редактор до состояния, где текущий product contract выражен в явных domain boundaries и не держится на giant owner-типах.
@@ -169,7 +170,7 @@
    `scene override` полностью заменяет project background для сцены;
    source taxonomy больше не зафиксирована на `solid/gradient/image` как конечная модель.
 
-3. `PR 3: Audio Domain Contract And Compatibility Layer` — `OPEN`
+3. `PR 3: Audio Domain Contract And Compatibility Layer` — `DONE`
    Цель: убрать `project music` как canonical contract и перевести audio в generic timeline domain.
    По коду: разрезать special-case path в `AnimiApp/Sources/Project/CanonicalTimeline.swift`, `AnimiApp/Sources/Editor/Store/EditorReducer.swift`, `AnimiApp/Sources/Player/EditorViewController.swift`, `AnimiApp/Sources/Editor/TimelineView.swift`, `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
    Acceptance:

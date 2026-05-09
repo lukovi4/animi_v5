@@ -280,8 +280,10 @@ internal final class SingleSceneVideoExportRunner {
                     return
                 }
 
-                // Update video textures before render
-                videoSlotsCoordinator?.updateTextures(forSceneFrameIndex: frameIndex)
+                // Update video textures before render (clamped for hold-last-frame parity)
+                let clampedFrame = ExportFrameClamping.sceneFrame(frameIndex, nativeDurationFrames: runtime.durationFrames)
+                let mediaFrame = max(frameIndex, 0)
+                videoSlotsCoordinator?.updateTextures(visibilityFrameIndex: clampedFrame, mediaFrameIndex: mediaFrame)
 
                 if let error = videoSlotsCoordinator?.providerError {
                     pipeline.setError(error)
@@ -359,9 +361,11 @@ internal final class SingleSceneVideoExportRunner {
         overlaySnapshot: OverlayExportSnapshot?,
         overlayCache: OverlayRenderResourceCache
     ) throws -> (textOverlayCount: Int, stickerOverlayCount: Int) {
+        let clampedFrame = ExportFrameClamping.sceneFrame(frameIndex, nativeDurationFrames: runtime.durationFrames)
+
         let commands = SceneRenderPlan.renderCommands(
             for: runtime,
-            sceneFrameIndex: frameIndex,
+            sceneFrameIndex: clampedFrame,
             resolvedTransforms: snapshot.resolvedTransforms,
             variantOverrides: snapshot.variantOverrides,
             userMediaPresent: snapshot.userMediaPresent,
@@ -376,7 +380,7 @@ internal final class SingleSceneVideoExportRunner {
             textureProvider: textureProvider,
             pathRegistry: pathRegistry,
             assetSizes: assetSizes,
-            localFrame: frameIndex,
+            localFrame: clampedFrame,
             canvasSize: runtime.canvasSize,
             sceneInstanceId: UUID()
         )

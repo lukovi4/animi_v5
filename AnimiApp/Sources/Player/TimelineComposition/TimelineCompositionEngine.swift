@@ -251,6 +251,9 @@ public final class TimelineCompositionEngine {
                 try runtime.applyPersistedVideoSelection(blockId: blockId, selection)
             } catch {
                 #if DEBUG
+                if UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace") {
+                    print("[VideoPlaybackTrace] engine.applySelection.failed instanceId=\(instanceId) blockId=\(blockId) selection=[\(String(format: "%.6f", selection.trimStart)),\(String(format: "%.6f", selection.trimEnd))] error=\(error)")
+                }
                 print("[Phase5] Engine runtime fast-apply failed (best-effort): \(error)")
                 #endif
             }

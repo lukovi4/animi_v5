@@ -10,10 +10,10 @@ import TVECore
 @MainActor
 protocol SceneMediaSyncing: AnyObject {
     // MARK: Frame Update APIs
-    func updateVideoStillFrames(sceneFrameIndex: Int)
+    func updateVideoStillFrames(sceneFrameIndex: Int, mediaFrameIndex: Int)
     func awaitPendingStillFrames() async
-    func updateVideoFramesForPlayback(sceneFrameIndex: Int)
-    func startVideoPlayback(sceneFrameIndex: Int)
+    func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int)
+    func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int)
 
     // MARK: Readiness APIs (TT-02)
     var isSceneMediaReady: Bool { get }
@@ -21,8 +21,8 @@ protocol SceneMediaSyncing: AnyObject {
 
     // MARK: TT-03 Budget-Aware APIs
     func playbackCandidates(sceneFrameIndex: Int) -> [PlaybackVideoCandidate]
-    func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
-    func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
+    func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
+    func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
 
     // MARK: TT-03 Completion: Soft-Stop for Warm Runtimes
     /// Stops all active video playback while preserving textures (hold-last).
@@ -381,7 +381,9 @@ public final class SceneInstanceRuntime {
 
     /// TT-02: Internal helper to sync frozen frame with clamping.
     private func syncFrozenFrame(_ localFrame: Int) {
-        mediaSyncing.updateVideoStillFrames(sceneFrameIndex: clampedLocalFrame(localFrame))
+        let visibilityFrame = clampedLocalFrame(localFrame)
+        let mediaFrame = max(localFrame, 0)
+        mediaSyncing.updateVideoStillFrames(sceneFrameIndex: visibilityFrame, mediaFrameIndex: mediaFrame)
     }
 
     /// TT-02: Starts preparing runtime for presentation at specific local frame.
@@ -522,19 +524,25 @@ public final class SceneInstanceRuntime {
 
     /// Syncs video frames to specific local frame (for scrubbing).
     public func syncVideoFrame(_ localFrame: Int) {
-        mediaSyncing.updateVideoStillFrames(sceneFrameIndex: clampedLocalFrame(localFrame))
+        let visibilityFrame = clampedLocalFrame(localFrame)
+        let mediaFrame = max(localFrame, 0)
+        mediaSyncing.updateVideoStillFrames(sceneFrameIndex: visibilityFrame, mediaFrameIndex: mediaFrame)
     }
 
     /// Syncs video frames for playback tick (gated to video frame rate).
     /// Legacy wrapper: uses local budget policy. For engine-owned budget use budget-aware variant.
     public func syncPlaybackTick(_ localFrame: Int) {
-        mediaSyncing.updateVideoFramesForPlayback(sceneFrameIndex: clampedLocalFrame(localFrame))
+        let visibilityFrame = clampedLocalFrame(localFrame)
+        let mediaFrame = max(localFrame, 0)
+        mediaSyncing.updateVideoFramesForPlayback(sceneFrameIndex: visibilityFrame, mediaFrameIndex: mediaFrame)
     }
 
     /// Starts video playback at the given local frame.
     /// Legacy wrapper: uses local budget policy. For engine-owned budget use budget-aware variant.
     public func startPlayback(at localFrame: Int) {
-        mediaSyncing.startVideoPlayback(sceneFrameIndex: clampedLocalFrame(localFrame))
+        let visibilityFrame = clampedLocalFrame(localFrame)
+        let mediaFrame = max(localFrame, 0)
+        mediaSyncing.startVideoPlayback(sceneFrameIndex: visibilityFrame, mediaFrameIndex: mediaFrame)
     }
 
     /// Pauses playback.
@@ -573,8 +581,11 @@ public final class SceneInstanceRuntime {
     ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
     ///   - hostTime: Host time from transport (nil for legacy callers)
     func startPlayback(at localFrame: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
+        let visibilityFrame = clampedLocalFrame(localFrame)
+        let mediaFrame = max(localFrame, 0)
         mediaSyncing.startVideoPlayback(
-            sceneFrameIndex: clampedLocalFrame(localFrame),
+            sceneFrameIndex: visibilityFrame,
+            mediaFrameIndex: mediaFrame,
             grantedBlockIds: grantedBlockIds,
             hostTime: hostTime
         )
@@ -587,8 +598,11 @@ public final class SceneInstanceRuntime {
     ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
     ///   - hostTime: Host time from transport (nil for legacy callers)
     func syncPlaybackTick(_ localFrame: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
+        let visibilityFrame = clampedLocalFrame(localFrame)
+        let mediaFrame = max(localFrame, 0)
         mediaSyncing.updateVideoFramesForPlayback(
-            sceneFrameIndex: clampedLocalFrame(localFrame),
+            sceneFrameIndex: visibilityFrame,
+            mediaFrameIndex: mediaFrame,
             grantedBlockIds: grantedBlockIds,
             hostTime: hostTime
         )

@@ -14,12 +14,14 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
     /// Spy implementing TimelineExportVideoCoordinating for test verification.
     private final class CoordinatorSpy: TimelineExportVideoCoordinating {
         var providerError: ExportVideoFrameProviderError?
-        var updatedFrames: [Int] = []
+        var updatedVisibilityFrames: [Int] = []
+        var updatedMediaFrames: [Int] = []
         var finishCalled = false
         var cancelCalled = false
 
-        func updateTextures(forSceneFrameIndex frame: Int) {
-            updatedFrames.append(frame)
+        func updateTextures(visibilityFrameIndex: Int, mediaFrameIndex: Int) {
+            updatedVisibilityFrames.append(visibilityFrameIndex)
+            updatedMediaFrames.append(mediaFrameIndex)
         }
 
         func finish() {
@@ -169,6 +171,61 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         return cache
     }
 
+    /// Builds a session where timeline duration exceeds native scene duration (extended scene).
+    @MainActor
+    private func makeExtendedSession(
+        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
+        nativeFrames: Int,
+        timelineFrames: Int,
+        fixedId: UUID = UUID()
+    ) -> (TimelineCompositionEngine.TimelineExportSession, UUID) {
+        let payloadId = UUID()
+        let sceneTypeId = "scene-type-ext"
+        let timelineDurationUs = framesToUs(timelineFrames)
+
+        let item = TimelineItem(id: fixedId, payloadId: payloadId, kind: .scene, startUs: nil, durationUs: timelineDurationUs)
+        let payloads: [UUID: TimelinePayload] = [payloadId: .scene(ScenePayload(sceneTypeId: sceneTypeId))]
+
+        let res = makeMinimalResources(durationFrames: nativeFrames, sceneTypeId: sceneTypeId)
+        let renderState = SceneRenderStateSnapshot(
+            resolvedTransforms: [:], variantOverrides: [:], userMediaPresent: [:], layerToggleState: [:]
+        )
+        let mediaSnapshot = ExportMediaSnapshot(
+            imageRefs: [], videoRefs: [],
+            allAssetIds: Set(res.compiled.mergedAssetIndex.basenameById.keys)
+        )
+        let snapshot = TimelineCompositionEngine.TimelineExportSceneSnapshot(
+            sceneIndex: 0, instanceId: fixedId, runtime: res.compiled.runtime,
+            renderState: renderState, videoSelections: [:], mediaSnapshot: mediaSnapshot,
+            assetIndex: res.compiled.mergedAssetIndex, resolver: res.resolver,
+            bindingAssetIds: res.compiled.bindingAssetIds, pathRegistry: res.pathRegistry,
+            assetSizes: res.assetSizes, sceneCanvasSize: res.canvasSize,
+            templateBackground: res.compiled.runtime.scene.background
+        )
+
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: [item])
+        let timeline = CanonicalTimeline(tracks: [sceneTrack], payloads: payloads, boundaryTransitions: [:])
+        let math = TimelineTransitionMath(
+            sceneItems: timeline.sceneItems,
+            boundaryTransitions: timeline.boundaryTransitions,
+            fps: 30
+        )
+
+        let session = TimelineCompositionEngine.TimelineExportSession(
+            transitionMath: math,
+            canvasSize: SizeD(width: 1080, height: 1920),
+            fps: 30,
+            scenesByInstanceId: [fixedId: snapshot],
+            audioSceneData: [TimelineCompositionEngine.SceneAudioExportData(
+                sceneIndex: 0, runtime: res.compiled.runtime, videoSelections: [:]
+            )],
+            overlaySnapshot: OverlayExportSnapshot(textItems: [], stickerItems: [])
+        )
+
+        return (session, fixedId)
+    }
+
     // MARK: - Single Frame Tests
 
     /// resolveFrame returns .single with correct localFrame for single scene.
@@ -221,8 +278,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         // Frame 50 is in scene A (0..99)
         _ = try runtime.resolveFrame(50)
 
-        XCTAssertEqual(spyA.updatedFrames, [50])
-        XCTAssertTrue(spyB.updatedFrames.isEmpty, "Scene B coordinator should not be updated for scene A frame")
+        XCTAssertEqual(spyA.updatedVisibilityFrames, [50])
+        XCTAssertTrue(spyB.updatedVisibilityFrames.isEmpty, "Scene B coordinator should not be updated for scene A frame")
     }
 
     // MARK: - Transition Frame Tests
@@ -316,8 +373,8 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
         let midFrame = window.startFrame + window.transition.durationFrames / 2
         _ = try runtime.resolveFrame(midFrame)
 
-        XCTAssertFalse(spyA.updatedFrames.isEmpty, "Scene A coordinator should be updated during transition")
-        XCTAssertFalse(spyB.updatedFrames.isEmpty, "Scene B coordinator should be updated during transition")
+        XCTAssertFalse(spyA.updatedVisibilityFrames.isEmpty, "Scene A coordinator should be updated during transition")
+        XCTAssertFalse(spyB.updatedVisibilityFrames.isEmpty, "Scene B coordinator should be updated during transition")
     }
 
     // MARK: - Provider Error Tests
@@ -1122,5 +1179,345 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             hasNonBlackInROI(pixels, bytesPerRow: bpr, cx: cx, cy: cy, radius: 50),
             "Text overlay pixels must survive full pipeline: render -> encode -> decode"
         )
+    }
+
+    // MARK: - Export Frame Clamping Regression Tests
+
+    /// Extended scene: localFrame beyond native duration is clamped to last native frame.
+    @MainActor
+    func testExtendedScene_clampsLocalFrame_toNativeDuration() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let instanceId = UUID()
+        let (session, _) = makeExtendedSession(
+            device: device, commandQueue: commandQueue,
+            nativeFrames: 150, timelineFrames: 300, fixedId: instanceId
+        )
+
+        let spy = CoordinatorSpy()
+        let factory: TimelineExportCoordinatorFactory = { snapshot, _, _ in
+            snapshot.instanceId == instanceId ? spy : nil
+        }
+
+        let runtime = try TimelineExportRuntime(session: session, textureCache: textureCache, coordinatorFactory: factory)
+
+        // Frame 180 is beyond native 150 frames → must clamp to 149
+        let result = try runtime.resolveFrame(180)
+
+        XCTAssertEqual(spy.updatedVisibilityFrames, [149],
+            "Coordinator must receive clamped frame (149), not raw extended frame (180)")
+        XCTAssertEqual(spy.updatedMediaFrames, [180],
+            "Coordinator must receive unclamped media frame (180) for video time mapping")
+
+        guard case .single(let context) = result else {
+            XCTFail("Expected .single, got \(result)")
+            return
+        }
+        XCTAssertEqual(context.localFrame, 149,
+            "Render context localFrame must be clamped to native last frame")
+    }
+
+    /// Transition export clamps both A and B sides when both scenes are extended beyond native duration.
+    @MainActor
+    func testTransitionExport_clampsBothSides() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let idA = UUID(), idB = UUID()
+
+        // Scene A: native 100 frames, timeline 200 frames → A exceeds native during transition
+        // Scene B: native 5 frames, timeline 160 frames → B exceeds native even at transition start
+        // Default fade transition is ~15 frames. B local frame at mid-transition ≈ 7-8, exceeds native 5.
+        let nativeA = 100, timelineA = 200
+        let nativeB = 5, timelineB = 160
+
+        let payloadIdA = UUID(), payloadIdB = UUID()
+        let timelineDurationUsA = framesToUs(timelineA)
+        let timelineDurationUsB = framesToUs(timelineB)
+
+        let itemA = TimelineItem(id: idA, payloadId: payloadIdA, kind: .scene, startUs: nil, durationUs: timelineDurationUsA)
+        let itemB = TimelineItem(id: idB, payloadId: payloadIdB, kind: .scene, startUs: nil, durationUs: timelineDurationUsB)
+
+        var payloads: [UUID: TimelinePayload] = [:]
+        payloads[payloadIdA] = .scene(ScenePayload(sceneTypeId: "scene-type-a"))
+        payloads[payloadIdB] = .scene(ScenePayload(sceneTypeId: "scene-type-b"))
+
+        let resA = makeMinimalResources(durationFrames: nativeA, sceneTypeId: "scene-type-a")
+        let resB = makeMinimalResources(durationFrames: nativeB, sceneTypeId: "scene-type-b")
+
+        let renderState = SceneRenderStateSnapshot(
+            resolvedTransforms: [:], variantOverrides: [:], userMediaPresent: [:], layerToggleState: [:]
+        )
+
+        var snapshots: [UUID: TimelineCompositionEngine.TimelineExportSceneSnapshot] = [:]
+        for (i, (id, res)) in [(idA, resA), (idB, resB)].enumerated() {
+            snapshots[id] = TimelineCompositionEngine.TimelineExportSceneSnapshot(
+                sceneIndex: i, instanceId: id, runtime: res.compiled.runtime,
+                renderState: renderState, videoSelections: [:],
+                mediaSnapshot: ExportMediaSnapshot(imageRefs: [], videoRefs: [], allAssetIds: []),
+                assetIndex: res.compiled.mergedAssetIndex, resolver: res.resolver,
+                bindingAssetIds: res.compiled.bindingAssetIds, pathRegistry: res.pathRegistry,
+                assetSizes: res.assetSizes, sceneCanvasSize: res.canvasSize,
+                templateBackground: nil
+            )
+        }
+
+        let transition = SceneTransition(type: .fade, easingPreset: .linear)
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: [itemA, itemB])
+        let timeline = CanonicalTimeline(
+            tracks: [sceneTrack], payloads: payloads,
+            boundaryTransitions: [SceneBoundaryKey(idA, idB): transition]
+        )
+        let math = TimelineTransitionMath(
+            sceneItems: timeline.sceneItems,
+            boundaryTransitions: timeline.boundaryTransitions,
+            fps: 30
+        )
+
+        let session = TimelineCompositionEngine.TimelineExportSession(
+            transitionMath: math,
+            canvasSize: SizeD(width: 1080, height: 1920),
+            fps: 30,
+            scenesByInstanceId: snapshots,
+            audioSceneData: [],
+            overlaySnapshot: OverlayExportSnapshot(textItems: [], stickerItems: [])
+        )
+
+        let spyA = CoordinatorSpy()
+        let spyB = CoordinatorSpy()
+        let factory: TimelineExportCoordinatorFactory = { snapshot, _, _ in
+            if snapshot.instanceId == idA { return spyA }
+            if snapshot.instanceId == idB { return spyB }
+            return nil
+        }
+
+        let runtime = try TimelineExportRuntime(session: session, textureCache: textureCache, coordinatorFactory: factory)
+
+        guard let window = math.allTransitionWindows.first else {
+            throw XCTSkip("No transition windows")
+        }
+
+        // Use a frame near end of transition where B's local frame also exceeds native 5
+        let lateFrame = window.startFrame + window.transition.durationFrames - 2
+
+        let result = try runtime.resolveFrame(lateFrame)
+
+        guard case .transition(let ctx) = result else {
+            XCTFail("Expected .transition at frame \(lateFrame)")
+            return
+        }
+
+        // Scene A: native 100 → clamped to 99. Raw local ≈ 198, well beyond native.
+        XCTAssertEqual(ctx.sceneA.localFrame, nativeA - 1,
+            "Scene A local frame must be clamped to native last frame (99)")
+        XCTAssertEqual(spyA.updatedVisibilityFrames.last, nativeA - 1,
+            "Scene A coordinator must receive clamped frame")
+        XCTAssertGreaterThan(spyA.updatedMediaFrames.last ?? 0, nativeA - 1,
+            "Scene A media frame must be unclamped (beyond native)")
+
+        // Scene B: native 5 → clamped to 4. Raw local ≈ 13, exceeds native 5.
+        XCTAssertEqual(ctx.sceneB.localFrame, nativeB - 1,
+            "Scene B local frame must be clamped to native last frame (4)")
+        XCTAssertEqual(spyB.updatedVisibilityFrames.last, nativeB - 1,
+            "Scene B coordinator must receive clamped frame")
+        XCTAssertGreaterThan(spyB.updatedMediaFrames.last ?? 0, nativeB - 1,
+            "Scene B media frame must be unclamped (beyond native)")
+    }
+
+    /// Media block command parity: clamped frame produces block render commands that would be absent at raw extended frame.
+    /// Uses a real SceneRuntime with a BlockRuntime to verify actual RenderCommand output.
+    @MainActor
+    func testMediaBlockCommandParity_clampedFrameProducesBlockCommands() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let nativeFrames = 150
+
+        // Build a minimal AnimIR with one image layer visible for the full animation
+        let compId: CompID = "root"
+        let imageLayer = Layer(
+            id: 1,
+            name: "bg_image",
+            type: .image,
+            timing: LayerTiming(inPoint: 0, outPoint: Double(nativeFrames), startTime: 0),
+            parent: nil,
+            transform: .identity,
+            masks: [],
+            matte: nil,
+            content: .image(assetId: "img_1"),
+            isMatteSource: false
+        )
+        let comp = Composition(
+            id: compId,
+            size: SizeD(width: 1080, height: 1920),
+            layers: [imageLayer]
+        )
+        let meta = Meta(
+            width: 1080, height: 1920, fps: 30,
+            inPoint: 0, outPoint: Double(nativeFrames),
+            sourceAnimRef: "test-anim.json"
+        )
+        let animIR = AnimIR(
+            meta: meta,
+            rootComp: compId,
+            comps: [compId: comp],
+            assets: AssetIndexIR(),
+            binding: BindingInfo(bindingKey: "user_photo", boundLayerId: 1, boundAssetId: "img_1", boundCompId: compId)
+        )
+
+        // Build BlockRuntime with timing [0, nativeFrames) and the real AnimIR
+        let block = BlockRuntime(
+            blockId: "block_media_1",
+            zIndex: 0,
+            orderIndex: 0,
+            rectCanvas: RectD(x: 0, y: 0, width: 1080, height: 1920),
+            bindingBaseline: BindingBaselineRuntime(boundAssetId: "img_1", contentSizeLocal: SizeD(width: 1080, height: 1920)),
+            mediaInputGeometry: MediaInputGeometryRuntime(placementRectLocal: RectD(x: 0, y: 0, width: 1080, height: 1920)),
+            timing: BlockTiming(startFrame: 0, endFrame: nativeFrames),
+            containerClip: .slotRect,
+            selectedVariantId: "default",
+            editVariantId: "default",
+            variants: [VariantRuntime(variantId: "default", animRef: "test-anim.json", animIR: animIR, bindingKey: "user_photo")]
+        )
+
+        // Build SceneRuntime with the block
+        let canvas = Canvas(width: 1080, height: 1920, fps: 30, durationFrames: nativeFrames)
+        let scene = Scene(schemaVersion: "1.0", sceneId: "test-scene", canvas: canvas, background: nil, mediaBlocks: [])
+        let runtime = SceneRuntime(scene: scene, canvas: canvas, blocks: [block], durationFrames: nativeFrames, fps: 30)
+
+        // Verify: renderCommands at raw extended frame (180) — block invisible, no block commands
+        let commandsAtRaw = SceneRenderPlan.renderCommands(for: runtime, sceneFrameIndex: 180)
+        let blockGroupsAtRaw = commandsAtRaw.filter {
+            if case .beginGroup(let name) = $0 { return name.contains("Block:") }
+            return false
+        }
+        XCTAssertTrue(blockGroupsAtRaw.isEmpty,
+            "At raw extended frame 180, block must be invisible — no block group commands")
+
+        // Verify: renderCommands at clamped frame (149) — block visible, has block commands
+        let clampedFrame = ExportFrameClamping.sceneFrame(180, nativeDurationFrames: nativeFrames)
+        let commandsAtClamped = SceneRenderPlan.renderCommands(for: runtime, sceneFrameIndex: clampedFrame)
+        let blockGroupsAtClamped = commandsAtClamped.filter {
+            if case .beginGroup(let name) = $0 { return name.contains("Block:") }
+            return false
+        }
+        XCTAssertFalse(blockGroupsAtClamped.isEmpty,
+            "At clamped frame 149, block must be visible — block group commands present")
+
+        // Verify more commands at clamped frame than at raw frame (block adds pushTransform, pushClipRect, etc.)
+        XCTAssertGreaterThan(commandsAtClamped.count, commandsAtRaw.count,
+            "Clamped frame must produce more render commands than raw extended frame (block is visible)")
+
+        // End-to-end: export runtime resolveFrame at 180 produces context with clamped localFrame
+        let instanceId = UUID()
+        let (session, _) = makeExtendedSession(
+            device: device, commandQueue: commandQueue,
+            nativeFrames: nativeFrames, timelineFrames: 300, fixedId: instanceId
+        )
+        let noCoordinators: TimelineExportCoordinatorFactory = { _, _, _ in nil }
+        let exportRuntime = try TimelineExportRuntime(session: session, textureCache: textureCache, coordinatorFactory: noCoordinators)
+
+        let result = try exportRuntime.resolveFrame(180)
+        guard case .single(let context) = result else {
+            XCTFail("Expected .single")
+            return
+        }
+        XCTAssertEqual(context.localFrame, nativeFrames - 1,
+            "Export runtime must clamp localFrame so block visibility is preserved")
+    }
+
+    /// Extended scene: frame within native range passes through unchanged.
+    @MainActor
+    func testExtendedScene_inRangeFrame_passesThrough() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let textureCache = makeTextureCache(device: device) else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let instanceId = UUID()
+        let (session, _) = makeExtendedSession(
+            device: device, commandQueue: commandQueue,
+            nativeFrames: 150, timelineFrames: 300, fixedId: instanceId
+        )
+
+        let spy = CoordinatorSpy()
+        let factory: TimelineExportCoordinatorFactory = { snapshot, _, _ in
+            snapshot.instanceId == instanceId ? spy : nil
+        }
+
+        let runtime = try TimelineExportRuntime(session: session, textureCache: textureCache, coordinatorFactory: factory)
+
+        let result = try runtime.resolveFrame(42)
+
+        XCTAssertEqual(spy.updatedVisibilityFrames, [42],
+            "In-range frame must pass through without clamping")
+        XCTAssertEqual(spy.updatedMediaFrames, [42],
+            "In-range media frame must match visibility frame")
+
+        guard case .single(let context) = result else {
+            XCTFail("Expected .single")
+            return
+        }
+        XCTAssertEqual(context.localFrame, 42)
+    }
+
+    // MARK: - Duration Parity
+
+    /// One stretched scene: compressedDurationFrames must equal the timeline (stretched) duration.
+    @MainActor
+    func test_oneScene_stretched_exportSession_hasTimelineDuration() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (session, _) = makeExtendedSession(
+            device: device, commandQueue: commandQueue,
+            nativeFrames: 150, timelineFrames: 300
+        )
+
+        XCTAssertEqual(session.transitionMath.compressedDurationFrames, 300)
+    }
+}
+
+// MARK: - ExportFrameClamping Unit Tests
+
+final class ExportFrameClampingTests: XCTestCase {
+
+    func testNegativeFrame_clampsToZero() {
+        XCTAssertEqual(ExportFrameClamping.sceneFrame(-5, nativeDurationFrames: 100), 0)
+    }
+
+    func testInRangeFrame_unchanged() {
+        XCTAssertEqual(ExportFrameClamping.sceneFrame(42, nativeDurationFrames: 100), 42)
+    }
+
+    func testBeyondDuration_clampsToMaxFrame() {
+        XCTAssertEqual(ExportFrameClamping.sceneFrame(180, nativeDurationFrames: 150), 149)
+    }
+
+    func testExactLastFrame_unchanged() {
+        XCTAssertEqual(ExportFrameClamping.sceneFrame(149, nativeDurationFrames: 150), 149)
+    }
+
+    func testDurationOne_alwaysZero() {
+        XCTAssertEqual(ExportFrameClamping.sceneFrame(0, nativeDurationFrames: 1), 0)
+        XCTAssertEqual(ExportFrameClamping.sceneFrame(5, nativeDurationFrames: 1), 0)
+        XCTAssertEqual(ExportFrameClamping.sceneFrame(-1, nativeDurationFrames: 1), 0)
+    }
+
+    func testZeroFrame_atZeroDuration_clampsToZero() {
+        XCTAssertEqual(ExportFrameClamping.sceneFrame(0, nativeDurationFrames: 0), 0)
     }
 }

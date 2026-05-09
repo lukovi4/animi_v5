@@ -70,8 +70,11 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
     @MainActor
     final class MediaSyncingSpy: SceneMediaSyncing {
         var stillFrames: [Int] = []
+        var stillMediaFrames: [Int] = []
         var playbackFrames: [Int] = []
+        var playbackMediaFrames: [Int] = []
         var startPlaybackFrames: [Int] = []
+        var startPlaybackMediaFrames: [Int] = []
 
         // TT-02: Controllable readiness flags for tests
         var isSceneMediaReady: Bool = false
@@ -80,13 +83,16 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         // TT-03: Budget-aware tracking
         var playbackCandidatesByFrame: [Int: [PlaybackVideoCandidate]] = [:]
         var budgetedStartCalls: [(frame: Int, granted: Set<String>)] = []
+        var budgetedStartMediaFrames: [Int] = []
         var budgetedTickCalls: [(frame: Int, granted: Set<String>)] = []
+        var budgetedTickMediaFrames: [Int] = []
 
         // TT-03 Completion: Soft-stop tracking
         var softStopPreservingTexturesCalls: Int = 0
 
-        func updateVideoStillFrames(sceneFrameIndex: Int) {
+        func updateVideoStillFrames(sceneFrameIndex: Int, mediaFrameIndex: Int) {
             stillFrames.append(sceneFrameIndex)
+            stillMediaFrames.append(mediaFrameIndex)
         }
 
         // PR2: Controllable still-await for testing readiness-holds-until-still-delivered
@@ -109,12 +115,14 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             stillAwaitContinuation = nil
         }
 
-        func updateVideoFramesForPlayback(sceneFrameIndex: Int) {
+        func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int) {
             playbackFrames.append(sceneFrameIndex)
+            playbackMediaFrames.append(mediaFrameIndex)
         }
 
-        func startVideoPlayback(sceneFrameIndex: Int) {
+        func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int) {
             startPlaybackFrames.append(sceneFrameIndex)
+            startPlaybackMediaFrames.append(mediaFrameIndex)
         }
 
         // TT-03: Budget-aware API implementations
@@ -122,12 +130,14 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             playbackCandidatesByFrame[sceneFrameIndex] ?? []
         }
 
-        func startVideoPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
+        func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
             budgetedStartCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
+            budgetedStartMediaFrames.append(mediaFrameIndex)
         }
 
-        func updateVideoFramesForPlayback(sceneFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
+        func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
             budgetedTickCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
+            budgetedTickMediaFrames.append(mediaFrameIndex)
         }
 
         // TT-03 Completion: Soft-stop implementation
@@ -277,6 +287,7 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
         // Then: Spy should receive clamped frame 299
         XCTAssertEqual(spy.stillFrames, [299], "syncVideoFrame should pass clamped frame to media service")
+        XCTAssertEqual(spy.stillMediaFrames, [350], "syncVideoFrame should pass unclamped media frame")
     }
 
     /// Behavior: syncPlaybackTick(350) passes clamped frame 299 to media service.
@@ -304,6 +315,7 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
         // Then: Spy should receive clamped frame 299
         XCTAssertEqual(spy.playbackFrames, [299], "syncPlaybackTick should pass clamped frame to media service")
+        XCTAssertEqual(spy.playbackMediaFrames, [350], "syncPlaybackTick should pass unclamped media frame")
     }
 
     /// Behavior: startPlayback(at: 350) passes clamped frame 299 to media service.
@@ -331,6 +343,7 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
         // Then: Spy should receive clamped frame 299
         XCTAssertEqual(spy.startPlaybackFrames, [299], "startPlayback should pass clamped frame to media service")
+        XCTAssertEqual(spy.startPlaybackMediaFrames, [350], "startPlayback should pass unclamped media frame")
     }
 
     /// Behavior: Multiple sync calls all pass clamped frames.
@@ -362,8 +375,11 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
         // Then: All should be clamped to 299
         XCTAssertEqual(spy.stillFrames, [299, 299, 299])
+        XCTAssertEqual(spy.stillMediaFrames, [300, 350, 450])
         XCTAssertEqual(spy.playbackFrames, [299])
+        XCTAssertEqual(spy.playbackMediaFrames, [1000])
         XCTAssertEqual(spy.startPlaybackFrames, [299])
+        XCTAssertEqual(spy.startPlaybackMediaFrames, [500])
     }
 
     // MARK: - Edge Case Tests

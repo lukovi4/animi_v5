@@ -768,7 +768,7 @@ final class EditorRuntime {
             sceneEdit.updateSceneEditRenderSource()
 
             if !isPlaying, localFrame != lastStillSyncFrame {
-                userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
+                userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame, mediaFrameIndex: localFrame)
                 lastStillSyncFrame = localFrame
             }
         } else {
@@ -782,7 +782,7 @@ final class EditorRuntime {
                 self.sceneEdit.updateSceneEditRenderSource()
 
                 if !self.isPlaying, localFrame != self.lastStillSyncFrame {
-                    self.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame)
+                    self.userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame, mediaFrameIndex: localFrame)
                     self.lastStillSyncFrame = localFrame
                 }
             }
@@ -799,7 +799,9 @@ final class EditorRuntime {
     // MARK: - Playback Control
 
     func startPlayback() {
-        guard EditorRenderContract.isPlaybackAllowed(in: .timeline) else { return }
+        guard let uiMode = session.state?.uiMode,
+              EditorRenderContract.isPlaybackAllowed(in: uiMode)
+        else { return }
         guard playbackStartTask == nil else { return }
         guard let engine = timelineCompositionEngine else { return }
 
@@ -896,7 +898,7 @@ final class EditorRuntime {
             if let service = userMediaService,
                !service.blockIdsWithVideo.isEmpty,
                localFrame != lastStillSyncFrame {
-                service.updateVideoFramesForPlayback(sceneFrameIndex: localFrame)
+                service.updateVideoFramesForPlayback(sceneFrameIndex: localFrame, mediaFrameIndex: localFrame)
                 lastStillSyncFrame = localFrame
             }
         }
@@ -1261,7 +1263,7 @@ final class EditorRuntime {
             return
         }
         if force || frameIndex != lastStillSyncFrame {
-            userMediaService?.updateVideoStillFrames(sceneFrameIndex: frameIndex)
+            userMediaService?.updateVideoStillFrames(sceneFrameIndex: frameIndex, mediaFrameIndex: frameIndex)
             lastStillSyncFrame = frameIndex
         }
     }

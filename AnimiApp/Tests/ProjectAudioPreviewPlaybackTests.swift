@@ -457,35 +457,51 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         controllable.drainAll()
     }
 
-    // MARK: - Test 9: sceneEdit mode doesn't start preview audio (via real startPlayback)
+    // MARK: - Test 9: sceneEdit mode → startPlayback is complete no-op
 
-    func test_sceneEditMode_doesNotStartPreviewAudio() async throws {
-        guard let (_, runtime) = await makePlayableRuntime(state: .sceneEdit(instanceId: UUID())) else {
+    func test_sceneEditMode_doesNotStartAnyPlayback() async throws {
+        guard let (session, runtime) = await makePlayableRuntime() else {
             throw XCTSkip("Metal device not available")
         }
+
+        // Transition session to sceneEdit via real store dispatch
+        guard let sceneId = session.state?.sceneItems.first?.id else {
+            XCTFail("Test timeline must contain a scene")
+            return
+        }
+        session.dispatch(.enterSceneEdit(sceneId: sceneId))
+        runtime.bootForTesting(state: .sceneEdit(instanceId: sceneId))
+
+        // Verify precondition: session uiMode is .sceneEdit
+        if case .sceneEdit = session.state?.uiMode {} else {
+            XCTFail("session.state.uiMode must be .sceneEdit after dispatch")
+            return
+        }
+
         let mock = MockPreviewAudioController()
         runtime.setPreviewAudioController(mock)
         runtime.previewAudioPipelineBuilder = { nil }
 
-        // Call real startPlayback() — passes engine guard.
-        // Note: startPlayback() hardcodes EditorRenderContract.isPlaybackAllowed(in: .timeline),
-        // so it proceeds regardless of runtime state. Preview audio guard is in
-        // startPreviewAudioForTimelinePlayback (state == .timelinePreview).
+        var emittedPlaybackStart = false
+        runtime.onOutput = { output in
+            if case .playbackStateChanged(let isPlaying) = output, isPlaying {
+                emittedPlaybackStart = true
+            }
+        }
+
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
-
-        // Audio controller should NOT have been touched
-        XCTAssertEqual(mock.replacePipelineCallCount, 0, "Preview audio must not build pipeline in sceneEdit mode")
-        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Preview audio must not start in sceneEdit mode")
-        XCTAssertEqual(mock.teardownCallCount, 0, "No teardown because startPreviewAudioForTimelinePlayback is not entered")
-
-        // Also verify markPreviewAudioDirty is no-op in sceneEdit even while playing
-        runtime.simulateSetPlaying(true)
-        runtime.markPreviewAudioDirty()
         for _ in 0..<5 { await Task.yield() }
-        XCTAssertEqual(mock.replacePipelineCallCount, 0, "markDirty in sceneEdit must not trigger rebuild")
 
-        runtime.stopPlayback()
+        XCTAssertFalse(runtime.isPlaying,
+                       "startPlayback must be no-op in sceneEdit — isPlaying must stay false")
+        XCTAssertFalse(emittedPlaybackStart,
+                       "No .playbackStateChanged(true) must be emitted in sceneEdit")
+        XCTAssertEqual(mock.replacePipelineCallCount, 0,
+                       "Preview audio pipeline must not build in sceneEdit")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0,
+                       "Preview audio must not start in sceneEdit")
+        XCTAssertEqual(mock.teardownCallCount, 0,
+                       "No teardown because startPlayback is a no-op")
     }
 
     // MARK: - Test 10: double dirty while playing — only last pipeline plays

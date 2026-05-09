@@ -55,6 +55,14 @@ public final class VideoFrameProvider {
     /// Scene FPS for time mapping
     private var sceneFPS: Double = 30.0
 
+    /// Active trim window for playback clamping.
+    private struct PlaybackWindow {
+        let start: Double
+        let end: Double
+    }
+
+    private var playbackWindow: PlaybackWindow?
+
     /// Last extracted texture (for caching/reuse) — playback path only
     private var lastPlaybackTexture: MTLTexture?
     private var lastPlaybackExtractedVideoTime: CMTime = .invalid
@@ -71,21 +79,114 @@ public final class VideoFrameProvider {
 
     // MARK: - Playback State
 
-    /// Whether playback mode is active (player.rate = 1)
+    /// Whether playback mode is active (player.rate = 1 or hold-last)
     /// PR1.2: Made public for playback gating in UserMediaService
     public private(set) var isPlaybackActive: Bool = false
 
-    /// Last corrective seek time (for throttling)
-    private var lastCorrectiveSeekTime: CFTimeInterval = 0
+    /// Internal state machine for trim-end hold behavior.
+    /// When expectedVideoTime reaches trimEnd, we pause the player and load an exact
+    /// still frame via AVAssetImageGenerator (deterministic, no AVPlayerItemVideoOutput).
+    /// `isPlaybackActive` stays `true` so UserMediaService keeps calling each tick.
+    private enum PlaybackHoldState: Equatable {
+        /// Normal playback (AVPlayer running at rate=1)
+        case none
+        /// Exact still frame requested via AVAssetImageGenerator, not yet delivered.
+        /// Returns fallback texture while loading.
+        case loadingExactFrame(CMTime)
+        /// Exact hold frame locked — return holdPlaybackTexture, skip all AVPlayer I/O
+        case holding(CMTime)
+    }
 
-    /// Corrective seek throttle interval (500ms)
-    private let correctiveSeekThrottle: CFTimeInterval = 0.5
+    private var playbackHoldState: PlaybackHoldState = .none
+    private var playbackHoldTask: Task<Void, Never>?
+    private var holdPlaybackTexture: MTLTexture?
 
-    /// Drift threshold in frames before corrective seek
-    private let driftThresholdFrames: Double = 2.0
+    #if DEBUG
+    internal struct DebugPlaybackSnapshot {
+        let playbackWindowStart: Double?
+        let playbackWindowEnd: Double?
+        let expectedVideoTimeSeconds: Double?
+        let clampedExpectedTimeSeconds: Double?
+        let itemTimeSeconds: Double?
+        let clampedOutputTimeSeconds: Double?
+        let hasNewPixelBuffer: Bool?
+        let copySucceeded: Bool?
+        let textureIdentifier: String?
+        let holdState: String
+        let playerRate: Float
+        let hasHoldTexture: Bool
+    }
 
-    /// PR1.1: Drift correction disabled for preview stability; export pipeline will handle sync deterministically
-    private let isDriftCorrectionEnabled = false
+    /// Debug seam: whether provider is in hold-loading state
+    internal var debugIsPlaybackHoldLoading: Bool {
+        if case .loadingExactFrame = playbackHoldState { return true }
+        return false
+    }
+    /// Debug seam: whether provider has locked hold frame
+    internal var debugIsPlaybackHolding: Bool {
+        if case .holding = playbackHoldState { return true }
+        return false
+    }
+    /// Debug seam: current AVPlayer rate
+    internal var debugPlayerRate: Float { player.rate }
+    /// Debug seam: count of AVPlayerItemVideoOutput.copyPixelBuffer calls
+    internal private(set) var debugPlaybackOutputCopyCount: Int = 0
+    /// Debug seam: count of exact still requests initiated for hold
+    internal private(set) var debugHoldStillRequestCount: Int = 0
+    /// Debug seam: whether hold texture has been loaded
+    internal var debugHasHoldPlaybackTexture: Bool { holdPlaybackTexture != nil }
+    internal private(set) var debugLastExpectedVideoTimeSeconds: Double?
+    internal private(set) var debugLastClampedExpectedTimeSeconds: Double?
+    internal private(set) var debugLastItemTimeSeconds: Double?
+    internal private(set) var debugLastClampedOutputTimeSeconds: Double?
+    internal private(set) var debugLastHasNewPixelBuffer: Bool?
+    internal private(set) var debugLastCopySucceeded: Bool?
+    internal private(set) var debugLastTextureIdentifier: String?
+
+    internal var debugPlaybackSnapshot: DebugPlaybackSnapshot {
+        DebugPlaybackSnapshot(
+            playbackWindowStart: playbackWindow?.start,
+            playbackWindowEnd: playbackWindow?.end,
+            expectedVideoTimeSeconds: debugLastExpectedVideoTimeSeconds,
+            clampedExpectedTimeSeconds: debugLastClampedExpectedTimeSeconds,
+            itemTimeSeconds: debugLastItemTimeSeconds,
+            clampedOutputTimeSeconds: debugLastClampedOutputTimeSeconds,
+            hasNewPixelBuffer: debugLastHasNewPixelBuffer,
+            copySucceeded: debugLastCopySucceeded,
+            textureIdentifier: debugLastTextureIdentifier,
+            holdState: debugPlaybackHoldStateDescription,
+            playerRate: player.rate,
+            hasHoldTexture: holdPlaybackTexture != nil
+        )
+    }
+
+    private var debugPlaybackHoldStateDescription: String {
+        switch playbackHoldState {
+        case .none:
+            return "none"
+        case .loadingExactFrame(let time):
+            return String(format: "loadingExactFrame(%.6f)", time.seconds)
+        case .holding(let time):
+            return String(format: "holding(%.6f)", time.seconds)
+        }
+    }
+
+    private static var debugVideoPlaybackTraceEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")
+    }
+
+    private static func debugTextureIdentifier(_ texture: MTLTexture?) -> String? {
+        guard let texture else { return nil }
+        return String(ObjectIdentifier(texture as AnyObject).hashValue)
+    }
+
+    private static func debugTrace(_ message: @autoclosure () -> String) {
+        guard debugVideoPlaybackTraceEnabled else { return }
+        print("[VideoPlaybackTrace] \(message())")
+    }
+    #endif
+
+    // (Drift correction removed — always disabled; export pipeline uses deterministic path)
 
     // MARK: - PR1.1 Diagnostics
 
@@ -164,6 +265,18 @@ public final class VideoFrameProvider {
         self.sceneFPS = fps
     }
 
+    /// Sets the active trim window for playback clamping.
+    public func setPlaybackWindow(start: Double, end: Double) {
+        self.playbackWindow = PlaybackWindow(start: start, end: end)
+        playbackHoldTask?.cancel()
+        playbackHoldTask = nil
+        holdPlaybackTexture = nil
+        playbackHoldState = .none
+        #if DEBUG
+        Self.debugTrace("provider.setPlaybackWindow start=\(String(format: "%.6f", start)) end=\(String(format: "%.6f", end))")
+        #endif
+    }
+
     // MARK: - Playback Control
 
     /// Starts playback mode at the given video time.
@@ -175,17 +288,39 @@ public final class VideoFrameProvider {
     public func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {
         guard isReady else { return }
 
-        let targetTime = videoTime(seconds: videoTimeSeconds)
+        let targetTime = playbackTime(seconds: videoTimeSeconds)
+        isPlaybackActive = true
+        playbackHoldTask?.cancel()
+        playbackHoldTask = nil
+        holdPlaybackTexture = nil
+        playbackHoldState = .none
+
+        // If target is already at trim-end hold boundary, enter hold immediately
+        if Self.shouldHoldPlayback(
+            expectedSeconds: videoTimeSeconds,
+            fileDuration: duration.seconds,
+            windowEnd: playbackWindow?.end
+        ) {
+            #if DEBUG
+            Self.debugTrace("provider.startPlayback immediateHold expected=\(String(format: "%.6f", videoTimeSeconds)) target=\(String(format: "%.6f", targetTime.seconds)) window=[\(String(format: "%.6f", playbackWindow?.start ?? -1)),\(String(format: "%.6f", playbackWindow?.end ?? -1))]")
+            #endif
+            _ = enterOrContinuePlaybackHold(at: targetTime)
+            return
+        }
+
+        #if DEBUG
+        Self.debugTrace("provider.startPlayback expected=\(String(format: "%.6f", videoTimeSeconds)) target=\(String(format: "%.6f", targetTime.seconds)) hostTime=\(hostTime.map { String(format: "%.6f", $0) } ?? "nil") window=[\(String(format: "%.6f", playbackWindow?.start ?? -1)),\(String(format: "%.6f", playbackWindow?.end ?? -1))]")
+        #endif
+
         if let hostTime {
             // AVPlayer expects host-clock CMTime here, not raw media-time seconds.
             // Also never schedule at/behind "now" on device — AVPlayer can throw.
             let hostClockTime = Self.scheduledHostClockTime(forTransportHostTime: hostTime)
             player.setRate(1.0, time: targetTime, atHostTime: hostClockTime)
         } else {
-            player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
-            player.rate = 1.0
+            let hostClockTime = Self.scheduledHostClockTime(forTransportHostTime: CACurrentMediaTime())
+            player.setRate(1.0, time: targetTime, atHostTime: hostClockTime)
         }
-        isPlaybackActive = true
     }
 
     /// Stops playback mode.
@@ -197,6 +332,13 @@ public final class VideoFrameProvider {
     public func stopPlayback(flush: Bool = true) {
         player.rate = 0
         isPlaybackActive = false
+        playbackHoldTask?.cancel()
+        playbackHoldTask = nil
+        holdPlaybackTexture = nil
+        playbackHoldState = .none
+        #if DEBUG
+        Self.debugTrace("provider.stopPlayback flush=\(flush)")
+        #endif
 
         // PR1.2.1: Only flush on explicit request (Pause), not on gating
         if flush {
@@ -210,56 +352,62 @@ public final class VideoFrameProvider {
         }
     }
 
-    /// Returns texture for current playback position (NO seek per frame).
+    /// Returns texture for current playback position.
     ///
-    /// In playback mode, AVPlayer runs independently. We just extract the current
-    /// frame from videoOutput. Drift correction happens only when threshold exceeded.
+    /// Normal playback: AVPlayer runs at rate=1, frames extracted via AVPlayerItemVideoOutput
+    /// using hostTime-based itemTime (no seek per frame).
     ///
-    /// PR4: Time-based API. `expectedVideoTime` is a hint for drift/debug, not a per-tick seek target.
-    /// Uses hostTime-based itemTime for reliable frame extraction.
+    /// At trim-end boundary: `expectedVideoTime` is the authority. AVPlayer is paused,
+    /// an exact still frame is loaded via AVAssetImageGenerator, and cached texture is
+    /// returned on subsequent ticks (no AVPlayerItemVideoOutput reads).
     ///
-    /// - Parameter videoTimeSeconds: Expected video time (for drift detection, not per-tick seek)
+    /// - Parameter videoTimeSeconds: Expected video time (authority at trim boundary)
     /// - Returns: Metal texture, or nil if not available
     public func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? {
         guard isReady, isPlaybackActive else { return lastPlaybackTexture }
 
-        // Drift correction disabled for preview stability
-        if isDriftCorrectionEnabled {
-            checkAndCorrectDrift(expectedVideoTime: videoTimeSeconds)
+        let expectedTime = playbackTime(seconds: videoTimeSeconds)
+        #if DEBUG
+        debugLastExpectedVideoTimeSeconds = videoTimeSeconds
+        debugLastClampedExpectedTimeSeconds = expectedTime.seconds
+        debugLastItemTimeSeconds = nil
+        debugLastClampedOutputTimeSeconds = nil
+        debugLastHasNewPixelBuffer = nil
+        debugLastCopySucceeded = nil
+        debugLastTextureIdentifier = Self.debugTextureIdentifier(lastPlaybackTexture)
+        #endif
+
+        // Check if expected time is at or past trim-end hold boundary
+        if Self.shouldHoldPlayback(
+            expectedSeconds: videoTimeSeconds,
+            fileDuration: duration.seconds,
+            windowEnd: playbackWindow?.end
+        ) {
+            let texture = enterOrContinuePlaybackHold(at: expectedTime)
+            #if DEBUG
+            debugLastTextureIdentifier = Self.debugTextureIdentifier(texture)
+            #endif
+            return texture
+        }
+
+        // If we were in hold but expected time is back inside trim window, resume
+        if playbackHoldState != .none {
+            exitPlaybackHold(resumeAt: expectedTime, hostTime: hostTime)
         }
 
         // Host-time-based frame extraction — use shared transport host time when available
         let effectiveHostTime = hostTime ?? CACurrentMediaTime()
         let itemTime = videoOutput.itemTime(forHostTime: effectiveHostTime)
 
-        // Clamp to hold-last
-        let clampedTime = videoTime(seconds: itemTime.seconds)
+        // Clamp to trim window
+        let clampedTime = playbackTime(seconds: itemTime.seconds)
+        #if DEBUG
+        debugLastItemTimeSeconds = itemTime.seconds
+        debugLastClampedOutputTimeSeconds = clampedTime.seconds
+        #endif
 
         // Extract frame at clamped playback position
         return extractTexture(at: clampedTime)
-    }
-
-    /// Checks for drift between expected and actual video playback, corrects if needed.
-    private func checkAndCorrectDrift(expectedVideoTime videoTimeSeconds: Double) {
-        let now = CACurrentMediaTime()
-
-        // Throttle corrective seeks
-        guard now - lastCorrectiveSeekTime >= correctiveSeekThrottle else { return }
-
-        let expectedTime = videoTime(seconds: videoTimeSeconds)
-        let actualTime = player.currentTime()
-
-        // Calculate drift in frames
-        let driftSeconds = abs(expectedTime.seconds - actualTime.seconds)
-        let driftFrames = driftSeconds * sceneFPS
-
-        if driftFrames > driftThresholdFrames {
-            #if DEBUG
-            print("[VideoFrameProvider] Drift correction: \(String(format: "%.1f", driftFrames)) frames, seeking to \(expectedTime.seconds)s")
-            #endif
-            player.seek(to: expectedTime, toleranceBefore: .zero, toleranceAfter: .zero)
-            lastCorrectiveSeekTime = now
-        }
     }
 
     /// Maps transport media-time seconds into a safe host-clock CMTime for AVPlayer scheduling.
@@ -288,7 +436,7 @@ public final class VideoFrameProvider {
         try Task.checkCancellation()
         guard isReady else { throw PosterError.notReady }
 
-        let targetTime = videoTime(seconds: videoTimeSeconds)
+        let targetTime = fileTime(seconds: videoTimeSeconds)
 
         // Still cache hit — synchronous fast path (no await)
         if lastStillVideoTime.isValid,
@@ -336,7 +484,7 @@ public final class VideoFrameProvider {
         try Task.checkCancellation()
         guard isReady else { throw PosterError.notReady }
 
-        let targetTime = videoTime(seconds: videoTimeSeconds)
+        let targetTime = fileTime(seconds: videoTimeSeconds)
 
         // Cache hit check (epsilon comparison)
         if lastInteractiveStillVideoTime.isValid,
@@ -444,55 +592,176 @@ public final class VideoFrameProvider {
 
     // MARK: - Private Helpers
 
-    /// Converts video time in seconds to CMTime with hold-last clamp.
-    ///
-    /// PR1: No loop — clamps to [0, duration - epsilon] for hold-last behavior.
-    ///
-    /// - Parameter seconds: Video time in seconds (already computed with trim window by caller)
-    /// - Returns: Clamped CMTime
-    private func videoTime(seconds: Double) -> CMTime {
-        let maxSeconds = max(0, duration.seconds - Self.epsilon)
-        let clampedSeconds = min(max(seconds, 0), maxSeconds)
-        return CMTime(seconds: clampedSeconds, preferredTimescale: 600)
+    /// Clamps to [0, duration - epsilon]. Used by still/poster/interactive paths.
+    private func fileTime(seconds: Double) -> CMTime {
+        CMTime(seconds: Self.clampedFileTime(seconds, fileDuration: duration.seconds),
+               preferredTimescale: 600)
     }
 
-    /// Extracts texture from video output at given time (playback path only).
-    private func extractTexture(at time: CMTime) -> MTLTexture? {
-        // Try to get pixel buffer
-        let itemTime = time
+    /// Clamps to active trim window, falling back to file bounds.
+    /// Used exclusively by playback path (startPlayback, frameTextureForPlayback, drift correction).
+    private func playbackTime(seconds: Double) -> CMTime {
+        CMTime(seconds: Self.clampedPlaybackTime(
+                   seconds,
+                   fileDuration: duration.seconds,
+                   windowStart: playbackWindow?.start,
+                   windowEnd: playbackWindow?.end),
+               preferredTimescale: 600)
+    }
 
-        // Check if new buffer available
-        if videoOutput.hasNewPixelBuffer(forItemTime: itemTime) {
-            if let pixelBuffer = videoOutput.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
-                let texture = textureFactory.makeTexture(from: pixelBuffer)
-                lastPlaybackTexture = texture
-                lastPlaybackExtractedVideoTime = time
-                #if DEBUG
-                successExtractCount += 1
-                logDiagnosticsIfNeeded()
-                #endif
-                return texture
-            }
+    /// Pure clamp to [0, fileDuration - epsilon].
+    internal static func clampedFileTime(_ seconds: Double, fileDuration: Double) -> Double {
+        let hi = max(0, fileDuration - epsilon)
+        return min(max(seconds, 0), hi)
+    }
+
+    /// Pure clamp to [windowStart, min(windowEnd - epsilon, fileDuration - epsilon)].
+    /// Falls back to file bounds when window is nil.
+    internal static func clampedPlaybackTime(
+        _ seconds: Double,
+        fileDuration: Double,
+        windowStart: Double?,
+        windowEnd: Double?
+    ) -> Double {
+        let fileCeiling = max(0, fileDuration - epsilon)
+        let lo: Double
+        let hi: Double
+        if let ws = windowStart, let we = windowEnd {
+            lo = max(ws, 0)
+            let rawHi = min(we - epsilon, fileCeiling)
+            hi = max(lo, rawHi)  // guard: hi >= lo even for very short trim
         } else {
-            // Try copyPixelBuffer anyway (may work for nearby times)
-            if let pixelBuffer = videoOutput.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) {
-                let texture = textureFactory.makeTexture(from: pixelBuffer)
-                lastPlaybackTexture = texture
-                lastPlaybackExtractedVideoTime = time
-                #if DEBUG
-                successExtractCount += 1
-                logDiagnosticsIfNeeded()
-                #endif
-                return texture
-            }
+            lo = 0
+            hi = fileCeiling
         }
+        return min(max(seconds, lo), hi)
+    }
 
+    /// Returns the hold-end time for the playback window, or nil if no window.
+    internal static func playbackHoldEndTime(
+        fileDuration: Double,
+        windowEnd: Double?
+    ) -> Double? {
+        guard let we = windowEnd else { return nil }
+        let fileCeiling = max(0, fileDuration - epsilon)
+        return min(we - epsilon, fileCeiling)
+    }
+
+    /// Returns true when expectedSeconds is at or past the trim-end hold boundary.
+    internal static func shouldHoldPlayback(
+        expectedSeconds: Double,
+        fileDuration: Double,
+        windowEnd: Double?
+    ) -> Bool {
+        guard let holdTime = playbackHoldEndTime(fileDuration: fileDuration, windowEnd: windowEnd) else {
+            return false
+        }
+        return expectedSeconds >= holdTime
+    }
+
+    /// Attempts to copy a pixel buffer from video output and convert to texture.
+    /// Returns nil if no buffer available (caller decides fallback).
+    private func copyPlaybackTexture(at time: CMTime) -> MTLTexture? {
+        #if DEBUG
+        debugPlaybackOutputCopyCount += 1
+        debugLastHasNewPixelBuffer = videoOutput.hasNewPixelBuffer(forItemTime: time)
+        debugLastCopySucceeded = false
+        #endif
+        if let pixelBuffer = videoOutput.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) {
+            let texture = textureFactory.makeTexture(from: pixelBuffer)
+            lastPlaybackTexture = texture
+            lastPlaybackExtractedVideoTime = time
+            #if DEBUG
+            debugLastCopySucceeded = true
+            debugLastTextureIdentifier = Self.debugTextureIdentifier(texture)
+            successExtractCount += 1
+            logDiagnosticsIfNeeded()
+            #endif
+            return texture
+        }
+        return nil
+    }
+
+    /// Extracts texture from video output at given time, falls back to cached texture.
+    private func extractTexture(at time: CMTime) -> MTLTexture? {
+        if let texture = copyPlaybackTexture(at: time) {
+            return texture
+        }
         // Return cached texture as fallback
         #if DEBUG
         nilExtractCount += 1
         logDiagnosticsIfNeeded()
         #endif
         return lastPlaybackTexture
+    }
+
+    // MARK: - Playback Hold
+
+    /// Enters or continues trim-end hold. No AVPlayerItemVideoOutput reads.
+    /// Exact hold frame is loaded asynchronously via AVAssetImageGenerator.
+    private func enterOrContinuePlaybackHold(at holdTime: CMTime) -> MTLTexture? {
+        switch playbackHoldState {
+        case .holding:
+            return holdPlaybackTexture ?? lastPlaybackTexture
+
+        case .loadingExactFrame(let time) where time == holdTime:
+            return holdPlaybackTexture ?? lastPlaybackTexture
+
+        case .none, .loadingExactFrame:
+            beginExactHoldFrameLoad(at: holdTime)
+            return holdPlaybackTexture ?? lastPlaybackTexture
+        }
+    }
+
+    /// Starts async exact-frame load for hold. Pauses AVPlayer, fires one still request.
+    private func beginExactHoldFrameLoad(at holdTime: CMTime) {
+        player.rate = 0
+        playbackHoldTask?.cancel()
+        holdPlaybackTexture = lastPlaybackTexture  // fallback until exact frame arrives
+        playbackHoldState = .loadingExactFrame(holdTime)
+
+        #if DEBUG
+        debugHoldStillRequestCount += 1
+        #endif
+
+        let token = generation
+        playbackHoldTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let texture = try await self.requestStillTexture(atVideoTime: holdTime.seconds)
+                guard self.generation == token, !Task.isCancelled else { return }
+                self.holdPlaybackTexture = texture
+                self.lastPlaybackTexture = texture
+                self.lastPlaybackExtractedVideoTime = holdTime
+                self.playbackHoldState = .holding(holdTime)
+                #if DEBUG
+                self.debugLastTextureIdentifier = Self.debugTextureIdentifier(texture)
+                Self.debugTrace("provider.holdStill.loaded time=\(String(format: "%.6f", holdTime.seconds)) texture=\(self.debugLastTextureIdentifier ?? "nil")")
+                #endif
+            } catch {
+                guard self.generation == token, !Task.isCancelled else { return }
+                // Settle into holding with fallback texture — don't retry every tick
+                self.playbackHoldState = .holding(holdTime)
+                #if DEBUG
+                Self.debugTrace("provider.holdStill.failed time=\(String(format: "%.6f", holdTime.seconds)) error=\(error)")
+                #endif
+            }
+        }
+    }
+
+    /// Exits hold state and restarts AVPlayer from the given time.
+    private func exitPlaybackHold(resumeAt time: CMTime, hostTime: CFTimeInterval?) {
+        playbackHoldTask?.cancel()
+        playbackHoldTask = nil
+        holdPlaybackTexture = nil
+        playbackHoldState = .none
+        if let hostTime {
+            let hostClockTime = Self.scheduledHostClockTime(forTransportHostTime: hostTime)
+            player.setRate(1.0, time: time, atHostTime: hostClockTime)
+        } else {
+            let hostClockTime = Self.scheduledHostClockTime(forTransportHostTime: CACurrentMediaTime())
+            player.setRate(1.0, time: time, atHostTime: hostClockTime)
+        }
     }
 
     #if DEBUG
@@ -613,6 +882,7 @@ public final class VideoFrameProvider {
         lastStillTexture = nil
         lastStillVideoTime = .invalid
         presentationInfo = nil
+        playbackWindow = nil
         textureFactory.flushCache()
         state = .idle
     }
