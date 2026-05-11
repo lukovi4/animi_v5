@@ -24,6 +24,12 @@ public enum ExportVideoFrameProviderError: Error, Sendable {
 
     /// Failed to create Metal texture from pixel buffer
     case failedToCreateMetalTexture(CVReturn)
+
+    /// Failed to allocate an export-owned texture for a decoded video frame
+    case failedToCreateOwnedTexture
+
+    /// Failed to copy a CoreVideo-backed decoded frame into export-owned Metal storage
+    case failedToCopyTexture(Error?)
 }
 
 extension ExportVideoFrameProviderError: LocalizedError {
@@ -41,6 +47,10 @@ extension ExportVideoFrameProviderError: LocalizedError {
             return "Failed to get pixel buffer from video sample"
         case .failedToCreateMetalTexture(let status):
             return "Failed to create Metal texture: CVReturn \(status)"
+        case .failedToCreateOwnedTexture:
+            return "Failed to allocate owned Metal texture for decoded video frame"
+        case .failedToCopyTexture(let error):
+            return "Failed to copy decoded video frame into owned Metal texture: \(error?.localizedDescription ?? "unknown")"
         }
     }
 }
@@ -122,6 +132,11 @@ enum ResamplingDecision: Equatable {
 public final class ExportVideoFrameProvider {
     // MARK: - Types
 
+    private struct DecodedFrame {
+        let pts: CMTime
+        let texture: MTLTexture
+    }
+
     /// Configuration for video frame provider.
     public struct Config: Sendable {
         /// Video selection with trim/audio parameters
@@ -159,7 +174,7 @@ public final class ExportVideoFrameProvider {
     private var lastPTS: CMTime = .invalid
 
     /// Pending sample for lookahead (P0 fix: correct hold-last PTS logic)
-    private var pending: (pts: CMTime, texture: MTLTexture)?
+    private var pending: DecodedFrame?
 
     /// Whether reader has been prepared
     private var isPrepared = false
@@ -551,7 +566,7 @@ public final class ExportVideoFrameProvider {
     ///
     /// P0 #2 fix: Throws on decode errors instead of returning nil silently.
     /// Returns nil only when reader has no more samples (expected end of stream).
-    private func decodeNextSampleThrowing() throws -> (pts: CMTime, texture: MTLTexture)? {
+    private func decodeNextSampleThrowing() throws -> DecodedFrame? {
         guard let output = output else { return nil }
 
         // No more samples = expected end of stream (not an error)
@@ -567,7 +582,13 @@ public final class ExportVideoFrameProvider {
             throw ExportVideoFrameProviderError.missingPixelBuffer
         }
 
-        // Convert to MTLTexture via CVMetalTextureCache
+        // Convert to export-owned MTLTexture. Do not retain CoreVideo-backed
+        // textures across frames: AVAssetReader owns and may recycle those buffers.
+        let texture = try makeOwnedTexture(from: pixelBuffer)
+        return DecodedFrame(pts: pts, texture: texture)
+    }
+
+    private func makeOwnedTexture(from pixelBuffer: CVPixelBuffer) throws -> MTLTexture {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
@@ -587,10 +608,44 @@ public final class ExportVideoFrameProvider {
         // P0 #2: throw on Metal texture creation failure
         guard status == kCVReturnSuccess,
               let cvMetalTexture,
-              let texture = CVMetalTextureGetTexture(cvMetalTexture) else {
+              let sourceTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
             throw ExportVideoFrameProviderError.failedToCreateMetalTexture(status)
         }
 
-        return (pts, texture)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .private
+
+        guard let ownedTexture = device.makeTexture(descriptor: descriptor),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            throw ExportVideoFrameProviderError.failedToCreateOwnedTexture
+        }
+
+        blitEncoder.copy(
+            from: sourceTexture,
+            sourceSlice: 0,
+            sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: width, height: height, depth: 1),
+            to: ownedTexture,
+            destinationSlice: 0,
+            destinationLevel: 0,
+            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+        )
+        blitEncoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if commandBuffer.status == .error {
+            throw ExportVideoFrameProviderError.failedToCopyTexture(commandBuffer.error)
+        }
+
+        return ownedTexture
     }
 }

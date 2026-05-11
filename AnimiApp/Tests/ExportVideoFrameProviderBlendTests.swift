@@ -1,5 +1,9 @@
+import AVFoundation
+import CoreVideo
+import Metal
 import XCTest
 @testable import AnimiApp
+@testable import TVECore
 
 final class ExportVideoFrameProviderBlendTests: XCTestCase {
 
@@ -33,6 +37,49 @@ final class ExportVideoFrameProviderBlendTests: XCTestCase {
             resamplingPolicy: .blend
         )
         XCTAssertEqual(config.resamplingPolicy, .blend)
+    }
+
+    // MARK: - Export-Owned Texture Contract
+
+    func test_providerReturnsExportOwnedTexture_notCoreVideoBackedTexture() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+
+        var cache: CVMetalTextureCache?
+        let status = CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache)
+        guard status == kCVReturnSuccess, let cache else {
+            XCTFail("Failed to create CVMetalTextureCache: \(status)")
+            return
+        }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("export-provider-owned-\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try await createColorRampVideo(at: url, frameCount: 4, fps: 24)
+
+        let provider = ExportVideoFrameProvider(
+            device: device,
+            textureCache: cache,
+            commandQueue: commandQueue,
+            config: .init(
+                selection: VideoSelection(url: url, trimStart: 0, trimEnd: 4.0 / 24.0),
+                resamplingPolicy: .nearest
+            )
+        )
+        try provider.prepare()
+        defer { provider.finish() }
+
+        guard let texture = provider.texture(forTargetVideoTime: 0) else {
+            XCTFail("Provider did not return decoded texture")
+            return
+        }
+
+        XCTAssertEqual(texture.storageMode, .private,
+                       "Export provider must copy decoded frames into owned Metal storage before caching")
+        XCTAssertNil(texture.iosurface,
+                     "Export provider must not cache CoreVideo-backed textures across render frames")
     }
 
     // MARK: - ResamplingDecision: .nearest policy
@@ -184,5 +231,112 @@ final class ExportVideoFrameProviderBlendTests: XCTestCase {
             // outputTime == lastPTS exactly (i/30 == 2i/60), so should be exact prev
             XCTAssertEqual(decision, .usePrev, "Frame \(i): expected .usePrev for 60→30 exact hit")
         }
+    }
+
+    // MARK: - Helpers
+
+    private func createColorRampVideo(at url: URL, frameCount: Int, fps: Int32) async throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? FileManager.default.removeItem(at: url)
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: 16,
+                AVVideoHeightKey: 16,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoAverageBitRateKey: 1_000_000,
+                    AVVideoExpectedSourceFrameRateKey: Int(fps)
+                ]
+            ]
+        )
+        input.expectsMediaDataInRealTime = false
+
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: 16,
+                kCVPixelBufferHeightKey as String: 16,
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ]
+        )
+
+        guard writer.canAdd(input) else {
+            throw NSError(domain: "ExportVideoFrameProviderBlendTests", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot add video input"])
+        }
+        writer.add(input)
+
+        guard writer.startWriting() else {
+            throw writer.error ?? NSError(domain: "ExportVideoFrameProviderBlendTests", code: 2)
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        for frame in 0..<frameCount {
+            while !input.isReadyForMoreMediaData {
+                await Task.yield()
+            }
+            let buffer = try makePixelBuffer(frame: frame)
+            let pts = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(fps))
+            XCTAssertTrue(adaptor.append(buffer, withPresentationTime: pts),
+                          "Failed to append test video frame \(frame)")
+        }
+
+        input.markAsFinished()
+        await writer.finishWriting()
+
+        guard writer.status == .completed else {
+            throw writer.error ?? NSError(domain: "ExportVideoFrameProviderBlendTests", code: 3,
+                                          userInfo: [NSLocalizedDescriptionKey: "AVAssetWriter failed"])
+        }
+    }
+
+    private func makePixelBuffer(frame: Int) throws -> CVPixelBuffer {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            16,
+            16,
+            kCVPixelFormatType_32BGRA,
+            [
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ] as CFDictionary,
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let pixelBuffer else {
+            throw NSError(domain: "ExportVideoFrameProviderBlendTests", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to create pixel buffer"])
+        }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw NSError(domain: "ExportVideoFrameProviderBlendTests", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "Missing pixel buffer base address"])
+        }
+
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let value = UInt8(min(frame * 60, 255))
+        for y in 0..<16 {
+            let row = base.advanced(by: y * bytesPerRow).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<16 {
+                let offset = x * 4
+                row[offset + 0] = value
+                row[offset + 1] = UInt8(255 - Int(value))
+                row[offset + 2] = UInt8((Int(value) + 80) % 255)
+                row[offset + 3] = 255
+            }
+        }
+
+        return pixelBuffer
     }
 }
