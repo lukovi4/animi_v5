@@ -255,6 +255,10 @@ final class EditorRuntime {
         playbackCurrentProjectTimeUs = projectTimeUs
         playbackCurrentHostTime = hostTime
     }
+
+    var isRestoringPreviewAfterExport: Bool {
+        exportController.isRestoringPreviewAfterExport
+    }
     #endif
 
     func boot(metalContext: EditorRuntimeMetalContext, library: SceneLibrarySnapshot) {
@@ -623,14 +627,31 @@ final class EditorRuntime {
         // Store playhead changes are UI-mirror only — must not re-enter presentation path.
         guard !isPlaying else { return }
 
+        if exportController.isRestoringPreviewAfterExport {
+            timelineCompositionEngine?.invalidateScrub()
+            playheadAsyncTask?.cancel()
+            return
+        }
+
         switch state {
-        case .timelinePreview, .exporting:
+        case .timelinePreview:
             handleTimelineModePlayheadChanged(compressedFrame)
+        case .exporting:
+            // After enterExportMode() teardown, runtimes are released.
+            // Allowing presentation resolve here would re-create them mid-export.
+            if !exportController.exportTeardownOccurred {
+                handleTimelineModePlayheadChanged(compressedFrame)
+            }
         case .sceneEdit:
             handleSceneEditModePlayheadChanged(compressedFrame)
         default:
             break
         }
+    }
+
+    func cancelPendingPlayheadResolve() {
+        playheadAsyncTask?.cancel()
+        playheadAsyncTask = nil
     }
 
     private func handleTimelineModePlayheadChanged(_ compressedFrame: Int) {
@@ -681,59 +702,7 @@ final class EditorRuntime {
 
             switch resolution {
             case .resolved(let resolved):
-                self.cachedTimelineFrame = resolved
-                self.cachedTimelineCompressedFrame = compressedFrame
-
-                switch resolved {
-                case .single(let ctx):
-                    self.sceneEdit.activeSceneInstanceId = ctx.sceneInstanceId
-                case .transition:
-                    self.sceneEdit.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
-                }
-
-                if !self.isPlaying {
-                    switch resolved {
-                    case .single(let ctx):
-                        if let runtime = engine.runtime(for: ctx.sceneInstanceId) {
-                            runtime.syncVideoFrame(ctx.localFrame)
-                        }
-                    case .transition(let ctx):
-                        if let runtimeA = engine.runtime(for: ctx.sceneA.sceneInstanceId) {
-                            runtimeA.syncVideoFrame(ctx.sceneA.localFrame)
-                        }
-                        if let runtimeB = engine.runtime(for: ctx.sceneB.sceneInstanceId) {
-                            runtimeB.syncVideoFrame(ctx.sceneB.localFrame)
-                        }
-                    }
-                }
-
-                // Resolve overlays via shared OverlayResolver
-                let overlayItems: [ResolvedOverlayRenderItem]
-                if let engine = self.timelineCompositionEngine,
-                   let timeline = engine.timeline,
-                   let math = engine.transitionMath,
-                   let timeUs = OverlayTimeMapping.globalTimeUs(for: compressedFrame, math: math, fps: engine.fps) {
-                    overlayItems = OverlayResolver.resolve(
-                        from: timeline, at: timeUs, stickerProvider: engine.stickerProvider
-                    )
-                } else {
-                    overlayItems = []
-                }
-
-                // Resolve per-scene background for this frame's owner scene.
-                if let previewBgState = self.background.resolvePreviewBackgroundState(for: resolved) {
-                    self.background.effectiveBackgroundState = previewBgState
-                }
-
-                // Update render source
-                self.currentRenderSource = .timeline(TimelineRenderSourcePayload(
-                    resolvedFrame: resolved,
-                    backgroundState: self.background.effectiveBackgroundState,
-                    backgroundTextureProvider: self.background.backgroundTextureProvider,
-                    diagnosticFrameTag: compressedFrame,
-                    overlayItems: overlayItems
-                ))
-                self.onOutput?(.renderSourceUpdated)
+                self.applyResolvedTimelineFrame(resolved, compressedFrame: compressedFrame, engine: engine)
 
             case .hold:
                 #if DEBUG
@@ -749,6 +718,125 @@ final class EditorRuntime {
                 #if DEBUG
                 logger.debug("[EditorRuntime] Resolution failed: \(String(describing: failure))")
                 #endif
+            }
+        }
+    }
+
+    private func applyResolvedTimelineFrame(
+        _ resolved: ResolvedTimelineFrame,
+        compressedFrame: Int,
+        engine: TimelineCompositionEngine
+    ) {
+        cachedTimelineFrame = resolved
+        cachedTimelineCompressedFrame = compressedFrame
+
+        switch resolved {
+        case .single(let ctx):
+            sceneEdit.activeSceneInstanceId = ctx.sceneInstanceId
+        case .transition:
+            sceneEdit.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
+        }
+
+        if !isPlaying {
+            switch resolved {
+            case .single(let ctx):
+                if let runtime = engine.runtime(for: ctx.sceneInstanceId) {
+                    runtime.syncVideoFrame(ctx.localFrame)
+                }
+            case .transition(let ctx):
+                if let runtimeA = engine.runtime(for: ctx.sceneA.sceneInstanceId) {
+                    runtimeA.syncVideoFrame(ctx.sceneA.localFrame)
+                }
+                if let runtimeB = engine.runtime(for: ctx.sceneB.sceneInstanceId) {
+                    runtimeB.syncVideoFrame(ctx.sceneB.localFrame)
+                }
+            }
+        }
+
+        // Resolve overlays via shared OverlayResolver
+        let overlayItems: [ResolvedOverlayRenderItem]
+        if let engine = timelineCompositionEngine,
+           let timeline = engine.timeline,
+           let math = engine.transitionMath,
+           let timeUs = OverlayTimeMapping.globalTimeUs(for: compressedFrame, math: math, fps: engine.fps) {
+            overlayItems = OverlayResolver.resolve(
+                from: timeline, at: timeUs, stickerProvider: engine.stickerProvider
+            )
+        } else {
+            overlayItems = []
+        }
+
+        // Resolve per-scene background for this frame's owner scene.
+        if let previewBgState = background.resolvePreviewBackgroundState(for: resolved) {
+            background.effectiveBackgroundState = previewBgState
+        }
+
+        // Update render source
+        currentRenderSource = .timeline(TimelineRenderSourcePayload(
+            resolvedFrame: resolved,
+            backgroundState: background.effectiveBackgroundState,
+            backgroundTextureProvider: background.backgroundTextureProvider,
+            diagnosticFrameTag: compressedFrame,
+            overlayItems: overlayItems
+        ))
+        onOutput?(.renderSourceUpdated)
+    }
+
+    // MARK: - Post-Export Preview Restore
+
+    func restorePreviewResourcesAfterExport() async {
+        switch state {
+        case .timelinePreview:
+            if let engine = timelineCompositionEngine {
+                await restoreTimelinePreview(engine: engine)
+            } else if let instanceId = sceneEdit.activeSceneInstanceId {
+                // Single-scene legacy path (no timeline engine)
+                await sceneEdit.applySceneInstanceState(instanceId: instanceId)
+                sceneEdit.updateSceneEditRenderSource()
+                let localFrame = playbackCoordinator?.currentLocalFrame ?? currentFrameIndex
+                userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame, mediaFrameIndex: localFrame)
+                lastStillSyncFrame = localFrame
+            }
+
+        case .sceneEdit(let instanceId):
+            await sceneEdit.applySceneInstanceState(instanceId: instanceId)
+            sceneEdit.updateSceneEditRenderSource()
+            let localFrame = playbackCoordinator?.currentLocalFrame ?? currentFrameIndex
+            userMediaService?.updateVideoStillFrames(sceneFrameIndex: localFrame, mediaFrameIndex: localFrame)
+            lastStillSyncFrame = localFrame
+
+        default:
+            break
+        }
+    }
+
+    private func restoreTimelinePreview(engine: TimelineCompositionEngine) async {
+        while !Task.isCancelled {
+            guard state == .timelinePreview else { return }
+
+            let targetFrame = session.state?.playheadCompressedFrame ?? 0
+            await engine.prepareForPlayback(startingAt: targetFrame)
+
+            // Re-read: user may have scrubbed during the await
+            let latestFrame = session.state?.playheadCompressedFrame ?? 0
+            if latestFrame != targetFrame {
+                continue
+            }
+
+            engine.invalidateScrub()
+            let generation = engine.currentScrubGeneration
+            let resolution = await engine.resolveFrame(
+                targetFrame, generation: generation, policy: .presentation
+            )
+
+            switch resolution {
+            case .resolved(let resolved):
+                applyResolvedTimelineFrame(resolved, compressedFrame: targetFrame, engine: engine)
+                return
+            case .staleGeneration, .hold:
+                continue
+            case .failed:
+                return
             }
         }
     }
@@ -799,6 +887,7 @@ final class EditorRuntime {
     // MARK: - Playback Control
 
     func startPlayback() {
+        guard !exportController.isRestoringPreviewAfterExport else { return }
         guard let uiMode = session.state?.uiMode,
               EditorRenderContract.isPlaybackAllowed(in: uiMode)
         else { return }

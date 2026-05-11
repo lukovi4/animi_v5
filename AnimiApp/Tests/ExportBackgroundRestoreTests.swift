@@ -636,9 +636,9 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         XCTAssertFalse(emittedRenderSourceUpdated, "No renderSourceUpdated should be emitted for color-only background")
     }
 
-    // MARK: 6. Color-only cancel after teardown — synchronous output (no async deferral)
+    // MARK: 6. Color-only cancel after teardown — output after preview restore
 
-    func test_cancelExport_colorOnlyAfterTeardown_emitsSynchronously() async throws {
+    func test_cancelExport_colorOnlyAfterTeardown_emitsAfterRestore() async throws {
         guard let (_, runtime) = await makeSessionWithColorBackground() else {
             throw XCTSkip("Metal or session not available")
         }
@@ -646,19 +646,16 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         runtime.bootForTesting(state: .exporting)
         runtime.simulateEnterExportMode()
 
-        var receivedOutput: EditorRuntimeOutput?
+        let cancelExpectation = expectation(description: "exportCancelled emitted after restore")
         runtime.onOutput = { output in
-            receivedOutput = output
+            if case .exportCancelled = output {
+                cancelExpectation.fulfill()
+            }
         }
 
         runtime.cancelExport()
 
-        // Output must arrive synchronously — no Task deferral for color-only backgrounds
-        if case .exportCancelled = receivedOutput {
-            // OK
-        } else {
-            XCTFail("Expected .exportCancelled synchronously for color-only background, got \(String(describing: receivedOutput))")
-        }
+        await fulfillment(of: [cancelExpectation], timeout: 5.0)
     }
 
     // MARK: 7. Export success — texture loaded before output

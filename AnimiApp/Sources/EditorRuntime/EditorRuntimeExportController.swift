@@ -37,6 +37,7 @@ internal final class EditorRuntimeExportController {
     var preExportState: EditorRuntimeState?
     var preflightContinuation: CheckedContinuation<EditorRuntime.ExportPreflightChoice, Never>?
     var exportTeardownOccurred = false
+    private(set) var isRestoringPreviewAfterExport = false
     var makeDeliverer: () -> ExportDelivering = { ExportDeliveryCoordinator() }
 
     var isExporting: Bool { activeExportRequest != nil }
@@ -48,6 +49,7 @@ internal final class EditorRuntimeExportController {
     // MARK: - Public API
 
     func startExport(policy: ExportDeliveryPolicy) {
+        guard !isRestoringPreviewAfterExport else { return }
         guard runtime.state == .timelinePreview || {
             if case .sceneEdit = runtime.state { return true }
             return false
@@ -70,15 +72,14 @@ internal final class EditorRuntimeExportController {
         preflightContinuation?.resume(returning: .cancel)
         preflightContinuation = nil
         clearActiveExportRequest()
-        let needsReload = exportTeardownOccurred && runtime.background.hasImageBackgroundRegions
-        restorePreExportState()
-        if needsReload {
-            Task { [weak runtime] in
-                guard let runtime else { return }
-                await runtime.background.reloadBackgroundTextures()
+        if exportTeardownOccurred {
+            Task { [weak self, weak runtime] in
+                guard let self, let runtime else { return }
+                await self.restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
                 runtime.onOutput?(.exportCancelled)
             }
         } else {
+            restorePreExportState()
             runtime.onOutput?(.exportCancelled)
         }
     }
@@ -109,6 +110,7 @@ internal final class EditorRuntimeExportController {
     }
 
     func executeExport() async {
+        guard !isRestoringPreviewAfterExport else { return }
         guard runtime.state == .exporting else { return }
         guard let ctx = runtime.metalContext else {
             abortExport(message: "No Metal context available")
@@ -144,12 +146,17 @@ internal final class EditorRuntimeExportController {
         activeExportRequest = request
         handleExportCompletion(result: result, requestId: request.id)
     }
+
+    func setRestoringForTesting(_ value: Bool) {
+        isRestoringPreviewAfterExport = value
+    }
     #endif
 
     // MARK: - Export Mode Management
 
     func enterExportMode() {
         runtime.stopPlayback()
+        runtime.cancelPendingPlayheadResolve()
         runtime.previewAudio.controller.teardown()
         runtime.previewAudio.cancelBuild()
         runtime.background.backgroundTextureService?.clearAllTrackedTextures()
@@ -159,11 +166,23 @@ internal final class EditorRuntimeExportController {
     }
 
     func exitExportModeToIdle() async {
-        let needsReload = exportTeardownOccurred && runtime.background.hasImageBackgroundRegions
+        await restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
+    }
+
+    private func restorePreviewAfterExportTeardownIfNeeded(runtime: EditorRuntime) async {
+        guard exportTeardownOccurred else {
+            restorePreExportState()
+            return
+        }
+        let needsBackgroundReload = runtime.background.hasImageBackgroundRegions
         restorePreExportState()
-        if needsReload {
+        isRestoringPreviewAfterExport = true
+        defer { isRestoringPreviewAfterExport = false }
+
+        if needsBackgroundReload {
             await runtime.background.reloadBackgroundTextures()
         }
+        await runtime.restorePreviewResourcesAfterExport()
     }
 
     func restorePreExportState() {
@@ -486,16 +505,11 @@ internal final class EditorRuntimeExportController {
             logger.info("[Export] Ignoring stale completion")
             return
         }
-        let needsReload = exportTeardownOccurred && runtime.background.hasImageBackgroundRegions
-        restorePreExportState()
-        if needsReload {
-            Task { [weak self, weak runtime] in
-                guard let self, let runtime else { return }
-                await runtime.background.reloadBackgroundTextures()
-                self.emitExportCompletionOutput(result: result, requestId: requestId)
-            }
-        } else {
-            emitExportCompletionOutput(result: result, requestId: requestId)
+        Task { [weak self, weak runtime] in
+            guard let self, let runtime else { return }
+            await self.restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
+            guard self.isActiveExportRequest(requestId) else { return }
+            self.emitExportCompletionOutput(result: result, requestId: requestId)
         }
     }
 

@@ -1498,6 +1498,11 @@ public final class UserMediaService {
         tickCounter = 0
     }
 
+    #if DEBUG
+    /// Test seam: number of active video providers (re-created by setVideo/bind).
+    public var activeVideoProviderCount: Int { videoProviders.count }
+    #endif
+
     // MARK: - Export Snapshot (PR-E3)
 
     /// Returns a snapshot of video selections for export.
