@@ -526,8 +526,18 @@ final class EditorViewController: UIViewController {
 
     // MARK: - Internal Helpers (PR11: metalView access for owners)
 
-    func requestRender() { metalView.setNeedsDisplay() }
+    func requestRender() {
+        #if DEBUG
+        requestRenderCallCountForTesting += 1
+        #endif
+        metalView.setNeedsDisplay()
+    }
     func setMetalViewPaused(_ paused: Bool) { metalView.isPaused = paused }
+
+    #if DEBUG
+    var isMetalViewPausedForTesting: Bool { metalView.isPaused }
+    private(set) var requestRenderCallCountForTesting = 0
+    #endif
     var metalDevice: MTLDevice? { metalView.device }
     var metalColorPixelFormat: MTLPixelFormat { metalView.colorPixelFormat }
     var commandQueue: MTLCommandQueue? { _commandQueue }

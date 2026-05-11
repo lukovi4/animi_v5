@@ -88,26 +88,28 @@ internal final class EditorExportFlowController {
     }
 
     func handleExportRenderSucceeded(_ url: URL) {
-        let vc = viewController
-        vc.setMetalViewPaused(false)
-        vc.requestRender()
+        restorePreviewRenderSurfaceAfterExport()
         exportProgressVC?.updateState(.savingToPhotos)
     }
 
     func handleExportRenderFailed(_ error: Error) {
-        let vc = viewController
-        vc.setMetalViewPaused(false)
-        vc.requestRender()
+        restorePreviewRenderSurfaceAfterExport()
         dismissPresentedExportUIIfNeeded {
             self.presentExportError(error)
         }
     }
 
     func handleExportCancelled() {
-        let vc = viewController
-        vc.setMetalViewPaused(false)
-        vc.requestRender()
-        vc.dismiss(animated: true)
+        restorePreviewRenderSurfaceAfterExport()
+        viewController.dismiss(animated: true)
+    }
+
+    /// Restore on-demand rendering after export ends.
+    /// `isPaused = true` returns MTKView to on-demand mode (matching boot state).
+    /// `requestRender()` draws one still frame so the preview isn't blank.
+    internal func restorePreviewRenderSurfaceAfterExport() {
+        viewController.setMetalViewPaused(true)
+        viewController.requestRender()
     }
 
     func handleExportDeliveryShareHandoff(_ fileURL: URL) {
