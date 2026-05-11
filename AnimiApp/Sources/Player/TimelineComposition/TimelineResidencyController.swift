@@ -79,7 +79,28 @@ internal final class TimelineResidencyController {
 
     // MARK: - Decoder Allocation
 
-    /// Returns local frames for every scene eligible for decoder allocation.
+    /// Returns local frames for only the active render participants (no warm scenes).
+    func activePlaybackLocalFrames(
+        math: TimelineTransitionMath,
+        mode: TimelineTransitionMath.RenderMode
+    ) -> [UUID: Int] {
+        switch mode {
+        case .single(let sceneIndex, let localFrame):
+            guard sceneIndex < math.sceneItems.count else { return [:] }
+            return [math.sceneItems[sceneIndex].id: localFrame]
+
+        case .transition(let aIndex, let frameA, let bIndex, let frameB, _, _):
+            guard aIndex < math.sceneItems.count,
+                  bIndex < math.sceneItems.count else { return [:] }
+            return [
+                math.sceneItems[aIndex].id: frameA,
+                math.sceneItems[bIndex].id: frameB
+            ]
+        }
+    }
+
+    /// Returns local frames for residency/diagnostic purposes (active + warm boundary frames).
+    /// Not used for realtime playback — see `activePlaybackLocalFrames` instead.
     func decoderAllocationLocalFrames(
         math: TimelineTransitionMath,
         mode: TimelineTransitionMath.RenderMode

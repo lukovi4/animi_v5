@@ -514,12 +514,9 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
 
     // MARK: - DEFECT-02 Proof Tests
 
-    /// DEFECT-02 proof: warm scenes do not receive spare decoder grants.
-    /// When budget has spare capacity (3 decoders, 1 pinned scene using 1), warm scenes
-    /// should receive the remaining 2 grants — but they don't because `shouldHaveActiveDecoders`
-    /// only returns true for pinned.
+    /// Warm scenes must NOT receive playback grants — only pinned scenes get grants.
     @MainActor
-    func testWarmScenesReceiveSpareBudgetGrants() async throws {
+    func testWarmScenesDoNotReceivePlaybackGrants() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -539,7 +536,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         for (i, id) in ids.enumerated() {
             let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
             spy.isSceneMediaReady = true
-            // Configure 1 candidate for every frame in this scene's range
             let candidate = PlaybackVideoCandidate(
                 blockId: "video_\(i)",
                 priority: BlockPriorityInfo(isVisible: true, area: 100, zIndex: 1)
@@ -574,7 +570,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         // Scene 1 is pinned, scenes 0 and 2 are warm
         await engine.prepareForPlayback(startingAt: 150)
 
-        // Get budget snapshot
         guard let snapshot = engine.debugPlaybackBudgetSnapshot(at: 150) else {
             XCTFail("debugPlaybackBudgetSnapshot should return non-nil")
             return
@@ -585,10 +580,217 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         XCTAssertTrue(snapshot.warmInstanceIds.contains(ids[0]), "Scene 0 should be warm")
         XCTAssertTrue(snapshot.warmInstanceIds.contains(ids[2]), "Scene 2 should be warm")
 
+        // Warm scenes must NOT receive playback grants
         let warmGrants0 = snapshot.grantsByInstance[ids[0]] ?? []
         let warmGrants2 = snapshot.grantsByInstance[ids[2]] ?? []
-        XCTAssertFalse(warmGrants0.isEmpty, "Warm scene 0 should receive spare grant, got empty")
-        XCTAssertFalse(warmGrants2.isEmpty, "Warm scene 2 should receive spare grant, got empty")
+        XCTAssertTrue(warmGrants0.isEmpty, "Warm scene 0 must not receive playback grants")
+        XCTAssertTrue(warmGrants2.isEmpty, "Warm scene 2 must not receive playback grants")
+
+        // Pinned scene still gets its grant
+        let pinnedGrants = snapshot.grantsByInstance[ids[1]] ?? []
+        XCTAssertFalse(pinnedGrants.isEmpty, "Pinned scene 1 must receive playback grant")
+    }
+
+    /// Regression: startPlayback must not start warm scenes even with spare budget.
+    @MainActor
+    func testStartPlayback_doesNotStartWarmScenes_evenWithSpareBudget() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let ids = (0..<3).map { _ in UUID() }
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 3, framesPerScene: 100, fixedIds: ids)
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources {
+            cache.addToCache(res)
+        }
+
+        var spies: [UUID: SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy] = [:]
+        for (i, id) in ids.enumerated() {
+            let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+            spy.isSceneMediaReady = true
+            let candidate = PlaybackVideoCandidate(
+                blockId: "video_\(i)",
+                priority: BlockPriorityInfo(isVisible: true, area: 100, zIndex: 1)
+            )
+            for frame in 0..<100 {
+                spy.playbackCandidatesByFrame[frame] = [candidate]
+            }
+            spies[id] = spy
+        }
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spies[instanceId]!
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+
+        // Playhead at frame 50 = scene 0 active, scene 1 warm next, scene 2 far
+        await engine.prepareForPlayback(startingAt: 50)
+        engine.startPlayback(at: 50)
+
+        XCTAssertEqual(spies[ids[0]]?.budgetedStartCalls.count, 1, "Active scene 0 should receive start")
+        XCTAssertEqual(spies[ids[1]]?.budgetedStartCalls.count, 0, "Warm next scene 1 must not receive start")
+        XCTAssertEqual(spies[ids[2]]?.budgetedStartCalls.count, 0, "Far scene 2 must not receive start")
+    }
+
+    /// Regression: syncPlaybackTick must not tick warm scenes.
+    @MainActor
+    func testSyncPlaybackTick_doesNotTickWarmScenes() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let ids = (0..<3).map { _ in UUID() }
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 3, framesPerScene: 100, fixedIds: ids)
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources {
+            cache.addToCache(res)
+        }
+
+        var spies: [UUID: SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy] = [:]
+        for (i, id) in ids.enumerated() {
+            let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+            spy.isSceneMediaReady = true
+            let candidate = PlaybackVideoCandidate(
+                blockId: "video_\(i)",
+                priority: BlockPriorityInfo(isVisible: true, area: 100, zIndex: 1)
+            )
+            for frame in 0..<100 {
+                spy.playbackCandidatesByFrame[frame] = [candidate]
+            }
+            spies[id] = spy
+        }
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spies[instanceId]!
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+
+        await engine.prepareForPlayback(startingAt: 50)
+        engine.startPlayback(at: 50)
+        engine.syncPlaybackTick(50)
+
+        XCTAssertEqual(spies[ids[0]]?.budgetedTickCalls.count, 1, "Active scene 0 should receive tick")
+        XCTAssertEqual(spies[ids[1]]?.budgetedTickCalls.count, 0, "Warm scene 1 must not receive tick")
+    }
+
+    /// Regression: transition playback starts only transition participants, not warm next.
+    @MainActor
+    func testTransitionPlaybackStartsOnlyTransitionParticipants() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let ids = (0..<3).map { i in
+            UUID(uuidString: "\(String(repeating: String(i), count: 8))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 12))")!
+        }
+
+        let durationUs: TimeUs = 100 * 1_000_000 / 30
+        let sceneItems: [TimelineItem] = ids.map { id in
+            TimelineItem(id: id, payloadId: UUID(), kind: .scene, durationUs: durationUs)
+        }
+
+        // 10-frame fade transition between scene 0 and 1
+        let boundaryKey = SceneBoundaryKey(ids[0], ids[1])
+        let transition = SceneTransition(type: .fade, durationFrames: 10)
+
+        var payloads: [UUID: TimelinePayload] = [:]
+        var resourcesList: [SceneTypeResourcesCache.Resources] = []
+        for (i, item) in sceneItems.enumerated() {
+            let sceneTypeId = "scene-type-\(i)"
+            payloads[item.payloadId] = .scene(ScenePayload(sceneTypeId: sceneTypeId))
+            resourcesList.append(makeMinimalResources(durationFrames: 100, sceneTypeId: sceneTypeId))
+        }
+
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: sceneItems)
+        let timeline = CanonicalTimeline(
+            tracks: [sceneTrack],
+            payloads: payloads,
+            boundaryTransitions: [boundaryKey: transition]
+        )
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resourcesList {
+            cache.addToCache(res)
+        }
+
+        var spies: [UUID: SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy] = [:]
+        for (i, id) in ids.enumerated() {
+            let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+            spy.isSceneMediaReady = true
+            let candidate = PlaybackVideoCandidate(
+                blockId: "video_\(i)",
+                priority: BlockPriorityInfo(isVisible: true, area: 100, zIndex: 1)
+            )
+            for frame in 0..<100 {
+                spy.playbackCandidatesByFrame[frame] = [candidate]
+            }
+            spies[id] = spy
+        }
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            mediaLocator: StubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spies[instanceId]!
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+
+        // Playhead in transition zone between scene 0 and 1
+        let transitionFrame = 95
+        await engine.prepareForPlayback(startingAt: transitionFrame)
+        engine.startPlayback(at: transitionFrame)
+
+        XCTAssertEqual(spies[ids[0]]?.budgetedStartCalls.count, 1, "Transition A (scene 0) should receive start")
+        XCTAssertEqual(spies[ids[1]]?.budgetedStartCalls.count, 1, "Transition B (scene 1) should receive start")
+        XCTAssertEqual(spies[ids[2]]?.budgetedStartCalls.count, 0, "Warm next (scene 2) must not receive start")
     }
 
     // MARK: - TT-03 Completion: Active->Warm Transition Tests

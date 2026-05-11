@@ -111,10 +111,11 @@ public final class GlobalVideoBudgetCoordinator {
         }
     }
 
-    /// Returns whether a scene instance participates in decoder allocation.
-    /// Pinned scenes are considered first; warm scenes receive spare capacity only if budget allows.
+    /// Returns whether a scene instance should run active decoders for realtime playback.
+    /// Only pinned scenes (current render participants) qualify.
+    /// Warm scenes are resident/prepared but do not run active decoders.
     public func shouldHaveActiveDecoders(for instanceId: UUID) -> Bool {
-        pinnedInstanceIds.contains(instanceId) || warmInstanceIds.contains(instanceId)
+        pinnedInstanceIds.contains(instanceId)
     }
 
     /// Returns ordered list of scene instances to evict.

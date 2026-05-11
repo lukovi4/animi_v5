@@ -50,8 +50,8 @@ internal final class TimelinePlaybackSyncController {
         for instanceId in residentIds {
             guard let localFrame = localFramesByInstanceId[instanceId] else { continue }
             let grantedBlockIds = grants[instanceId] ?? []
-            let shouldSync = activeInstanceIds.contains(instanceId) || !grantedBlockIds.isEmpty
-            guard shouldSync else { continue }
+            let isActive = activeInstanceIds.contains(instanceId)
+            guard isActive else { continue }
 
             if isStart {
                 engine.instanceRuntimes[instanceId]?.startPlayback(at: localFrame, grantedBlockIds: grantedBlockIds, hostTime: hostTime)

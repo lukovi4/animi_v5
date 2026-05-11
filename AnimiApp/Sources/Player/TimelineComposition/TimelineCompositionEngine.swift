@@ -412,7 +412,7 @@ public final class TimelineCompositionEngine {
         budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
         residencyController.evictNonResidentRuntimes(math: math)
 
-        let localFrames = residencyController.decoderAllocationLocalFrames(math: math, mode: mode)
+        let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: mode)
         let grants = residencyController.playbackBudgetGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
         playbackSyncController.applyPlaybackBudget(
             mode: mode, math: math, localFramesByInstanceId: localFrames,
@@ -433,7 +433,7 @@ public final class TimelineCompositionEngine {
         budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
         residencyController.evictNonResidentRuntimes(math: math)
 
-        let localFrames = residencyController.decoderAllocationLocalFrames(math: math, mode: mode)
+        let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: mode)
         let grants = residencyController.playbackBudgetGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
         playbackSyncController.applyPlaybackBudget(
             mode: mode, math: math, localFramesByInstanceId: localFrames,
@@ -584,7 +584,7 @@ public final class TimelineCompositionEngine {
 
         budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
 
-        let localFrames = residencyController.decoderAllocationLocalFrames(math: math, mode: renderMode)
+        let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: renderMode)
         let grants = residencyController.playbackBudgetGrants(math: math, mode: renderMode, localFramesByInstanceId: localFrames)
 
         let activeIds = budgetCoordinator.prioritizedInstances(
