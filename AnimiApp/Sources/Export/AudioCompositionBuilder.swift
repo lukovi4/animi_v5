@@ -233,8 +233,15 @@ public final class AudioCompositionBuilder {
         projectDuration: Double,
         defaultVolume: Float,
         transitionMath: TimelineTransitionMath? = nil,
-        sceneIndex: Int = 0
+        sceneIndex: Int = 0,
+        sceneDurationFrames: Int? = nil,
+        nativeSceneDurationFrames: Int? = nil,
+        outgoingTransitionTailFrames: Int = 0
     ) throws -> AVMutableAudioMixInputParameters? {
+        // Volume=0 means silence — skip track entirely
+        let volume = max(0, min(1, selection.volume))
+        guard volume > 0 else { return nil }
+
         let asset = AVURLAsset(url: selection.url)
 
         // Get audio track (video might not have audio - skip with DEBUG warning)
@@ -267,7 +274,26 @@ public final class AudioCompositionBuilder {
             // Single-scene: use local frame directly
             blockStartTime = Double(block.timing.startFrame) / Double(fps)
         }
-        let blockVisibility = Double(block.timing.endFrame - block.timing.startFrame) / Double(fps)
+        // Canonical visibility formula following the render contract:
+        // - Timeline localFrame runs raw 0...timelineDurationFrames
+        // - After native scene end, last frame is held until timeline end
+        // - No time-stretching of block start/end — native timing plays as-is
+        let blockVisibility: Double
+        if let sceneDurationFrames, let nativeSceneDurationFrames, nativeSceneDurationFrames > 0 {
+            let localStart = block.timing.startFrame
+            let localEnd: Int
+            if block.timing.endFrame >= nativeSceneDurationFrames {
+                // Block visible to native end → extends to timeline end + outgoing transition tail
+                localEnd = sceneDurationFrames + outgoingTransitionTailFrames
+            } else {
+                // Partial block — native timing, no stretch, no tail
+                localEnd = block.timing.endFrame
+            }
+            blockVisibility = Double(max(0, localEnd - localStart)) / Double(fps)
+        } else {
+            // Single-scene / no stretch info — use native timing
+            blockVisibility = Double(block.timing.endFrame - block.timing.startFrame) / Double(fps)
+        }
         let windowDuration = max(0, selection.winEnd - selection.winStart)
         let availableProject = max(0, projectDuration - blockStartTime)
 
@@ -292,12 +318,72 @@ public final class AudioCompositionBuilder {
             return nil
         }
 
-        // Volume parameters
-        let volume = selection.volume > 0 ? selection.volume : defaultVolume
         let params = AVMutableAudioMixInputParameters(track: compositionTrack)
         params.setVolume(volume, at: .zero)
 
+        // Apply transition ramps if multi-scene
+        if let math = transitionMath {
+            applyTransitionRamps(
+                params: params,
+                sceneIndex: sceneIndex,
+                blockStartTime: blockStartTime,
+                insertDuration: insertDuration,
+                volume: volume,
+                transitionMath: math,
+                fps: fps
+            )
+        }
+
         return params
+    }
+
+    // MARK: - Transition Ramps
+
+    /// Applies volume ramps during scene transitions for video slot audio.
+    /// Outgoing scene fades out, incoming scene fades in over the transition window.
+    private func applyTransitionRamps(
+        params: AVMutableAudioMixInputParameters,
+        sceneIndex: Int,
+        blockStartTime: Double,
+        insertDuration: Double,
+        volume: Float,
+        transitionMath: TimelineTransitionMath,
+        fps: Int
+    ) {
+        let blockEndTime = blockStartTime + insertDuration
+
+        for window in transitionMath.allTransitionWindows {
+            let windowStartSec = Double(window.startFrame) / Double(fps)
+            let windowEndSec = Double(window.endFrame) / Double(fps)
+            let windowDuration = windowEndSec - windowStartSec
+            guard windowDuration > 0 else { continue }
+
+            // Compute intersection of transition window with this audio block
+            let intersectionStart = max(blockStartTime, windowStartSec)
+            let intersectionEnd = min(blockEndTime, windowEndSec)
+            guard intersectionEnd > intersectionStart else { continue }
+
+            let startTime = CMTime(seconds: intersectionStart, preferredTimescale: Self.timescale)
+            let rampDuration = CMTime(seconds: intersectionEnd - intersectionStart, preferredTimescale: Self.timescale)
+
+            if window.fromSceneIndex == sceneIndex {
+                // Outgoing: fade volume → 0
+                let startProgress = (intersectionStart - windowStartSec) / windowDuration
+                let endProgress = (intersectionEnd - windowStartSec) / windowDuration
+                let startVol = volume * Float(1.0 - startProgress)
+                let endVol = volume * Float(1.0 - endProgress)
+                params.setVolumeRamp(fromStartVolume: startVol, toEndVolume: endVol, timeRange: CMTimeRange(start: startTime, duration: rampDuration))
+            }
+
+            if window.toSceneIndex == sceneIndex {
+                // Incoming: fade 0 → volume
+                let startProgress = (intersectionStart - windowStartSec) / windowDuration
+                let endProgress = (intersectionEnd - windowStartSec) / windowDuration
+                let startVol = volume * Float(startProgress)
+                let endVol = volume * Float(endProgress)
+                params.setVolumeRamp(fromStartVolume: startVol, toEndVolume: endVol, timeRange: CMTimeRange(start: startTime, duration: rampDuration))
+            }
+        }
     }
 
     // MARK: - Timeline Build (Multi-Scene)
@@ -328,6 +414,16 @@ public final class AudioCompositionBuilder {
         // 2. Add original audio from video slots for each scene (if enabled)
         if plan.includeOriginalFromVideoSlots {
             for data in sceneData {
+                // Compute outgoing transition tail frames for this scene (once per scene)
+                var outgoingTailFrames = 0
+                for window in transitionMath.allTransitionWindows {
+                    guard window.fromSceneIndex == data.sceneIndex else { continue }
+                    let sceneEnd = transitionMath.compressedStartFrame(forSceneAt: data.sceneIndex)
+                        + transitionMath.durationFrames(forSceneAt: data.sceneIndex)
+                    outgoingTailFrames = max(0, window.endFrame - sceneEnd)
+                    break
+                }
+
                 for block in data.runtime.blocks {
                     guard let selection = data.videoSelections[block.blockId] else { continue }
                     guard selection.isValid else { continue }
@@ -341,7 +437,10 @@ public final class AudioCompositionBuilder {
                         projectDuration: projectDuration,
                         defaultVolume: plan.originalDefaultVolume,
                         transitionMath: transitionMath,
-                        sceneIndex: data.sceneIndex
+                        sceneIndex: data.sceneIndex,
+                        sceneDurationFrames: transitionMath.durationFrames(forSceneAt: data.sceneIndex),
+                        nativeSceneDurationFrames: data.runtime.durationFrames,
+                        outgoingTransitionTailFrames: outgoingTailFrames
                     )
                     if let params { mixParameters.append(params) }
                 }

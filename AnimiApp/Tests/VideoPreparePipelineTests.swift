@@ -84,8 +84,8 @@ final class VideoPreparePipelineTests: XCTestCase {
 
         XCTAssertEqual(result.trimStart, 0)
         XCTAssertGreaterThan(result.trimEnd, 0.5, "Duration should be roughly 1s")
-        XCTAssertTrue(result.isMuted, "New video imports default to muted")
-        XCTAssertEqual(result.volume, 1.0)
+        XCTAssertEqual(result.isMuted, VideoAudioPolicy.defaultIsMuted, "Should match policy default")
+        XCTAssertEqual(result.volume, VideoAudioPolicy.defaultVolume, "Should match policy default")
     }
 
     /// Missing file throws fileNotReadable.

@@ -212,6 +212,10 @@ private let logger = Logger(subsystem: "com.animi.app", category: "SceneEditTool
             self?.videoTrimCoordinator.enterVideoTrim(for: blockId)
         }
 
+        container.onVideoVolume = { [weak self] blockId in
+            self?.presentVideoVolumeSlider(blockId: blockId)
+        }
+
         container.onTrimCancel = { [weak self] in
             self?.videoTrimCoordinator.cancelVideoTrim()
         }
@@ -259,6 +263,50 @@ private let logger = Logger(subsystem: "com.animi.app", category: "SceneEditTool
             self.session.dispatch(.resetMediaPlacement(sceneInstanceId: instanceId, blockId: blockId))
             self.updateMediaBlockActionBarForSelectedBlock()
         }
+    }
+
+    // MARK: - Video Volume
+
+    private func presentVideoVolumeSlider(blockId: String) {
+        guard let instanceId = sceneEditTargetInstanceId,
+              let slot = session.state?.draft.sceneInstanceStates[instanceId]?.mediaSlotsByBlockId?[blockId],
+              slot.mediaRef.mediaKind == .video,
+              let videoWindow = slot.videoWindow else { return }
+
+        let alert = UIAlertController(
+            title: "Video Volume",
+            message: "\n\n",
+            preferredStyle: .alert
+        )
+
+        let slider = UISlider()
+        slider.minimumValue = 0.0
+        slider.maximumValue = 1.0
+        slider.value = videoWindow.isMuted ? 0.0 : videoWindow.volume
+        slider.translatesAutoresizingMaskIntoConstraints = false
+
+        alert.view.addSubview(slider)
+        NSLayoutConstraint.activate([
+            slider.leadingAnchor.constraint(equalTo: alert.view.leadingAnchor, constant: 20),
+            slider.trailingAnchor.constraint(equalTo: alert.view.trailingAnchor, constant: -20),
+            slider.topAnchor.constraint(equalTo: alert.view.topAnchor, constant: 60),
+        ])
+
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Done", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let updated = videoWindow.applyingSliderValue(slider.value)
+
+            try? self.runtime?.applyPersistedVideoSelection(blockId: blockId, updated)
+
+            self.session.dispatch(.setVideoSelection(
+                sceneInstanceId: instanceId,
+                blockId: blockId,
+                selection: updated
+            ))
+        })
+
+        delegate?.sceneEditModule(self, presentAlert: alert)
     }
 
     // MARK: - Destructive Flow Helpers
@@ -365,6 +413,11 @@ private let logger = Logger(subsystem: "com.animi.app", category: "SceneEditTool
 
         let isPlacementDefault = slot?.asset.placement.isNearDefault ?? true
 
+        let canAdjustVideoAudio: Bool = {
+            guard mediaKind == .video, hasMedia else { return false }
+            return slot?.videoWindow != nil
+        }()
+
         container.configureMediaBlockActionBar(
             blockId: blockId,
             allowedMedia: ctx.allowedMedia,
@@ -373,6 +426,7 @@ private let logger = Logger(subsystem: "com.animi.app", category: "SceneEditTool
             isEnabled: isEnabled,
             mediaKind: mediaKind,
             canTrimVideo: canTrimVideo,
+            canAdjustVideoAudio: canAdjustVideoAudio,
             ingestStatus: ingestStatus,
             showsIngestStatus: true,
             isPlacementDefault: isPlacementDefault

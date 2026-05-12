@@ -52,6 +52,6 @@ public enum VideoPreparePipeline {
             throw VideoPreparePipelineError.invalidDuration(seconds)
         }
 
-        return PersistedVideoSelection(trimStart: 0, trimEnd: seconds, isMuted: true, volume: 1.0)
+        return PersistedVideoSelection(trimStart: 0, trimEnd: seconds, isMuted: VideoAudioPolicy.defaultIsMuted, volume: VideoAudioPolicy.defaultVolume)
     }
 }

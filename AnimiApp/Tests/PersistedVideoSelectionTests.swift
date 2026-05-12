@@ -92,6 +92,52 @@ final class PersistedVideoSelectionTests: XCTestCase {
         XCTAssertEqual(decoded.mediaSlotsByBlockId?["block2"]?.videoWindow?.isMuted, true)
     }
 
+    // MARK: - applyingSliderValue
+
+    private func baseSelection() -> PersistedVideoSelection {
+        PersistedVideoSelection(trimStart: 0, trimEnd: 5.0, isMuted: false, volume: 1.0)
+    }
+
+    func test_applySlider_zero_mutesAndSetsVolumeZero() {
+        let result = baseSelection().applyingSliderValue(0)
+        XCTAssertEqual(result.volume, 0)
+        XCTAssertTrue(result.isMuted)
+    }
+
+    func test_applySlider_negative_clampsToZeroAndMutes() {
+        let result = baseSelection().applyingSliderValue(-0.5)
+        XCTAssertEqual(result.volume, 0)
+        XCTAssertTrue(result.isMuted)
+    }
+
+    func test_applySlider_half_setsVolumeAndUnmutes() {
+        let result = baseSelection().applyingSliderValue(0.5)
+        XCTAssertEqual(result.volume, 0.5)
+        XCTAssertFalse(result.isMuted)
+    }
+
+    func test_applySlider_one_fullVolume() {
+        let result = baseSelection().applyingSliderValue(1.0)
+        XCTAssertEqual(result.volume, 1.0)
+        XCTAssertFalse(result.isMuted)
+    }
+
+    func test_applySlider_greaterThanOne_clampsToOne() {
+        let result = baseSelection().applyingSliderValue(1.5)
+        XCTAssertEqual(result.volume, 1.0)
+        XCTAssertFalse(result.isMuted)
+    }
+
+    func test_applySlider_preservesTrimFields() {
+        var sel = baseSelection()
+        sel.trimStart = 1.0
+        sel.trimEnd = 3.0
+        let result = sel.applyingSliderValue(0.7)
+        XCTAssertEqual(result.trimStart, 1.0)
+        XCTAssertEqual(result.trimEnd, 3.0)
+        XCTAssertEqual(result.volume, 0.7, accuracy: 0.001)
+    }
+
     func test_sceneState_nilMediaSlots() throws {
         // JSON without mediaSlotsByBlockId field
         let json = """

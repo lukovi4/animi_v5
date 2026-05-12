@@ -123,6 +123,9 @@ final class EditorLayoutContainerView: UIView {
     /// Called when Trim button is tapped
     var onTrimVideo: ((String) -> Void)?
 
+    /// Called when Volume button is tapped
+    var onVideoVolume: ((String) -> Void)?
+
     /// Called when Reset Transform button is tapped
     var onResetTransform: ((String) -> Void)?
 
@@ -477,6 +480,9 @@ final class EditorLayoutContainerView: UIView {
         mediaBlockActionBar.onTrimVideo = { [weak self] blockId in
             self?.onTrimVideo?(blockId)
         }
+        mediaBlockActionBar.onVideoVolume = { [weak self] blockId in
+            self?.onVideoVolume?(blockId)
+        }
         mediaBlockActionBar.onAnimation = { [weak self] blockId in
             self?.onAnimation?(blockId)
         }
@@ -715,6 +721,7 @@ final class EditorLayoutContainerView: UIView {
         isEnabled: Bool,
         mediaKind: MediaKind? = nil,
         canTrimVideo: Bool = false,
+        canAdjustVideoAudio: Bool = false,
         ingestStatus: IngestSlotStatus = .idle,
         showsIngestStatus: Bool = false,
         isPlacementDefault: Bool = true
@@ -727,6 +734,7 @@ final class EditorLayoutContainerView: UIView {
             isEnabled: isEnabled,
             mediaKind: mediaKind,
             canTrimVideo: canTrimVideo,
+            canAdjustVideoAudio: canAdjustVideoAudio,
             ingestStatus: ingestStatus,
             showsIngestStatus: showsIngestStatus,
             isPlacementDefault: isPlacementDefault

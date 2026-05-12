@@ -23,6 +23,9 @@ final class MediaBlockActionBar: UIView {
     /// Called when Trim button is tapped. Parameter: blockId.
     var onTrimVideo: ((String) -> Void)?
 
+    /// Called when Volume button is tapped. Parameter: blockId.
+    var onVideoVolume: ((String) -> Void)?
+
     /// Called when Reset Transform button is tapped. Parameter: blockId.
     var onResetTransform: ((String) -> Void)?
 
@@ -119,6 +122,19 @@ final class MediaBlockActionBar: UIView {
         return button
     }()
 
+    private lazy var volumeButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "speaker.wave.2")
+        config.title = "Volume"
+        config.imagePlacement = .top
+        config.imagePadding = 4
+        config.baseForegroundColor = .label
+        let button = UIButton(configuration: config)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(volumeTapped), for: .touchUpInside)
+        return button
+    }()
+
     private lazy var animationButton: UIButton = {
         var config = UIButton.Configuration.plain()
         config.image = UIImage(systemName: "sparkles.rectangle.stack")
@@ -199,6 +215,7 @@ final class MediaBlockActionBar: UIView {
         stackView.addArrangedSubview(addPhotoButton)
         stackView.addArrangedSubview(addVideoButton)
         stackView.addArrangedSubview(trimButton)
+        stackView.addArrangedSubview(volumeButton)
         stackView.addArrangedSubview(animationButton)
         stackView.addArrangedSubview(toggleEnabledButton)
         stackView.addArrangedSubview(resetTransformButton)
@@ -243,6 +260,7 @@ final class MediaBlockActionBar: UIView {
         isEnabled: Bool,
         mediaKind: MediaKind? = nil,
         canTrimVideo: Bool = false,
+        canAdjustVideoAudio: Bool = false,
         ingestStatus: IngestSlotStatus = .idle,
         showsIngestStatus: Bool = false,
         isPlacementDefault: Bool = true
@@ -265,6 +283,11 @@ final class MediaBlockActionBar: UIView {
         trimButton.isHidden = !isVideoSlot
         trimButton.isEnabled = canTrimVideo
         trimButton.alpha = canTrimVideo ? 1.0 : 0.5
+
+        // Volume button: shown only for video slots with media
+        volumeButton.isHidden = !canAdjustVideoAudio
+        volumeButton.isEnabled = canAdjustVideoAudio
+        volumeButton.alpha = canAdjustVideoAudio ? 1.0 : 0.5
 
         // Animation button: shown if block has variants
         animationButton.isHidden = !hasVariants
@@ -329,6 +352,8 @@ final class MediaBlockActionBar: UIView {
             addVideoButton.alpha = 0.5
             trimButton.isEnabled = false
             trimButton.alpha = 0.5
+            volumeButton.isEnabled = false
+            volumeButton.alpha = 0.5
 
         case .failed:
             statusContainer.isHidden = false
@@ -357,6 +382,11 @@ final class MediaBlockActionBar: UIView {
     @objc private func trimVideoTapped() {
         guard let id = blockId else { return }
         onTrimVideo?(id)
+    }
+
+    @objc private func volumeTapped() {
+        guard let id = blockId else { return }
+        onVideoVolume?(id)
     }
 
     @objc private func animationTapped() {

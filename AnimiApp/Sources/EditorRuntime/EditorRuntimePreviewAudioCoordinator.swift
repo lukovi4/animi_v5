@@ -111,8 +111,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         }
         #endif
 
-        let plan = await runtime.buildAudioExportPlan(includeOriginalFromVideoSlots: false)
-        guard !plan.items.isEmpty else { return .noResolvableAudio }
+        let plan = await runtime.buildAudioExportPlan(includeOriginalFromVideoSlots: true)
 
         #if DEBUG
         if let gate = buildGate { await gate() }
@@ -122,11 +121,13 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         guard let engine = runtime.timelineCompositionEngine,
               let math = engine.transitionMath else { return .failed }
 
+        let sceneData = await engine.buildAudioSceneDataForPreview()
+
         let fps = Int(runtime.sceneFPS)
         let task = Task.detached { () -> BuiltAudioPipeline? in
             let builder = AudioCompositionBuilder()
             return try? builder.buildTimeline(
-                sceneData: [],
+                sceneData: sceneData,
                 transitionMath: math,
                 fps: fps,
                 plan: plan
@@ -136,8 +137,10 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         let result = await task.value
         self.buildTask = nil
 
-        if let result { return .pipeline(result) }
-        return .failed
+        guard let result, !result.composition.tracks(withMediaType: .audio).isEmpty else {
+            return .noResolvableAudio
+        }
+        return .pipeline(result)
     }
 
     private func installOnReady(generation gen: UInt) {

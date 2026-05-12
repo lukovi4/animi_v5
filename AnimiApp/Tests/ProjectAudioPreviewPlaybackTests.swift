@@ -1163,4 +1163,66 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
 
         runtime.stopPlayback()
     }
+
+    // MARK: - Video Slot Audio Dirty Marking
+
+    func test_videoSelectionChange_marksPreviewAudioDirty() async {
+        let (_, runtime) = await makeBootedRuntime()
+        let genBefore = runtime.previewAudioGeneration
+
+        let selection = PersistedVideoSelection(trimStart: 0, trimEnd: 1.0, isMuted: false, volume: 1.0)
+        try? runtime.sceneEdit.applyPersistedVideoSelection(blockId: "block-1", selection)
+
+        XCTAssertGreaterThan(runtime.previewAudioGeneration, genBefore,
+                            "applyPersistedVideoSelection should bump generation via markPreviewAudioDirty")
+    }
+
+    func test_videoSelectionToEngine_marksPreviewAudioDirty() async {
+        let (_, runtime) = await makeBootedRuntime()
+        let genBefore = runtime.previewAudioGeneration
+
+        let selection = PersistedVideoSelection(trimStart: 0, trimEnd: 1.0, isMuted: false, volume: 1.0)
+        runtime.sceneEdit.applyVideoSelectionToEngine(selection: selection, blockId: "block-1", instanceId: UUID())
+
+        XCTAssertGreaterThan(runtime.previewAudioGeneration, genBefore,
+                            "applyVideoSelectionToEngine should bump generation via markPreviewAudioDirty")
+    }
+
+    func test_mediaVisibilityChange_marksPreviewAudioDirty() async {
+        let (_, runtime) = await makeBootedRuntime()
+        let genBefore = runtime.previewAudioGeneration
+
+        _ = runtime.sceneEdit.applyMediaVisibilityChange(instanceId: UUID(), blockId: "block-1", visible: false)
+
+        XCTAssertGreaterThan(runtime.previewAudioGeneration, genBefore,
+                            "applyMediaVisibilityChange should bump generation via markPreviewAudioDirty")
+    }
+
+    func test_mediaSlotChange_marksPreviewAudioDirty() async throws {
+        let (session, runtime) = await makeBootedRuntime()
+
+        // Get the real instance ID from bootstrapped session (has sceneInstanceStates entry)
+        guard let editorState = session.state,
+              let instanceId = editorState.canonicalTimeline.sceneItems.first?.id else {
+            XCTFail("Bootstrapped session should have at least one scene item")
+            return
+        }
+
+        // Ensure sceneInstanceStates has an entry for this instance
+        // (bootstrap flow should have created one)
+        guard editorState.draft.sceneInstanceStates[instanceId] != nil else {
+            throw XCTSkip("Bootstrapped session has no sceneInstanceStates — cannot test async dirty path")
+        }
+
+        let genBefore = runtime.previewAudioGeneration
+
+        // applyMediaSlotChange with nil slot (remove) — triggers engine update Task
+        runtime.sceneEdit.applyMediaSlotChange(instanceId: instanceId, blockId: "block-1", slot: nil)
+
+        // The dirty mark happens inside a Task — yield to let it execute
+        for _ in 0..<20 { await Task.yield() }
+
+        XCTAssertGreaterThan(runtime.previewAudioGeneration, genBefore,
+                            "applyMediaSlotChange should bump generation via markPreviewAudioDirty")
+    }
 }

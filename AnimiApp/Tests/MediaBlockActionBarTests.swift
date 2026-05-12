@@ -310,6 +310,109 @@ final class MediaBlockActionBarTests: XCTestCase {
         XCTAssertEqual(status?.isHidden, true, "Status container should be hidden for idle")
     }
 
+    // MARK: - Volume Button
+
+    /// Volume button visible for video slot with media and canAdjustVideoAudio=true.
+    func test_videoSlotWithMedia_showsVolumeButton() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["video"],
+            hasVariants: false,
+            hasMedia: true,
+            isEnabled: true,
+            mediaKind: .video,
+            canTrimVideo: true,
+            canAdjustVideoAudio: true
+        )
+
+        let volume = button(titled: "Volume", in: bar)
+        XCTAssertNotNil(volume, "Should find Volume button")
+        XCTAssertEqual(volume?.isHidden, false, "Volume should be visible for video with audio")
+        XCTAssertEqual(volume?.isEnabled, true, "Volume should be enabled")
+    }
+
+    /// Volume button hidden for photo slots.
+    func test_photoSlot_hidesVolumeButton() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["photo"],
+            hasVariants: false,
+            hasMedia: true,
+            isEnabled: true,
+            mediaKind: .photo,
+            canAdjustVideoAudio: false
+        )
+
+        let volume = button(titled: "Volume", in: bar)
+        XCTAssertNotNil(volume, "Should find Volume button")
+        XCTAssertEqual(volume?.isHidden, true, "Volume should be hidden for photo slots")
+    }
+
+    /// Volume button hidden for empty slots.
+    func test_emptySlot_hidesVolumeButton() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["photo", "video"],
+            hasVariants: false,
+            hasMedia: false,
+            isEnabled: true,
+            canAdjustVideoAudio: false
+        )
+
+        let volume = button(titled: "Volume", in: bar)
+        XCTAssertNotNil(volume, "Should find Volume button")
+        XCTAssertEqual(volume?.isHidden, true, "Volume should be hidden for empty slots")
+    }
+
+    /// Volume button callback fires with correct blockId.
+    func test_videoVolumeButton_emitsBlockId() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["video"],
+            hasVariants: false,
+            hasMedia: true,
+            isEnabled: true,
+            mediaKind: .video,
+            canAdjustVideoAudio: true
+        )
+
+        var receivedBlockId: String?
+        bar.onVideoVolume = { blockId in
+            receivedBlockId = blockId
+        }
+
+        let volume = button(titled: "Volume", in: bar)
+        XCTAssertNotNil(volume, "Should find Volume button")
+        volume?.sendActions(for: .touchUpInside)
+        XCTAssertEqual(receivedBlockId, "b1", "Callback should receive correct blockId")
+    }
+
+    /// Processing ingest disables volume button.
+    func test_processingIngest_disablesVolumeButton() {
+        let bar = makeBar()
+        bar.configure(
+            blockId: "b1",
+            allowedMedia: ["video"],
+            hasVariants: false,
+            hasMedia: true,
+            isEnabled: true,
+            mediaKind: .video,
+            canTrimVideo: true,
+            canAdjustVideoAudio: true,
+            ingestStatus: .processing,
+            showsIngestStatus: true
+        )
+
+        let volume = button(titled: "Volume", in: bar)
+        XCTAssertNotNil(volume, "Should find Volume button")
+        XCTAssertEqual(volume?.isEnabled, false, "Volume should be disabled during processing")
+        XCTAssertEqual(volume?.alpha, 0.5, "Volume should be dimmed during processing")
+    }
+
     /// processing -> showsIngestStatus=false: media buttons re-enabled, status hidden.
     func test_transition_processingToStatusHidden_reEnablesMediaButtons() {
         let bar = makeBar()

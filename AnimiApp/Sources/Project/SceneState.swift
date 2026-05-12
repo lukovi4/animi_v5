@@ -43,6 +43,15 @@ public struct PersistedVideoSelection: Codable, Equatable, Sendable {
         )
     }
 
+    /// Maps a slider float (0…1) to volume + isMuted.
+    /// Clamps to [0, 1]. Values ≤ 0 set isMuted = true.
+    public func applyingSliderValue(_ sliderValue: Float) -> PersistedVideoSelection {
+        var copy = self
+        let clamped = max(Float(0), min(Float(1), sliderValue))
+        copy.volume = clamped
+        copy.isMuted = clamped <= 0
+        return copy
+    }
 }
 
 // MARK: - Scene State

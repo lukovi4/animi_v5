@@ -939,6 +939,48 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - buildAudioSceneData Tests
+
+    /// buildAudioSceneData includes cold scenes.
+    @MainActor
+    func test_buildAudioSceneData_includesColdScenes() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 3, framesPerScene: 60)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let audioData = try await engine.buildAudioSceneData()
+
+        XCTAssertEqual(audioData.count, 3, "buildAudioSceneData should include all scenes (including cold)")
+        for (i, data) in audioData.enumerated() {
+            XCTAssertEqual(data.sceneIndex, i, "Scene index should match enumeration order")
+        }
+    }
+
+    /// buildAudioSceneData produces identical data to export session's audioSceneData.
+    @MainActor
+    func test_buildAudioSceneData_matchesExportSession() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 2, framesPerScene: 90)
+        let engine = makeEngine(device: device, commandQueue: commandQueue, timeline: timeline, resources: resources)
+
+        let session = try await engine.buildExportSession()
+        let audioData = try await engine.buildAudioSceneData()
+
+        XCTAssertEqual(audioData.count, session.audioSceneData.count, "Count should match export session")
+        for (a, b) in zip(audioData, session.audioSceneData) {
+            XCTAssertEqual(a.sceneIndex, b.sceneIndex, "Scene indices should match")
+            XCTAssertEqual(a.videoSelections.count, b.videoSelections.count, "Video selections should match")
+        }
+    }
 }
 
 // MARK: - Test Stubs

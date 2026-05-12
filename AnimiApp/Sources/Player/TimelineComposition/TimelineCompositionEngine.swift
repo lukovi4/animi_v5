@@ -617,6 +617,40 @@ public final class TimelineCompositionEngine {
         public let videoSelections: [String: VideoSelection]
     }
 
+    /// Builds audio scene data (strict — throws on any scene failure). Used by export.
+    func buildAudioSceneData() async throws -> [SceneAudioExportData] {
+        guard let math = transitionMath, let timeline = timeline else { return [] }
+        let context = TimelineExportSessionBuilder.Context(
+            transitionMath: math,
+            timeline: timeline,
+            sceneStates: sceneStates,
+            currentAssetRegistry: currentAssetRegistry,
+            resourcesCache: resourcesCache,
+            mediaLocator: mediaLocator,
+            stickerProvider: stickerProvider,
+            fps: fps,
+            canvasSize: canvasSize
+        )
+        return try await TimelineExportSessionBuilder.buildAudioSceneData(context: context)
+    }
+
+    /// Builds audio scene data (resilient — skips scenes that fail). Used by preview.
+    func buildAudioSceneDataForPreview() async -> [SceneAudioExportData] {
+        guard let math = transitionMath, let timeline = timeline else { return [] }
+        let context = TimelineExportSessionBuilder.Context(
+            transitionMath: math,
+            timeline: timeline,
+            sceneStates: sceneStates,
+            currentAssetRegistry: currentAssetRegistry,
+            resourcesCache: resourcesCache,
+            mediaLocator: mediaLocator,
+            stickerProvider: stickerProvider,
+            fps: fps,
+            canvasSize: canvasSize
+        )
+        return await TimelineExportSessionBuilder.buildAudioSceneDataResilient(context: context)
+    }
+
     /// Compatibility helper — timeline export after TT-05 uses session.audioSceneData instead.
     // MARK: - TT-05 Export Session
 

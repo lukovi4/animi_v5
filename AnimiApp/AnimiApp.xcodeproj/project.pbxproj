@@ -85,6 +85,7 @@
 		40CA9DA9870A900C1BA377A3 /* StickerLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCDA7316EADC1E24B0E7DD65 /* StickerLibrary.swift */; };
 		437E36167CB6268151194F8E /* PersistedVideoSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30705CEDF8C7BDFEAB99E0A3 /* PersistedVideoSelectionTests.swift */; };
 		44736526D6B8BD9CD38F6F1C /* VideoPreparePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD9847E91ED84D2B27F5A60 /* VideoPreparePipeline.swift */; };
+		DE932A6D5E254D8BA9858BD4 /* VideoAudioPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A9BBA4D15E94BBD95A41D85 /* VideoAudioPolicy.swift */; };
 		44C79EC7A0FF0AAD75294335 /* InlineVideoTrimCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD5A28884DE81352DD9C9FC9 /* InlineVideoTrimCoordinator.swift */; };
 		456BC686C29BC069FF22A3A7 /* TimelineCompositionEngineExportSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F217C91EDFFDAE0C8DD6F90D /* TimelineCompositionEngineExportSessionTests.swift */; };
 		459AA43AC78302B2E34CDCF0 /* PickerAssetAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 966DDCD0A5E1D440FF15C89E /* PickerAssetAdapter.swift */; };
@@ -114,6 +115,7 @@
 		57C23E798E20C6709A23C537 /* AudioTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC6C7BCD49916848933ACCC5 /* AudioTrackView.swift */; };
 		57DE15DF4368D76C4331A767 /* ExportDeliveryPlayerFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5AF506783B23A9AA032D9B5 /* ExportDeliveryPlayerFlowTests.swift */; };
 		58EE44C0463EA2560509056E /* AudioWriterPumpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 674596031572692DF249640B /* AudioWriterPumpTests.swift */; };
+		8F6A3BF10AAE47829E45C17C /* AudioCompositionBuilderVideoSlotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD3393F1289F4FE1862C7593 /* AudioCompositionBuilderVideoSlotTests.swift */; };
 		5A05EB4FEBF3A1FD9D628AF4 /* EditorSessionSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74C6E2BAD58DD29C50E60896 /* EditorSessionSnapshot.swift */; };
 		5B3C214EEC95FA95322E3F71 /* ExportVideoFrameProviderBlendTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7DA813366CB015C14593389 /* ExportVideoFrameProviderBlendTests.swift */; };
 		5C00B3EEFE58A0C860BF5CB5 /* SceneEditTargetInstanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D021C99C10DB0855254ACA28 /* SceneEditTargetInstanceTests.swift */; };
@@ -434,6 +436,7 @@
 		2C6F6D9E214831C361A947FE /* TemplateCatalogRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateCatalogRepositoryTests.swift; sourceTree = "<group>"; };
 		2CFCF74F9E5906B8855CBA71 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2DD9847E91ED84D2B27F5A60 /* VideoPreparePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPreparePipeline.swift; sourceTree = "<group>"; };
+		4A9BBA4D15E94BBD95A41D85 /* VideoAudioPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoAudioPolicy.swift; sourceTree = "<group>"; };
 		2EADDEDB66974033DE631FC0 /* BundleSceneLibraryLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleSceneLibraryLoader.swift; sourceTree = "<group>"; };
 		30705CEDF8C7BDFEAB99E0A3 /* PersistedVideoSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistedVideoSelectionTests.swift; sourceTree = "<group>"; };
 		30CC59FA6F398F868AA02669 /* VideoTrimFilmstripView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTrimFilmstripView.swift; sourceTree = "<group>"; };
@@ -518,6 +521,7 @@
 		6704D8395BED2D7804FD980D /* VideoPosterCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPosterCache.swift; sourceTree = "<group>"; };
 		670E0A34E07E457820B5E3A0 /* ExportMediaSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportMediaSnapshot.swift; sourceTree = "<group>"; };
 		674596031572692DF249640B /* AudioWriterPumpTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWriterPumpTests.swift; sourceTree = "<group>"; };
+		FD3393F1289F4FE1862C7593 /* AudioCompositionBuilderVideoSlotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCompositionBuilderVideoSlotTests.swift; sourceTree = "<group>"; };
 		695CDA66BFAAF9E9490AFDFA /* TemplateCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateCatalog.swift; sourceTree = "<group>"; };
 		6A04D252BCD74F091A0FA0C8 /* TVECore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TVECore; path = ../TVECore; sourceTree = SOURCE_ROOT; };
 		6C3EF8701FE43C71E34328DE /* VideoSelectionFastPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSelectionFastPathTests.swift; sourceTree = "<group>"; };
@@ -738,6 +742,7 @@
 				9C80C09F979F9189B067EC8B /* ResolvedMediaMap.swift */,
 				3CD43146A70451750445D31C /* SceneMediaSlot.swift */,
 				6704D8395BED2D7804FD980D /* VideoPosterCache.swift */,
+				4A9BBA4D15E94BBD95A41D85 /* VideoAudioPolicy.swift */,
 				2DD9847E91ED84D2B27F5A60 /* VideoPreparePipeline.swift */,
 			);
 			path = MediaIngest;
@@ -773,6 +778,7 @@
 				5604708E3AC1A6297A0C73B2 /* AppLaunchRouterTests.swift */,
 				009C3BDF813882590A970479 /* AssetRegistryBookkeepingTests.swift */,
 				6DBBF71D72BB4D77DD2ED9F6 /* AssetRegistryGCContractTests.swift */,
+				FD3393F1289F4FE1862C7593 /* AudioCompositionBuilderVideoSlotTests.swift */,
 				674596031572692DF249640B /* AudioWriterPumpTests.swift */,
 				4618A8F93722163D18372FD4 /* BackgroundPresetRepositoryTests.swift */,
 				8D8FD07F0B8C742066EB95E2 /* BackgroundTextureServiceTests.swift */,
@@ -1385,6 +1391,7 @@
 				525D5AAD2AF0725A541848FF /* AppLaunchRouterTests.swift in Sources */,
 				8C3C3F3B0DC7E8BD40D09055 /* AssetRegistryBookkeepingTests.swift in Sources */,
 				9AB23F0CEA82721CA6B3F0EF /* AssetRegistryGCContractTests.swift in Sources */,
+				8F6A3BF10AAE47829E45C17C /* AudioCompositionBuilderVideoSlotTests.swift in Sources */,
 				58EE44C0463EA2560509056E /* AudioWriterPumpTests.swift in Sources */,
 				DCD914DD7CE7B5C8C6931752 /* BackgroundPresetRepositoryTests.swift in Sources */,
 				CC62193D7045BFAB9A361E4F /* BackgroundTextureServiceTests.swift in Sources */,
@@ -1716,6 +1723,7 @@
 				634873BF88B7C4366E03297A /* VideoFrameProvider.swift in Sources */,
 				331800CDE8433BC1216EE58E /* VideoPosterCache.swift in Sources */,
 				44736526D6B8BD9CD38F6F1C /* VideoPreparePipeline.swift in Sources */,
+				DE932A6D5E254D8BA9858BD4 /* VideoAudioPolicy.swift in Sources */,
 				F653D833B1BEF170450E8524 /* VideoTimelineTimeMapper.swift in Sources */,
 				A4BF6853C30B13148ED3DDBE /* VideoTrimBarView.swift in Sources */,
 				FCEA77D22134988ABFBA17DE /* VideoTrimFilmstripView.swift in Sources */,

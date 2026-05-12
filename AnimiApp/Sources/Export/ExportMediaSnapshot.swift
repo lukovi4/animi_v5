@@ -97,6 +97,31 @@ public struct ExportMediaSnapshot: Sendable {
         assetRegistry: ProjectAssetRegistry,
         runtime: SceneRuntime
     ) async throws -> ExportMediaSnapshot {
+        let videoSelections = try await Self.buildVideoSelections(
+            mediaSlots: mediaSlots,
+            mediaLocator: mediaLocator,
+            assetRegistry: assetRegistry,
+            runtime: runtime
+        )
+        return try await build(
+            compiledScene: compiledScene,
+            mediaSlots: mediaSlots,
+            mediaLocator: mediaLocator,
+            assetRegistry: assetRegistry,
+            runtime: runtime,
+            prevalidatedVideoSelections: videoSelections
+        )
+    }
+
+    /// Builds snapshot using pre-validated video selections (avoids double validation on export path).
+    static func build(
+        compiledScene: CompiledScene,
+        mediaSlots: [String: SceneMediaSlot],
+        mediaLocator: any ProjectMediaLocator,
+        assetRegistry: ProjectAssetRegistry,
+        runtime: SceneRuntime,
+        prevalidatedVideoSelections videoSelections: [String: VideoSelection]
+    ) async throws -> ExportMediaSnapshot {
         var imageRefs: [ImageRef] = []
         var videoRefs: [VideoRef] = []
 
@@ -129,47 +154,13 @@ public struct ExportMediaSnapshot: Sendable {
                 ))
 
             case .video:
-                guard let videoWindow = slot.videoWindow else {
-                    throw ExportMediaError.missingVideoWindow(blockId: blockId)
-                }
-                guard let url = try? await mediaLocator.absoluteURL(for: slot.mediaRef, registry: assetRegistry),
-                      FileManager.default.fileExists(atPath: url.path) else {
-                    throw ExportMediaError.missingPersistedVideo(blockId: blockId)
-                }
-
-                // Probe actual duration for strict validation
-                let asset = AVURLAsset(url: url)
-                let durationSeconds: Double
-                do {
-                    let duration = try await asset.load(.duration)
-                    durationSeconds = CMTimeGetSeconds(duration)
-                } catch {
-                    throw ExportMediaError.invalidVideoSelection(
+                if let selection = videoSelections[blockId] {
+                    videoRefs.append(VideoRef(
                         blockId: blockId,
-                        reason: "Failed to load video duration: \(error.localizedDescription)"
-                    )
+                        selection: selection,
+                        bindingAssetIds: bindingAssetIds
+                    ))
                 }
-
-                let selection: VideoSelection
-                do {
-                    selection = try VideoWindowValidator.validate(
-                        selection: videoWindow,
-                        url: url,
-                        actualDuration: durationSeconds,
-                        blockId: blockId
-                    )
-                } catch let validationError {
-                    throw ExportMediaError.invalidVideoSelection(
-                        blockId: blockId,
-                        reason: validationError.localizedDescription
-                    )
-                }
-
-                videoRefs.append(VideoRef(
-                    blockId: blockId,
-                    selection: selection,
-                    bindingAssetIds: bindingAssetIds
-                ))
 
             case .audio:
                 // Audio media kind is not used in scene media slots — skip
@@ -185,5 +176,64 @@ public struct ExportMediaSnapshot: Sendable {
             videoRefs: videoRefs,
             allAssetIds: allAssetIds
         )
+    }
+
+    // MARK: - Shared Video Selection Resolution
+
+    /// Resolves and validates video selections from media slots.
+    /// Shared between export (via `ExportMediaSnapshot.build`) and preview audio
+    /// (via `TimelineExportSessionBuilder.buildAudioSceneData`).
+    public static func buildVideoSelections(
+        mediaSlots: [String: SceneMediaSlot],
+        mediaLocator: any ProjectMediaLocator,
+        assetRegistry: ProjectAssetRegistry,
+        runtime: SceneRuntime
+    ) async throws -> [String: VideoSelection] {
+        var result: [String: VideoSelection] = [:]
+
+        for (blockId, slot) in mediaSlots {
+            guard slot.visibility else { continue }
+            guard slot.mediaRef.mediaKind == .video else { continue }
+
+            guard let videoWindow = slot.videoWindow else {
+                throw ExportMediaError.missingVideoWindow(blockId: blockId)
+            }
+            guard let url = try? await mediaLocator.absoluteURL(for: slot.mediaRef, registry: assetRegistry),
+                  FileManager.default.fileExists(atPath: url.path) else {
+                throw ExportMediaError.missingPersistedVideo(blockId: blockId)
+            }
+
+            // Probe actual duration for strict validation
+            let asset = AVURLAsset(url: url)
+            let durationSeconds: Double
+            do {
+                let duration = try await asset.load(.duration)
+                durationSeconds = CMTimeGetSeconds(duration)
+            } catch {
+                throw ExportMediaError.invalidVideoSelection(
+                    blockId: blockId,
+                    reason: "Failed to load video duration: \(error.localizedDescription)"
+                )
+            }
+
+            let selection: VideoSelection
+            do {
+                selection = try VideoWindowValidator.validate(
+                    selection: videoWindow,
+                    url: url,
+                    actualDuration: durationSeconds,
+                    blockId: blockId
+                )
+            } catch let validationError {
+                throw ExportMediaError.invalidVideoSelection(
+                    blockId: blockId,
+                    reason: validationError.localizedDescription
+                )
+            }
+
+            result[blockId] = selection
+        }
+
+        return result
     }
 }

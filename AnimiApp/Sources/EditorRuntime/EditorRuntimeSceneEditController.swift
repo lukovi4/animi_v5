@@ -153,6 +153,7 @@ internal final class EditorRuntimeSceneEditController {
 
     func applyPersistedVideoSelection(blockId: String, _ selection: PersistedVideoSelection) throws {
         try runtime.userMediaService?.applyPersistedVideoSelection(blockId: blockId, selection)
+        runtime.markPreviewAudioDirty()
     }
 
     // MARK: - Media Mutations
@@ -185,6 +186,7 @@ internal final class EditorRuntimeSceneEditController {
 
         runtime.timelineCompositionEngine?.applyVisibilityChange(blockId: blockId, visible: visible, for: instanceId)
         runtime.refreshCurrentTimelineFrame()
+        runtime.markPreviewAudioDirty()
 
         return localApplied
     }
@@ -229,6 +231,7 @@ internal final class EditorRuntimeSceneEditController {
                 guard let self else { return }
                 await self.runtime.timelineCompositionEngine?.updateSceneState(sceneState, for: instanceId, assetRegistry: self.runtime.selfHealedRegistry())
                 self.runtime.refreshCurrentTimelineFrame()
+                self.runtime.markPreviewAudioDirty()
             }
         }
     }
@@ -259,6 +262,7 @@ internal final class EditorRuntimeSceneEditController {
 
     func applyVideoSelectionToEngine(selection: PersistedVideoSelection, blockId: String, instanceId: UUID) {
         runtime.timelineCompositionEngine?.applyPersistedVideoSelection(selection, blockId: blockId, for: instanceId)
+        runtime.markPreviewAudioDirty()
     }
 
     func syncEngineAfterUndoRedo(state: EditorState) {

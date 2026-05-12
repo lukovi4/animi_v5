@@ -31,7 +31,11 @@ internal enum TimelineExportSessionBuilder {
         let timeline = context.timeline
 
         var scenesByInstanceId: [UUID: TimelineCompositionEngine.TimelineExportSceneSnapshot] = [:]
-        var audioSceneData: [TimelineCompositionEngine.SceneAudioExportData] = []
+
+        // Build audio scene data via shared helper (same validation path as preview audio).
+        // Also returns preloaded resources so we avoid redundant preloadMetadata IO below.
+        let audioResult = try await buildAudioSceneDataResult(context: context)
+        let audioSceneData = audioResult.sceneData
 
         for (index, item) in math.sceneItems.enumerated() {
             let instanceId = item.id
@@ -44,11 +48,12 @@ internal enum TimelineExportSessionBuilder {
             }
             let sceneTypeId = scenePayload.sceneTypeId
 
-            // 2. Resources: full cache if warm, metadata-only preload if cold.
-            //    NEVER calls full preload() or getOrCreateRuntime() for cold scenes.
+            // 2. Resources: warm cache → preloaded from audio pass → cold preload (fallback).
             let resources: SceneTypeResourcesCache.Resources
             if let cached = context.resourcesCache.resources(for: sceneTypeId) {
                 resources = cached
+            } else if let preloaded = audioResult.resourcesBySceneType[sceneTypeId] {
+                resources = preloaded
             } else {
                 resources = try await context.resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
             }
@@ -57,14 +62,17 @@ internal enum TimelineExportSessionBuilder {
             let state = context.sceneStates[instanceId] ?? .empty
             let mediaSlots = state.mediaSlotsByBlockId ?? [:]
 
-            // 4. Build media snapshot first (async — probes video duration, resolves URLs)
+            // 4. Build media snapshot — reuse pre-validated video selections from audioSceneData
+            //    to avoid double URL resolution + duration probe.
             let compiled = resources.compiled
+            let prevalidated = audioSceneData.first(where: { $0.sceneIndex == index })?.videoSelections ?? [:]
             let mediaSnapshot = try await ExportMediaSnapshot.build(
                 compiledScene: compiled,
                 mediaSlots: mediaSlots,
                 mediaLocator: context.mediaLocator,
                 assetRegistry: context.currentAssetRegistry,
-                runtime: compiled.runtime
+                runtime: compiled.runtime,
+                prevalidatedVideoSelections: prevalidated
             )
 
             // 5. Render state from sceneStates (no runtime needed)
@@ -108,12 +116,6 @@ internal enum TimelineExportSessionBuilder {
                 templateBackground: compiled.runtime.scene.background
             )
             scenesByInstanceId[instanceId] = snapshot
-
-            audioSceneData.append(TimelineCompositionEngine.SceneAudioExportData(
-                sceneIndex: index,
-                runtime: compiled.runtime,
-                videoSelections: videoSelections
-            ))
         }
 
         // Build unified overlay snapshot from timeline + sticker provider
@@ -147,6 +149,118 @@ internal enum TimelineExportSessionBuilder {
             audioSceneData: audioSceneData,
             overlaySnapshot: overlaySnapshot
         )
+    }
+
+    // MARK: - Audio Scene Data (shared between export and preview)
+
+    /// Result of building audio scene data, including resources for reuse by `build()`.
+    struct AudioSceneDataBuildResult {
+        let sceneData: [TimelineCompositionEngine.SceneAudioExportData]
+        let resourcesBySceneType: [String: SceneTypeResourcesCache.Resources]
+    }
+
+    /// Builds audio scene data for all scenes (including cold ones), returning preloaded resources
+    /// so that `build()` can reuse them without redundant `preloadMetadata` IO.
+    private static func buildAudioSceneDataResult(context: Context) async throws -> AudioSceneDataBuildResult {
+        let math = context.transitionMath
+        let timeline = context.timeline
+        var audioSceneData: [TimelineCompositionEngine.SceneAudioExportData] = []
+        var resourcesBySceneType: [String: SceneTypeResourcesCache.Resources] = [:]
+
+        for (index, item) in math.sceneItems.enumerated() {
+            let instanceId = item.id
+
+            guard let tlItem = timeline.sceneItems.first(where: { $0.id == instanceId }),
+                  let payload = timeline.payloads[tlItem.payloadId],
+                  case .scene(let scenePayload) = payload else {
+                continue
+            }
+            let sceneTypeId = scenePayload.sceneTypeId
+
+            let resources: SceneTypeResourcesCache.Resources
+            if let cached = context.resourcesCache.resources(for: sceneTypeId) {
+                resources = cached
+            } else {
+                resources = try await context.resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
+            }
+            resourcesBySceneType[sceneTypeId] = resources
+
+            let state = context.sceneStates[instanceId] ?? .empty
+            let mediaSlots = state.mediaSlotsByBlockId ?? [:]
+
+            let videoSelections = try await ExportMediaSnapshot.buildVideoSelections(
+                mediaSlots: mediaSlots,
+                mediaLocator: context.mediaLocator,
+                assetRegistry: context.currentAssetRegistry,
+                runtime: resources.compiled.runtime
+            )
+
+            audioSceneData.append(TimelineCompositionEngine.SceneAudioExportData(
+                sceneIndex: index,
+                runtime: resources.compiled.runtime,
+                videoSelections: videoSelections
+            ))
+        }
+
+        return AudioSceneDataBuildResult(sceneData: audioSceneData, resourcesBySceneType: resourcesBySceneType)
+    }
+
+    /// Builds audio scene data for all scenes (including cold ones).
+    /// Uses `ExportMediaSnapshot.buildVideoSelections` — the single shared validation path
+    /// for both export and preview audio.
+    static func buildAudioSceneData(context: Context) async throws -> [TimelineCompositionEngine.SceneAudioExportData] {
+        try await buildAudioSceneDataResult(context: context).sceneData
+    }
+
+    /// Resilient variant for preview audio: builds per-scene, skips scenes that fail.
+    /// Export path uses the throwing `buildAudioSceneData(context:)` which fails atomically.
+    static func buildAudioSceneDataResilient(context: Context) async -> [TimelineCompositionEngine.SceneAudioExportData] {
+        let math = context.transitionMath
+        let timeline = context.timeline
+        var audioSceneData: [TimelineCompositionEngine.SceneAudioExportData] = []
+
+        for (index, item) in math.sceneItems.enumerated() {
+            let instanceId = item.id
+
+            guard let tlItem = timeline.sceneItems.first(where: { $0.id == instanceId }),
+                  let payload = timeline.payloads[tlItem.payloadId],
+                  case .scene(let scenePayload) = payload else {
+                continue
+            }
+            let sceneTypeId = scenePayload.sceneTypeId
+
+            do {
+                let resources: SceneTypeResourcesCache.Resources
+                if let cached = context.resourcesCache.resources(for: sceneTypeId) {
+                    resources = cached
+                } else {
+                    resources = try await context.resourcesCache.preloadMetadata(sceneTypeId: sceneTypeId)
+                }
+
+                let state = context.sceneStates[instanceId] ?? .empty
+                let mediaSlots = state.mediaSlotsByBlockId ?? [:]
+
+                let videoSelections = try await ExportMediaSnapshot.buildVideoSelections(
+                    mediaSlots: mediaSlots,
+                    mediaLocator: context.mediaLocator,
+                    assetRegistry: context.currentAssetRegistry,
+                    runtime: resources.compiled.runtime
+                )
+
+                audioSceneData.append(TimelineCompositionEngine.SceneAudioExportData(
+                    sceneIndex: index,
+                    runtime: resources.compiled.runtime,
+                    videoSelections: videoSelections
+                ))
+            } catch {
+                #if DEBUG
+                print("[PreviewAudio] Skipping scene \(index) (\(sceneTypeId)): \(error)")
+                #endif
+                continue
+            }
+        }
+
+        return audioSceneData
     }
 
     // MARK: - Export-Only Helpers
