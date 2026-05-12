@@ -1,272 +1,117 @@
-С учетом принятых продуктовых решений целевой контракт теперь фиксируется жестко.
+**ТЗ**
 
-**Текущее Состояние На 2026-05-06**
-- Зафиксирован integration milestone commit:
-  `a7c45b4` —
-  `integration: per-scene background domain, export runner extraction, preview background switching`.
-- Зафиксирован следующий structural export commit:
-  `1e17c58` —
-  `refactor(export): extract TimelineExportSessionBuilder from engine`.
-- Зафиксирован playback transport commit:
-  `88e79c7` —
-  `refactor(playback): introduce PlaybackTransport as single timeline playback time owner`.
-- Зафиксирован preview-audio integration commit:
-  `a6e5dac` —
-  `feat(playback): integrate preview audio transport with generation-guarded orchestration`.
-- Зафиксирован preview-audio readiness barrier fix:
-  `e26e05e` —
-  `fix(playback): add preview audio readiness barrier`.
-- Зафиксирован split `TimelineCompositionEngine`:
-  `7f8807b` —
-  `refactor(engine): split TimelineCompositionEngine into 3 internal owners`.
-- Зафиксирован split `EditorRuntime`:
-  `PR10` —
-  `EditorRuntime Thinning` completed in committed production code.
-- Зафиксирован split `EditorViewController`:
-  `PR11` —
-  `EditorViewController Thinning` completed in committed production code.
-- Зафиксирован generic audio contract split:
-  `PR3` —
-  `Audio Domain Contract And Compatibility Layer` completed in local production code.
-- Актуальный локальный gate:
-  `bash Scripts/run_animiapp_tests.sh`
-  ->
-  `1344 tests, 0 failures, 2 skipped`.
-- В committed production code закрыты:
-  `PR 1: Export Artifact And Delivery Policy Split`,
-  `PR 2: Background Domain Contract And Scope Resolution`,
-  `PR 3: Audio Domain Contract And Compatibility Layer`,
-  `PR 4: VideoExporter Decomposition`,
-  `PR 5: Timeline Export Session Builder Extraction`,
-  `PR 6: Playback Transport And Timebase Refactor`,
-  `PR 7: Preview Audio Transport Integration`,
-  `PR 8: TimelineCompositionEngine Internal Split`,
-  `PR 9: Scene Edit Tool Architecture`,
-  `PR 10: EditorRuntime Thinning`,
-  `PR 11: EditorViewController Thinning`.
-- Дополнительно внутри этого integration milestone закрыт integration tail между `PR1–PR4`:
-  delivery/runtime/output seam,
-  scene background production edit/persistence/export path,
-  per-scene timeline export background contract,
-  timeline preview background switching на first non-transition frame.
-- Внутри committed `PR 6` закрыт только transport/video playback ownership:
-  runtime-owned `PlaybackTransport`,
-  store playhead как mirrored UI state,
-  shared host-time contract для timeline/video preview path.
-- `Preview audio transport integration` больше не future-work относительно `PR 6`:
-  preview music в editor preview теперь идет через shared transport-owned playback time,
-  device-only AVPlayer start/readiness crashes закрыты follow-up fix-ами `PR7.1/PR7.2`,
-  `markPreviewAudioDirty()` получил runtime-owned invalidation/rebuild contract.
-- Все canonical PR по sequence `PR1–PR11` закрыты в production code или текущем рабочем дереве.
-- Следующий канонический шаг по плану:
-  полный branch-wide cross-audit `PR0–PR11` и финальная stabilization review перед merge/release.
+Исправить баг неправильного размера/позиции пользовательских фото и видео в **track matte**-блоках канонически, строго по текущему коду продукта, без костылей по шаблонам и без отката предыдущих рефакторингов.
 
-**Финальная Цель Рефакторинга**
-- Не “уменьшить файлы” и не “разложить код по папкам”, а довести редактор до состояния, где текущий product contract выражен в явных domain boundaries и не держится на giant owner-типах.
-- После рефакторинга приложение должно поддерживать уже зафиксированный shipped/future-near scope без еще одного structural rewrite:
-  generic audio timeline,
-  artifact-first export c mandatory `Save to Photos -> share/post`,
-  project-level background default,
-  scene-level background override,
-  scene-edit tool surface.
-- `EditorViewController`, `EditorRuntime`, `TimelineCompositionEngine` и `VideoExporter` должны стать тонкими facade/presentation boundary типами, а не местом, где одновременно живут UI, orchestration, domain policy и feature-specific branching.
-- `Audio`, `Background`, `Export Delivery` и `Scene Edit` должны получить отдельных owner-ов и явные контракты, чтобы новые фичи добавлялись внутри своих модулей, а не через повторное разрастание controller/runtime/exporter.
-- Рефакторинг считается успешным только если следующий продуктовый шаг в этих доменах можно делать через локальное расширение соответствующего модуля, без новой волны переписывания editor core.
+**1. Подтвержденная проблема**
+- Корень бага находится в рассинхроне между matte bbox dry-run и реальным `drawImage`.
+- Matte bbox считается в [MatteBboxCompute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MatteBboxCompute.swift#L26). В ветке `.drawImage` внутри `computeRangeBBox` используется только `assetSizes[assetId]` как размер картинки в [MatteBboxCompute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MatteBboxCompute.swift#L92).
+- Реальный рендер той же картинки идет в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1879) и использует другой контракт геометрии: `videoOrientedSize -> displaySize -> assetSize -> textureSize`.
+- Канонический resolver для этой геометрии уже существует в [AssetRenderGeometryResolver.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/AssetRenderGeometryResolver.swift#L10).
+- Bbox-sized matte offscreen path запускается в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L976) и затем рендерит в bbox-local textures в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1027).
+- Если bbox посчитан по `assetSize`, а реальный user media quad рисуется по `displaySize` или `videoOrientedSize`, matte texture выделяется слишком маленькой или со смещенным origin. Визуальный симптом: медиа выглядит уменьшенным и/или сдвинутым.
+- Это касается именно **track matte** path (`beginMatte/endMatte`) из [RenderCommand.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/RenderGraph/RenderCommand.swift#L98), а не обычного `hasMask` path.
+- Подтверждено на реальных шаблонах:
+  - matte-based: [block_02/no-anim.json](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/SceneSources/example_4blocks/block_02/no-anim.json), [block_03/no-anim.json](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/SceneSources/example_4blocks/block_03/no-anim.json), [no-anim.json](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/SceneSources/polaroid_shared_demo/no-anim.json)
+  - control via normal mask: [block_04/no-anim.json](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/SceneSources/example_4blocks/block_04/no-anim.json)
 
-**Зафиксированный Product Contract**
-- `Audio` идет в сторону `multi-item audio editor`, а не остается special-case `project music`.
-- `Audio` должен жить как generic timeline domain поверх уже существующих `TrackKind.audio` / `ItemKind.audioClip` / `TimelinePayload.audio`.
-- `Audio roles` должны быть metadata на item/payload уровне (`music`, `voiceover`, `sfx`, future roles), а не набором отдельных special-case полей и helper-ов.
-- `Export` всегда сначала создает локальный `render/export artifact` и только потом передает его в delivery flow.
-- Если пользователь отправляет видео наружу, delivery path обязан выполнить цепочку `Save to Photos -> share/post`.
-- `Save to Photos` остается обязательным шагом для social/share path, но не должен быть частью render/export layer.
-- Пользователь должен иметь возможность сразу выбрать destination после завершения render/export.
-- `Background` должен поддерживать 2 scope:
-  `project default background`
-  и
-  `scene custom background`.
-- Effective background chain должен быть:
-  `scene custom -> project default -> template default`.
-- Если у сцены задан custom background, он полностью заменяет project background для этой сцены.
-- `Background` с первого дня должен быть готов к source taxonomy:
-  `solid`,
-  `gradient`,
-  `image`,
-  `video`,
-  `animated`.
-- Для `video/animated background` future contract должен поддерживать playback-параметры вроде:
-  `loop`,
-  `trim`,
-  `start offset`,
-  и похожие настройки.
-- Аудио у background не является частью shipped/future contract.
-- Future `animated text`, `animated stickers`, `video overlays` и другие timeline-driven visual/audio элементы не должны получать собственные preview clock-ы. Они должны подключаться как consumers единого project playback time.
-- `Scene Edit` остается отдельным per-scene tool surface, но не становится owner-ом background domain.
-- Отдельный outside-editor preview/player сейчас **не является целевой shipped-функцией**. Значит отдельный read-only player stack строить сейчас не нужно, но новые runtime/export/background/audio модули нельзя делать editor-only по контракту.
+**2. Целевой контракт**
+- В renderer должен существовать **один** source of truth для quad geometry `drawImage`.
+- Matte bbox dry-run и фактический `drawImage` обязаны использовать **одинаковые** `width/height` для одного и того же `assetId`.
+- Приоритет источников геометрии должен быть единым везде:
+  `videoOrientedSize -> displaySize -> assetSize -> textureSize`
+- Если matte dry-run не может надежно определить геометрию изображения, он **не должен** считать bbox по неверным данным. Он должен вернуть `nil`, чтобы renderer ушел в уже существующий full-frame fallback в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1127).
+- Никакие изменения в `placement`, `BindingBaselineRuntime`, `SceneRuntimeStateApplier`, compiler или scene JSON для этого фикса не нужны.
 
-**Канонический Архитектурный Контракт**
-- `EditorViewController` должен стать только `UI host + presentation boundary`. В нем должны остаться lifecycle, modal presentation, UIKit delegates, `MTKView` hosting. Из него должны уйти flow-level orchestration, store/runtime binding detail, export UI branching, audio/background business orchestration.
-- `EditorRuntime` должен остаться `runtime facade + state/output contract`. Он не должен сам содержать export domain, delivery policy, background domain, audio bridging, scene-edit tool orchestration и playback/render-source internals в одном типе.
-- `Audio` должен стать отдельным domain с generic item model и role metadata. Controller должен презентовать audio UI, runtime должен получать готовый audio snapshot/plan, export pipeline должен принимать уже собранный audio plan.
-- `Export` должен быть разрезан на 2 независимых слоя:
-  `render/export session orchestration`
-  и
-  `delivery policy / destination flow`.
-  Render/export не должен знать, куда пользователь потом отправит файл.
-- Delivery layer должен владеть lifetime export artifact-а:
-  retention,
-  cleanup,
-  retry semantics,
-  mandatory `Save to Photos -> share` chaining.
-- `Background` должен стать отдельным domain с явным разделением:
-  `scope resolution`
-  (`scene -> project -> template`)
-  `background source model`
-  `effective background state`
-  `background residency/render inputs`
-  `image/video backends`.
-- `BackgroundTextureService` должен стать только image-backend внутри более широкого background runtime contract.
-- `EffectiveBackgroundBuilder` должен эволюционировать в scope/source resolver, а не оставаться image-oriented mapper-ом.
-- `Scene Edit` должен стать отдельной feature-архитектурой с tool-oriented decomposition:
-  selection/gesture tool,
-  media-slot tool,
-  trim tool,
-  overlay tool,
-  future effects/crop/mask tools.
-  Нельзя дальше складывать это обратно в `EditorViewController` и `EditorRuntime`.
-- Preview playback должен стать `transport-driven`, а не `frame-driven`.
-  В редакторе должен существовать один runtime-owned `PlaybackTransport / PlaybackClock`, который владеет project time.
-  `CADisplayLink` должен стать только render sampler / UI refresh trigger, а не источником времени.
-- Во время playback source of truth для текущего времени должен жить в runtime transport-е, а не в store playhead.
-  Store playhead нужен для scrub/pause/stop/restore state и UI sync, но не как owner playback clock-а.
-- `TimelineCompositionEngine`, `UserMediaService`, `VideoFrameProvider`, preview audio и future animated overlays/text/stickers должны стать consumers одного `project playback time`, а не независимыми clock domains с последующим corrective resync.
-- После принятого `PR 6` transport/video часть этого контракта уже закрыта;
-  preview audio для того же контракта вынесен в отдельный follow-up PR, чтобы не принимать partial audio seam.
-- Перед playback должен собираться достаточно стабильный `playback snapshot / playback graph`, чтобы video/audio/overlay/background path читали уже готовую time-driven модель, а не каждый subsystem пересобирал свой contract на горячем пути.
-- `TimelineCompositionEngine` должен стать фасадом над 3 внутренними подсистемами:
-  frame resolver,
-  playback budget/residency policy,
-  export session builder.
-- `VideoExporter` должен стать тонким export facade. Внутри не должно оставаться смешения config types, runner logic, audio assembly и timeline/single-scene orchestration в одном файле.
+**3. Архитектурное решение**
+1. Не дублировать размерную логику второй раз.
+2. Вынести lookup raw geometry для `assetId` в один внутренний helper renderer-модуля.
+3. Этот helper должен собирать входы для [AssetRenderGeometryResolver.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/AssetRenderGeometryResolver.swift#L10):
+   - `videoOrientedSize` через `AssetPresentationInfoProvider` из [VideoPresentationInfo.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/VideoPresentationInfo.swift#L127)
+   - `displaySize` через `AssetDisplaySizeProvider` из [AssetDisplaySizeProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/AssetDisplaySizeProvider.swift#L10)
+   - `assetSize` из `ctx.assetSizes`
+   - `textureSize` через `TextureProvider.texture(for:)` из [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L8)
+4. Этот helper должен быть **internal**, не public API.
+5. `drawImage` в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1879) должен перестать вручную дублировать priority-chain и перейти на этот shared helper.
+6. `computeMatteBBox` в [MatteBboxCompute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MatteBboxCompute.swift#L26) тоже должен использовать тот же shared helper.
+7. Канонически лучше передавать в `computeMatteBBox` не `TextureProvider` напрямую, а resolver closure вида:
+   `resolveImageGeometry: (String) -> AssetRenderGeometryResolver.Result?`
+   Это сохраняет bbox helper максимально чистым и тестируемым.
+8. `renderMatteScope` в [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L976) должен собирать этот closure из `ctx.textureProvider + ctx.assetSizes` и передавать его в `computeMatteBBox`.
 
-**Канонический Порядок PR-Рефакторинга**
-1. `PR 1: Export Artifact And Delivery Policy Split` — `DONE`
-   Цель: разрезать `render success`, `artifact lifetime` и `delivery destination policy`.
-   По коду: разрезать текущий hardcoded path в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` и `AnimiApp/Sources/Export/ExportDeliveryCoordinator.swift`.
-   Вынести:
-   `export artifact result`
-   и
-   `delivery policy`.
-   Acceptance:
-   export render success больше не означает автоматически `save to Photos`;
-   social/share path формализован как `save to Photos -> share`;
-   cleanup export file-а принадлежит delivery policy, а не render callback-у.
+**4. Изменения по файлам**
+- [MatteBboxCompute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MatteBboxCompute.swift#L26)
+  - изменить сигнатуры `computeMatteBBox` и `computeRangeBBox`
+  - добавить параметр `resolveImageGeometry`
+  - в ветке `.drawImage` больше не использовать `assetSizes[assetId]` напрямую
+  - вместо этого брать `Result.width/height` из shared geometry resolver
+  - если resolver вернул `nil`, возвращать `nil` из bbox computation, чтобы matte path ушел в full-frame fallback
+- [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L976)
+  - при вызове `computeMatteBBox` передавать geometry-resolver closure
+- [MetalRenderer+Execute.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/MetalRenderer+Execute.swift#L1879)
+  - убрать inline priority-chain
+  - вызывать тот же shared helper, что и matte bbox
+- Новый internal helper-файл в `TVECore/Sources/TVECore/MetalRenderer/`
+  - например `AssetQuadGeometryLookup.swift`
+  - обязан быть внутренним для модуля `TVECore`
+  - не должен вводить новую public surface area
+- [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift)
+  - менять протоколы не нужно
+  - текущие провайдеры уже умеют нужные метаданные:
+    [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L95),
+    [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L112),
+    [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L180),
+    [TextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/TextureProvider.swift#L200),
+    [ScenePackageTextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/ScenePackageTextureProvider.swift#L227),
+    [ScenePackageTextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/ScenePackageTextureProvider.swift#L369),
+    [LayeredTextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/LayeredTextureProvider.swift#L91),
+    [LayeredTextureProvider.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Sources/TVECore/MetalRenderer/LayeredTextureProvider.swift#L112)
 
-2. `PR 2: Background Domain Contract And Scope Resolution` — `DONE`
-   Цель: зафиксировать правильный background contract раньше runtime extraction.
-   По коду: разрезать current image-only assumptions в `AnimiApp/Sources/Project/ProjectBackgroundOverride.swift`, `AnimiApp/Sources/Background/EffectiveBackgroundBuilder.swift`, `AnimiApp/Sources/Export/ExportBackgroundSnapshot.swift`, `TVECore/Sources/TVECore/Models/Background/BackgroundRegionState.swift`, `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
-   Acceptance:
-   существует явный contract для `project default` и `scene override`;
-   `scene override` полностью заменяет project background для сцены;
-   source taxonomy больше не зафиксирована на `solid/gradient/image` как конечная модель.
+**5. Обязательные правила поведения после фикса**
+- Для template assets без user metadata поведение не меняется: используется `assetSize`.
+- Для user photos с `displaySize` matte bbox обязан использовать `displaySize`, а не template `assetSize`.
+- Для videos с `presentationInfo.orientedSize` matte bbox обязан использовать oriented size, а не template `assetSize`.
+- Если у asset нет ни metadata, ни texture, matte bbox не имеет права строить “приблизительный” bbox по мусорным данным.
+- Full-frame fallback остается допустимым safety net и baseline visual behavior.
 
-3. `PR 3: Audio Domain Contract And Compatibility Layer` — `DONE`
-   Цель: убрать `project music` как canonical contract и перевести audio в generic timeline domain.
-   По коду: разрезать special-case path в `AnimiApp/Sources/Project/CanonicalTimeline.swift`, `AnimiApp/Sources/Editor/Store/EditorReducer.swift`, `AnimiApp/Sources/Player/EditorViewController.swift`, `AnimiApp/Sources/Editor/TimelineView.swift`, `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
-   Acceptance:
-   audio model выражается через generic audio items + role metadata;
-   runtime/export работают с audio snapshot/plan, а не с одним `musicConfig`;
-   shipped behavior не ломается за счет compatibility layer.
-   Текущее состояние:
-   compatibility groundwork частично есть,
-   но production export/runtime path все еще живет через music bridge,
-   поэтому PR не считается завершенным.
+**6. Что делать нельзя**
+- Не лечить `example_4blocks/block_02` или `polaroid_shared_demo` special-case’ами.
+- Не менять `BindingBaselineRuntime`, `MediaPlacementResolver`, `SceneRuntimeStateApplier`, `SceneCompiler`.
+- Не откатывать bbox optimization из `be7e3d5`.
+- Не откатывать `displaySize` / `videoOrientedSize` renderer contract из `513d23f` и `c1edf94`.
+- Не возвращаться к `assetSize` как универсальной геометрии для user media.
 
-4. `PR 4: VideoExporter Decomposition` — `DONE`
-   Цель: превратить `AnimiApp/Sources/Export/VideoExporter.swift` в фасад.
-   Вынести:
-   single-scene export runner,
-   timeline export runner,
-   config/error definitions,
-   delivery-agnostic artifact completion seam.
-   Acceptance:
-   `VideoExporter` больше не смешивает orchestration, config types, audio assembly и two export modes в одном giant файле.
+**7. Тесты**
+- Обязательно расширить [MetalRendererMatteTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Tests/TVECoreTests/MetalRendererMatteTests.swift#L10).
+- Добавить regression test для фото:
+  - matte source полностью покрывает кадр
+  - consumer имеет `assetSize` меньше, чем `displaySize`
+  - `displaySize` задается через provider, совместимый с `AssetDisplaySizeProvider`
+  - пиксели внутри `displaySize`-области, но вне `assetSize`-области, должны быть видимы после matte compositing
+- Добавить regression test для видео:
+  - `assetSize` и `videoOrientedSize` различаются
+  - bbox и финальный matte output должны следовать `videoOrientedSize`
+- Добавить unit/regression test на сам shared helper или на `computeMatteBBox`, чтобы он возвращал bbox по `displaySize`/`videoOrientedSize`, а не по `assetSize`
+- Существующие тесты на matte semantics должны остаться зелеными:
+  [MetalRendererMatteTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Tests/TVECoreTests/MetalRendererMatteTests.swift#L176),
+  [MetalRendererMatteTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Tests/TVECoreTests/MetalRendererMatteTests.swift#L351)
+- Дополнительно сохранить существующие тесты на `AssetRenderGeometryResolver` и export metadata:
+  [AssetRenderGeometryResolverTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/TVECore/Tests/TVECoreTests/AssetRenderGeometryResolverTests.swift#L8),
+  [ExportDisplaySizeRegressionTests.swift](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/AnimiApp/Tests/ExportDisplaySizeRegressionTests.swift#L1)
 
-5. `PR 5: Timeline Export Session Builder Extraction` — `DONE`
-   Цель: вынести `buildExportSession()` из `AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift` в отдельный builder.
-   Почему: export snapshot assembly уже является отдельным bounded context внутри engine.
-   Acceptance:
-   engine перестает содержать тяжелый export snapshot assembly code.
+**8. Acceptance Criteria**
+- `example_4blocks/block_02` и `block_03` больше не выглядят уменьшенными или сдвинутыми при вставке user photo/video.
+- `polaroid_shared_demo` больше не выглядит уменьшенным или сдвинутым в matte-блоке.
+- Контрольные mask-based блоки не меняют визуальное поведение.
+- `PlacementDiag` для таких блоков может остаться прежним; меняется именно финальный matte render result.
+- Preview и export совпадают по matte-блокам.
+- В коде остается ровно один renderer contract для размера user media quad.
 
-6. `PR 6: Playback Transport And Timebase Refactor` — `DONE`
-   Цель: перевести editor preview/playback с `frame-driven UI loop` на `transport-driven playback` с единым owner-ом времени до runtime/engine thinning.
-   Почему: текущая модель `displayLink -> currentFrame + 1 -> store playhead -> subsystem resync` не является устойчивой базой даже для video-first preview path.
-   По коду: разрезан playback-owner path в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`, `AnimiApp/Sources/Player/TimelineComposition/TimelineCompositionEngine.swift`, `AnimiApp/Sources/Player/TimelineComposition/SceneInstanceRuntime.swift`, `AnimiApp/Sources/UserMedia/UserMediaService.swift`, `AnimiApp/Sources/UserMedia/VideoFrameProvider.swift`.
-   Вынесено/введено:
-   `PlaybackTransport`,
-   runtime-owned playback cursor,
-   time-driven `project time -> frame/localFrame/mediaTime` mapping,
-   displayLink как render sampler, а не time owner,
-   single-driver timeline preview path без runtime re-entry через mirrored store playhead.
-   Acceptance:
-   preview playback больше не двигается через `currentFrame + 1`;
-   `CADisplayLink` больше не является source of truth для playback time;
-   store playhead во время playback является mirrored UI state, а не owner времени;
-   video preview path читает общий project playback time;
-   per-scene preview background switching не регрессит.
-   Явно вне scope принятого PR:
-   `PreviewAudioPlaybackController.swift` и audio preview transport integration.
+**9. Финальная проверка**
+- `swift test` в `TVECore`
+- `xcodebuild test` для app test target
+- Ручной QA на девайсе/симуляторе:
+  - `example_4blocks`: `block_02`, `block_03`, контроль `block_04`
+  - `polaroid_shared_demo`
+  - фото и видео отдельно
 
-7. `PR 7: Preview Audio Transport Integration` — `DONE`
-   Цель: довести editor preview audio до того же transport-driven contract, что уже принят для timeline/video preview path.
-   Почему: preview audio оставался последним timeline playback consumer-ом, который нельзя было оставлять на отдельном corrective-resync seam.
-   По коду: доведены `AnimiApp/Sources/EditorRuntime/PreviewAudioPlaybackController.swift` и audio-preview path-ы в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift`.
-   Acceptance:
-   preview audio стартует от shared playback transport time;
-   steady-state preview audio не держится на periodic corrective seek loop;
-   `markPreviewAudioDirty()` получает честкий runtime-owned contract вместо no-op seam;
-   partial audio preview workspace files становятся committed production code;
-   project-music preview path проходит device smoke без crash в `AVPlayer setRate:time:atHostTime:`.
-
-8. `PR 8: TimelineCompositionEngine Internal Split` — `DONE`
-   Цель: после transport refactor разрезать `TimelineCompositionEngine` на:
-   frame resolution,
-   residency/budget,
-   playback sync.
-   Acceptance:
-   engine становится фасадом, а не owner-ом всех timeline concerns сразу.
-
-9. `PR 9: Scene Edit Tool Architecture` — `DONE`
-   Цель: вынести из controller/runtime tool surface scene-edit.
-   По коду: собрать единый scene-edit feature из `AnimiApp/Sources/Editor/SceneEdit/SceneEditInteractionController.swift`, `AnimiApp/Sources/Editor/SceneEdit/InlineVideoTrimCoordinator.swift`, scene-edit path-ов в `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` и wiring в `AnimiApp/Sources/Player/EditorViewController.swift`.
-   Acceptance:
-   новый scene-edit tool добавляется в tool module, а не в giant controller/runtime.
-
-10. `PR 10: EditorRuntime Thinning` — `DONE`
-   Цель: после extraction-ов довести `AnimiApp/Sources/EditorRuntime/EditorRuntime.swift` до facade/state machine.
-   По коду: вынести `preview audio`, `scene edit runtime`, `background`, `export`
-   в internal owner-ы и оставить на runtime thin facade/test seams.
-   Acceptance:
-   runtime в основном маршрутизирует state, output и orchestration между уже вынесенными доменами.
-
-11. `PR 11: EditorViewController Thinning` — `DONE`
-   Цель: последним довести `AnimiApp/Sources/Player/EditorViewController.swift` до реально thin UI shell.
-   Acceptance:
-   controller больше не является composition root для половины editor feature-flows.
-
-**Жесткие Архитектурные Запреты**
-- Не делать “refactor by moving methods into extensions”.
-- Не создавать новый giant type вместо старого.
-- Не строить отдельный outside-editor preview module сейчас.
-- Не держать `music`, `background` и `scene edit` как special-case feature islands.
-- Не смешивать `export render` и `delivery destination` в одном owner-е.
-- Не склеивать `export success` и `Save to Photos` в один и тот же layer.
-- Не делать `project background` и `scene background` двумя несвязанными island-ами.
-- Не встраивать background domain обратно в scene-edit owner model.
-- Не использовать `CADisplayLink` как canonical source of playback time.
-- Не держать `store playhead` как owner времени во время активного playback.
-- Не лечить preview audio/video через наращивание periodic corrective seek/resync поверх неправильного master clock-а.
-
-**Открытые Продуктовые Вопросы**
-- Блокирующих продуктовых вопросов больше нет.
-- Delivery UI может стартовать с системного share sheet, но destination boundary должна оставаться достаточно широкой для future direct SDK destinations без влияния на render/export contract.
+Это и есть каноническое ТЗ по реальному коду: не трогать placement, а починить рассинхрон matte bbox и actual draw geometry в renderer.
