@@ -894,6 +894,8 @@ final class EditorRuntime {
         guard playbackStartTask == nil else { return }
         guard let engine = timelineCompositionEngine else { return }
 
+        AppAudioSessionController.activate()
+
         let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         let fps = Float(sceneFPS)
 
@@ -954,6 +956,7 @@ final class EditorRuntime {
         }
 
         onOutput?(.playbackStateChanged(isPlaying: false))
+        AppAudioSessionController.deactivate()
     }
 
     private func displayLinkFired(_ link: CADisplayLink) {

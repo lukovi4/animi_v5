@@ -12,6 +12,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             PhotoProxyCache.shared.collectExpired()
             VideoPosterCache.shared.collectExpired()
         }
+        AppAudioSessionController.configure()
         return true
     }
 
