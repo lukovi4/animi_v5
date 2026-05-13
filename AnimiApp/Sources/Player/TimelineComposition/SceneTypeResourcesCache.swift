@@ -267,12 +267,12 @@ public final class SceneTypeResourcesCache {
 
     /// Evicts resources for a scene type.
     public func evict(sceneTypeId: String) {
-        #if DEBUG
-        MemoryDiagnostics.event("SceneTypeCache.evict", "id=\(sceneTypeId) remaining=\(cache.count - 1)")
-        #endif
         cache.removeValue(forKey: sceneTypeId)
         loadingTasks[sceneTypeId]?.cancel()
         loadingTasks.removeValue(forKey: sceneTypeId)
+        #if DEBUG
+        MemoryDiagnostics.event("SceneTypeCache.evict", "id=\(sceneTypeId) remaining=\(cache.count)")
+        #endif
     }
 
     /// Evicts all cached resources.

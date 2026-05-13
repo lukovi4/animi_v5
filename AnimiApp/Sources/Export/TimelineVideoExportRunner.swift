@@ -194,7 +194,7 @@ internal final class TimelineVideoExportRunner {
 
         for frameIndex in 0..<totalFrames {
             #if DEBUG
-            if frameIndex % 300 == 0 { MemoryDiagnostics.checkpoint("export.frame.\(frameIndex)") }
+            if frameIndex % 300 == 0 { MemoryDiagnostics.checkpoint("export.frame.\(frameIndex)", metal: metalDevice) }
             #endif
             if exportSession.shouldStop { break }
 

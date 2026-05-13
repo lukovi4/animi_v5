@@ -310,6 +310,10 @@ internal final class EditorBootstrapController {
         vc.loadingState = .preparing(requestId: requestId)
         updateLoadingStateUI()
 
+        #if DEBUG
+        MemoryDiagnostics.event("bootstrap.prepare.start", "requestId=\(requestId) sceneTypeId=\(sceneTypeId) obj=\(ObjectIdentifier(vc).hashValue)")
+        #endif
+
         preparingTask = Task { [weak vc] in
             guard let vc = vc else { return }
 
@@ -328,7 +332,20 @@ internal final class EditorBootstrapController {
                     }
                 )
 
-                guard !Task.isCancelled, vc.bootstrapController.currentRequestId == requestId else { return }
+                guard !Task.isCancelled, vc.bootstrapController.currentRequestId == requestId else {
+                    #if DEBUG
+                    await MainActor.run {
+                        MemoryDiagnostics.event("bootstrap.prepare.discardStale", "requestId=\(requestId)")
+                    }
+                    #endif
+                    return
+                }
+
+                #if DEBUG
+                await MainActor.run {
+                    MemoryDiagnostics.event("bootstrap.prepare.loaded", "requestId=\(requestId)")
+                }
+                #endif
 
                 await MainActor.run {
                     vc.bootstrapController.applyLoadedSceneType(
@@ -338,6 +355,11 @@ internal final class EditorBootstrapController {
                 }
 
             } catch is CancellationError {
+                #if DEBUG
+                await MainActor.run {
+                    MemoryDiagnostics.event("bootstrap.prepare.cancel", "requestId=\(requestId)")
+                }
+                #endif
                 await MainActor.run { logger.info("Scene load cancelled") }
             } catch {
                 guard vc.bootstrapController.currentRequestId == requestId else { return }
@@ -356,9 +378,15 @@ internal final class EditorBootstrapController {
     ) {
         let vc = viewController
         guard currentRequestId == requestId else {
+            #if DEBUG
+            MemoryDiagnostics.event("bootstrap.prepare.discardStale", "requestId=\(requestId) (apply)")
+            #endif
             log("Scene load result discarded")
             return
         }
+        #if DEBUG
+        MemoryDiagnostics.event("bootstrap.prepare.apply", "requestId=\(requestId) obj=\(ObjectIdentifier(vc).hashValue)")
+        #endif
 
         if let stats = loadResult.preloadStats {
             log(String(format: "[Preload] loaded: %d, missing: %d, skipped: %d, duration: %.1fms",

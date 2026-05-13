@@ -156,7 +156,7 @@ internal final class EditorRuntimeExportController {
 
     func enterExportMode() {
         #if DEBUG
-        MemoryDiagnostics.checkpoint("export.enter.before")
+        MemoryDiagnostics.checkpoint("export.enter.before", metal: runtime.metalContext?.device)
         MemoryDiagnostics.event("export.enter")
         MemoryDiagnostics.signpostEvent("export.enter")
         #endif
@@ -169,7 +169,7 @@ internal final class EditorRuntimeExportController {
         runtime.timelineCompositionEngine?.releaseForExport()
         exportTeardownOccurred = true
         #if DEBUG
-        MemoryDiagnostics.checkpoint("export.enter.after")
+        MemoryDiagnostics.checkpoint("export.enter.after", metal: runtime.metalContext?.device)
         #endif
     }
 
@@ -197,7 +197,7 @@ internal final class EditorRuntimeExportController {
         #if DEBUG
         MemoryDiagnostics.event("export.previewRestored")
         MemoryDiagnostics.signpostEvent("preview.restore")
-        MemoryDiagnostics.checkpoint("preview.restore.after")
+        MemoryDiagnostics.checkpoint("preview.restore.after", metal: runtime.metalContext?.device)
         #endif
     }
 

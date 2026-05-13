@@ -64,13 +64,15 @@ final class EditorViewController: UIViewController {
 
     deinit {
         #if DEBUG
-        MemoryDiagnostics.event("EditorViewController.deinit")
+        MemoryDiagnostics.event("EditorViewController.deinit", "obj=\(ObjectIdentifier(self).hashValue)")
         MemoryDiagnostics.signpostEvent("editor.close")
-        MemoryDiagnostics.checkpoint("editor.close.after")
         #endif
         autosaveCoordinator?.stopFromDeinit()
         NotificationCenter.default.removeObserver(self, name: .appDidEnterBackground, object: nil)
         _mediaIngestCoordinator?.cancelAllFromDeinit()
+        #if DEBUG
+        MemoryDiagnostics.checkpoint("editor.close.after")
+        #endif
     }
 
     @objc private func appDidEnterBackground() {

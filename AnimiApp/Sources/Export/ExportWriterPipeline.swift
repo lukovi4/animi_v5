@@ -218,14 +218,14 @@ final class ExportWriterPipeline {
 
     deinit {
         #if DEBUG
-        MemoryDiagnostics.event("ExportWriterPipeline.deinit")
+        MemoryDiagnostics.event("ExportWriterPipeline.deinit", "obj=\(ObjectIdentifier(self).hashValue)")
         #endif
     }
 
     /// Cancel: stop pumps, cancel writer, delete file.
     func cancel() {
         #if DEBUG
-        MemoryDiagnostics.event("ExportWriterPipeline.cancel")
+        MemoryDiagnostics.event("ExportWriterPipeline.cancel", "obj=\(ObjectIdentifier(self).hashValue)")
         #endif
         let outputURL = writer.outputURL
         videoPump.cancel()

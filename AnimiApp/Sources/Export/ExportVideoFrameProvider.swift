@@ -232,6 +232,11 @@ public final class ExportVideoFrameProvider {
         self.textureCache = textureCache
         self.commandQueue = commandQueue
         self.config = config
+
+        #if DEBUG
+        MemoryDiagnostics.increment("ExportVideoFrameProvider")
+        MemoryDiagnostics.event("ExportVideoFrameProvider.init", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
     }
 
     // MARK: - Lifecycle
@@ -508,6 +513,7 @@ public final class ExportVideoFrameProvider {
     /// Finishes reading and releases resources.
     public func finish() {
         #if DEBUG
+        MemoryDiagnostics.event("ExportVideoFrameProvider.finish", "obj=\(ObjectIdentifier(self).hashValue)")
         logExportSummary()
         #endif
 
@@ -528,6 +534,13 @@ public final class ExportVideoFrameProvider {
     /// Cancels reading immediately.
     public func cancel() {
         finish()
+    }
+
+    deinit {
+        #if DEBUG
+        MemoryDiagnostics.decrement("ExportVideoFrameProvider")
+        MemoryDiagnostics.event("ExportVideoFrameProvider.deinit", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
     }
 
     // MARK: - PerfDiag (DEBUG)

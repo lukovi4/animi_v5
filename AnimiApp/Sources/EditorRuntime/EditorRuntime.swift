@@ -166,7 +166,7 @@ final class EditorRuntime {
 
     deinit {
         #if DEBUG
-        MemoryDiagnostics.event("EditorRuntime.deinit")
+        MemoryDiagnostics.event("EditorRuntime.deinit", "obj=\(ObjectIdentifier(self).hashValue)")
         #endif
         if let observer = memoryWarningObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -933,7 +933,7 @@ final class EditorRuntime {
             self.displayLink?.add(to: .main, forMode: .common)
 
             #if DEBUG
-            MemoryDiagnostics.event("displayLink.create")
+            MemoryDiagnostics.event("displayLink.create", "obj=\(ObjectIdentifier(self).hashValue)")
             MemoryDiagnostics.checkpoint("playback.start", metal: self.metalContext?.device)
             #endif
 
@@ -956,7 +956,7 @@ final class EditorRuntime {
         isPlaying = false
         displayLink?.invalidate()
         #if DEBUG
-        MemoryDiagnostics.event("displayLink.invalidate")
+        MemoryDiagnostics.event("displayLink.invalidate", "obj=\(ObjectIdentifier(self).hashValue)")
         #endif
         displayLink = nil
 
