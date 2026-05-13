@@ -954,11 +954,13 @@ final class EditorRuntime {
 
         playbackTransport.stop()
         isPlaying = false
-        displayLink?.invalidate()
-        #if DEBUG
-        MemoryDiagnostics.event("displayLink.invalidate", "obj=\(ObjectIdentifier(self).hashValue)")
-        #endif
-        displayLink = nil
+        if let link = displayLink {
+            link.invalidate()
+            #if DEBUG
+            MemoryDiagnostics.event("displayLink.invalidate", "obj=\(ObjectIdentifier(self).hashValue)")
+            #endif
+            displayLink = nil
+        }
 
         if timelineCompositionEngine != nil {
             timelineCompositionEngine?.stopPlayback()

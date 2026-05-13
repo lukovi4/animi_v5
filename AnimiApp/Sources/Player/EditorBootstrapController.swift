@@ -362,7 +362,14 @@ internal final class EditorBootstrapController {
                 #endif
                 await MainActor.run { logger.info("Scene load cancelled") }
             } catch {
-                guard vc.bootstrapController.currentRequestId == requestId else { return }
+                guard vc.bootstrapController.currentRequestId == requestId else {
+                    #if DEBUG
+                    await MainActor.run {
+                        MemoryDiagnostics.event("bootstrap.prepare.discardStale", "requestId=\(requestId) (error: \(error.localizedDescription))")
+                    }
+                    #endif
+                    return
+                }
                 await MainActor.run {
                     logger.info("ERROR: Failed to load scene: \(error)")
                     vc.loadingState = .failed(message: "Failed to load scene")

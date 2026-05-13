@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreVideo
+import Metal
 
 /// Owns the full export lifecycle: pre-pipeline (preparing) through post-pipeline (finishing/completed/failed/cancelled).
 ///
@@ -40,6 +41,11 @@ internal final class ExportSession {
 
     // Finishing hook — fires once when finishWriting() begins (before pipeline.finishWriting)
     private var onFinishing: (() -> Void)?
+
+    #if DEBUG
+    /// Metal device stored for diagnostic checkpoint at completion.
+    var diagnosticDevice: MTLDevice?
+    #endif
 
     // MARK: - Init
 
@@ -158,7 +164,7 @@ internal final class ExportSession {
         if wasAlreadyCancelled { outcome = "cancelled" }
         else if case .failure = finalResult { outcome = "failure" }
         else { outcome = "success" }
-        MemoryDiagnostics.checkpoint("export.complete.\(outcome)")
+        MemoryDiagnostics.checkpoint("export.complete.\(outcome)", metal: diagnosticDevice)
         MemoryDiagnostics.signpostEvent("export.complete")
         #endif
         DispatchQueue.main.async { [completionCallback] in completionCallback(finalResult) }

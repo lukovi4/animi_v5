@@ -96,6 +96,9 @@ public final class VideoExporter: @unchecked Sendable {
         completion: @escaping (Result<URL, Error>) -> Void
     ) async {
         let session = ExportSession(completion: completion)
+        #if DEBUG
+        session.diagnosticDevice = device
+        #endif
         setActiveSession(session)
 
         session.setOnTerminal { [weak self] in
@@ -183,6 +186,9 @@ public final class VideoExporter: @unchecked Sendable {
     ) {
         let effectiveRegistry = assetRegistry ?? engine.currentAssetRegistry
         let exportSession = ExportSession(completion: completion)
+        #if DEBUG
+        exportSession.diagnosticDevice = engine.device
+        #endif
         setActiveSession(exportSession)
 
         exportSession.setOnTerminal { [weak self] in
