@@ -199,6 +199,11 @@ public final class SceneInstanceRuntime {
 
         // PR4: Re-resolve placement after async media load with actual dimensions
         setupMediaReadyHook()
+
+        #if DEBUG
+        MemoryDiagnostics.increment("SceneInstanceRuntime")
+        MemoryDiagnostics.event("SceneInstanceRuntime.init", "obj=\(ObjectIdentifier(self).hashValue) id=\(sceneInstanceId) type=\(sceneTypeId)")
+        #endif
     }
 
     // MARK: - Test Init (Internal)
@@ -251,6 +256,18 @@ public final class SceneInstanceRuntime {
 
         // PR4: Re-resolve placement after async media load with actual dimensions
         setupMediaReadyHook()
+
+        #if DEBUG
+        MemoryDiagnostics.increment("SceneInstanceRuntime")
+        MemoryDiagnostics.event("SceneInstanceRuntime.init", "obj=\(ObjectIdentifier(self).hashValue) id=\(sceneInstanceId) type=\(sceneTypeId)")
+        #endif
+    }
+
+    deinit {
+        #if DEBUG
+        MemoryDiagnostics.decrement("SceneInstanceRuntime")
+        MemoryDiagnostics.event("SceneInstanceRuntime.deinit", "obj=\(ObjectIdentifier(self).hashValue) id=\(sceneInstanceId)")
+        #endif
     }
 
     // MARK: - PR4: Media Ready Hook
@@ -305,7 +322,7 @@ public final class SceneInstanceRuntime {
         readinessState = .created
 
         #if DEBUG
-        print("[SceneInstanceRuntime] Reset state for instance: \(sceneInstanceId)")
+        MemoryDiagnostics.event("SceneInstanceRuntime.resetState", "obj=\(ObjectIdentifier(self).hashValue) id=\(sceneInstanceId)")
         #endif
     }
 
@@ -339,7 +356,7 @@ public final class SceneInstanceRuntime {
         runtimeDiagnosticsSink?.receive(.mediaRestore(instanceId: sceneInstanceId, restoredCount: restoredCount))
 
         #if DEBUG
-        print("[SceneInstanceRuntime] Applied state for \(sceneInstanceId): restored \(restoredCount) media items")
+        MemoryDiagnostics.event("SceneInstanceRuntime.applyState", "obj=\(ObjectIdentifier(self).hashValue) id=\(sceneInstanceId) restored=\(restoredCount)")
         #endif
     }
 
@@ -397,6 +414,9 @@ public final class SceneInstanceRuntime {
     ///
     /// Does NOT block - use waitUntilReadyForPresentation to await completion.
     public func startPreparingForPresentation(at localFrame: Int) {
+        #if DEBUG
+        MemoryDiagnostics.event("SceneInstanceRuntime.prepare", "obj=\(ObjectIdentifier(self).hashValue) id=\(sceneInstanceId) frame=\(localFrame)")
+        #endif
         let targetFrame = clampedLocalFrame(localFrame)
 
         switch readinessState {

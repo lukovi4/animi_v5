@@ -153,6 +153,14 @@ internal final class ExportSession {
 
         cleanup?()
         terminalHook?()
+        #if DEBUG
+        let outcome: String
+        if wasAlreadyCancelled { outcome = "cancelled" }
+        else if case .failure = finalResult { outcome = "failure" }
+        else { outcome = "success" }
+        MemoryDiagnostics.checkpoint("export.complete.\(outcome)")
+        MemoryDiagnostics.signpostEvent("export.complete")
+        #endif
         DispatchQueue.main.async { [completionCallback] in completionCallback(finalResult) }
     }
 

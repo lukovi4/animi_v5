@@ -229,6 +229,9 @@ internal final class SingleSceneVideoExportRunner {
         let totalFrames = runtime.durationFrames
 
         for frameIndex in 0..<totalFrames {
+            #if DEBUG
+            if frameIndex % 300 == 0 { MemoryDiagnostics.checkpoint("export.frame.\(frameIndex)") }
+            #endif
             if session.shouldStop { break }
 
             semaphore.wait()

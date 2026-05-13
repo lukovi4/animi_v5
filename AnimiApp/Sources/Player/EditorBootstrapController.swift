@@ -203,6 +203,7 @@ internal final class EditorBootstrapController {
 
         #if DEBUG
         rt.assertBootInvariants(uiMode: state.uiMode)
+        MemoryDiagnostics.checkpoint("editor.boot.after", metal: vc.metalDevice)
         #endif
     }
 

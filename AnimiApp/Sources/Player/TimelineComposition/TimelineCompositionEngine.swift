@@ -538,6 +538,9 @@ public final class TimelineCompositionEngine {
     /// Preserves `transitionMath` (needed for buildExportSession) and
     /// `sceneStates` (needed for mediaAssignments).
     public func releaseForExport() {
+        #if DEBUG
+        MemoryDiagnostics.event("TCEngine.releaseForExport", "runtimes=\(instanceRuntimes.count)")
+        #endif
         for runtime in instanceRuntimes.values {
             runtime.pause()
         }

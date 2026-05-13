@@ -63,6 +63,11 @@ final class EditorViewController: UIViewController {
     }
 
     deinit {
+        #if DEBUG
+        MemoryDiagnostics.event("EditorViewController.deinit")
+        MemoryDiagnostics.signpostEvent("editor.close")
+        MemoryDiagnostics.checkpoint("editor.close.after")
+        #endif
         autosaveCoordinator?.stopFromDeinit()
         NotificationCenter.default.removeObserver(self, name: .appDidEnterBackground, object: nil)
         _mediaIngestCoordinator?.cancelAllFromDeinit()
@@ -171,6 +176,9 @@ final class EditorViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        #if DEBUG
+        MemoryDiagnostics.checkpoint("editor.boot.before")
+        #endif
         view.backgroundColor = .systemBackground
         setupRenderer()
         setupEditorLayout()
@@ -407,6 +415,9 @@ final class EditorViewController: UIViewController {
         perfLogger.stop()
         #endif
         if Self.shouldCleanupOnDisappear(isMovingFromParent: isMovingFromParent, isBeingDismissed: isBeingDismissed) {
+            #if DEBUG
+            MemoryDiagnostics.checkpoint("editor.close.before")
+            #endif
             runtime?.clearAllBackgroundTextures()
         }
     }

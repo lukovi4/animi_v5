@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A1B2C3D4E5F60718MEMDIAG1 /* MemoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718MEMDIAG2 /* MemoryDiagnostics.swift */; };
 		000310CC1CEBC4C70C362B60 /* PlacementGestureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84F06CD95A1FA8540DC0DBC3 /* PlacementGestureSession.swift */; };
 		003C1E5DD09CBF1E2AA0BD4A /* OverlayPresentationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5945A4C61EF117A13059ADB9 /* OverlayPresentationState.swift */; };
 		00ABBBDB7E78827E4D870F10 /* FileProjectMediaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 529DE8D8DEB4F9B6781AFD1D /* FileProjectMediaStore.swift */; };
@@ -366,6 +367,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A1B2C3D4E5F60718MEMDIAG2 /* MemoryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDiagnostics.swift; sourceTree = "<group>"; };
 		008B456A6D18BC55E52A997F /* EditorReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerTests.swift; sourceTree = "<group>"; };
 		0093D3976ECB877F83A18053 /* VideoTrimSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTrimSession.swift; sourceTree = "<group>"; };
 		009C3BDF813882590A970479 /* AssetRegistryBookkeepingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetRegistryBookkeepingTests.swift; sourceTree = "<group>"; };
@@ -1037,6 +1039,7 @@
 				E5ECE540AAD3F6F6FE110D7F /* App */,
 				5EE3CBAF8EB42497C510D2D4 /* Background */,
 				9E265860D86C3AF53EC27331 /* Content */,
+				A1B2C3D4E5F60718MEMDIAG3 /* Diagnostics */,
 				AB885C05AC47A6617B0FB4FE /* Editor */,
 				D35E3BC761B840F7D0B535CE /* EditorRuntime */,
 				7BCD837E9ADCA0B14A6853D5 /* EditorSession */,
@@ -1052,6 +1055,14 @@
 				CD4563A8559BB859E46BEC71 /* UserMedia */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4E5F60718MEMDIAG3 /* Diagnostics */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F60718MEMDIAG2 /* MemoryDiagnostics.swift */,
+			);
+			path = Diagnostics;
 			sourceTree = "<group>";
 		};
 		72CE5FE139D05A5CF58948F4 /* Stickers */ = {
@@ -1527,6 +1538,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				338BC0927AA52CCD82641382 /* ActiveDraftSlot.swift in Sources */,
+				A1B2C3D4E5F60718MEMDIAG1 /* MemoryDiagnostics.swift in Sources */,
 				F2E1D0C9B8A7F6E5D4C3B2A1 /* AppAudioSessionController.swift in Sources */,
 				15510D16CBD6441144758C26 /* AppCompositionRoot.swift in Sources */,
 				CF7EDF9D02220536D8D2ADAF /* AppDelegate.swift in Sources */,

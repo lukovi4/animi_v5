@@ -165,6 +165,9 @@ final class EditorRuntime {
     }
 
     deinit {
+        #if DEBUG
+        MemoryDiagnostics.event("EditorRuntime.deinit")
+        #endif
         if let observer = memoryWarningObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -929,6 +932,11 @@ final class EditorRuntime {
             self.displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
             self.displayLink?.add(to: .main, forMode: .common)
 
+            #if DEBUG
+            MemoryDiagnostics.event("displayLink.create")
+            MemoryDiagnostics.checkpoint("playback.start", metal: self.metalContext?.device)
+            #endif
+
             engine.startPlayback(at: compressedFrame, hostTime: hostTime)
 
             self.onOutput?(.playbackStateChanged(isPlaying: true))
@@ -947,6 +955,9 @@ final class EditorRuntime {
         playbackTransport.stop()
         isPlaying = false
         displayLink?.invalidate()
+        #if DEBUG
+        MemoryDiagnostics.event("displayLink.invalidate")
+        #endif
         displayLink = nil
 
         if timelineCompositionEngine != nil {

@@ -193,6 +193,9 @@ internal final class TimelineVideoExportRunner {
         let videoGroup = DispatchGroup()
 
         for frameIndex in 0..<totalFrames {
+            #if DEBUG
+            if frameIndex % 300 == 0 { MemoryDiagnostics.checkpoint("export.frame.\(frameIndex)") }
+            #endif
             if exportSession.shouldStop { break }
 
             semaphore.wait()

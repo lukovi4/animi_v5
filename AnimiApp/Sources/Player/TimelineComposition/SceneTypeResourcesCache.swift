@@ -117,8 +117,14 @@ public final class SceneTypeResourcesCache {
     /// - Parameter sceneTypeId: Scene type to preload.
     /// - Returns: Loaded resources.
     public func preload(sceneTypeId: String) async throws -> Resources {
+        #if DEBUG
+        MemoryDiagnostics.event("SceneTypeCache.preload.start", "id=\(sceneTypeId) cached=\(cache.count)")
+        #endif
         // Already cached?
         if let existing = cache[sceneTypeId] {
+            #if DEBUG
+            MemoryDiagnostics.event("SceneTypeCache.preload.hit", "id=\(sceneTypeId)")
+            #endif
             return existing
         }
 
@@ -190,6 +196,10 @@ public final class SceneTypeResourcesCache {
             let resources = try await task.value
             cache[sceneTypeId] = resources
             loadingTasks.removeValue(forKey: sceneTypeId)
+            #if DEBUG
+            MemoryDiagnostics.event("SceneTypeCache.preload.stored", "id=\(sceneTypeId) total=\(cache.count) ids=\(Array(cache.keys).joined(separator: ","))")
+            MemoryDiagnostics.signpostEvent("cache.stored")
+            #endif
             return resources
         } catch {
             loadingTasks.removeValue(forKey: sceneTypeId)
@@ -257,6 +267,9 @@ public final class SceneTypeResourcesCache {
 
     /// Evicts resources for a scene type.
     public func evict(sceneTypeId: String) {
+        #if DEBUG
+        MemoryDiagnostics.event("SceneTypeCache.evict", "id=\(sceneTypeId) remaining=\(cache.count - 1)")
+        #endif
         cache.removeValue(forKey: sceneTypeId)
         loadingTasks[sceneTypeId]?.cancel()
         loadingTasks.removeValue(forKey: sceneTypeId)
@@ -264,6 +277,9 @@ public final class SceneTypeResourcesCache {
 
     /// Evicts all cached resources.
     public func evictAll() {
+        #if DEBUG
+        MemoryDiagnostics.event("SceneTypeCache.evictAll", "count=\(cache.count)")
+        #endif
         cache.removeAll()
         for task in loadingTasks.values {
             task.cancel()
@@ -282,6 +298,9 @@ public final class SceneTypeResourcesCache {
     /// Used when resources are loaded externally (e.g., during initial scene load).
     public func addToCache(_ resources: Resources) {
         cache[resources.sceneTypeId] = resources
+        #if DEBUG
+        MemoryDiagnostics.event("SceneTypeCache.addToCache", "id=\(resources.sceneTypeId) total=\(cache.count)")
+        #endif
     }
 }
 

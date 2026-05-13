@@ -247,6 +247,11 @@ public final class VideoFrameProvider {
         // Add video output to player item
         playerItem.add(videoOutput)
 
+        #if DEBUG
+        MemoryDiagnostics.increment("VideoFrameProvider")
+        MemoryDiagnostics.event("VideoFrameProvider.init", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
+
         // Configure player (initially paused, muted)
         player.rate = 0
         player.isMuted = true
@@ -868,6 +873,9 @@ public final class VideoFrameProvider {
     /// Releases video resources.
     /// PR-async-race: Increments generation and cancels pending tasks to prevent stale updates.
     public func release() {
+        #if DEBUG
+        MemoryDiagnostics.event("VideoFrameProvider.release", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
         // PR-async-race: Invalidate all pending async operations
         generation += 1
         durationTask?.cancel()
@@ -889,5 +897,9 @@ public final class VideoFrameProvider {
 
     deinit {
         release()
+        #if DEBUG
+        MemoryDiagnostics.decrement("VideoFrameProvider")
+        MemoryDiagnostics.event("VideoFrameProvider.deinit", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
     }
 }

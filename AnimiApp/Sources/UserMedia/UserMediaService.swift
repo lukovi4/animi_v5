@@ -429,6 +429,11 @@ public final class UserMediaService {
         self.scenePlayer = scenePlayer
         self.scenePlayerForTest = nil
         self.textureProvider = textureProvider
+
+        #if DEBUG
+        MemoryDiagnostics.increment("UserMediaService")
+        MemoryDiagnostics.event("UserMediaService.init", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
     }
 
     /// Internal initializer for testing.
@@ -1245,6 +1250,9 @@ public final class UserMediaService {
     /// PR-async-race: Increments generation and cancels setup task to prevent stale updates.
     /// All media files are persistent (owned by MediaAssetStore), so no file deletion here.
     private func cleanupVideoResources(for blockId: String) {
+        #if DEBUG
+        MemoryDiagnostics.event("UMS.cleanupVideo", "obj=\(ObjectIdentifier(self).hashValue) blockId=\(blockId)")
+        #endif
         // PR-async-race: Invalidate pending async operations for this blockId
         mediaSetupGenerationByBlock[blockId, default: 0] += 1
         mediaSetupTasksByBlock[blockId]?.cancel()
@@ -1343,6 +1351,10 @@ public final class UserMediaService {
     deinit {
         // VideoFrameProvider.deinit handles its own cleanup (release()).
         // All media files are persistent (owned by MediaAssetStore), no temp cleanup needed.
+        #if DEBUG
+        MemoryDiagnostics.decrement("UserMediaService")
+        MemoryDiagnostics.event("UserMediaService.deinit", "obj=\(ObjectIdentifier(self).hashValue) videoProviders=\(videoProviders.count)")
+        #endif
     }
 
     // MARK: - State Query
@@ -1474,6 +1486,9 @@ public final class UserMediaService {
     /// Preserves `mediaState` (contains VideoSelection metadata needed for `exportVideoSelectionsSnapshot()`).
     /// After calling this, preview video playback is no longer functional, but snapshot APIs still work.
     public func releasePreviewResources() {
+        #if DEBUG
+        MemoryDiagnostics.event("UMS.releasePreview", "obj=\(ObjectIdentifier(self).hashValue) videoProviders=\(videoProviders.count) setupTasks=\(mediaSetupTasksByBlock.count) stillTasks=\(stillTasksByBlock.count) trimTasks=\(trimPreviewTasksByBlock.count) activeVideo=\(activeVideoBlockIds.count)")
+        #endif
         // PR2: Cancel all pending still frame tasks
         for (_, task) in stillTasksByBlock {
             task.cancel()

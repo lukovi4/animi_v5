@@ -216,8 +216,17 @@ final class ExportWriterPipeline {
         }
     }
 
+    deinit {
+        #if DEBUG
+        MemoryDiagnostics.event("ExportWriterPipeline.deinit")
+        #endif
+    }
+
     /// Cancel: stop pumps, cancel writer, delete file.
     func cancel() {
+        #if DEBUG
+        MemoryDiagnostics.event("ExportWriterPipeline.cancel")
+        #endif
         let outputURL = writer.outputURL
         videoPump.cancel()
         audioPump?.cancel()

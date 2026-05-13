@@ -273,6 +273,9 @@ public final class ExportVideoSlotsCoordinator {
 
     /// Finishes all providers and releases resources.
     public func finish() {
+        #if DEBUG
+        MemoryDiagnostics.event("ExportVideoSlots.finish", "slots=\(slots.count)")
+        #endif
         for (_, slot) in slots {
             slot.provider.finish()
         }
@@ -282,6 +285,9 @@ public final class ExportVideoSlotsCoordinator {
 
     /// Cancels all providers immediately.
     public func cancel() {
+        #if DEBUG
+        MemoryDiagnostics.event("ExportVideoSlots.cancel")
+        #endif
         for (_, slot) in slots {
             slot.provider.cancel()
         }

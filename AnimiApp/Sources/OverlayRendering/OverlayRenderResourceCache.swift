@@ -100,6 +100,9 @@ internal final class OverlayRenderResourceCache: @unchecked Sendable {
 
     /// Called on UIKit memory warning. Preview cache owner subscribes; export cache does not.
     func purgeOnMemoryPressure() {
+        #if DEBUG
+        MemoryDiagnostics.event("OverlayCache.purge")
+        #endif
         invalidateAll()
     }
 

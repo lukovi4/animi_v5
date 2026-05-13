@@ -155,6 +155,11 @@ internal final class EditorRuntimeExportController {
     // MARK: - Export Mode Management
 
     func enterExportMode() {
+        #if DEBUG
+        MemoryDiagnostics.checkpoint("export.enter.before")
+        MemoryDiagnostics.event("export.enter")
+        MemoryDiagnostics.signpostEvent("export.enter")
+        #endif
         runtime.stopPlayback()
         runtime.cancelPendingPlayheadResolve()
         runtime.previewAudio.controller.teardown()
@@ -163,9 +168,15 @@ internal final class EditorRuntimeExportController {
         runtime.userMediaService?.releasePreviewResources()
         runtime.timelineCompositionEngine?.releaseForExport()
         exportTeardownOccurred = true
+        #if DEBUG
+        MemoryDiagnostics.checkpoint("export.enter.after")
+        #endif
     }
 
     func exitExportModeToIdle() async {
+        #if DEBUG
+        MemoryDiagnostics.event("export.exit")
+        #endif
         await restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
     }
 
@@ -183,6 +194,11 @@ internal final class EditorRuntimeExportController {
             await runtime.background.reloadBackgroundTextures()
         }
         await runtime.restorePreviewResourcesAfterExport()
+        #if DEBUG
+        MemoryDiagnostics.event("export.previewRestored")
+        MemoryDiagnostics.signpostEvent("preview.restore")
+        MemoryDiagnostics.checkpoint("preview.restore.after")
+        #endif
     }
 
     func restorePreExportState() {
