@@ -100,6 +100,8 @@ final class EditorRuntime {
 
     var userMediaService: UserMediaService?
 
+    var rendererResourceTrimmer: ((TrimPolicy) -> Void)?
+
     // MARK: - Background
     private(set) lazy var background = EditorRuntimeBackgroundController(runtime: self)
 
@@ -159,8 +161,9 @@ final class EditorRuntime {
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
             queue: .main
-        ) { _ in
+        ) { [weak self] _ in
             cache.purgeOnMemoryPressure()
+            self?.rendererResourceTrimmer?(.memoryWarning)
         }
     }
 
@@ -967,6 +970,8 @@ final class EditorRuntime {
         } else {
             userMediaService?.stopVideoPlayback()
         }
+
+        rendererResourceTrimmer?(.softInteractiveStop)
 
         onOutput?(.playbackStateChanged(isPlaying: false))
         AppAudioSessionController.deactivate()

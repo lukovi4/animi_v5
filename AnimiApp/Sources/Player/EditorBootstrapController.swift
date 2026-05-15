@@ -186,6 +186,9 @@ internal final class EditorBootstrapController {
         let library = vc.sceneLibrarySnapshot!
         let rt = EditorRuntime(session: vc.session)
         rt.onOutput = { [weak vc] output in vc?.bootstrapController.handleRuntimeOutput(output) }
+        rt.rendererResourceTrimmer = { [weak vc] policy in
+            vc?.trimRendererTransientResources(policy: policy)
+        }
         vc.runtime = rt
 
         if let device = vc.metalDevice, let queue = vc.commandQueue {

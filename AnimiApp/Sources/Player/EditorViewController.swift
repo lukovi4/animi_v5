@@ -420,8 +420,16 @@ final class EditorViewController: UIViewController {
             #if DEBUG
             MemoryDiagnostics.checkpoint("editor.close.before")
             #endif
+            if runtime?.isPlaying == true {
+                runtime?.stopPlayback()
+            }
+            trimRendererTransientResources(policy: .editorClose)
             runtime?.clearAllBackgroundTextures()
         }
+    }
+
+    func trimRendererTransientResources(policy: TrimPolicy) {
+        renderer?.trimTransientResources(policy: policy)
     }
 
     static func shouldCleanupOnDisappear(isMovingFromParent: Bool, isBeingDismissed: Bool) -> Bool {

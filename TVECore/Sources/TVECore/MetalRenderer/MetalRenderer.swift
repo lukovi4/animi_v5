@@ -247,6 +247,10 @@ public final class MetalRenderer {
         }
     }
 
+    public func trimTransientResources(policy: TrimPolicy) {
+        texturePool.trim(policy: policy)
+    }
+
     /// Clears pooled textures to free memory.
     /// Call this when the renderer won't be used for a while.
     public func clearCaches() {
