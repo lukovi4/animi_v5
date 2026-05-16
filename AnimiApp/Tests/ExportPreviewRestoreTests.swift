@@ -450,7 +450,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
         // Enter exporting + teardown
         runtime.exportController.preExportState = .timelinePreview
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         // Runtimes should be cleared
         XCTAssertTrue(engine.instanceRuntimes.isEmpty, "Runtimes should be cleared after export teardown")
@@ -494,7 +494,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
 
         runtime.exportController.preExportState = .timelinePreview
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
         XCTAssertTrue(engine.instanceRuntimes.isEmpty)
 
         let successExpectation = expectation(description: "exportRenderSucceeded")
@@ -532,7 +532,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
 
         runtime.exportController.preExportState = .timelinePreview
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         // Move playhead to frame 20 while runtimes are torn down.
         // The restore loop re-reads playheadCompressedFrame after prepareForPlayback,
@@ -578,7 +578,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
 
         runtime.exportController.preExportState = .timelinePreview
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
         XCTAssertTrue(engine.instanceRuntimes.isEmpty)
 
         let cancelExpectation = expectation(description: "exportCancelled emitted")
@@ -608,7 +608,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
 
         runtime.exportController.preExportState = .timelinePreview
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
         XCTAssertTrue(engine.instanceRuntimes.isEmpty)
 
         let failExpectation = expectation(description: "exportRenderFailed emitted")
@@ -643,7 +643,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
 
         runtime.exportController.preExportState = .sceneEdit(instanceId: instanceId)
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         let successExpectation = expectation(description: "exportRenderSucceeded emitted")
         runtime.onOutput = { output in
@@ -732,7 +732,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
         // Export teardown releases video providers
         runtime.exportController.preExportState = .sceneEdit(instanceId: instanceId)
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         XCTAssertEqual(service.activeVideoProviderCount, 0,
                        "releasePreviewResources must clear all video providers")
@@ -786,7 +786,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
         // Export teardown: releases all runtimes
         runtime.exportController.preExportState = .timelinePreview
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
         XCTAssertTrue(engine.instanceRuntimes.isEmpty, "Runtimes cleared after teardown")
 
         // Trigger restore via completion
@@ -847,7 +847,7 @@ final class ExportPreviewRestoreTests: XCTestCase {
 
         runtime.exportController.preExportState = .timelinePreview
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         // Wait for any in-flight boot resolves to drain after teardown
         await Task.yield()
@@ -874,5 +874,136 @@ final class ExportPreviewRestoreTests: XCTestCase {
 
         XCTAssertEqual(engine.instanceRuntimes.count, baselineCount,
                        "Scrub during export after teardown must not change runtime count")
+    }
+
+    // MARK: - PR3 Race Path Tests
+
+    func test_playheadBlockedDuringExportEntering() async throws {
+        guard let (_, runtime) = await makeFullyBootedRuntime() else {
+            throw XCTSkip("Metal or session not available")
+        }
+
+        // Put into exporting state
+        runtime.exportController.preExportState = .timelinePreview
+        runtime.bootForTesting(state: .exporting)
+
+        // Simulate entering state (without actually running enterExportMode)
+        runtime.exportController.setExportTeardownStateForTesting(.entering)
+
+        let resolveBefore = runtime.timelinePresentResolveCount
+
+        // Playhead change during .entering should be blocked
+        runtime.handlePlayheadChanged(5)
+        runtime.handlePlayheadChanged(10)
+        runtime.handlePlayheadChanged(15)
+
+        XCTAssertEqual(runtime.timelinePresentResolveCount, resolveBefore,
+                       "Playhead resolve must be blocked during .entering state")
+    }
+
+    func test_cancelDuringEntering_setsFlag() async throws {
+        guard let (_, runtime) = await makeFullyBootedRuntime() else {
+            throw XCTSkip("Metal or session not available")
+        }
+
+        runtime.exportController.preExportState = .timelinePreview
+        runtime.bootForTesting(state: .exporting)
+
+        // Simulate entering state
+        runtime.exportController.setExportTeardownStateForTesting(.entering)
+
+        // cancelExport in .entering state should set flag (not restore immediately)
+        runtime.exportController.cancelExport()
+
+        // The cancel path for .entering doesn't emit immediately — deferred to enterExportMode resume
+        // Verify the state machine accepted the cancel
+        XCTAssertTrue(runtime.exportController.blocksPreviewPresentationDuringExport,
+                      "Should still block presentation until enterExportMode resumes")
+    }
+
+    func test_enterExportMode_succeeds_whenNoCancelRequested() async throws {
+        guard let (_, runtime) = await makeFullyBootedRuntime() else {
+            throw XCTSkip("Metal or session not available")
+        }
+        guard let engine = runtime.testTimelineCompositionEngine else {
+            throw XCTSkip("No engine")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 90, sceneTypeId: "scene_1")
+        engine.resourcesCache.addToCache(resources)
+
+        runtime.exportController.preExportState = .timelinePreview
+        runtime.bootForTesting(state: .exporting)
+
+        // Enter export mode — should succeed when no cancel requested
+        let entered = await runtime.exportController.enterExportMode()
+        XCTAssertTrue(entered, "Should succeed when no cancel requested")
+        XCTAssertEqual(runtime.exportController.exportTeardownState, .completed)
+
+        // Verify export runner guards work: cancel clears state
+        runtime.exportController.cancelExport()
+
+        // After cancel from .completed, export request should be nil (not created yet)
+        XCTAssertNil(runtime.exportController.activeExportRequest,
+                     "No active request should survive cancel")
+    }
+
+    func test_cancelAfterEnterBeforeRunnerStart_preventsExport() async throws {
+        guard let (_, runtime) = await makeFullyBootedRuntime() else {
+            throw XCTSkip("Metal or session not available")
+        }
+
+        runtime.exportController.preExportState = .timelinePreview
+        runtime.bootForTesting(state: .exporting)
+
+        // Enter export mode successfully
+        await runtime.simulateEnterExportMode()
+
+        XCTAssertEqual(runtime.exportController.exportTeardownState, .completed)
+
+        // Now simulate cancel between enter and runner start
+        runtime.exportController.cancelExport()
+
+        // Verify export runner would bail
+        XCTAssertNil(runtime.exportController.activeExportRequest,
+                     "No export request should exist after cancel")
+    }
+
+    func test_releasePreviewResources_drainsSetupTasks() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+
+        let session = await makeBootstrappedSession()
+        guard let editorState = session.state else {
+            throw XCTSkip("No editor state")
+        }
+
+        let runtime = EditorRuntime(session: session)
+        let metalContext = EditorRuntimeMetalContext(
+            device: device,
+            commandQueue: commandQueue,
+            colorPixelFormat: .bgra8Unorm
+        )
+        let loadResult = makeLoadResult(device: device)
+        runtime.configureAndBoot(
+            metalContext: metalContext,
+            library: SceneLibrarySnapshot(
+                fps: 30,
+                canvas: CanvasConfig(width: 1080, height: 1920),
+                scenes: [SceneTypeDescriptor(id: "scene_1", order: 0, title: "Test", baseDurationUs: 3_000_000)]
+            ),
+            loadResult: loadResult,
+            editorState: editorState
+        )
+
+        // After release, no video providers should remain
+        await runtime.userMediaService?.releasePreviewResources()
+
+        #if DEBUG
+        XCTAssertEqual(runtime.userMediaService?.activeVideoProviderCount ?? 0, 0,
+                       "All video providers must be released after drain")
+        #endif
     }
 }

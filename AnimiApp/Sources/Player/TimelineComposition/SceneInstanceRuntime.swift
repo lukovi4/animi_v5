@@ -263,6 +263,12 @@ public final class SceneInstanceRuntime {
         #endif
     }
 
+    #if DEBUG
+    func debugFlushTextureCaches() {
+        userMediaService.debugFlushAllTextureCaches()
+    }
+    #endif
+
     deinit {
         #if DEBUG
         MemoryDiagnostics.decrement("SceneInstanceRuntime")
@@ -457,6 +463,9 @@ public final class SceneInstanceRuntime {
         var elapsed = 0
 
         while elapsed < maxWaitMs {
+            // PR3: Exit immediately on task cancellation (teardown path)
+            guard !Task.isCancelled else { return }
+
             // Check for external state changes (reset, reload, cancel)
             guard case .preparing(let current) = readinessState, current == targetFrame else {
                 return  // State changed externally, abort this loop
@@ -476,6 +485,9 @@ public final class SceneInstanceRuntime {
                 // PR2: Await still frame delivery so texture is on-screen before .ready
                 await mediaSyncing.awaitPendingStillFrames()
 
+                // PR3: Re-check cancellation after await
+                guard !Task.isCancelled else { return }
+
                 // Re-check state hasn't changed during await
                 guard case .preparing(let current) = readinessState, current == targetFrame else {
                     return
@@ -491,6 +503,8 @@ public final class SceneInstanceRuntime {
             }
 
             try? await Task.sleep(nanoseconds: pollIntervalMs * 1_000_000)
+            // PR3: Check cancellation after sleep (exit fast on teardown)
+            guard !Task.isCancelled else { return }
             elapsed += Int(pollIntervalMs)
 
             // Re-sync frozen frame during poll
@@ -526,6 +540,9 @@ public final class SceneInstanceRuntime {
         let pollIntervalMs: UInt64 = 50
 
         while true {
+            // PR3: Exit on cancellation (teardown path)
+            guard !Task.isCancelled else { return readinessState }
+
             switch readinessState {
             case .ready, .failed, .timedOut:
                 return readinessState
@@ -568,6 +585,21 @@ public final class SceneInstanceRuntime {
     /// Pauses playback.
     public func pause() {
         userMediaService.stopVideoPlayback()
+    }
+
+    /// Releases all preview resources (video providers, setup tasks).
+    /// Called on editor close and export enter to ensure GPU memory is freed.
+    /// Transitions readinessState to terminal so any pending waitUntilReady returns immediately.
+    /// Async: drains in-flight setup tasks to guarantee no retained providers after return.
+    func releasePreviewResources() async {
+        preparationTask?.cancel()
+        preparationTask = nil
+        // Move to terminal state so waitUntilReadyForPresentation exits its poll loop
+        if case .preparing = readinessState {
+            readinessState = .failed(reason: "released")
+        }
+        pause()
+        await userMediaService.releasePreviewResources()
     }
 
     /// TT-03 Completion: Deactivates playback while preserving textures (hold-last).

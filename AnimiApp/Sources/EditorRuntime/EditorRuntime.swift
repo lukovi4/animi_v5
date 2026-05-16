@@ -100,6 +100,10 @@ final class EditorRuntime {
 
     var userMediaService: UserMediaService?
 
+    #if DEBUG
+    var debugTexturePoolSnapshotProvider: (() -> TexturePool.TexturePoolSnapshot?)?
+    #endif
+
     var rendererResourceTrimmer: ((TrimPolicy) -> Void)?
 
     // MARK: - Background
@@ -202,8 +206,8 @@ final class EditorRuntime {
     var testBackgroundTextureService: BackgroundTextureService? { background.backgroundTextureService }
 
     /// Test seam: triggers export teardown without starting actual export.
-    func simulateEnterExportMode() {
-        exportController.enterExportMode()
+    func simulateEnterExportMode() async {
+        await exportController.enterExportMode()
     }
 
     /// Test seam: async exit-export-mode with background texture restore.
@@ -643,9 +647,9 @@ final class EditorRuntime {
         case .timelinePreview:
             handleTimelineModePlayheadChanged(compressedFrame)
         case .exporting:
-            // After enterExportMode() teardown, runtimes are released.
-            // Allowing presentation resolve here would re-create them mid-export.
-            if !exportController.exportTeardownOccurred {
+            // Block presentation resolve during export enter/completed to prevent
+            // re-creating runtimes mid-teardown or mid-export.
+            if !exportController.blocksPreviewPresentationDuringExport {
                 handleTimelineModePlayheadChanged(compressedFrame)
             }
         case .sceneEdit:
@@ -658,6 +662,17 @@ final class EditorRuntime {
     func cancelPendingPlayheadResolve() {
         playheadAsyncTask?.cancel()
         playheadAsyncTask = nil
+    }
+
+    /// Releases all preview resources on editor close.
+    /// Mirrors export teardown but evicts type cache (editor is fully closing).
+    /// Async: drains in-flight setup tasks to guarantee no retained providers after return.
+    func releasePreviewResourcesForClose() async {
+        cancelPendingPlayheadResolve()
+        previewAudio.controller.teardown()
+        previewAudio.cancelBuild()
+        await userMediaService?.releasePreviewResources()
+        await timelineCompositionEngine?.releasePreviewResources(evictTypeCache: true)
     }
 
     private func handleTimelineModePlayheadChanged(_ compressedFrame: Int) {
@@ -949,6 +964,12 @@ final class EditorRuntime {
     }
 
     func stopPlayback() {
+        #if DEBUG
+        if MemoryDiagnostics.isEnabled {
+            MemoryDiagnostics.checkpoint("playback.stop.before", metal: metalContext?.device, resources: gatherResourceContext())
+        }
+        #endif
+
         playbackStartTask?.cancel()
         playbackStartTask = nil
         previewAudio.controller.pause()
@@ -971,11 +992,51 @@ final class EditorRuntime {
             userMediaService?.stopVideoPlayback()
         }
 
+        #if DEBUG
+        if UserDefaults.standard.bool(forKey: "DebugFlushTextureCachesOnStop") {
+            MemoryDiagnostics.event("experiment.flushTextureCachesOnStop")
+            userMediaService?.debugFlushAllTextureCaches()
+            timelineCompositionEngine?.debugFlushAllTextureCaches()
+        }
+        #endif
+
         rendererResourceTrimmer?(.softInteractiveStop)
 
         onOutput?(.playbackStateChanged(isPlaying: false))
         AppAudioSessionController.deactivate()
+
+        #if DEBUG
+        if MemoryDiagnostics.isEnabled {
+            MemoryDiagnostics.checkpoint("playback.stop.after", metal: metalContext?.device, resources: gatherResourceContext())
+            let device = metalContext?.device
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self, MemoryDiagnostics.isEnabled else { return }
+                MemoryDiagnostics.checkpoint("playback.stop.after.2s", metal: device, resources: self.gatherResourceContext())
+            }
+        }
+        #endif
     }
+
+    #if DEBUG
+    func gatherResourceContext() -> MemoryDiagnostics.ResourceContext {
+        var ctx = MemoryDiagnostics.ResourceContext()
+        ctx.texturePoolSnapshot = debugTexturePoolSnapshotProvider?()
+        ctx.sceneTypeCacheSnapshot = timelineCompositionEngine?.resourcesCache.debugSnapshot()
+        ctx.overlayCacheSnapshot = overlayRenderCache.debugSnapshot()
+        ctx.runtimeCount = timelineCompositionEngine?.instanceRuntimes.count
+
+        var vpCount = 0
+        if let engine = timelineCompositionEngine {
+            for runtime in engine.instanceRuntimes.values {
+                vpCount += runtime.userMediaService.activeVideoProviderCount
+            }
+        }
+        vpCount += userMediaService?.activeVideoProviderCount ?? 0
+        ctx.videoProviderCount = vpCount
+
+        return ctx
+    }
+    #endif
 
     private func displayLinkFired(_ link: CADisplayLink) {
         guard let editorState = session.state else { return }

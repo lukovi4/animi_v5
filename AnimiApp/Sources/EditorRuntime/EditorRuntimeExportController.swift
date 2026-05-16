@@ -30,15 +30,32 @@ internal final class EditorRuntimeExportController {
         }
     }
 
+    // MARK: - Export Teardown State
+
+    enum ExportTeardownState {
+        case idle
+        case entering
+        case completed
+    }
+
     // MARK: - Stored Properties
 
     var pendingDeliveryPolicy: ExportDeliveryPolicy = .photoLibraryOnly
     var activeExportRequest: ActiveExportRequest?
     var preExportState: EditorRuntimeState?
     var preflightContinuation: CheckedContinuation<EditorRuntime.ExportPreflightChoice, Never>?
-    var exportTeardownOccurred = false
+    private(set) var exportTeardownState: ExportTeardownState = .idle
+    private var cancelRequestedDuringEnter = false
     private(set) var isRestoringPreviewAfterExport = false
     var makeDeliverer: () -> ExportDelivering = { ExportDeliveryCoordinator() }
+
+    /// Legacy compat: true when teardown has fully completed (used by restore path).
+    var exportTeardownOccurred: Bool { exportTeardownState == .completed }
+
+    /// Blocks preview presentation resolve during export enter/completed.
+    var blocksPreviewPresentationDuringExport: Bool {
+        exportTeardownState == .entering || exportTeardownState == .completed
+    }
 
     var isExporting: Bool { activeExportRequest != nil }
 
@@ -72,13 +89,18 @@ internal final class EditorRuntimeExportController {
         preflightContinuation?.resume(returning: .cancel)
         preflightContinuation = nil
         clearActiveExportRequest()
-        if exportTeardownOccurred {
+        switch exportTeardownState {
+        case .completed:
             Task { [weak self, weak runtime] in
                 guard let self, let runtime else { return }
                 await self.restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
                 runtime.onOutput?(.exportCancelled)
             }
-        } else {
+        case .entering:
+            // Teardown is in-flight (suspended at await). Mark cancellation.
+            // enterExportMode() will check this on resume and abort.
+            cancelRequestedDuringEnter = true
+        case .idle:
             restorePreExportState()
             runtime.onOutput?(.exportCancelled)
         }
@@ -119,7 +141,8 @@ internal final class EditorRuntimeExportController {
 
         let route = resolveExportRoute()
 
-        enterExportMode()
+        let entered = await enterExportMode()
+        guard entered, runtime.state == .exporting else { return }
 
         switch route {
         case .timeline:
@@ -150,11 +173,20 @@ internal final class EditorRuntimeExportController {
     func setRestoringForTesting(_ value: Bool) {
         isRestoringPreviewAfterExport = value
     }
+
+    func setExportTeardownStateForTesting(_ state: ExportTeardownState) {
+        exportTeardownState = state
+    }
     #endif
 
     // MARK: - Export Mode Management
 
-    func enterExportMode() {
+    /// Performs export teardown: stops playback, drains preview resources, clears textures.
+    /// Returns `true` if teardown completed successfully, `false` if cancelled during drain.
+    @discardableResult
+    func enterExportMode() async -> Bool {
+        exportTeardownState = .entering
+        cancelRequestedDuringEnter = false
         #if DEBUG
         MemoryDiagnostics.checkpoint("export.enter.before", metal: runtime.metalContext?.device)
         MemoryDiagnostics.event("export.enter")
@@ -164,13 +196,28 @@ internal final class EditorRuntimeExportController {
         runtime.cancelPendingPlayheadResolve()
         runtime.previewAudio.controller.teardown()
         runtime.previewAudio.cancelBuild()
+        // Clear background textures early (before await window opens)
         runtime.background.backgroundTextureService?.clearAllTrackedTextures()
-        runtime.userMediaService?.releasePreviewResources()
-        runtime.timelineCompositionEngine?.releaseForExport()
-        exportTeardownOccurred = true
+        await runtime.userMediaService?.releasePreviewResources()
+        await runtime.timelineCompositionEngine?.releasePreviewResources(evictTypeCache: false)
+
+        // Check if export was cancelled during async drain
+        guard !cancelRequestedDuringEnter else {
+            // Resources were released during drain — must restore them
+            exportTeardownState = .completed
+            cancelRequestedDuringEnter = false
+            await restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
+            runtime.onOutput?(.exportCancelled)
+            return false
+        }
+
+        // Clear background textures after async drain to prevent re-entrancy reload
+        runtime.background.backgroundTextureService?.clearAllTrackedTextures()
+        exportTeardownState = .completed
         #if DEBUG
         MemoryDiagnostics.checkpoint("export.enter.after", metal: runtime.metalContext?.device)
         #endif
+        return true
     }
 
     func exitExportModeToIdle() async {
@@ -204,7 +251,7 @@ internal final class EditorRuntimeExportController {
     func restorePreExportState() {
         runtime.state = preExportState ?? .timelinePreview
         preExportState = nil
-        exportTeardownOccurred = false
+        exportTeardownState = .idle
     }
 
     func clearActiveExportRequest() {
@@ -234,6 +281,7 @@ internal final class EditorRuntimeExportController {
     // MARK: - Single Scene Export
 
     private func executeSingleSceneExport(ctx: EditorRuntimeMetalContext) async {
+        guard runtime.state == .exporting, exportTeardownState == .completed else { return }
         guard let compiled = runtime.compiledScene,
               let player = runtime.scenePlayer,
               let resolver = runtime.assetResolver else {
@@ -389,6 +437,7 @@ internal final class EditorRuntimeExportController {
     // MARK: - Timeline Export
 
     private func executeTimelineExport(ctx: EditorRuntimeMetalContext) async {
+        guard runtime.state == .exporting, exportTeardownState == .completed else { return }
         guard let engine = runtime.timelineCompositionEngine,
               let transitionMath = engine.transitionMath else {
             await abortExportAfterTeardown(message: "No timeline configured for timeline export")

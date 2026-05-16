@@ -446,7 +446,7 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         XCTAssertTrue(service.isLoaded(testSlotKey), "Texture should be loaded before teardown")
 
         // Simulate export teardown
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         XCTAssertFalse(service.isLoaded(testSlotKey), "Texture should be cleared after teardown")
     }
@@ -481,7 +481,7 @@ final class ExportBackgroundRestoreTests: XCTestCase {
 
         // Teardown
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
         XCTAssertFalse(service.isLoaded(testSlotKey), "Texture cleared after teardown")
 
         // Restore
@@ -544,7 +544,7 @@ final class ExportBackgroundRestoreTests: XCTestCase {
 
         // Enter exporting state + teardown
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
         XCTAssertFalse(service.isLoaded(testSlotKey))
 
         // Spy on output
@@ -622,7 +622,7 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         }
 
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         var emittedRenderSourceUpdated = false
         runtime.onOutput = { output in
@@ -644,7 +644,7 @@ final class ExportBackgroundRestoreTests: XCTestCase {
         }
 
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         let cancelExpectation = expectation(description: "exportCancelled emitted after restore")
         runtime.onOutput = { output in
@@ -688,7 +688,7 @@ final class ExportBackgroundRestoreTests: XCTestCase {
 
         // Enter exporting + teardown
         runtime.bootForTesting(state: .exporting)
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
         XCTAssertFalse(service.isLoaded(testSlotKey))
 
         // Spy: at the moment .exportRenderSucceeded fires, texture must already be loaded

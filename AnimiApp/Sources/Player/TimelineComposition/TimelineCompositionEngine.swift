@@ -441,6 +441,14 @@ public final class TimelineCompositionEngine {
         )
     }
 
+    #if DEBUG
+    func debugFlushAllTextureCaches() {
+        for runtime in instanceRuntimes.values {
+            runtime.debugFlushTextureCaches()
+        }
+    }
+    #endif
+
     /// PR-G: Stops playback for all loaded runtimes.
     public func stopPlayback() {
         for runtime in instanceRuntimes.values {
@@ -525,26 +533,36 @@ public final class TimelineCompositionEngine {
         residencyController.evictNonResidentRuntimes(math: math)
     }
 
-    /// Releases all scene resources.
-    public func releaseResources() {
-        for runtime in instanceRuntimes.values {
-            runtime.pause()
-        }
+    /// Releases all preview resources from scene instance runtimes.
+    /// - Parameter evictTypeCache: If true, also evicts the shared scene type resources cache.
+    ///   Use `true` on editor close (everything goes), `false` on export (cache needed for restore).
+    /// Async: drains in-flight setup tasks to guarantee no retained providers after return.
+    func releasePreviewResources(evictTypeCache: Bool) async {
+        #if DEBUG
+        MemoryDiagnostics.event("TCEngine.releasePreview", "runtimes=\(instanceRuntimes.count) evictCache=\(evictTypeCache)")
+        #endif
+        // Snapshot and clear dictionary before any await to prevent mutation during iteration
+        let runtimes = Array(instanceRuntimes.values)
         instanceRuntimes.removeAll()
+        for runtime in runtimes {
+            await runtime.releasePreviewResources()
+        }
+        if evictTypeCache {
+            resourcesCache.evictAll()
+        }
+    }
+
+    /// Releases all scene resources.
+    public func releaseResources() async {
+        await releasePreviewResources(evictTypeCache: false)
     }
 
     /// Releases scene runtimes for export — frees GPU memory from preview.
     ///
     /// Preserves `transitionMath` (needed for buildExportSession) and
     /// `sceneStates` (needed for mediaAssignments).
-    public func releaseForExport() {
-        #if DEBUG
-        MemoryDiagnostics.event("TCEngine.releaseForExport", "runtimes=\(instanceRuntimes.count)")
-        #endif
-        for runtime in instanceRuntimes.values {
-            runtime.pause()
-        }
-        instanceRuntimes.removeAll()
+    public func releaseForExport() async {
+        await releasePreviewResources(evictTypeCache: false)
     }
 
     /// Returns runtime for given instance ID, if loaded.

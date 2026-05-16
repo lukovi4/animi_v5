@@ -334,7 +334,7 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let mock = MockPreviewAudioController()
         runtime.setPreviewAudioController(mock)
 
-        runtime.simulateEnterExportMode()
+        await runtime.simulateEnterExportMode()
 
         XCTAssertGreaterThanOrEqual(mock.teardownCallCount, 1)
     }
