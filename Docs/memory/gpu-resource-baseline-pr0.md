@@ -225,9 +225,9 @@ Task 3 must still include preview/export resource separation and export terminal
 
 ## 6. Expected Evidence After Refactor
 
-What should change after PR 1-4:
+What should change after PR 1-5:
 
-- `pool.avail` reaches plateau within configured budget, initially evaluated at 128 / 192 / 256 MB in PR 4 device tuning.
+- `pool.avail` reaches plateau within configured budget, initially evaluated at 128 / 192 / 256 MB in PR 5 device tuning.
 - Footprint does not grow monotonically through repeated play/pause cycles.
 - `inUse` returns to 0 after stop + GPU completion. This already works and must not regress.
 - Close/reopen delta should remain below 30-50 MB after warmup.
@@ -269,3 +269,73 @@ Reason:
 - VM Tracker confirms the memory class is VM/IOSurface/Metal-backed rather than Swift heap.
 - Fast scrub checkpoint is missing, but that is a diagnostic coverage limitation and does not block bounded exact-size `TexturePool`.
 
+## 8. Post-PR2 Device Validation Addendum
+
+This section records follow-up evidence after PR 1 and PR 2. It does not replace the PR 0b baseline because one of the runs used a different template with similar load. It is used to direct the next PR.
+
+### PR 2 Scope Validated
+
+PR 2 commit: `66056ad`.
+
+PR 2 connected renderer `TexturePool.trim(policy:)` to:
+
+- playback stop -> `.softInteractiveStop`;
+- memory warning -> `.memoryWarning`;
+- editor close -> `.editorClose`, after stopping active playback.
+
+### Play/Pause Result
+
+Compared with PR 0b, the renderer pool is no longer the dominant retained-memory source.
+
+| Evidence | PR 0b baseline | Post-PR2 similar-load run |
+|----------|----------------|---------------------------|
+| Late retained `TexturePool.available` | `1111` textures / `308.2 MB` | `11` textures / `11.6 MB` |
+| Highest observed retained pool in post-PR2 run | n/a | `18` textures / `32.1 MB` |
+| `TexturePool.inUse` after stop | `0` | `0` |
+| Interpretation | unbounded pool retention | renderer pool bounded/trimmed |
+
+Representative post-PR2 checkpoint:
+
+```text
+playback.stop.after.2s | footprint: 520MB | resident: 171MB | metal: 482MB
+pool | avail: 11 (11.6MB) | inUse: 0 (~0.0MB)
+SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 7
+```
+
+Conclusion:
+
+PR 1 + PR 2 address the original unbounded `TexturePool.available` failure mode. Remaining high Metal memory during preview is not explained by the renderer pool.
+
+### Close Result
+
+Close while playing confirms renderer trim but exposes a separate preview runtime/video-provider lifecycle gap.
+
+Observed close run:
+
+```text
+editor.boot.after | footprint: 68MB | metal: 11MB | UserMediaService: 1
+playback.start | footprint: 144MB | metal: 90MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+playback.stop.before | footprint: 421MB | metal: 376MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+playback.stop.after | footprint: 324MB | metal: 281MB | pool.avail: 0.8MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+editor.close.before | footprint: 326MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+editor.close.after | footprint: 326MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+```
+
+Conclusion:
+
+`editor.close.after` does not release timeline preview runtimes or video providers. PR 3 must target:
+
+- `TimelineCompositionEngine.instanceRuntimes`;
+- `SceneInstanceRuntime`;
+- per-runtime `UserMediaService`;
+- `VideoFrameProvider`;
+- preview video texture/CVMetalTextureCache resources.
+
+Target for the next validation:
+
+```text
+editor.close.after.2s:
+SceneInstanceRuntime: 0
+VideoFrameProvider: 0
+pool.avail near 0
+```
