@@ -49,7 +49,10 @@ public final class VideoExporter: @unchecked Sendable {
     // MARK: - Shared Helpers
 
     internal func makeExportRenderer(device: MTLDevice, maxFramesInFlight: Int = 3) throws -> MetalRenderer {
-        let options = MetalRendererOptions(maxFramesInFlight: maxFramesInFlight)
+        let options = MetalRendererOptions(
+            maxFramesInFlight: maxFramesInFlight,
+            texturePoolConfiguration: .export
+        )
         return try MetalRenderer(device: device, colorPixelFormat: .bgra8Unorm, options: options)
     }
 

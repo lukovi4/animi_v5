@@ -3,7 +3,7 @@ import Metal
 
 // MARK: - Texture Pool Configuration
 
-public struct TexturePoolConfiguration {
+public struct TexturePoolConfiguration: Sendable, Equatable {
     public var softBudgetBytes: Int
     public var hardBudgetBytes: Int
     public var maxAvailableTextures: Int

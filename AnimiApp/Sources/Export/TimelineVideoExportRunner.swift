@@ -163,6 +163,9 @@ internal final class TimelineVideoExportRunner {
             exportSession.complete(with: .failure(VideoExportError.failedToCreateTextureCache))
             return
         }
+        #if DEBUG
+        MemoryDiagnostics.event("CVTextureCache.create", "owner=TimelineExport")
+        #endif
 
         // 3. Create residency controller + runtime on export queue
         let residencyController = TimelineExportResidencyController(
@@ -182,9 +185,21 @@ internal final class TimelineVideoExportRunner {
         let exportOverlayCache = OverlayRenderResourceCache()
 
         exportSession.setCleanup(
-            onSuccess: { exportRuntime.finish() },
-            onFailure: { exportRuntime.cancel() },
-            onCancel:  { exportRuntime.cancel() }
+            onSuccess: {
+                exportRuntime.finish()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            },
+            onFailure: {
+                exportRuntime.cancel()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            },
+            onCancel: {
+                exportRuntime.cancel()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            }
         )
         exportSession.transitionToRendering()
 

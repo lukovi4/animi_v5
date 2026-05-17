@@ -193,6 +193,9 @@ internal final class SingleSceneVideoExportRunner {
             session.complete(with: .failure(VideoExportError.failedToCreateTextureCache))
             return
         }
+        #if DEBUG
+        MemoryDiagnostics.event("CVTextureCache.create", "owner=SingleSceneExport")
+        #endif
 
         // 4. Setup video slots coordinator
         var videoSlotsCoordinator: ExportVideoSlotsCoordinator?
@@ -212,9 +215,21 @@ internal final class SingleSceneVideoExportRunner {
         }
 
         session.setCleanup(
-            onSuccess: { videoSlotsCoordinator?.finish() },
-            onFailure: { videoSlotsCoordinator?.cancel() },
-            onCancel:  { videoSlotsCoordinator?.cancel() }
+            onSuccess: {
+                videoSlotsCoordinator?.finish()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            },
+            onFailure: {
+                videoSlotsCoordinator?.cancel()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            },
+            onCancel: {
+                videoSlotsCoordinator?.cancel()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            }
         )
         session.transitionToRendering()
 

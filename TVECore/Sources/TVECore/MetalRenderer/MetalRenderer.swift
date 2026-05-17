@@ -127,6 +127,10 @@ public struct MetalRendererOptions: Sendable {
     /// Default is 3 (triple buffering).
     public var maxFramesInFlight: Int
 
+    /// Texture pool configuration (budget, max textures, idle generations).
+    /// Default is `.preview`; export pipelines should use `.export`.
+    public var texturePoolConfiguration: TexturePoolConfiguration
+
     /// Creates renderer options with defaults.
     /// - Parameters:
     ///   - clearColor: Clear color (default: transparent black)
@@ -134,18 +138,21 @@ public struct MetalRendererOptions: Sendable {
     ///   - enableDiagnostics: Enable diagnostic logging (default: false)
     ///   - enablePerfMetrics: Enable perf metrics collection in DEBUG (default: false)
     ///   - maxFramesInFlight: Max in-flight frames for ring buffer (default: 3)
+    ///   - texturePoolConfiguration: Texture pool budget/limits (default: .preview)
     public init(
         clearColor: ClearColor = .transparentBlack,
         enableWarningsForUnsupportedCommands: Bool = true,
         enableDiagnostics: Bool = false,
         enablePerfMetrics: Bool = false,
-        maxFramesInFlight: Int = 3
+        maxFramesInFlight: Int = 3,
+        texturePoolConfiguration: TexturePoolConfiguration = .preview
     ) {
         self.clearColor = clearColor
         self.enableWarningsForUnsupportedCommands = enableWarningsForUnsupportedCommands
         self.enableDiagnostics = enableDiagnostics
         self.enablePerfMetrics = enablePerfMetrics
         self.maxFramesInFlight = max(1, maxFramesInFlight)
+        self.texturePoolConfiguration = texturePoolConfiguration
     }
 }
 
@@ -210,7 +217,7 @@ public final class MetalRenderer {
         self.options = options
         self.logger = logger
         self.resources = try MetalRendererResources(device: device, colorPixelFormat: colorPixelFormat)
-        self.texturePool = TexturePool(device: device)
+        self.texturePool = TexturePool(device: device, configuration: options.texturePoolConfiguration)
         self.maskCache = MaskCache(device: device)
         self.shapeCache = ShapeCache(device: device)
         self.vertexUploadPool = VertexUploadPool(device: device, buffersInFlight: options.maxFramesInFlight)
@@ -260,6 +267,12 @@ public final class MetalRenderer {
         pathIndexBufferCache.clear()
         pathSamplingCache.clear()
     }
+
+    #if DEBUG
+    public func debugTexturePoolSnapshot() -> TexturePool.TexturePoolSnapshot {
+        texturePool.debugSnapshot()
+    }
+    #endif
 
     // MARK: - Public API
 
@@ -609,7 +622,9 @@ public final class MetalRenderer {
                 pathSamplingCache.beginFrame()
 
                 // Acquire offscreen target from pool (now .private per PR1)
-                guard let targetTexture = texturePool.acquireColorTexture(size: targetSizePx) else {
+                guard let targetTexture = TexturePool.withDebugOwner("renderer.warmRender", {
+                    texturePool.acquireColorTexture(size: targetSizePx)
+                }) else {
                     return
                 }
                 inFlightTextures.append(targetTexture)
