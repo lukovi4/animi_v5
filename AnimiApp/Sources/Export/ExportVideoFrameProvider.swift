@@ -225,7 +225,9 @@ public final class ExportVideoFrameProvider {
     }
 
     private func clearAsyncCopyError() {
-        clearAsyncCopyError()
+        _asyncCopyErrorLock.lock()
+        _asyncCopyError = nil
+        _asyncCopyErrorLock.unlock()
     }
 
     // MARK: - PerfDiag Counters (DEBUG)
