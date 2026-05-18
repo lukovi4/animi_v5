@@ -32,12 +32,17 @@ public final class VideoFrameBlender {
 
     /// Blends two textures with linear interpolation.
     ///
+    /// The returned scratch texture becomes valid **after** the committed command buffer
+    /// executes on the GPU — not synchronously at the point of return. This is safe in
+    /// the export path because blend CB and render CB share the same `commandQueue`,
+    /// and the render path calls `waitUntilCompleted` as the frame-level sync point.
+    ///
     /// - Parameters:
     ///   - prev: Previous frame texture
     ///   - next: Next frame texture
     ///   - alpha: Blend factor (0 = prev, 1 = next)
     ///   - commandQueue: Metal command queue for dispatch
-    /// - Returns: Blended texture, or nil on GPU failure
+    /// - Returns: Blended texture (valid after GPU execution), or nil on GPU failure
     public func blend(
         prev: MTLTexture, next: MTLTexture,
         alpha: Float, commandQueue: MTLCommandQueue
@@ -83,8 +88,14 @@ public final class VideoFrameBlender {
         encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
         encoder.endEncoding()
 
+        #if DEBUG
+        commandBuffer.addCompletedHandler { cb in
+            if cb.status == .error {
+                print("[VideoFrameBlender] blend error: \(cb.error?.localizedDescription ?? "unknown")")
+            }
+        }
+        #endif
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
 
         return scratch
     }

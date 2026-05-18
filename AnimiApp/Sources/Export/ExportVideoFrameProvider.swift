@@ -129,6 +129,20 @@ enum ResamplingDecision: Equatable {
 /// let texture = provider.texture(forTargetVideoTime: 1.5)
 /// provider.finish()
 /// ```
+/// Test seam for export video frame providers.
+public protocol ExportVideoFrameProviding: AnyObject {
+    var config: ExportVideoFrameProvider.Config { get }
+    var providerError: ExportVideoFrameProviderError? { get }
+    var presentationInfo: VideoPresentationInfo? { get }
+    func prepareIfNeeded() throws
+    func texture(forTargetVideoTime targetTimeSeconds: Double) -> MTLTexture?
+    func finish()
+    func cancel()
+    func suspend()
+    func resume() throws
+    func releaseDecodedState()
+}
+
 public final class ExportVideoFrameProvider {
     // MARK: - Types
 
@@ -162,7 +176,7 @@ public final class ExportVideoFrameProvider {
     private let device: MTLDevice
     private let textureCache: CVMetalTextureCache
     private let commandQueue: MTLCommandQueue
-    let config: Config
+    public let config: Config
 
     private var reader: AVAssetReader?
     private var output: AVAssetReaderTrackOutput?
@@ -183,14 +197,36 @@ public final class ExportVideoFrameProvider {
     private var isFinished = false
 
     /// Provider error (set on decode failure, propagated to coordinator)
-    private(set) var providerError: ExportVideoFrameProviderError?
+    public private(set) var providerError: ExportVideoFrameProviderError?
 
     /// Video presentation metadata (orientation, size, UV transform).
     /// Computed once during prepare from track metadata.
-    private(set) var presentationInfo: VideoPresentationInfo?
+    public private(set) var presentationInfo: VideoPresentationInfo?
 
     /// Lazy GPU blender for temporal interpolation (PR 6)
     private var blender: VideoFrameBlender?
+
+    /// Thread-safe async blit error (set from completion handler on arbitrary Metal thread)
+    private let _asyncCopyErrorLock = NSLock()
+    private var _asyncCopyError: Error?
+
+    private func recordAsyncCopyError(_ error: Error?) {
+        _asyncCopyErrorLock.lock()
+        _asyncCopyError = error
+        _asyncCopyErrorLock.unlock()
+    }
+
+    private func consumeAsyncCopyError() -> Error? {
+        _asyncCopyErrorLock.lock()
+        let error = _asyncCopyError
+        _asyncCopyError = nil
+        _asyncCopyErrorLock.unlock()
+        return error
+    }
+
+    private func clearAsyncCopyError() {
+        clearAsyncCopyError()
+    }
 
     // MARK: - PerfDiag Counters (DEBUG)
 
@@ -272,6 +308,7 @@ public final class ExportVideoFrameProvider {
         blender?.releaseScratch()
         isPrepared = false
         isFinished = false
+        clearAsyncCopyError()
         // Keep config, blender PSO, and providerError intact
     }
 
@@ -288,6 +325,7 @@ public final class ExportVideoFrameProvider {
         lastTexture = nil
         pending = nil
         blender?.releaseScratch()
+        clearAsyncCopyError()
     }
 
     // MARK: - Internal Prepare
@@ -378,6 +416,12 @@ public final class ExportVideoFrameProvider {
     public func texture(forTargetVideoTime targetTimeSeconds: Double) -> MTLTexture? {
         // If we already have an error, return last texture (or nil)
         guard providerError == nil else { return lastTexture }
+
+        // Check for deferred async blit error
+        if let asyncError = consumeAsyncCopyError() {
+            providerError = .failedToCopyTexture(asyncError)
+            return lastTexture
+        }
         guard isPrepared else { return nil }
 
         let targetTime = CMTime(seconds: targetTimeSeconds, preferredTimescale: Self.timescale)
@@ -529,6 +573,7 @@ public final class ExportVideoFrameProvider {
         isPrepared = false
         isFinished = false
         providerError = nil
+        clearAsyncCopyError()
     }
 
     /// Cancels reading immediately.
@@ -595,17 +640,15 @@ public final class ExportVideoFrameProvider {
             throw ExportVideoFrameProviderError.missingPixelBuffer
         }
 
-        // Convert to export-owned MTLTexture. Do not retain CoreVideo-backed
-        // textures across frames: AVAssetReader owns and may recycle those buffers.
-        let texture = try makeOwnedTexture(from: pixelBuffer)
-        return DecodedFrame(pts: pts, texture: texture)
-    }
+        // Check for async blit error from previous frame
+        if let asyncError = consumeAsyncCopyError() {
+            throw ExportVideoFrameProviderError.failedToCopyTexture(asyncError)
+        }
 
-    private func makeOwnedTexture(from pixelBuffer: CVPixelBuffer) throws -> MTLTexture {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
-        var cvMetalTexture: CVMetalTexture?
+        var cvMTex: CVMetalTexture?
         let status = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
@@ -615,15 +658,30 @@ public final class ExportVideoFrameProvider {
             width,
             height,
             0,
-            &cvMetalTexture
+            &cvMTex
         )
 
-        // P0 #2: throw on Metal texture creation failure
         guard status == kCVReturnSuccess,
-              let cvMetalTexture,
+              let cvMetalTexture = cvMTex,
               let sourceTexture = CVMetalTextureGetTexture(cvMetalTexture) else {
             throw ExportVideoFrameProviderError.failedToCreateMetalTexture(status)
         }
+
+        let texture = try makeOwnedTexture(
+            from: pixelBuffer,
+            cvMetalTexture: cvMetalTexture,
+            sourceTexture: sourceTexture
+        )
+        return DecodedFrame(pts: pts, texture: texture)
+    }
+
+    private func makeOwnedTexture(
+        from pixelBuffer: CVPixelBuffer,
+        cvMetalTexture: CVMetalTexture,
+        sourceTexture: MTLTexture
+    ) throws -> MTLTexture {
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
@@ -652,13 +710,24 @@ public final class ExportVideoFrameProvider {
             destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
         )
         blitEncoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
 
-        if commandBuffer.status == .error {
-            throw ExportVideoFrameProviderError.failedToCopyTexture(commandBuffer.error)
+        // Strong-retain ALL resources participating in command buffer until GPU completes.
+        // pixelBuffer: IOSurface backing for sourceTexture
+        // cvMetalTexture: Metal<->IOSurface mapping for sourceTexture
+        // ownedTexture: blit destination (may be replaced in DecodedFrame before GPU finishes)
+        commandBuffer.addCompletedHandler { [pixelBuffer, cvMetalTexture, ownedTexture, weak self] cb in
+            _ = pixelBuffer
+            _ = cvMetalTexture
+            _ = ownedTexture
+            if cb.status == .error {
+                self?.recordAsyncCopyError(cb.error)
+            }
         }
+        commandBuffer.commit()
+        // No waitUntilCompleted — render's wait on same queue is the sync point.
 
         return ownedTexture
     }
 }
+
+extension ExportVideoFrameProvider: ExportVideoFrameProviding {}
