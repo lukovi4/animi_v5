@@ -199,8 +199,11 @@ public final class TimelineCompositionEngine {
             fps: fps
         )
 
-        // Evict orphaned runtimes (scenes that were removed)
+        // Cancel in-flight creation tasks for orphaned scenes
         let orphanedIds = previousSceneIds.subtracting(newSceneIds)
+        frameResolver.cancelCreationTasks(for: orphanedIds)
+
+        // Evict orphaned runtimes (scenes that were removed)
         for orphanId in orphanedIds {
             if let runtime = instanceRuntimes.removeValue(forKey: orphanId) {
                 runtime.pause()
@@ -541,6 +544,9 @@ public final class TimelineCompositionEngine {
         #if DEBUG
         MemoryDiagnostics.event("TCEngine.releasePreview", "runtimes=\(instanceRuntimes.count) evictCache=\(evictTypeCache)")
         #endif
+        // Cancel any in-flight runtime creation tasks before clearing
+        frameResolver.cancelAllCreationTasks()
+
         // Snapshot and clear dictionary before any await to prevent mutation during iteration
         let runtimes = Array(instanceRuntimes.values)
         instanceRuntimes.removeAll()
@@ -563,6 +569,18 @@ public final class TimelineCompositionEngine {
     /// `sceneStates` (needed for mediaAssignments).
     public func releaseForExport() async {
         await releasePreviewResources(evictTypeCache: false)
+    }
+
+    // MARK: - Runtime Creation Task Management
+
+    /// Cancels in-flight runtime creation tasks for the given instance IDs.
+    func cancelRuntimeCreationTasks(for ids: Set<UUID>) {
+        frameResolver.cancelCreationTasks(for: ids)
+    }
+
+    /// Cancels all in-flight runtime creation tasks.
+    func cancelAllRuntimeCreationTasks() {
+        frameResolver.cancelAllCreationTasks()
     }
 
     /// Returns runtime for given instance ID, if loaded.
