@@ -44,6 +44,10 @@ final class AudioWriterPump {
         onError: @escaping (Error) -> Void,
         completion: @escaping () -> Void
     ) {
+        #if DEBUG
+        let pumpStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         // Create reader
         let reader: AVAssetReader
         do {
@@ -53,6 +57,10 @@ final class AudioWriterPump {
             completion()
             return
         }
+
+        #if DEBUG
+        let readerCreateNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         // Create audio mix output
         let audioTracks = composition.tracks(withMediaType: .audio)
@@ -71,11 +79,19 @@ final class AudioWriterPump {
         }
         reader.add(output)
 
+        #if DEBUG
+        let outputSetupNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         guard reader.startReading() else {
             onError(VideoExportError.audioReaderStartFailed(reader.error))
             completion()
             return
         }
+
+        #if DEBUG
+        let readerStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         self.reader = reader
         self.output = output
@@ -116,6 +132,19 @@ final class AudioWriterPump {
                 }
             }
         }
+
+        #if DEBUG
+        let endNs = DispatchTime.now().uptimeNanoseconds
+        MemoryDiagnostics.event(
+            "export.audioPump.start.summary",
+            String(format: "readerCreate=%.2fs outputSetup=%.2fs readerStart=%.2fs callback=%.2fs total=%.2fs",
+                   Double(readerCreateNs - pumpStartNs) / 1e9,
+                   Double(outputSetupNs - readerCreateNs) / 1e9,
+                   Double(readerStartNs - outputSetupNs) / 1e9,
+                   Double(endNs - readerStartNs) / 1e9,
+                   Double(endNs - pumpStartNs) / 1e9)
+        )
+        #endif
     }
 
     // MARK: - Cancel
