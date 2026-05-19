@@ -45,11 +45,27 @@ PR 2 выполнен и принят по code review:
 - Device play/pause validation: retained `TexturePool.available` dropped from PR0 baseline `308.2 MB` to low tens of MB, with late sample around `11.6 MB`, `inUse = 0`
 - Close validation: renderer pool is trimmed, but `editor.close.after` still retains `SceneInstanceRuntime: 2`, `UserMediaService: 3`, `VideoFrameProvider: 3`
 
+PR 3 выполнен и принят по device logs:
+
+- Commit: `b9f5ab0`
+- Tests/build: `1445` tests passed, build succeeded
+- Export enter validation:
+  - `export.enter.before`: `footprint 282 MB`, `metal 245 MB`, `SceneInstanceRuntime: 2`, `UserMediaService: 3`, `VideoFrameProvider: 2`
+  - `export.enter.after`: `footprint 158 MB`, `metal 111 MB`, `SceneInstanceRuntime: 0`, `UserMediaService: 1`, `VideoFrameProvider: 0`
+- Export terminal validation:
+  - `export.complete.success`: `ExportVideoFrameProvider: 0`, `SceneInstanceRuntime: 0`, `VideoFrameProvider: 0`
+- Preview restore validation:
+  - `preview.restore.after`: `SceneInstanceRuntime: 3`, `UserMediaService: 4`, `VideoFrameProvider: 5`
+- Close validation:
+  - `editor.close.afterTeardown`: `footprint 86 MB`, `metal 30 MB`, `SceneInstanceRuntime: 0`, `UserMediaService: 1`, `VideoFrameProvider: 0`
+  - `editor.close.after.2s`: `footprint 38 MB`, `metal 1 MB`, `SceneInstanceRuntime: 0`, `UserMediaService: 0`, `VideoFrameProvider: 0`
+- Conclusion: timeline preview runtime / video provider retention on export enter and close is fixed. Active export working-set peaks remain in scope for the next PR.
+
 **Следующий шаг**
 
-Начать `PR 3: Timeline Preview Runtime / Video Provider Teardown` из [task-3-prs.md](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/task-3-prs.md).
+Начать `PR 4: Preview / Export Resource Separation` из [task-3-prs.md](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/task-3-prs.md).
 
-PR 3 должен освободить preview timeline/runtime/video resources на close/export boundaries. PR 3 не должен включать export renderer separation, bucketing, `MTLHeap` или изменения visual algorithms.
+PR 4 должен изолировать preview/export resource ownership и сократить active export working set без изменения visual algorithms, preview quality, audio/video behavior, sticker/text behavior или persisted project schema.
 
 **Цель**
 

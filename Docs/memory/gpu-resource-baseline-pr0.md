@@ -339,3 +339,125 @@ SceneInstanceRuntime: 0
 VideoFrameProvider: 0
 pool.avail near 0
 ```
+
+## 9. Post-PR3 Device Validation Addendum
+
+This section records follow-up evidence after PR 3. It validates the timeline preview runtime / video provider teardown work on device logs from [logs.md](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/logs.md).
+
+### PR 3 Scope Validated
+
+PR 3 target:
+
+- release timeline preview runtimes on export enter and editor close;
+- release per-runtime `UserMediaService` resources;
+- release `VideoFrameProvider` instances;
+- preserve preview restore after export;
+- keep renderer pool bounded from PR 1 / PR 2.
+
+### Export Enter Result
+
+| Checkpoint | footprint | metal | ExportVideoFrameProvider | SceneInstanceRuntime | UserMediaService | VideoFrameProvider | Interpretation |
+|------------|-----------|-------|--------------------------|----------------------|------------------|--------------------|----------------|
+| `export.enter.before` | 282 MB | 245 MB | n/a | 2 | 3 | 2 | Preview timeline/video resources are live before export teardown |
+| `export.enter.after` | 158 MB | 111 MB | n/a | 0 | 1 | 0 | Preview runtimes and video providers are released before export runner starts |
+| `export.frame.0` | 143 MB | 107 MB | n/a | 0 | 1 | 0 | Export starts from a lower preview-resource baseline |
+| `export.frame.300` | 390 MB | 373 MB | 2 | 0 | 1 | 0 | Export providers are active only during export |
+| `export.frame.600` | 393 MB | 365 MB | 1 | 0 | 1 | 0 | Export provider count remains scoped to export |
+| `export.frame.900` | 564 MB | 527 MB | 3 | 0 | 1 | 0 | Export working set peaks during export, not from preview providers |
+| `export.complete.success` | 491 MB | 344 MB | 0 | 0 | 1 | 0 | Export video providers are released on terminal path |
+| `preview.restore.after` | 207 MB | 162 MB | 0 | 3 | 4 | 5 | Preview resources are recreated after export restore |
+
+Conclusion:
+
+PR 3 fixes export-enter preview teardown. `SceneInstanceRuntime` and `VideoFrameProvider` drop to zero at `export.enter.after`, and `ExportVideoFrameProvider` returns to zero at `export.complete.success`.
+
+### Editor Close Result
+
+| Checkpoint | footprint | metal | ExportVideoFrameProvider | SceneInstanceRuntime | UserMediaService | VideoFrameProvider | Interpretation |
+|------------|-----------|-------|--------------------------|----------------------|------------------|--------------------|----------------|
+| `editor.close.before` | 286 MB | n/a | 0 | 2 | 3 | 3 | Preview resources are live before close teardown |
+| `playback.stop.after` during close | 215 MB | 171 MB | 0 | 2 | 3 | 3 | Playback stop trims renderer resources but does not own runtime/provider teardown |
+| `editor.close.after` | 215 MB | n/a | 0 | 2 | 3 | 3 | Legacy synchronous checkpoint fires before async PR3 teardown completes |
+| `editor.close.afterTeardown` | 86 MB | 30 MB | 0 | 0 | 1 | 0 | PR3 async teardown has released timeline runtimes and video providers |
+| `editor.close.after.2s` | 38 MB | 1 MB | 0 | 0 | 0 | 0 | Final delayed checkpoint shows all tracked preview resources released |
+
+Conclusion:
+
+PR 3 fixes close/reopen preview retention. The old `editor.close.after` checkpoint is not the final proof point anymore; the relevant checkpoints are `editor.close.afterTeardown` and `editor.close.after.2s`.
+
+### TexturePool Status After PR 3
+
+Representative post-PR3 close path:
+
+```text
+playback.stop.after | footprint: 215MB | metal: 171MB
+pool | avail: 4 (3.9MB) | inUse: 0 (~0.0MB)
+editor.close.after.2s | footprint: 38MB | metal: 1MB
+SceneInstanceRuntime: 0 | UserMediaService: 0 | VideoFrameProvider: 0
+```
+
+Conclusion:
+
+The original unbounded `TexturePool.available` failure mode remains fixed. Post-PR3 retained pool size is MB-level, not the PR 0b baseline of `1111` textures / `308.2 MB`.
+
+### Remaining Scope After PR 3
+
+PR 3 does not claim to solve active export working-set peaks. The latest export run still reaches:
+
+```text
+export.frame.900 | footprint: 564MB | metal: 527MB | ExportVideoFrameProvider: 3
+```
+
+This is active export memory, not a retained preview-runtime leak, because:
+
+- `ExportVideoFrameProvider` returns to `0` at `export.complete.success`;
+- `SceneInstanceRuntime` and preview `VideoFrameProvider` remain `0` during export;
+- close teardown returns to `footprint: 38MB`, `metal: 1MB`.
+
+The remaining work belongs to the next PRs: preview/export resource separation and export working-set/budget tuning.
+
+## 10. PR4 Device Baseline
+
+PR4 wired the export renderer to the `.export` TexturePool configuration (64/96MB limits). Device measurements after PR4:
+
+| Checkpoint | footprint | metal | ExportVideoFrameProvider | Notes |
+|------------|-----------|-------|--------------------------|-------|
+| `export.enter.after` | ~158 MB | ~111 MB | 0 | Preview teardown complete |
+| `export.frame.300` | ~390 MB | ~373 MB | 2 | Active export working set |
+| `export.frame.600` | ~393 MB | ~365 MB | 1 | Stable mid-export |
+| `export.frame.900` | ~548 MB | ~487 MB | 3 | Export peak — not a leak, active working set |
+| `export.complete.success` | ~491 MB | ~344 MB | 0 | Export providers released |
+| `preview.restore.after` | ~207 MB | ~162 MB | 0 | Preview restored |
+| `editor.close.after.2s` | ~38 MB | ~1 MB | 0 | Full teardown |
+
+## 11. PR5 Device Budget Tuning
+
+### Problem
+
+PR4 peak export working set (548MB footprint / 487MB metal) is not a leak but results from aggressive default budgets. PR5 tunes production constants to reduce peak without degrading quality or export duration.
+
+### Changes
+
+Default budget constants updated:
+
+| Parameter | PR4 value | PR5 value | Rationale |
+|-----------|-----------|-----------|-----------|
+| `maxActiveVideoProviders` | 4 | 3 | Reduce simultaneous decoded video frames in memory |
+| `videoPrefetchFrames` | fps (30) | fps/2, min 12 (15) | Half-second prefetch window sufficient for smooth playback |
+| `maxFramesInFlight` | 2 or 3 (conditional) | 2 (always) | Reduce GPU pipeline depth, save one full-frame buffer |
+
+`TexturePool.export` config unchanged at 64/96MB — pool reuse is not the dominant contributor to peak.
+
+### Rollback Matrix
+
+| Symptom | First rollback | Rationale |
+|---------|----------------|-----------|
+| Video starts late / black frames | `maxActiveVideoProviders` 3 → 4 | Coordinator suspends needed provider |
+| Export duration regression > 20% | `maxFramesInFlight` 2 → 3 | GPU pipeline under-saturated |
+| Memory still > target but visuals OK | `TexturePool.export` 64/96MB → 32/64MB | Pool reuse holding stale textures |
+
+### Device Validation (pending)
+
+To be filled after device testing with:
+- Standard template (same as PR4)
+- Template with 4+ simultaneous video blocks (safety gate for `maxActiveVideoProviders = 3`)

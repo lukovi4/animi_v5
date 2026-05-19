@@ -31,21 +31,20 @@
 - PR 2 tests/build: AnimiApp `1440/0`, TVECore `950/0`, build succeeded.
 - PR 2 device validation на похожей нагрузке подтверждает, что `TexturePool.available` больше не является источником роста до сотен MB: late playback pool держится около `11.6 MB`, `inUse = 0`.
 - PR 2 close validation выявила остаточный retention вне renderer pool: `editor.close.before` и `editor.close.after` оба показывают `SceneInstanceRuntime: 2`, `UserMediaService: 3`, `VideoFrameProvider: 3`.
-- Следующая доказанная область работ: timeline preview runtime / video provider teardown on close/export boundaries.
+- `PR 3: Timeline Preview Runtime / Video Provider Teardown` выполнен и принят по device logs.
+- PR 3 commit: `b9f5ab0`.
+- PR 3 tests/build: `1445` tests passed, build succeeded.
+- PR 3 export validation: `export.enter.before` показывает `SceneInstanceRuntime: 2`, `VideoFrameProvider: 2`; `export.enter.after` показывает `SceneInstanceRuntime: 0`, `VideoFrameProvider: 0`.
+- PR 3 export terminal validation: `ExportVideoFrameProvider` возвращается к `0` на `export.complete.success`.
+- PR 3 preview restore validation: `preview.restore.after` recreates preview resources (`SceneInstanceRuntime: 3`, `VideoFrameProvider: 5`).
+- PR 3 close validation: `editor.close.afterTeardown` показывает `SceneInstanceRuntime: 0`, `VideoFrameProvider: 0`; `editor.close.after.2s` показывает `SceneInstanceRuntime: 0`, `UserMediaService: 0`, `VideoFrameProvider: 0`, `metal: 1MB`.
+- Следующая доказанная область работ: preview/export resource separation and export working-set/budget control.
 
 **Следующий шаг**
 
-Переходить к `PR 3: Timeline Preview Runtime / Video Provider Teardown`.
+Переходить к `PR 4: Preview / Export Resource Separation`.
 
-PR 3 должен закрыть retention, который остался после PR 2:
-
-- `TimelineCompositionEngine.instanceRuntimes`;
-- `SceneInstanceRuntime`;
-- per-runtime `UserMediaService`;
-- `VideoFrameProvider`;
-- preview video texture/CVMetalTextureCache resources.
-
-PR 3 не должен менять visual algorithms, export rendering, audio behavior, sticker/text behavior или persisted project schema.
+PR 4 должен работать с export/preview resource boundaries и active export working set. PR 4 не должен снова решать close teardown: это закрыто PR 3 и подтверждено device logs.
 
 **Цель документа**
 
@@ -402,6 +401,52 @@ pool.avail near 0
 - Close/reopen loop does not accumulate preview runtimes/providers.
 - Existing export preview restore still works.
 - Preview quality and playback FPS do not regress.
+
+**Implemented result**
+
+- Commit: `b9f5ab0`.
+- Scope: 10 files, focused on preview teardown, export enter state, async media drain, and targeted tests.
+- `UserMediaService.releasePreviewResources()` drains pending setup tasks before releasing providers.
+- `SceneInstanceRuntime.releasePreviewResources()` cancels preparation and releases per-runtime media resources.
+- `TimelineCompositionEngine.releasePreviewResources(evictTypeCache:)` removes runtime references before awaiting per-runtime teardown.
+- `EditorRuntime.releasePreviewResourcesForClose()` is the close-specific preview teardown boundary.
+- `EditorRuntimeExportController.enterExportMode()` now blocks preview presentation during `.entering`, drains preview resources, handles cancel-during-enter, and only starts runners after completed teardown.
+- Export runner entry points guard against stale/cancelled state before creating active export work.
+
+**Device validation result**
+
+Latest device log source: [logs.md](/Users/evgeny/Documents/+Work/Animi/animi_v5/animi/logs.md).
+
+Export enter:
+
+```text
+export.enter.before | footprint: 282MB | metal: 245MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 2
+export.enter.after  | footprint: 158MB | metal: 111MB | SceneInstanceRuntime: 0 | UserMediaService: 1 | VideoFrameProvider: 0
+export.complete.success | footprint: 491MB | metal: 344MB | ExportVideoFrameProvider: 0 | SceneInstanceRuntime: 0 | VideoFrameProvider: 0
+preview.restore.after | footprint: 207MB | metal: 162MB | SceneInstanceRuntime: 3 | UserMediaService: 4 | VideoFrameProvider: 5
+```
+
+Editor close:
+
+```text
+editor.close.before        | footprint: 286MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+editor.close.afterTeardown | footprint: 86MB  | metal: 30MB | SceneInstanceRuntime: 0 | UserMediaService: 1 | VideoFrameProvider: 0
+editor.close.after.2s      | footprint: 38MB  | metal: 1MB  | SceneInstanceRuntime: 0 | UserMediaService: 0 | VideoFrameProvider: 0
+```
+
+Conclusion:
+
+PR 3 is accepted by device evidence. It fixes the preview runtime / video provider retention that PR 2 exposed. The old `editor.close.after` checkpoint is no longer the proof point because async teardown completes at `editor.close.afterTeardown` and is fully settled at `editor.close.after.2s`.
+
+**Remaining work moved forward**
+
+Active export memory can still reach hundreds of MB during export:
+
+```text
+export.frame.900 | footprint: 564MB | metal: 527MB | ExportVideoFrameProvider: 3
+```
+
+This is not PR 3 retention: export providers return to `0` on `export.complete.success`, and close returns to `metal: 1MB`. PR 4 should handle preview/export resource separation and export working-set policy.
 
 ---
 
