@@ -16,6 +16,10 @@ internal final class EditorRuntimeExportController {
         let id: UUID
         let exporter: VideoExporter
         let deliveryPolicy: ExportDeliveryPolicy
+        #if DEBUG
+        let debugStartNs: UInt64
+        var debugRenderStartNs: UInt64?
+        #endif
 
         var deliveryFlow: ExportDeliveryFlow?
 
@@ -23,6 +27,9 @@ internal final class EditorRuntimeExportController {
             self.id = id
             self.exporter = exporter
             self.deliveryPolicy = deliveryPolicy
+            #if DEBUG
+            self.debugStartNs = DispatchTime.now().uptimeNanoseconds
+            #endif
         }
 
         func isActive(for requestId: UUID) -> Bool {
@@ -403,6 +410,18 @@ internal final class EditorRuntimeExportController {
             return
         }
 
+        #if DEBUG
+        if let request = activeExportRequest, request.isActive(for: requestId) {
+            let renderStartNs = DispatchTime.now().uptimeNanoseconds
+            request.debugRenderStartNs = renderStartNs
+            let prepareSec = Double(renderStartNs - request.debugStartNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "export.prepare.summary",
+                String(format: "mode=single duration=%.2fs outcome=success", prepareSec)
+            )
+        }
+        #endif
+
         await exporter.exportVideo(
             compiledScene: compiled,
             scenePlayer: player,
@@ -541,6 +560,18 @@ internal final class EditorRuntimeExportController {
             return
         }
 
+        #if DEBUG
+        if let request = activeExportRequest, request.isActive(for: requestId) {
+            let renderStartNs = DispatchTime.now().uptimeNanoseconds
+            request.debugRenderStartNs = renderStartNs
+            let prepareSec = Double(renderStartNs - request.debugStartNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "export.prepare.summary",
+                String(format: "mode=timeline duration=%.2fs outcome=success", prepareSec)
+            )
+        }
+        #endif
+
         exporter.exportTimeline(
             engine: engine,
             sceneBackgrounds: sceneBackgrounds,
@@ -572,7 +603,23 @@ internal final class EditorRuntimeExportController {
         }
         Task { [weak self, weak runtime] in
             guard let self, let runtime else { return }
+
+            #if DEBUG
+            let restoreStartNs = DispatchTime.now().uptimeNanoseconds
+            #endif
+
             await self.restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
+
+            #if DEBUG
+            let restoreEndNs = DispatchTime.now().uptimeNanoseconds
+            let restoreSec = Double(restoreEndNs - restoreStartNs) / 1_000_000_000.0
+            let restoreOutcome = self.isActiveExportRequest(requestId) ? "success" : "stale"
+            MemoryDiagnostics.event(
+                "export.previewRestore.summary",
+                String(format: "duration=%.2fs outcome=%@", restoreSec, restoreOutcome)
+            )
+            #endif
+
             guard self.isActiveExportRequest(requestId) else { return }
             self.emitExportCompletionOutput(result: result, requestId: requestId)
         }
@@ -588,11 +635,17 @@ internal final class EditorRuntimeExportController {
 
         case .failure(let error as VideoExportError) where error.isCancelled:
             logger.info("[Export] Cancelled")
+            #if DEBUG
+            logExportTotalSummary(requestId: requestId, outcome: "cancelled")
+            #endif
             clearActiveExportRequest()
             runtime.onOutput?(.exportCancelled)
 
         case .failure(let error):
             logger.error("[Export] ERROR: \(error.localizedDescription)")
+            #if DEBUG
+            logExportTotalSummary(requestId: requestId, outcome: "failure")
+            #endif
             clearActiveExportRequest()
             runtime.onOutput?(.exportRenderFailed(error))
         }
@@ -601,8 +654,23 @@ internal final class EditorRuntimeExportController {
     private func saveExportedVideoToPhotos(_ url: URL, requestId: UUID) {
         let deliverer = makeDeliverer()
         let policy = activeExportRequest?.deliveryPolicy ?? .photoLibraryOnly
+        #if DEBUG
+        let debugStartNs = activeExportRequest?.debugStartNs
+        #endif
         let shareHandoff: ((URL) -> Void)? = policy == .photoLibraryThenShare
-            ? { [weak self] url in self?.runtime.onOutput?(.exportDeliveryShareHandoff(url)) }
+            ? { [weak self] url in
+                #if DEBUG
+                if let debugStartNs {
+                    let endNs = DispatchTime.now().uptimeNanoseconds
+                    let elapsedSec = Double(endNs - debugStartNs) / 1_000_000_000.0
+                    MemoryDiagnostics.event(
+                        "export.total.summary",
+                        String(format: "duration=%.2fs outcome=savedToPhotosShareReady", elapsedSec)
+                    )
+                }
+                #endif
+                self?.runtime.onOutput?(.exportDeliveryShareHandoff(url))
+            }
             : nil
         let flow = ExportDeliveryFlow(
             requestId: requestId,
@@ -611,6 +679,23 @@ internal final class EditorRuntimeExportController {
             isRequestActive: { [weak self] id in self?.isActiveExportRequest(id) ?? false },
             clearRequestIfCurrent: { [weak self] id in self?.clearExportRequestIfCurrent(id) },
             completion: { [weak self] outcome in
+                #if DEBUG
+                let shouldLogTotalInCompletion: Bool
+                switch (policy, outcome) {
+                case (.photoLibraryThenShare, .savedToPhotos):
+                    shouldLogTotalInCompletion = false
+                default:
+                    shouldLogTotalInCompletion = true
+                }
+                if shouldLogTotalInCompletion, let debugStartNs {
+                    let endNs = DispatchTime.now().uptimeNanoseconds
+                    let elapsedSec = Double(endNs - debugStartNs) / 1_000_000_000.0
+                    MemoryDiagnostics.event(
+                        "export.total.summary",
+                        String(format: "duration=%.2fs outcome=%@", elapsedSec, String(describing: outcome))
+                    )
+                }
+                #endif
                 self?.runtime.onOutput?(.exportDeliveryCompleted(outcome))
             },
             shareHandoff: shareHandoff
@@ -618,6 +703,19 @@ internal final class EditorRuntimeExportController {
         activeExportRequest?.deliveryFlow = flow
         flow.start(fileURL: url, destination: .photoLibrary)
     }
+
+    #if DEBUG
+    private func logExportTotalSummary(requestId: UUID, outcome: String) {
+        guard let request = activeExportRequest,
+              request.isActive(for: requestId) else { return }
+        let endNs = DispatchTime.now().uptimeNanoseconds
+        let elapsedSec = Double(endNs - request.debugStartNs) / 1_000_000_000.0
+        MemoryDiagnostics.event(
+            "export.total.summary",
+            String(format: "duration=%.2fs outcome=%@", elapsedSec, outcome)
+        )
+    }
+    #endif
 
     // MARK: - Per-Scene Background
 

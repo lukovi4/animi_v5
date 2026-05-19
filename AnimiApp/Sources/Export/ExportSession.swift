@@ -254,7 +254,22 @@ internal final class ExportSession {
         // Emit .finishing BEFORE pipeline.finishWriting — real lifecycle phase
         finishing?()
 
+        #if DEBUG
+        let finishStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         pipeline?.finishWriting { [self] result in
+            #if DEBUG
+            let finishEndNs = DispatchTime.now().uptimeNanoseconds
+            let elapsedSec = Double(finishEndNs - finishStartNs) / 1_000_000_000.0
+            let outcome: String
+            if case .success = result { outcome = "success" } else { outcome = "failure" }
+            MemoryDiagnostics.event(
+                "export.finishWriting.summary",
+                String(format: "duration=%.2fs outcome=%@", elapsedSec, outcome)
+            )
+            #endif
+
             self.complete(with: result)
         }
     }

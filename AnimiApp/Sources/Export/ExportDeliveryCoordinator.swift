@@ -83,7 +83,22 @@ final class ExportDeliveryFlow {
 
     /// Starts delivery. Must be called exactly once.
     func start(fileURL: URL, destination: ExportDeliveryDestination) {
+        #if DEBUG
+        let deliveryStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         deliverer?.deliver(fileURL: fileURL, to: destination) { [self] result in
+            #if DEBUG
+            let deliveryEndNs = DispatchTime.now().uptimeNanoseconds
+            let elapsedSec = Double(deliveryEndNs - deliveryStartNs) / 1_000_000_000.0
+            let deliveryOutcome: String
+            if case .success = result { deliveryOutcome = "success" } else { deliveryOutcome = "failure" }
+            MemoryDiagnostics.event(
+                "export.delivery.summary",
+                String(format: "destination=photoLibrary policy=%@ duration=%.2fs outcome=%@",
+                       String(describing: self.policy), elapsedSec, deliveryOutcome)
+            )
+            #endif
             guard let isRequestActive = self.isRequestActive,
                   let clearRequestIfCurrent = self.clearRequestIfCurrent,
                   let completion = self.completion else {

@@ -101,6 +101,7 @@ public final class VideoExporter: @unchecked Sendable {
         let session = ExportSession(completion: completion)
         #if DEBUG
         session.diagnosticDevice = device
+        let handoffStartNs = DispatchTime.now().uptimeNanoseconds
         #endif
         setActiveSession(session)
 
@@ -160,8 +161,27 @@ public final class VideoExporter: @unchecked Sendable {
         let resolvedBgURLs = await resolveBackgroundURLs(from: backgroundSnapshot, registry: assetRegistry)
 
         // Run export on background queue
+        #if DEBUG
+        let handoffSec = Double(DispatchTime.now().uptimeNanoseconds - handoffStartNs) / 1_000_000_000.0
+        MemoryDiagnostics.event(
+            "export.handoff.summary",
+            String(format: "mode=single duration=%.2fs", handoffSec)
+        )
+        #endif
+        #if DEBUG
+        let debugHandoffEndNs = DispatchTime.now().uptimeNanoseconds
+        #else
+        let debugHandoffEndNs: UInt64 = 0
+        #endif
         let allAssetIds = Set(compiledScene.mergedAssetIndex.basenameById.keys)
-        exportQueue.async { [workItem, session, allAssetIds, resolvedBgURLs] in
+        exportQueue.async { [workItem, session, allAssetIds, resolvedBgURLs, debugHandoffEndNs] in
+            #if DEBUG
+            let queueDelaySec = Double(DispatchTime.now().uptimeNanoseconds - debugHandoffEndNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "export.queueDelay.summary",
+                String(format: "mode=single delay=%.2fs", queueDelaySec)
+            )
+            #endif
             SingleSceneVideoExportRunner.run(
                 workItem: workItem,
                 session: session,
@@ -208,11 +228,24 @@ public final class VideoExporter: @unchecked Sendable {
             return
         }
 
+        #if DEBUG
+        let taskScheduleNs = DispatchTime.now().uptimeNanoseconds
+        #else
+        let taskScheduleNs: UInt64 = 0
+        #endif
         Task { @MainActor [weak self] in
             guard let self else {
                 exportSession.complete(with: .failure(VideoExportError.cancelled))
                 return
             }
+            #if DEBUG
+            let taskDelaySec = Double(DispatchTime.now().uptimeNanoseconds - taskScheduleNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "export.taskDelay.summary",
+                String(format: "mode=timeline delay=%.2fs", taskDelaySec)
+            )
+            let handoffStartNs = DispatchTime.now().uptimeNanoseconds
+            #endif
 
             guard !exportSession.isCancelled else {
                 exportSession.complete(with: .failure(VideoExportError.cancelled))
@@ -268,7 +301,26 @@ public final class VideoExporter: @unchecked Sendable {
                 resolvedBgURLs.merge(sceneURLs) { _, new in new }
             }
 
-            self.exportQueue.async { [workItem, exportSession, resolvedBgURLs] in
+            #if DEBUG
+            let handoffSec = Double(DispatchTime.now().uptimeNanoseconds - handoffStartNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "export.handoff.summary",
+                String(format: "mode=timeline duration=%.2fs", handoffSec)
+            )
+            #endif
+            #if DEBUG
+            let debugHandoffEndNs = DispatchTime.now().uptimeNanoseconds
+            #else
+            let debugHandoffEndNs: UInt64 = 0
+            #endif
+            self.exportQueue.async { [workItem, exportSession, resolvedBgURLs, debugHandoffEndNs] in
+                #if DEBUG
+                let queueDelaySec = Double(DispatchTime.now().uptimeNanoseconds - debugHandoffEndNs) / 1_000_000_000.0
+                MemoryDiagnostics.event(
+                    "export.queueDelay.summary",
+                    String(format: "mode=timeline delay=%.2fs", queueDelaySec)
+                )
+                #endif
                 TimelineVideoExportRunner.run(
                     workItem: workItem,
                     exportSession: exportSession,
