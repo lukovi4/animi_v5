@@ -836,7 +836,9 @@ extension MetalRenderer {
         let targetSize = ctx.target.sizePx
 
         // Create stencil texture
-        guard let stencilTex = texturePool.acquireStencilTexture(size: targetSize) else {
+        guard let stencilTex = TexturePool.withDebugOwner("stencil.composite", {
+            texturePool.acquireStencilTexture(size: targetSize)
+        }) else {
             return
         }
         defer { texturePool.release(stencilTex) }
@@ -1044,12 +1046,16 @@ extension MetalRenderer {
         let bboxLocalScissor = MTLScissorRect(x: 0, y: 0, width: bbox.width, height: bbox.height)
 
         // Allocate bbox-sized textures
-        guard let matteTex = texturePool.acquireColorTexture(size: bboxSize) else {
+        guard let matteTex = TexturePool.withDebugOwner("matte.bbox", {
+            texturePool.acquireColorTexture(size: bboxSize)
+        }) else {
             return
         }
         defer { texturePool.release(matteTex) }
 
-        guard let consumerTex = texturePool.acquireColorTexture(size: bboxSize) else {
+        guard let consumerTex = TexturePool.withDebugOwner("matte.bbox", {
+            texturePool.acquireColorTexture(size: bboxSize)
+        }) else {
             return
         }
         defer { texturePool.release(consumerTex) }
@@ -1143,7 +1149,9 @@ extension MetalRenderer {
         let currentScissor = inheritedState.currentScissor
 
         // Step 1: Render matte source commands to matteTex
-        guard let matteTex = texturePool.acquireColorTexture(size: targetSize) else {
+        guard let matteTex = TexturePool.withDebugOwner("matte.fullTarget", {
+            texturePool.acquireColorTexture(size: targetSize)
+        }) else {
             return
         }
         defer { texturePool.release(matteTex) }
@@ -1161,7 +1169,9 @@ extension MetalRenderer {
         )
 
         // Step 2: Render matte consumer commands to consumerTex
-        guard let consumerTex = texturePool.acquireColorTexture(size: targetSize) else {
+        guard let consumerTex = TexturePool.withDebugOwner("matte.fullTarget", {
+            texturePool.acquireColorTexture(size: targetSize)
+        }) else {
             return
         }
         defer { texturePool.release(consumerTex) }
@@ -2219,7 +2229,9 @@ extension MetalRenderer {
         let currentScissor = inheritedState.currentScissor
 
         // Step 1: Acquire offscreen texture
-        guard let offscreenTex = texturePool.acquireColorTexture(size: targetSize) else {
+        guard let offscreenTex = TexturePool.withDebugOwner("isolatedGroup.fullTarget", {
+            texturePool.acquireColorTexture(size: targetSize)
+        }) else {
             return
         }
         defer { texturePool.release(offscreenTex) }

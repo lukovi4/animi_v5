@@ -55,6 +55,9 @@ public final class UserMediaTextureFactory {
         )
         if status == kCVReturnSuccess {
             self.textureCache = cache
+            #if DEBUG
+            MemoryDiagnostics.event("CVTextureCache.create", "owner=UserMediaTextureFactory")
+            #endif
         }
     }
 
@@ -238,6 +241,9 @@ public final class UserMediaTextureFactory {
     public func flushCache() {
         if let cache = textureCache {
             CVMetalTextureCacheFlush(cache, 0)
+            #if DEBUG
+            MemoryDiagnostics.event("CVTextureCache.flush", "owner=UserMediaTextureFactory")
+            #endif
         }
     }
 }

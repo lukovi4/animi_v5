@@ -77,10 +77,18 @@ extension MetalRenderer {
         let bboxLocalScissor = MTLScissorRect(x: 0, y: 0, width: bbox.width, height: bbox.height)
 
         // 2) Allocate textures
-        guard let coverageTex = texturePool.acquireR8Texture(size: bboxSize),
-              let accumA = texturePool.acquireR8Texture(size: bboxSize),
-              let accumB = texturePool.acquireR8Texture(size: bboxSize),
-              let contentTex = texturePool.acquireColorTexture(size: bboxSize) else {
+        guard let coverageTex = TexturePool.withDebugOwner("mask.boolean.bbox", {
+                  texturePool.acquireR8Texture(size: bboxSize)
+              }),
+              let accumA = TexturePool.withDebugOwner("mask.boolean.bbox", {
+                  texturePool.acquireR8Texture(size: bboxSize)
+              }),
+              let accumB = TexturePool.withDebugOwner("mask.boolean.bbox", {
+                  texturePool.acquireR8Texture(size: bboxSize)
+              }),
+              let contentTex = TexturePool.withDebugOwner("mask.boolean.bbox", {
+                  texturePool.acquireColorTexture(size: bboxSize)
+              }) else {
             // Allocation failed - fallback: render inner commands without mask
             #if DEBUG
             MaskDebugCounters.fallbackCount += 1

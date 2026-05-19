@@ -221,8 +221,12 @@ internal enum TimelineRenderExecutor {
             drawableScale: request.drawableScale
         )
 
-        guard let textureA = texturePool.acquireColorTexture(size: sizePx),
-              let textureB = texturePool.acquireColorTexture(size: sizePx) else {
+        guard let textureA = TexturePool.withDebugOwner("timeline.transition.offscreen", {
+                  texturePool.acquireColorTexture(size: sizePx)
+              }),
+              let textureB = TexturePool.withDebugOwner("timeline.transition.offscreen", {
+                  texturePool.acquireColorTexture(size: sizePx)
+              }) else {
             throw TimelineRenderExecutorError.failedToAcquireOffscreenTexture
         }
 
