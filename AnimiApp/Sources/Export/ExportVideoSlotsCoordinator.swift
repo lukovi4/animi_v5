@@ -7,11 +7,11 @@ import TVECore
 
 /// Coordinates video slot providers for export (PR-E3).
 ///
-/// Creates and manages `ExportVideoFrameProvider` instances for all video blocks.
+/// Stores slot metadata and creates providers lazily for visible/prefetch windows.
 /// On each frame, updates textures in `ExportTextureProvider` for all binding asset IDs.
 ///
-/// B1: Visibility gating — only decodes frames for blocks that are visible
-/// at the current scene frame (with prefetch margin for decode latency).
+/// PR5-Fix: Lazy provider residency — providers exist only while their block is visible/prefetch.
+/// Visible providers are never evicted. Budget only limits prefetch capacity.
 ///
 /// Usage:
 /// ```swift
@@ -35,9 +35,9 @@ import TVECore
 public final class ExportVideoSlotsCoordinator {
     // MARK: - Constants
 
-    /// B1: Prefetch margin in frames for visibility gating.
+    /// Prefetch margin in frames for visibility gating.
     /// Providers start decoding this many frames before block becomes visible.
-    /// Configured via ExportResourceBudget.videoPrefetchFrames (default ~1s worth of frames).
+    /// Configured via ExportResourceBudget.videoPrefetchFrames (default: half-FPS, min 12).
     private let videoPrefetchFrames: Int
 
     // MARK: - Types
@@ -45,10 +45,11 @@ public final class ExportVideoSlotsCoordinator {
     /// Internal state for a video slot
     private struct VideoSlot {
         let blockId: String
-        let provider: ExportVideoFrameProvider
+        let config: ExportVideoFrameProvider.Config
         let bindingAssetIds: [String]
         let startFrame: Int
         let endFrame: Int
+        var provider: ExportVideoFrameProviding?
         var isPrepared: Bool = false
     }
 
@@ -57,9 +58,10 @@ public final class ExportVideoSlotsCoordinator {
     private let device: MTLDevice
     private let textureCache: CVMetalTextureCache
     private let commandQueue: MTLCommandQueue
-    private let runtime: SceneRuntime
+    private let runtime: SceneRuntime?
     private let sceneFPS: Double
     private let exportTextureProvider: MutableTextureProvider
+    private let providerFactory: (String, ExportVideoFrameProvider.Config) -> ExportVideoFrameProviding
 
     /// Video slots indexed by blockId
     private var slots: [String: VideoSlot] = [:]
@@ -88,6 +90,8 @@ public final class ExportVideoSlotsCoordinator {
     ///   - sceneFPS: Scene FPS
     ///   - exportTextureProvider: Mutable texture provider for injection
     ///   - videoPrefetchFrames: Number of frames to prefetch (from ExportResourceBudget)
+    ///   - maxActiveProviders: Maximum active providers (from budget)
+    ///   - providerFactory: Optional factory for creating providers (test seam)
     public init(
         device: MTLDevice,
         textureCache: CVMetalTextureCache,
@@ -95,8 +99,9 @@ public final class ExportVideoSlotsCoordinator {
         runtime: SceneRuntime,
         sceneFPS: Double,
         exportTextureProvider: MutableTextureProvider,
-        videoPrefetchFrames: Int = 30,
-        maxActiveProviders: Int = 4
+        videoPrefetchFrames: Int = 15,
+        maxActiveProviders: Int = 4,
+        providerFactory: ((String, ExportVideoFrameProvider.Config) -> ExportVideoFrameProviding)? = nil
     ) {
         self.device = device
         self.textureCache = textureCache
@@ -106,54 +111,64 @@ public final class ExportVideoSlotsCoordinator {
         self.exportTextureProvider = exportTextureProvider
         self.videoPrefetchFrames = videoPrefetchFrames
         self.maxActiveProviders = maxActiveProviders
+        self.providerFactory = providerFactory ?? { _, config in
+            ExportVideoFrameProvider(
+                device: device,
+                textureCache: textureCache,
+                commandQueue: commandQueue,
+                config: config
+            )
+        }
 
-        // Build binding asset IDs map once (from runtime.blocks)
         buildBindingAssetIdsMap()
+    }
+
+    /// Test-only init without runtime.
+    internal init(
+        device: MTLDevice,
+        textureCache: CVMetalTextureCache,
+        commandQueue: MTLCommandQueue,
+        sceneFPS: Double,
+        exportTextureProvider: MutableTextureProvider,
+        videoPrefetchFrames: Int = 15,
+        maxActiveProviders: Int = 4,
+        providerFactory: @escaping (String, ExportVideoFrameProvider.Config) -> ExportVideoFrameProviding
+    ) {
+        self.device = device
+        self.textureCache = textureCache
+        self.commandQueue = commandQueue
+        self.runtime = nil
+        self.sceneFPS = sceneFPS
+        self.exportTextureProvider = exportTextureProvider
+        self.videoPrefetchFrames = videoPrefetchFrames
+        self.maxActiveProviders = maxActiveProviders
+        self.providerFactory = providerFactory
     }
 
     // MARK: - Configuration
 
     /// Configures the coordinator with video selections.
     ///
-    /// Creates `ExportVideoFrameProvider` for each video block.
+    /// Stores metadata only — providers are created lazily on visibility.
     ///
     /// - Parameter videoSelectionsByBlockId: Map of blockId → VideoSelection
     public func configure(videoSelectionsByBlockId: [String: VideoSelection]) {
+        guard let runtime = runtime else { return }
+
         // Clear existing slots
         slots.removeAll()
 
-        // Create provider for each video selection
+        // Store metadata for each video selection — no provider creation
         for (blockId, selection) in videoSelectionsByBlockId {
-            // Skip invalid selections
-            guard selection.isValid else {
-                continue
-            }
+            guard selection.isValid else { continue }
+            guard let block = runtime.blocks.first(where: { $0.blockId == blockId }) else { continue }
+            guard let assetIds = bindingAssetIdsByBlockId[blockId], !assetIds.isEmpty else { continue }
 
-            // Get block timing from runtime
-            guard let block = runtime.blocks.first(where: { $0.blockId == blockId }) else {
-                continue
-            }
-
-            // Get binding asset IDs for this block
-            guard let assetIds = bindingAssetIdsByBlockId[blockId], !assetIds.isEmpty else {
-                continue
-            }
-
-            // Create config (time mapping now owned by coordinator)
             let config = ExportVideoFrameProvider.Config(selection: selection)
 
-            // Create provider
-            let provider = ExportVideoFrameProvider(
-                device: device,
-                textureCache: textureCache,
-                commandQueue: commandQueue,
-                config: config
-            )
-
-            // Store slot with block timing for visibility gating (B1)
             slots[blockId] = VideoSlot(
                 blockId: blockId,
-                provider: provider,
+                config: config,
                 bindingAssetIds: assetIds,
                 startFrame: block.timing.startFrame,
                 endFrame: block.timing.endFrame
@@ -163,11 +178,20 @@ public final class ExportVideoSlotsCoordinator {
         isConfigured = true
     }
 
-    /// Releases all providers' decoded state while keeping configuration.
-    /// Used by residency controller during scene eviction.
+    /// Test seam: configure slots directly without runtime.
+    internal func configureSlots(_ testSlots: [(blockId: String, config: ExportVideoFrameProvider.Config, bindingAssetIds: [String], startFrame: Int, endFrame: Int)]) {
+        slots.removeAll()
+        for s in testSlots {
+            slots[s.blockId] = VideoSlot(blockId: s.blockId, config: s.config, bindingAssetIds: s.bindingAssetIds, startFrame: s.startFrame, endFrame: s.endFrame)
+        }
+        isConfigured = true
+    }
+
+    /// Releases all providers while keeping slot metadata.
     public func releaseProviders() {
-        for (_, slot) in slots {
-            slot.provider.releaseDecodedState()
+        let blockIds = Array(slots.keys)
+        for blockId in blockIds {
+            teardownSlot(blockId: blockId)
         }
     }
 
@@ -175,97 +199,58 @@ public final class ExportVideoSlotsCoordinator {
 
     /// Updates textures for all video slots at the given scene frame.
     ///
-    /// B1: Visibility gating — only processes slots that are visible at the current frame
-    /// (with prefetch margin for decode latency).
+    /// 3-phase classify-then-mutate:
+    /// 1. Visible — always create+prepare, get texture, inject. Never evicted.
+    /// 2. Prefetch — remaining capacity only, no texture injection.
+    /// 3. Far — terminal teardown (finish provider, clear textures).
     ///
-    /// For each visible video block:
-    /// 1. Gets texture from provider
-    /// 2. Checks for provider errors (P0 #2 fix)
-    /// 3. Injects texture into all binding asset IDs
-    ///
-    /// - Parameter sceneFrameIndex: Scene frame index
+    /// - Parameters:
+    ///   - visibilityFrameIndex: Scene frame for visibility classification
+    ///   - mediaFrameIndex: Scene frame for time mapping
     public func updateTextures(visibilityFrameIndex: Int, mediaFrameIndex: Int) {
         let sceneFrameIndex = visibilityFrameIndex
         let prefetchFrames = videoPrefetchFrames
-        let suspendMargin = prefetchFrames * 2
 
-        // Collect visible and far-away slots
-        var visibleBlockIds: [String] = []
+        // --- Classify (read-only snapshot) ---
+        let slotSnapshot = Array(slots.values)
+        var visibleIds: [String] = []
+        var prefetchOnly: [(blockId: String, distance: Int)] = []
+        var farIds: [String] = []
 
-        for (blockId, slot) in slots {
-            let visibilityStart = max(0, slot.startFrame - prefetchFrames)
-            let isVisible = sceneFrameIndex >= visibilityStart && sceneFrameIndex < slot.endFrame
+        for slot in slotSnapshot {
+            let isVisible = sceneFrameIndex >= slot.startFrame && sceneFrameIndex < slot.endFrame
+            let prefetchStart = max(0, slot.startFrame - prefetchFrames)
+            let isInPrefetch = sceneFrameIndex >= prefetchStart && sceneFrameIndex < slot.startFrame
 
             if isVisible {
-                visibleBlockIds.append(blockId)
-
-                // Lazy prepare on visibility hit
-                if !slot.isPrepared {
-                    do {
-                        try slot.provider.prepareIfNeeded()
-                        slots[blockId]?.isPrepared = true
-
-                        // Inject presentation info once after prepare
-                        if let info = slot.provider.presentationInfo {
-                            for assetId in slot.bindingAssetIds {
-                                (exportTextureProvider as? MutableAssetPresentationInfoProvider)?
-                                    .setPresentationInfo(info, for: assetId)
-                            }
-                        }
-                    } catch {
-                        if providerError == nil {
-                            providerError = error as? ExportVideoFrameProviderError
-                        }
-                        continue
-                    }
-                }
-
-                // Check for provider error
-                if let error = slot.provider.providerError, providerError == nil {
-                    providerError = error
-                }
-
-                // Coordinator owns time mapping via shared mapper
-                let mapped = VideoTimelineTimeMapper.targetVideoTime(
-                    sceneFrameIndex: mediaFrameIndex,
-                    blockStartFrame: slot.startFrame,
-                    sceneFPS: sceneFPS,
-                    selection: slot.provider.config.selection
-                )
-                guard let texture = slot.provider.texture(
-                    forTargetVideoTime: mapped.targetVideoTimeSeconds
-                ) else {
-                    continue
-                }
-
-                for assetId in slot.bindingAssetIds {
-                    exportTextureProvider.setTexture(texture, for: assetId)
-                }
-            } else if slot.isPrepared {
-                // Suspend providers that are far from current frame
-                let distanceFromEnd = sceneFrameIndex - slot.endFrame
-                let distanceFromStart = slot.startFrame - sceneFrameIndex
-                let distance = max(distanceFromEnd, distanceFromStart)
-
-                if distance > suspendMargin {
-                    slot.provider.suspend()
-                    slots[blockId]?.isPrepared = false
-                }
+                visibleIds.append(slot.blockId)
+            } else if isInPrefetch {
+                prefetchOnly.append((slot.blockId, slot.startFrame - sceneFrameIndex))
+            } else {
+                farIds.append(slot.blockId)
             }
         }
 
-        // Enforce maxActiveProviders: suspend furthest if over limit
-        let preparedSlots = slots.filter { $0.value.isPrepared }
-        if preparedSlots.count > maxActiveProviders {
-            let sorted = preparedSlots.sorted { a, b in
-                let distA = abs(sceneFrameIndex - (a.value.startFrame + a.value.endFrame) / 2)
-                let distB = abs(sceneFrameIndex - (b.value.startFrame + b.value.endFrame) / 2)
-                return distA > distB
+        // --- Phase 1: Visible — always create+prepare, get texture, inject. Never evict. ---
+        for blockId in visibleIds {
+            processVisibleSlot(blockId: blockId, mediaFrameIndex: mediaFrameIndex)
+        }
+
+        // --- Phase 2: Prefetch — remaining capacity only, NO texture injection ---
+        let prefetchCapacity = max(0, maxActiveProviders - visibleIds.count)
+        let sortedPrefetch = prefetchOnly.sorted { $0.distance < $1.distance }
+
+        for (i, entry) in sortedPrefetch.enumerated() {
+            if i < prefetchCapacity {
+                processPrefetchSlot(blockId: entry.blockId)
+            } else {
+                teardownSlot(blockId: entry.blockId)
             }
-            for (blockId, slot) in sorted.prefix(preparedSlots.count - maxActiveProviders) {
-                slot.provider.suspend()
-                slots[blockId]?.isPrepared = false
-            }
+        }
+
+        // --- Phase 3: Far — terminal teardown ---
+        for blockId in farIds {
+            teardownSlot(blockId: blockId)
         }
     }
 
@@ -276,8 +261,9 @@ public final class ExportVideoSlotsCoordinator {
         #if DEBUG
         MemoryDiagnostics.event("ExportVideoSlots.finish", "slots=\(slots.count)")
         #endif
-        for (_, slot) in slots {
-            slot.provider.finish()
+        let blockIds = Array(slots.keys)
+        for blockId in blockIds {
+            teardownSlot(blockId: blockId)
         }
         slots.removeAll()
         isConfigured = false
@@ -288,20 +274,123 @@ public final class ExportVideoSlotsCoordinator {
         #if DEBUG
         MemoryDiagnostics.event("ExportVideoSlots.cancel")
         #endif
-        for (_, slot) in slots {
-            slot.provider.cancel()
+        let blockIds = Array(slots.keys)
+        for blockId in blockIds {
+            guard var slot = slots[blockId] else { continue }
+            slot.provider?.cancel()
+            slot.provider = nil
+            slot.isPrepared = false
+            slots[blockId] = slot
+            for assetId in slot.bindingAssetIds {
+                exportTextureProvider.removeTexture(for: assetId)
+                (exportTextureProvider as? MutableAssetPresentationInfoProvider)?
+                    .removePresentationInfo(for: assetId)
+            }
         }
         slots.removeAll()
         isConfigured = false
     }
 
-    // MARK: - Private
+    // MARK: - Private Helpers
 
-    /// Builds binding asset IDs map from runtime blocks (once).
-    ///
-    /// For each block, collects all variant binding asset IDs.
-    /// This matches `ScenePlayer.bindingAssetIdsByVariant` but without @MainActor dependency.
+    private func processVisibleSlot(blockId: String, mediaFrameIndex: Int) {
+        guard var slot = slots[blockId] else { return }
+
+        // Lazy provider creation
+        if slot.provider == nil {
+            slot.provider = providerFactory(blockId, slot.config)
+            slots[blockId] = slot
+        }
+
+        // Lazy prepare
+        if !slot.isPrepared {
+            do {
+                try slot.provider?.prepareIfNeeded()
+                slot.isPrepared = true
+                slots[blockId] = slot
+
+                if let info = slot.provider?.presentationInfo {
+                    for assetId in slot.bindingAssetIds {
+                        (exportTextureProvider as? MutableAssetPresentationInfoProvider)?
+                            .setPresentationInfo(info, for: assetId)
+                    }
+                }
+            } catch {
+                if providerError == nil {
+                    providerError = error as? ExportVideoFrameProviderError
+                }
+                teardownSlot(blockId: blockId)
+                return
+            }
+        }
+
+        // Error check
+        if let error = slot.provider?.providerError, providerError == nil {
+            providerError = error
+        }
+
+        // Get texture and inject
+        let mapped = VideoTimelineTimeMapper.targetVideoTime(
+            sceneFrameIndex: mediaFrameIndex,
+            blockStartFrame: slot.startFrame,
+            sceneFPS: sceneFPS,
+            selection: slot.config.selection
+        )
+        guard let texture = slot.provider?.texture(forTargetVideoTime: mapped.targetVideoTimeSeconds) else {
+            return
+        }
+        for assetId in slot.bindingAssetIds {
+            exportTextureProvider.setTexture(texture, for: assetId)
+        }
+    }
+
+    private func processPrefetchSlot(blockId: String) {
+        guard var slot = slots[blockId] else { return }
+
+        if slot.provider == nil {
+            slot.provider = providerFactory(blockId, slot.config)
+            slots[blockId] = slot
+        }
+
+        if !slot.isPrepared {
+            do {
+                try slot.provider?.prepareIfNeeded()
+                slot.isPrepared = true
+                slots[blockId] = slot
+
+                if let info = slot.provider?.presentationInfo {
+                    for assetId in slot.bindingAssetIds {
+                        (exportTextureProvider as? MutableAssetPresentationInfoProvider)?
+                            .setPresentationInfo(info, for: assetId)
+                    }
+                }
+            } catch {
+                if providerError == nil {
+                    providerError = error as? ExportVideoFrameProviderError
+                }
+                teardownSlot(blockId: blockId)
+            }
+        }
+    }
+
+    private func teardownSlot(blockId: String) {
+        guard var slot = slots[blockId] else { return }
+
+        slot.provider?.finish()
+        slot.provider = nil
+        slot.isPrepared = false
+        slots[blockId] = slot
+
+        // Always remove injected textures and presentation info
+        for assetId in slot.bindingAssetIds {
+            exportTextureProvider.removeTexture(for: assetId)
+            (exportTextureProvider as? MutableAssetPresentationInfoProvider)?
+                .removePresentationInfo(for: assetId)
+        }
+    }
+
     private func buildBindingAssetIdsMap() {
+        guard let runtime = runtime else { return }
         for block in runtime.blocks {
             var assetIds: [String] = []
             for variant in block.variants {
@@ -313,4 +402,20 @@ public final class ExportVideoSlotsCoordinator {
             bindingAssetIdsByBlockId[block.blockId] = assetIds
         }
     }
+
+    // MARK: - Debug
+
+    #if DEBUG
+    struct DebugSlotSnapshot {
+        let blockId: String
+        let hasProvider: Bool
+        let isPrepared: Bool
+    }
+
+    func debugSlotSnapshot() -> [DebugSlotSnapshot] {
+        slots.values
+            .map { DebugSlotSnapshot(blockId: $0.blockId, hasProvider: $0.provider != nil, isPrepared: $0.isPrepared) }
+            .sorted { $0.blockId < $1.blockId }
+    }
+    #endif
 }
