@@ -17,7 +17,7 @@ final class ExportResourceBudgetTests: XCTestCase {
         let budget = ExportResourceBudget()
         XCTAssertEqual(budget.maxResidentScenes, 2)
         XCTAssertEqual(budget.maxActiveVideoProviders, 4)
-        XCTAssertEqual(budget.videoPrefetchFrames, 30)
+        XCTAssertEqual(budget.videoPrefetchFrames, 15)
         XCTAssertEqual(budget.maxFramesInFlight, 3)
         XCTAssertEqual(budget.targetImageMaxDimensionPx, 2048)
     }
