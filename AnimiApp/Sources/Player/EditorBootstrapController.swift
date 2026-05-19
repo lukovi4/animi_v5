@@ -20,6 +20,11 @@ internal final class EditorBootstrapController {
     var preparingTask: Task<Void, Never>?
     var currentRequestId: UUID?
 
+    #if DEBUG
+    private var debugPrepareStartNs: UInt64 = 0
+    private var debugPrepareSceneTypeId: String = ""
+    #endif
+
     init(viewController: EditorViewController) {
         self.viewController = viewController
     }
@@ -182,6 +187,9 @@ internal final class EditorBootstrapController {
     // MARK: - Boot Runtime
 
     func bootRuntime(loadResult: EditorRuntime.InitialSceneLoadResult, state: EditorState) {
+        #if DEBUG
+        let bootStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
         let vc = viewController
         let library = vc.sceneLibrarySnapshot!
         let rt = EditorRuntime(session: vc.session)
@@ -201,10 +209,18 @@ internal final class EditorBootstrapController {
             )
         }
 
+        #if DEBUG
+        rt.debugTexturePoolSnapshotProvider = { [weak vc] in
+            vc?.debugRenderer?.debugTexturePoolSnapshot()
+        }
+        #endif
+
         let mapper = state.makePlayheadMapper()
         vc.editorLayoutContainer.setMapper(mapper)
 
         #if DEBUG
+        let bootSec = Double(DispatchTime.now().uptimeNanoseconds - bootStartNs) / 1_000_000_000.0
+        MemoryDiagnostics.event("bootstrap.boot.summary", String(format: "duration=%.2fs", bootSec))
         rt.assertBootInvariants(uiMode: state.uiMode)
         MemoryDiagnostics.checkpoint("editor.boot.after", metal: vc.metalDevice)
         #endif
@@ -315,6 +331,8 @@ internal final class EditorBootstrapController {
 
         #if DEBUG
         MemoryDiagnostics.event("bootstrap.prepare.start", "requestId=\(requestId) sceneTypeId=\(sceneTypeId) obj=\(ObjectIdentifier(vc).hashValue)")
+        vc.bootstrapController.debugPrepareStartNs = DispatchTime.now().uptimeNanoseconds
+        vc.bootstrapController.debugPrepareSceneTypeId = sceneTypeId
         #endif
 
         preparingTask = Task { [weak vc] in
@@ -325,6 +343,9 @@ internal final class EditorBootstrapController {
 
                 guard let queue = await MainActor.run(body: { vc.commandQueue }) else { return }
 
+                #if DEBUG
+                let loadStartNs = DispatchTime.now().uptimeNanoseconds
+                #endif
                 let loadResult = try await EditorRuntime.loadInitialScene(
                     sceneTypeId: sceneTypeId,
                     sceneURL: sceneURL,
@@ -334,6 +355,16 @@ internal final class EditorBootstrapController {
                         vc?.preparingOverlay.setStatus(status)
                     }
                 )
+                #if DEBUG
+                let loadEndNs = DispatchTime.now().uptimeNanoseconds
+                let loadSec = Double(loadEndNs - loadStartNs) / 1_000_000_000.0
+                await MainActor.run {
+                    MemoryDiagnostics.event(
+                        "bootstrap.load.summary",
+                        String(format: "sceneTypeId=%@ duration=%.2fs", sceneTypeId, loadSec)
+                    )
+                }
+                #endif
 
                 guard !Task.isCancelled, vc.bootstrapController.currentRequestId == requestId else {
                     #if DEBUG
@@ -386,6 +417,9 @@ internal final class EditorBootstrapController {
         loadResult: EditorRuntime.InitialSceneLoadResult,
         requestId: UUID
     ) {
+        #if DEBUG
+        let applyStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
         let vc = viewController
         guard currentRequestId == requestId else {
             #if DEBUG
@@ -418,5 +452,16 @@ internal final class EditorBootstrapController {
         }
 
         vc.requestRender()
+
+        #if DEBUG
+        let applySec = Double(DispatchTime.now().uptimeNanoseconds - applyStartNs) / 1_000_000_000.0
+        MemoryDiagnostics.event("bootstrap.apply.summary", String(format: "duration=%.2fs", applySec))
+        let prepareTotalSec = Double(DispatchTime.now().uptimeNanoseconds - debugPrepareStartNs) / 1_000_000_000.0
+        MemoryDiagnostics.event(
+            "bootstrap.prepare.summary",
+            String(format: "sceneTypeId=%@ duration=%.2fs outcome=success",
+                   debugPrepareSceneTypeId, prepareTotalSec)
+        )
+        #endif
     }
 }

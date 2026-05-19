@@ -124,13 +124,25 @@ public final class SceneTypeResourcesCache {
         if let existing = cache[sceneTypeId] {
             #if DEBUG
             MemoryDiagnostics.event("SceneTypeCache.preload.hit", "id=\(sceneTypeId)")
+            MemoryDiagnostics.event("SceneTypeCache.preload.summary", "id=\(sceneTypeId) source=hit")
             #endif
             return existing
         }
 
         // Already loading?
         if let existingTask = loadingTasks[sceneTypeId] {
-            return try await existingTask.value
+            #if DEBUG
+            let joinStartNs = DispatchTime.now().uptimeNanoseconds
+            #endif
+            let result = try await existingTask.value
+            #if DEBUG
+            let joinSec = Double(DispatchTime.now().uptimeNanoseconds - joinStartNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "SceneTypeCache.preload.summary",
+                String(format: "id=%@ source=join wait=%.2fs", sceneTypeId, joinSec)
+            )
+            #endif
+            return result
         }
 
         // Validate provider
@@ -148,11 +160,17 @@ public final class SceneTypeResourcesCache {
 
         // Start new load task
         let task = Task<Resources, Error> {
+            #if DEBUG
+            let phaseStartNs = DispatchTime.now().uptimeNanoseconds
+            #endif
             // 1. Heavy IO via shared pipeline
             let loaded = try await SceneTypeLoadPipeline.load(
                 sceneTypeId: sceneTypeId,
                 from: sceneURL
             )
+            #if DEBUG
+            let ioEndNs = DispatchTime.now().uptimeNanoseconds
+            #endif
 
             let compiled = loaded.compiled
             let resolver = loaded.resolver
@@ -168,6 +186,10 @@ public final class SceneTypeResourcesCache {
                 )
             }
 
+            #if DEBUG
+            let providerEndNs = DispatchTime.now().uptimeNanoseconds
+            #endif
+
             // 3. Preload textures on background thread
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -175,6 +197,21 @@ public final class SceneTypeResourcesCache {
                     cont.resume()
                 }
             }
+
+            #if DEBUG
+            let preloadEndNs = DispatchTime.now().uptimeNanoseconds
+            let ioSec = Double(ioEndNs - phaseStartNs) / 1_000_000_000.0
+            let providerSec = Double(providerEndNs - ioEndNs) / 1_000_000_000.0
+            let textureSec = Double(preloadEndNs - providerEndNs) / 1_000_000_000.0
+            let totalSec = Double(preloadEndNs - phaseStartNs) / 1_000_000_000.0
+            await MainActor.run {
+                MemoryDiagnostics.event(
+                    "SceneTypeCache.preload.summary",
+                    String(format: "id=%@ source=cold io=%.2fs provider=%.2fs textures=%.2fs total=%.2fs",
+                           sceneTypeId, ioSec, providerSec, textureSec, totalSec)
+                )
+            }
+            #endif
 
             // 4. Build Resources
             return Resources(
@@ -216,12 +253,26 @@ public final class SceneTypeResourcesCache {
     public func preloadMetadata(sceneTypeId: String) async throws -> Resources {
         // Full cache hit? Return it (textures already warm — harmless for export).
         if let existing = cache[sceneTypeId] {
+            #if DEBUG
+            MemoryDiagnostics.event("SceneTypeCache.preloadMetadata.summary", "id=\(sceneTypeId) source=hit")
+            #endif
             return existing
         }
 
         // Full preload in flight? Await it.
         if let existingTask = loadingTasks[sceneTypeId] {
-            return try await existingTask.value
+            #if DEBUG
+            let joinStartNs = DispatchTime.now().uptimeNanoseconds
+            #endif
+            let result = try await existingTask.value
+            #if DEBUG
+            let joinSec = Double(DispatchTime.now().uptimeNanoseconds - joinStartNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "SceneTypeCache.preloadMetadata.summary",
+                String(format: "id=%@ source=joinFull wait=%.2fs", sceneTypeId, joinSec)
+            )
+            #endif
+            return result
         }
 
         guard let urlProvider = sceneURLProvider,
@@ -231,11 +282,17 @@ public final class SceneTypeResourcesCache {
 
         let capturedDevice = device
 
+        #if DEBUG
+        let metaStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
         // Heavy IO via shared pipeline — no texture warm-up
         let loaded = try await SceneTypeLoadPipeline.load(
             sceneTypeId: sceneTypeId,
             from: sceneURL
         )
+        #if DEBUG
+        let metaIoEndNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         let compiled = loaded.compiled
         let resolver = loaded.resolver
@@ -248,6 +305,18 @@ public final class SceneTypeResourcesCache {
             bindingAssetIds: compiled.bindingAssetIds,
             logger: { _ in }
         )
+
+        #if DEBUG
+        let metaProviderEndNs = DispatchTime.now().uptimeNanoseconds
+        let ioSec = Double(metaIoEndNs - metaStartNs) / 1_000_000_000.0
+        let providerSec = Double(metaProviderEndNs - metaIoEndNs) / 1_000_000_000.0
+        let totalSec = Double(metaProviderEndNs - metaStartNs) / 1_000_000_000.0
+        MemoryDiagnostics.event(
+            "SceneTypeCache.preloadMetadata.summary",
+            String(format: "id=%@ source=cold io=%.2fs provider=%.2fs total=%.2fs",
+                   sceneTypeId, ioSec, providerSec, totalSec)
+        )
+        #endif
 
         // NOT cached — lighter than full preload, would break preview if used as cache entry
         return Resources(
@@ -302,6 +371,36 @@ public final class SceneTypeResourcesCache {
         MemoryDiagnostics.event("SceneTypeCache.addToCache", "id=\(resources.sceneTypeId) total=\(cache.count)")
         #endif
     }
+    #if DEBUG
+    public struct DebugSnapshot {
+        public let cachedIds: [String]
+        public let loadingIds: [String]
+        public let cachedCount: Int
+        public let loadingCount: Int
+        public let estimatedTextureBytes: Int
+        public let totalTextureCount: Int
+    }
+
+    public func debugSnapshot() -> DebugSnapshot {
+        var totalBytes = 0
+        var totalTextures = 0
+        for (_, res) in cache {
+            if let provider = res.baseTextureProvider as? ScenePackageBaseTextureProvider {
+                let snap = provider.debugTextureSnapshot()
+                totalBytes += snap.estimatedBytes
+                totalTextures += snap.textureCount
+            }
+        }
+        return DebugSnapshot(
+            cachedIds: Array(cache.keys).sorted(),
+            loadingIds: Array(loadingTasks.keys).sorted(),
+            cachedCount: cache.count,
+            loadingCount: loadingTasks.count,
+            estimatedTextureBytes: totalBytes,
+            totalTextureCount: totalTextures
+        )
+    }
+    #endif
 }
 
 // MARK: - Errors
