@@ -81,9 +81,29 @@ final class AudioWriterPump {
 
         #if DEBUG
         let outputSetupNs = DispatchTime.now().uptimeNanoseconds
+        do {
+            let trackCount = audioTracks.count
+            let durationSec = composition.duration.seconds
+            let hasMix = audioMix != nil
+            let mixInputCount = audioMix?.inputParameters.count ?? 0
+            MemoryDiagnostics.event(
+                "export.audioReader.start.begin",
+                String(format: "tracks=%d duration=%.2fs hasMix=%d mixInputs=%d readerStatus=%ld",
+                       trackCount, durationSec, hasMix ? 1 : 0, mixInputCount,
+                       reader.status.rawValue)
+            )
+        }
         #endif
 
         guard reader.startReading() else {
+            #if DEBUG
+            MemoryDiagnostics.event(
+                "export.audioReader.start.end",
+                String(format: "ok=0 status=%ld error=%@",
+                       reader.status.rawValue,
+                       reader.error?.localizedDescription ?? "none")
+            )
+            #endif
             onError(VideoExportError.audioReaderStartFailed(reader.error))
             completion()
             return
@@ -91,6 +111,10 @@ final class AudioWriterPump {
 
         #if DEBUG
         let readerStartNs = DispatchTime.now().uptimeNanoseconds
+        MemoryDiagnostics.event(
+            "export.audioReader.start.end",
+            String(format: "ok=1 status=%ld error=none", reader.status.rawValue)
+        )
         #endif
 
         self.reader = reader

@@ -43,6 +43,15 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         buildTask = nil
     }
 
+    /// Silent teardown for export: destroys pipeline, cancels build, marks dirty.
+    /// Does NOT trigger rebuild — export owns the lifecycle until exit.
+    func teardownForExport() {
+        controller.teardown()
+        cancelBuild()
+        dirty = true
+        generation &+= 1
+    }
+
     // MARK: - Preview Audio Build Result
 
     enum PreviewAudioBuildResult {

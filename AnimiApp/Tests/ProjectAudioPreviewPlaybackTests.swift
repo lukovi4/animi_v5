@@ -1225,4 +1225,96 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(runtime.previewAudioGeneration, genBefore,
                             "applyMediaSlotChange should bump generation via markPreviewAudioDirty")
     }
+
+    // MARK: - teardownForExport
+
+    func test_teardownForExport_invalidatesForRebuild() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        // Build a pipeline so dirty becomes false
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertFalse(runtime.previewAudioDirty, "Should be clean after build")
+        XCTAssertTrue(mock.hasActivePipeline, "Should have active pipeline")
+        let teardownBefore = mock.teardownCallCount
+
+        runtime.stopPlayback()
+
+        // Act: teardownForExport
+        runtime.previewAudio.teardownForExport()
+
+        // Assert: dirty, torn down, no active pipeline
+        XCTAssertTrue(runtime.previewAudioDirty, "teardownForExport should mark dirty")
+        XCTAssertEqual(mock.teardownCallCount, teardownBefore + 1, "teardownForExport should call controller.teardown()")
+        XCTAssertFalse(mock.hasActivePipeline, "Pipeline should be torn down")
+
+        // Now resume playback — should rebuild
+        let replaceBefore = mock.replacePipelineCallCount
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Should trigger a new build")
+
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertGreaterThan(mock.replacePipelineCallCount, replaceBefore,
+                             "Should install new pipeline after rebuild")
+        XCTAssertFalse(runtime.previewAudioDirty, "Should be clean after rebuild")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    func test_teardownForExport_doesNotTriggerImmediateRebuild() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        // Set up playing state
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<5 { await Task.yield() }
+
+        // Stop playback but keep isPlaying check possible
+        runtime.stopPlayback()
+
+        // Simulate export scenario: runtime is stopped, call teardownForExport
+        runtime.previewAudio.teardownForExport()
+
+        // Assert: no orchestration task spawned
+        XCTAssertNil(runtime.previewAudio.orchestrationTask,
+                     "teardownForExport should NOT spawn an orchestration task")
+        XCTAssertTrue(runtime.previewAudioDirty,
+                      "Dirty flag should be set for later rebuild")
+
+        controllable.drainAll()
+    }
 }

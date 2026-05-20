@@ -201,8 +201,7 @@ internal final class EditorRuntimeExportController {
         #endif
         runtime.stopPlayback()
         runtime.cancelPendingPlayheadResolve()
-        runtime.previewAudio.controller.teardown()
-        runtime.previewAudio.cancelBuild()
+        runtime.previewAudio.teardownForExport()
         // Clear background textures early (before await window opens)
         runtime.background.backgroundTextureService?.clearAllTrackedTextures()
         await runtime.userMediaService?.releasePreviewResources()
