@@ -561,6 +561,17 @@ internal final class EditorRuntimeExportController {
         }
 
         #if DEBUG
+        MemoryDiagnostics.event(
+            "export.timeline.config",
+            String(format: "scenes=%d videoSlots=%d bgRegions=%d size=%dx%d fps=%d preset=%@ hasAudio=%d",
+                   sceneCount,
+                   totalVideoSlots,
+                   backgroundRegionCount,
+                   exportSizePx.width, exportSizePx.height,
+                   engine.fps,
+                   String(describing: exportPreset),
+                   audioPlan.items.isEmpty ? 0 : 1)
+        )
         if let request = activeExportRequest, request.isActive(for: requestId) {
             let renderStartNs = DispatchTime.now().uptimeNanoseconds
             request.debugRenderStartNs = renderStartNs

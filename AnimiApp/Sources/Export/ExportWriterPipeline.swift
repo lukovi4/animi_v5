@@ -28,6 +28,14 @@ final class ExportWriterPipeline {
     private let audioComposition: AVComposition?
     private let audioMix: AVAudioMix?
 
+    // MARK: - Writer Start Diagnostics
+
+    #if DEBUG
+    private let videoConfig: VideoConfig
+    private static var writerStartCounter = 0
+    private static let writerStartLock = NSLock()
+    #endif
+
     // MARK: - Error Aggregator (first-error-wins)
 
     private let errorLock = NSLock()
@@ -143,6 +151,9 @@ final class ExportWriterPipeline {
         self.expectedPumps = numPumps
         self.audioComposition = storedComposition
         self.audioMix = storedMix
+        #if DEBUG
+        self.videoConfig = video
+        #endif
 
         // 5. Video pump — onError wired to self.setError
         let videoQueue = DispatchQueue(label: "com.animi.videowriterpump")
@@ -176,14 +187,53 @@ final class ExportWriterPipeline {
     func startWriting() throws {
         #if DEBUG
         let startNs = DispatchTime.now().uptimeNanoseconds
+
+        let writerStartIndex: Int
+        let firstWriterInProcess: Bool
+        Self.writerStartLock.lock()
+        writerStartIndex = Self.writerStartCounter
+        firstWriterInProcess = Self.writerStartCounter == 0
+        Self.writerStartCounter += 1
+        Self.writerStartLock.unlock()
+
+        let outputExists = FileManager.default.fileExists(atPath: writer.outputURL.path)
+        MemoryDiagnostics.event(
+            "export.writer.startWriting.begin",
+            String(format: "writerStartIndex=%d firstWriterInProcess=%d outputExists=%d size=%dx%d fps=%d bitrate=%d hasAudio=%d writerStatus=%ld",
+                   writerStartIndex,
+                   firstWriterInProcess ? 1 : 0,
+                   outputExists ? 1 : 0,
+                   videoConfig.sizePx.width, videoConfig.sizePx.height,
+                   videoConfig.fps,
+                   videoConfig.bitrate,
+                   audioPump != nil ? 1 : 0,
+                   writer.status.rawValue)
+        )
         #endif
 
         guard writer.startWriting() else {
+            #if DEBUG
+            MemoryDiagnostics.event(
+                "export.writer.startWriting.end",
+                String(format: "writerStartIndex=%d duration=%.3fs writerStatus=%ld error=%@",
+                       writerStartIndex,
+                       Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1e9,
+                       writer.status.rawValue,
+                       writer.error?.localizedDescription ?? "none")
+            )
+            #endif
             throw VideoExportError.writerStartFailed(writer.error)
         }
 
         #if DEBUG
         let writerStartNs = DispatchTime.now().uptimeNanoseconds
+        MemoryDiagnostics.event(
+            "export.writer.startWriting.end",
+            String(format: "writerStartIndex=%d duration=%.3fs writerStatus=%ld error=none",
+                   writerStartIndex,
+                   Double(writerStartNs - startNs) / 1e9,
+                   writer.status.rawValue)
+        )
         #endif
 
         writer.startSession(atSourceTime: .zero)

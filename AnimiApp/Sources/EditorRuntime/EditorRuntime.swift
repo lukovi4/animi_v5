@@ -296,11 +296,19 @@ final class EditorRuntime {
         commandQueue: MTLCommandQueue,
         onStatus: @escaping @MainActor (String) -> Void
     ) async throws -> InitialSceneLoadResult {
+        #if DEBUG
+        let isl0 = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         // Phase 1: Heavy IO
         let loaded = try await SceneTypeLoadPipeline.load(
             sceneTypeId: sceneTypeId,
             from: sceneURL
         )
+
+        #if DEBUG
+        let isl1 = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         try Task.checkCancellation()
 
@@ -311,6 +319,10 @@ final class EditorRuntime {
             let c = p.loadCompiledScene(loaded.compiled)
             return (p, c)
         }
+
+        #if DEBUG
+        let isl2 = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         try Task.checkCancellation()
 
@@ -326,10 +338,28 @@ final class EditorRuntime {
             )
         }
 
+        #if DEBUG
+        let isl3 = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         try await Task(priority: .userInitiated) {
             try Task.checkCancellation()
             provider.preloadAll(commandQueue: commandQueue)
         }.value
+
+        #if DEBUG
+        let isl4 = DispatchTime.now().uptimeNanoseconds
+        MemoryDiagnostics.event(
+            "initialScene.load.summary",
+            String(format: "id=%@ pipeline=%.3fs player=%.3fs provider=%.3fs preload=%.3fs total=%.3fs",
+                   sceneTypeId,
+                   Double(isl1 - isl0) / 1e9,
+                   Double(isl2 - isl1) / 1e9,
+                   Double(isl3 - isl2) / 1e9,
+                   Double(isl4 - isl3) / 1e9,
+                   Double(isl4 - isl0) / 1e9)
+        )
+        #endif
 
         return InitialSceneLoadResult(
             player: player,
