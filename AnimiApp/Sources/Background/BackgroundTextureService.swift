@@ -88,6 +88,9 @@ public final class BackgroundTextureService {
         assetRegistry: ProjectAssetRegistry,
         isStale: (() -> Bool)? = nil
     ) async throws -> Bool {
+        #if DEBUG
+        MemoryDiagnostics.event("Background.load.start", "slot=\(slotKey)")
+        #endif
         // Resolve absolute path via registry-backed locator
         let fileURL = try await mediaLocator.absoluteURL(for: mediaRef, registry: assetRegistry)
 
@@ -105,13 +108,19 @@ public final class BackgroundTextureService {
         )
 
         // GUARD: check stale before writing to shared provider
-        if isStale?() == true { return false }
+        if isStale?() == true {
+            #if DEBUG
+            MemoryDiagnostics.event("Background.load.skipStale", "slot=\(slotKey)")
+            #endif
+            return false
+        }
 
         // Inject into provider
         textureProvider.setTexture(texture, for: slotKey)
         loadedSlotKeys.insert(slotKey)
 
         #if DEBUG
+        MemoryDiagnostics.event("Background.load.write", "slot=\(slotKey) totalKeys=\(loadedSlotKeys.count)")
         print("[BackgroundTextureService] Loaded texture for slot '\(slotKey)'")
         #endif
         return true
@@ -163,6 +172,9 @@ public final class BackgroundTextureService {
     /// Clears all tracked background textures.
     /// Used by caller-owned teardown paths such as permanent editor leave or export cleanup.
     public func clearAllTrackedTextures() {
+        #if DEBUG
+        MemoryDiagnostics.event("Background.clearAll", "keys=\(loadedSlotKeys.count)")
+        #endif
         clearAllTextures()
     }
 

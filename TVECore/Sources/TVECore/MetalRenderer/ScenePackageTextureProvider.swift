@@ -110,6 +110,21 @@ final class TexturePreloadCore {
         missingAssets.removeAll()
     }
 
+    #if DEBUG
+    struct TextureSnapshot {
+        let textureCount: Int
+        let estimatedBytes: Int
+    }
+
+    func debugTextureSnapshot() -> TextureSnapshot {
+        var totalBytes = 0
+        for (_, texture) in baseCache {
+            totalBytes += texture.width * texture.height * 4
+        }
+        return TextureSnapshot(textureCount: baseCache.count, estimatedBytes: totalBytes)
+    }
+    #endif
+
     /// Loads texture with premultiplied alpha conversion.
     private func loadTexture(from url: URL, assetId: String, commandQueue: MTLCommandQueue) -> MTLTexture? {
         do {
@@ -221,6 +236,18 @@ public final class ScenePackageBaseTextureProvider: TextureProvider, AssetDispla
     public func clearCache() {
         core.clearCache()
     }
+
+    #if DEBUG
+    public struct DebugTextureSnapshot {
+        public let textureCount: Int
+        public let estimatedBytes: Int
+    }
+
+    public func debugTextureSnapshot() -> DebugTextureSnapshot {
+        let snap = core.debugTextureSnapshot()
+        return DebugTextureSnapshot(textureCount: snap.textureCount, estimatedBytes: snap.estimatedBytes)
+    }
+    #endif
 
     // MARK: - AssetDisplaySizeProvider (read-only, always nil for base)
 

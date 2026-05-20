@@ -16,17 +16,37 @@ internal final class TimelineFrameResolver {
         self.engine = engine
     }
 
-    // MARK: - Runtime Creation
+    // MARK: - Single-Flight Runtime Creation
+
+    private struct RuntimeCreationEntry {
+        let token: UUID
+        let task: Task<SceneInstanceRuntime?, Never>
+    }
+
+    private var runtimeCreationTasks: [UUID: RuntimeCreationEntry] = [:]
 
     /// Gets or creates a runtime for the given instance ID.
     /// Does NOT wait for readiness - caller controls readiness via policy.
     func getOrCreateRuntime(for instanceId: UUID) async -> SceneInstanceRuntime? {
         // Already loaded?
         if let existing = engine.instanceRuntimes[instanceId] {
+            #if DEBUG
+            if MemoryDiagnostics.isVerboseRuntimeEnabled {
+                MemoryDiagnostics.event("Runtime.cacheHit", "id=\(instanceId) total=\(engine.instanceRuntimes.count)")
+            }
+            #endif
             return existing
         }
 
-        // Need to load - find timeline item by instance ID, then get payload
+        // Join in-flight creation if one exists
+        if let inflight = runtimeCreationTasks[instanceId] {
+            #if DEBUG
+            MemoryDiagnostics.event("Runtime.create.join", "id=\(instanceId)")
+            #endif
+            return await inflight.task.value
+        }
+
+        // Resolve timeline item synchronously before any suspension
         guard let timeline = engine.timeline,
               let item = timeline.sceneItems.first(where: { $0.id == instanceId }),
               let timelinePayload = timeline.payloads[item.payloadId] else {
@@ -36,7 +56,6 @@ internal final class TimelineFrameResolver {
             return nil
         }
 
-        // Extract ScenePayload via pattern match (TimelinePayload is an enum)
         guard case .scene(let scenePayload) = timelinePayload else {
             #if DEBUG
             print("[TimelineCompositionEngine] Payload is not a scene for instanceId: \(instanceId)")
@@ -45,46 +64,137 @@ internal final class TimelineFrameResolver {
         }
 
         let sceneTypeId = scenePayload.sceneTypeId
+        let token = UUID()
 
-        // Get resources from cache, or preload if not cached
-        let resources: SceneTypeResourcesCache.Resources
-        if let cached = engine.resourcesCache.resources(for: sceneTypeId) {
-            resources = cached
-        } else {
-            // Preload fallback - load resources if not cached
-            engine.runtimeDiagnosticsSink?.receive(.sceneTypePreloadStarted(sceneTypeId: sceneTypeId))
-            do {
-                resources = try await engine.resourcesCache.preload(sceneTypeId: sceneTypeId)
-                engine.runtimeDiagnosticsSink?.receive(.sceneTypePreloadCompleted(sceneTypeId: sceneTypeId))
-            } catch {
-                engine.runtimeDiagnosticsSink?.receive(.sceneTypePreloadFailed(sceneTypeId: sceneTypeId, error: error.localizedDescription))
+        #if DEBUG
+        MemoryDiagnostics.event("Runtime.create.start", "id=\(instanceId) sceneType=\(sceneTypeId)")
+        #endif
+
+        let task = Task<SceneInstanceRuntime?, Never> { @MainActor [weak self, weak engine] in
+            guard let engine else { return nil }
+
+            // Early cancellation guard before expensive preload
+            if Task.isCancelled {
                 #if DEBUG
-                print("[TimelineCompositionEngine] Failed to preload resources for \(sceneTypeId): \(error.localizedDescription)")
+                MemoryDiagnostics.event("Runtime.create.complete", "id=\(instanceId) outcome=cancelled")
                 #endif
                 return nil
             }
+
+            // Preload resources
+            let resources: SceneTypeResourcesCache.Resources
+            if let cached = engine.resourcesCache.resources(for: sceneTypeId) {
+                resources = cached
+            } else {
+                engine.runtimeDiagnosticsSink?.receive(.sceneTypePreloadStarted(sceneTypeId: sceneTypeId))
+                do {
+                    resources = try await engine.resourcesCache.preload(sceneTypeId: sceneTypeId)
+                    engine.runtimeDiagnosticsSink?.receive(.sceneTypePreloadCompleted(sceneTypeId: sceneTypeId))
+                } catch {
+                    engine.runtimeDiagnosticsSink?.receive(.sceneTypePreloadFailed(sceneTypeId: sceneTypeId, error: error.localizedDescription))
+                    #if DEBUG
+                    MemoryDiagnostics.event("Runtime.create.complete", "id=\(instanceId) outcome=failed")
+                    #endif
+                    return nil
+                }
+            }
+
+            // Post-await cancellation check
+            if Task.isCancelled {
+                #if DEBUG
+                MemoryDiagnostics.event("Runtime.create.complete", "id=\(instanceId) outcome=cancelled")
+                #endif
+                return nil
+            }
+
+            // Late-race guard: another path may have populated the runtime
+            if let existing = engine.instanceRuntimes[instanceId] {
+                #if DEBUG
+                MemoryDiagnostics.event("Runtime.create.complete", "id=\(instanceId) outcome=late-race-hit")
+                #endif
+                return existing
+            }
+
+            // Check timeline still contains this instance
+            guard let currentTimeline = engine.timeline,
+                  currentTimeline.sceneItems.contains(where: { $0.id == instanceId }) else {
+                #if DEBUG
+                MemoryDiagnostics.event("Runtime.create.complete", "id=\(instanceId) outcome=stale-timeline")
+                #endif
+                return nil
+            }
+
+            // Create instance runtime via factory
+            let runtime = engine.runtimeFactory(instanceId, resources, engine.device, engine.commandQueue)
+
+            // Propagate diagnostics sink to runtime
+            runtime.runtimeDiagnosticsSink = engine.runtimeDiagnosticsSink
+
+            // Forward runtime redraw requests to engine callback
+            runtime.onNeedsRedraw = { [weak engine] in
+                engine?.onNeedsRedraw?()
+            }
+
+            // Apply state if available
+            if let state = engine.sceneStates[instanceId] {
+                await runtime.applyState(state, assetRegistry: engine.currentAssetRegistry)
+            }
+
+            // Post-applyState cancellation check
+            if Task.isCancelled {
+                #if DEBUG
+                MemoryDiagnostics.event("Runtime.create.complete", "id=\(instanceId) outcome=cancelled")
+                #endif
+                return nil
+            }
+
+            // Active-token guard: if our token was removed (e.g. by cancelCreationTasks),
+            // another creation may be in progress — do not store a stale runtime.
+            guard self?.runtimeCreationTasks[instanceId]?.token == token else {
+                #if DEBUG
+                MemoryDiagnostics.event("Runtime.create.complete", "id=\(instanceId) outcome=token-mismatch")
+                #endif
+                return nil
+            }
+
+            // Store in cache
+            engine.instanceRuntimes[instanceId] = runtime
+            #if DEBUG
+            MemoryDiagnostics.event("Runtime.create.complete", "id=\(instanceId) outcome=success total=\(engine.instanceRuntimes.count)")
+            #endif
+
+            return runtime
         }
 
-        // Create instance runtime via factory
-        let runtime = engine.runtimeFactory(instanceId, resources, engine.device, engine.commandQueue)
+        runtimeCreationTasks[instanceId] = RuntimeCreationEntry(token: token, task: task)
 
-        // Propagate diagnostics sink to runtime
-        runtime.runtimeDiagnosticsSink = engine.runtimeDiagnosticsSink
+        let result = await task.value
 
-        // Forward runtime redraw requests to engine callback
-        runtime.onNeedsRedraw = { [weak engine] in
-            engine?.onNeedsRedraw?()
+        // Cleanup only if our token still matches (prevents removing a newer entry)
+        if runtimeCreationTasks[instanceId]?.token == token {
+            runtimeCreationTasks[instanceId] = nil
         }
 
-        // Apply state if available, threading the current registry snapshot.
-        if let state = engine.sceneStates[instanceId] {
-            await runtime.applyState(state, assetRegistry: engine.currentAssetRegistry)
+        return result
+    }
+
+    // MARK: - Creation Task Cancellation
+
+    /// Cancels in-flight creation tasks for the given instance IDs.
+    func cancelCreationTasks(for ids: Set<UUID>) {
+        for id in ids {
+            if let entry = runtimeCreationTasks.removeValue(forKey: id) {
+                entry.task.cancel()
+            }
         }
+    }
 
-        // Cache it
-        engine.instanceRuntimes[instanceId] = runtime
-
-        return runtime
+    /// Cancels all in-flight creation tasks.
+    func cancelAllCreationTasks() {
+        for (_, entry) in runtimeCreationTasks {
+            entry.task.cancel()
+        }
+        runtimeCreationTasks.removeAll()
     }
 
     // MARK: - Frame Resolution

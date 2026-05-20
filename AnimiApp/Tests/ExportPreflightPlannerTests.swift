@@ -19,7 +19,7 @@ final class ExportPreflightPlannerTests: XCTestCase {
             XCTAssertEqual(budget.maxResidentScenes, 1, "Single scene should have maxResidentScenes=1")
             XCTAssertGreaterThan(budget.maxFramesInFlight, 0)
             XCTAssertGreaterThan(budget.targetImageMaxDimensionPx, 0)
-            XCTAssertEqual(budget.videoPrefetchFrames, 30, "Prefetch frames should match FPS")
+            XCTAssertEqual(budget.videoPrefetchFrames, 15, "Prefetch frames should be half of FPS")
         case .recommendLowerPreset:
             // This may happen on constrained test runners — not a failure
             break
@@ -45,7 +45,7 @@ final class ExportPreflightPlannerTests: XCTestCase {
         let budget = ExportResourceBudget.default
         XCTAssertEqual(budget.maxResidentScenes, 2)
         XCTAssertEqual(budget.maxActiveVideoProviders, 4)
-        XCTAssertEqual(budget.videoPrefetchFrames, 30)
+        XCTAssertEqual(budget.videoPrefetchFrames, 15)
         XCTAssertEqual(budget.maxFramesInFlight, 3)
         XCTAssertEqual(budget.targetImageMaxDimensionPx, 2048)
     }
@@ -129,14 +129,14 @@ final class ExportPreflightPlannerTests: XCTestCase {
 
     // MARK: - FPS-Driven Prefetch
 
-    func test_prefetchFrames_matchesFPS() {
+    func test_prefetchFrames_usesHalfSecondWindowWithMinimum() {
         let result30 = ExportPreflightPlanner.plan(
             sceneCount: 1,
             canvasSize: (width: 1080, height: 1920),
             videoSlotCount: 0,
             fps: 30
         )
-        XCTAssertEqual(result30.budget.videoPrefetchFrames, 30)
+        XCTAssertEqual(result30.budget.videoPrefetchFrames, 15)
 
         let result60 = ExportPreflightPlanner.plan(
             sceneCount: 1,
@@ -144,7 +144,40 @@ final class ExportPreflightPlannerTests: XCTestCase {
             videoSlotCount: 0,
             fps: 60
         )
-        XCTAssertEqual(result60.budget.videoPrefetchFrames, 60)
+        XCTAssertEqual(result60.budget.videoPrefetchFrames, 30)
+
+        let result24 = ExportPreflightPlanner.plan(
+            sceneCount: 1,
+            canvasSize: (width: 1080, height: 1920),
+            videoSlotCount: 0,
+            fps: 24
+        )
+        XCTAssertEqual(result24.budget.videoPrefetchFrames, 12)
+    }
+
+    // MARK: - PR5 Budget Caps
+
+    func test_maxFramesInFlight_alwaysThree() {
+        let result = ExportPreflightPlanner.plan(
+            sceneCount: 5,
+            canvasSize: (width: 1080, height: 1920),
+            videoSlotCount: 10,
+            fps: 30
+        )
+        XCTAssertEqual(result.budget.maxFramesInFlight, 3,
+            "maxFramesInFlight should always be 3 regardless of available memory")
+    }
+
+    func test_maxActiveVideoProviders_cappedAtFour() {
+        let result = ExportPreflightPlanner.plan(
+            sceneCount: 5,
+            canvasSize: (width: 1080, height: 1920),
+            videoSlotCount: 10,
+            fps: 30
+        )
+        XCTAssertLessThanOrEqual(result.budget.maxActiveVideoProviders, 4,
+            "maxActiveVideoProviders should never exceed 4")
+        XCTAssertGreaterThan(result.budget.maxActiveVideoProviders, 0)
     }
 
     // MARK: - Canvas-Aware Image Dimension

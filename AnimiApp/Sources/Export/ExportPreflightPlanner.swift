@@ -88,19 +88,14 @@ public enum ExportPreflightPlanner {
         let maxExportDimension = max(canvasSize.width, canvasSize.height)
         let targetImageMaxDimensionPx = min(deviceClassMaxDimensionPx, maxExportDimension * 2)
 
-        // Compute prefetch frames (scale with FPS, ~1s worth)
-        let videoPrefetchFrames = fps
+        // Compute prefetch frames (half of FPS, min 12)
+        let videoPrefetchFrames = max(12, fps / 2)
 
-        // Max frames in flight: conservative on low-memory devices
-        let maxFramesInFlight: Int
-        if availableMemory < safeFloorMB * 2 {
-            maxFramesInFlight = 2
-        } else {
-            maxFramesInFlight = 3
-        }
+        // Max frames in flight: always 3
+        let maxFramesInFlight = 3
 
-        // Max active video providers
-        let maxActiveVideoProviders = min(videoSlotCount, physicalMemory >= mediumMemoryDeviceBytes ? 4 : 2)
+        // Max active video providers: cap at 4
+        let maxActiveVideoProviders = min(videoSlotCount, physicalMemory >= mediumMemoryDeviceBytes ? 4 : 3)
 
         let budget = ExportResourceBudget(
             maxResidentScenes: sceneCount > 1 ? 2 : 1,

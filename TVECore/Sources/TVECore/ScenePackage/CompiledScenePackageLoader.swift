@@ -42,12 +42,20 @@ public final class CompiledScenePackageLoader {
             throw CompiledPackageError.fileNotFound(fileURL)
         }
 
+        #if DEBUG
+        let cpl0 = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         let data: Data
         do {
             data = try Data(contentsOf: fileURL)
         } catch {
             throw CompiledPackageError.ioReadFailed(fileURL)
         }
+
+        #if DEBUG
+        let cpl1 = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         // Header minimal validation
         guard data.count >= Int(CompiledPackageConstants.headerSizeV1) else {
@@ -107,6 +115,10 @@ public final class CompiledScenePackageLoader {
             throw CompiledPackageError.unsupportedSchemaVersion(found: irSchemaVersion, supported: supportedRange)
         }
 
+        #if DEBUG
+        let cpl2 = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         // Extract and decode payload
         let payloadStart = Int(headerLength)
         let payloadEnd = payloadStart + Int(payloadLength)
@@ -123,6 +135,18 @@ public final class CompiledScenePackageLoader {
         } catch {
             throw CompiledPackageError.payloadDecodeFailed
         }
+
+        #if DEBUG
+        let cpl3 = DispatchTime.now().uptimeNanoseconds
+        let assetCount = payload.compiled.mergedAssetIndex.basenameById.count
+        print(String(format: "[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=%d read=%.3fs validate=%.3fs decode=%.3fs total=%.3fs assets=%d",
+                     data.count,
+                     Double(cpl1 - cpl0) / 1e9,
+                     Double(cpl2 - cpl1) / 1e9,
+                     Double(cpl3 - cpl2) / 1e9,
+                     Double(cpl3 - cpl0) / 1e9,
+                     assetCount))
+        #endif
 
         return CompiledScenePackage(
             compiled: payload.compiled,

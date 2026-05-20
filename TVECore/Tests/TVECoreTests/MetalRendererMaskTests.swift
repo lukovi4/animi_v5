@@ -770,6 +770,296 @@ final class TexturePoolTests: XCTestCase {
     }
 }
 
+// MARK: - Bounded TexturePool Tests
+
+final class BoundedTexturePoolTests: XCTestCase {
+    var device: MTLDevice!
+
+    override func setUpWithError() throws {
+        guard let d = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal not available")
+        }
+        device = d
+    }
+
+    func testReuseWorksUnderBudget() throws {
+        let pool = TexturePool(device: device)
+        var textures: [MTLTexture] = []
+        for _ in 0..<5 {
+            let t = try XCTUnwrap(pool.acquireColorTexture(size: (32, 32)))
+            textures.append(t)
+        }
+        for t in textures { pool.release(t) }
+
+        var reused: [MTLTexture] = []
+        for _ in 0..<5 {
+            let t = try XCTUnwrap(pool.acquireColorTexture(size: (32, 32)))
+            reused.append(t)
+        }
+
+        let originalIds = Set(textures.map { ObjectIdentifier($0) })
+        let reusedIds = Set(reused.map { ObjectIdentifier($0) })
+        XCTAssertEqual(originalIds, reusedIds, "All textures should be reused under budget")
+    }
+
+    func testPerKeyCapEvictsExtra() throws {
+        let config = TexturePoolConfiguration(
+            softBudgetBytes: 256 * 1024 * 1024,
+            hardBudgetBytes: 512 * 1024 * 1024,
+            maxAvailableTextures: 1000,
+            maxAvailablePerKey: 2,
+            maxIdleGenerations: 1000
+        )
+        let pool = TexturePool(device: device, configuration: config)
+
+        var textures: [MTLTexture] = []
+        for _ in 0..<5 {
+            let t = try XCTUnwrap(pool.acquireR8Texture(size: (32, 32)))
+            textures.append(t)
+        }
+        for t in textures { pool.release(t) }
+
+        // Only 2 should be retained per key cap
+        var reused: [MTLTexture] = []
+        for _ in 0..<5 {
+            let t = try XCTUnwrap(pool.acquireR8Texture(size: (32, 32)))
+            reused.append(t)
+        }
+
+        let originalIds = Set(textures.map { ObjectIdentifier($0) })
+        let reusedIds = Set(reused.map { ObjectIdentifier($0) })
+        let reusedFromOriginal = reusedIds.intersection(originalIds)
+        XCTAssertEqual(reusedFromOriginal.count, 2, "Only maxAvailablePerKey textures should be retained")
+    }
+
+    func testGlobalSoftBudgetEvictsLRU() throws {
+        // Each 64x64 BGRA = 16384 bytes. Soft budget = 40000 -> fits ~2
+        let config = TexturePoolConfiguration(
+            softBudgetBytes: 40000,
+            hardBudgetBytes: 80000,
+            maxAvailableTextures: 100,
+            maxAvailablePerKey: 100,
+            maxIdleGenerations: 10000
+        )
+        let pool = TexturePool(device: device, configuration: config)
+
+        var textures: [MTLTexture] = []
+        for _ in 0..<5 {
+            let t = try XCTUnwrap(pool.acquireColorTexture(size: (64, 64)))
+            textures.append(t)
+        }
+        for t in textures { pool.release(t) }
+
+        XCTAssertLessThanOrEqual(pool.totalAvailableBytes, config.softBudgetBytes,
+                                  "Available bytes should not exceed soft budget after release")
+    }
+
+    func testHardBudgetEnforced() throws {
+        // R8 16x16 = 256 bytes each. soft = 2000 (~7 textures), hard = 3000 (~11).
+        // softBudgetBytes / 4 = 500 > 256, so textures ARE cacheable.
+        let config = TexturePoolConfiguration(
+            softBudgetBytes: 2000,
+            hardBudgetBytes: 3000,
+            maxAvailableTextures: 1000,
+            maxAvailablePerKey: 1000,
+            maxIdleGenerations: 100000
+        )
+        let pool = TexturePool(device: device, configuration: config)
+
+        var textures: [MTLTexture] = []
+        for _ in 0..<20 {
+            let t = try XCTUnwrap(pool.acquireR8Texture(size: (16, 16)))
+            textures.append(t)
+        }
+        for t in textures { pool.release(t) }
+
+        XCTAssertGreaterThan(pool.totalAvailableBytes, 0,
+                              "Some textures should be cached")
+        XCTAssertLessThanOrEqual(pool.totalAvailableBytes, config.softBudgetBytes,
+                                  "Available bytes should be at or below soft budget")
+        XCTAssertLessThanOrEqual(pool.totalAvailableBytes, config.hardBudgetBytes,
+                                  "Available bytes must never exceed hard budget")
+    }
+
+    func testInUseNeverEvicted() throws {
+        // R8 16x16 = 256 bytes. soft/4 = 625 > 256 so they're cacheable.
+        let config = TexturePoolConfiguration(
+            softBudgetBytes: 2500,
+            hardBudgetBytes: 5000,
+            maxAvailableTextures: 2,
+            maxAvailablePerKey: 2,
+            maxIdleGenerations: 1
+        )
+        let pool = TexturePool(device: device, configuration: config)
+
+        // Acquire textures and keep them in use
+        var inUseTextures: [MTLTexture] = []
+        for _ in 0..<5 {
+            let t = try XCTUnwrap(pool.acquireR8Texture(size: (16, 16)))
+            inUseTextures.append(t)
+        }
+
+        // Also release one to have something available for trim to act on
+        let sacrificial = try XCTUnwrap(pool.acquireR8Texture(size: (16, 16)))
+        pool.release(sacrificial)
+        XCTAssertGreaterThan(pool.totalAvailableBytes, 0, "Should have available before trim")
+
+        pool.trim(policy: .memoryWarning)
+
+        // All in-use textures should survive and be releasable after trim
+        let inUseIds = Set(inUseTextures.map { ObjectIdentifier($0) })
+        for t in inUseTextures {
+            pool.release(t)
+        }
+
+        // After releasing, verify they become available (proving they survived trim)
+        var reacquired: [MTLTexture] = []
+        for _ in 0..<5 {
+            let t = try XCTUnwrap(pool.acquireR8Texture(size: (16, 16)))
+            reacquired.append(t)
+        }
+        let reacquiredFromOriginal = Set(reacquired.map { ObjectIdentifier($0) }).intersection(inUseIds)
+        // At least maxAvailablePerKey should be reused (others may be evicted by budget)
+        XCTAssertGreaterThanOrEqual(reacquiredFromOriginal.count, min(2, inUseTextures.count),
+                                     "In-use textures should survive trim and be reusable after release")
+    }
+
+    func testUsageStorageModeArePartOfKey() throws {
+        let pool = TexturePool(device: device)
+
+        // acquireMaskTexture: r8Unorm, shared, shaderRead
+        let mask = try XCTUnwrap(pool.acquireMaskTexture(size: (32, 32)))
+        // acquireR8Texture: r8Unorm, private, renderTarget|shaderRead|shaderWrite
+        let r8 = try XCTUnwrap(pool.acquireR8Texture(size: (32, 32)))
+
+        pool.release(mask)
+        pool.release(r8)
+
+        // Acquire mask again — should get the mask texture back, not the R8
+        let mask2 = try XCTUnwrap(pool.acquireMaskTexture(size: (32, 32)))
+        XCTAssertTrue(mask === mask2, "Mask texture should be reused from its own key")
+
+        // Acquire R8 again — should get the R8 texture back
+        let r82 = try XCTUnwrap(pool.acquireR8Texture(size: (32, 32)))
+        XCTAssertTrue(r8 === r82, "R8 texture should be reused from its own key")
+    }
+
+    func testOversizedTextureNotRetained() throws {
+        let config = TexturePoolConfiguration(
+            softBudgetBytes: 1 * 1024 * 1024, // 1 MB
+            hardBudgetBytes: 2 * 1024 * 1024,
+            maxAvailableTextures: 100,
+            maxAvailablePerKey: 100,
+            maxIdleGenerations: 10000
+        )
+        let pool = TexturePool(device: device, configuration: config)
+
+        // 2048x2048 BGRA = 16 MB > softBudgetBytes / 4 = 256 KB
+        let big = try XCTUnwrap(pool.acquireColorTexture(size: (2048, 2048)))
+        pool.release(big)
+
+        XCTAssertEqual(pool.totalAvailableBytes, 0, "Oversized texture should not be cached")
+
+        let big2 = try XCTUnwrap(pool.acquireColorTexture(size: (2048, 2048)))
+        XCTAssertFalse(big === big2, "Oversized texture should not be reused")
+    }
+
+    func testTrimMemoryWarning() throws {
+        let config = TexturePoolConfiguration(
+            softBudgetBytes: 100000,
+            hardBudgetBytes: 200000,
+            maxAvailableTextures: 1000,
+            maxAvailablePerKey: 1000,
+            maxIdleGenerations: 100000
+        )
+        let pool = TexturePool(device: device, configuration: config)
+
+        // Fill with small textures that fit under soft budget
+        var textures: [MTLTexture] = []
+        for _ in 0..<20 {
+            let t = try XCTUnwrap(pool.acquireR8Texture(size: (16, 16)))
+            textures.append(t)
+        }
+        for t in textures { pool.release(t) }
+
+        pool.trim(policy: .memoryWarning)
+
+        XCTAssertLessThanOrEqual(pool.totalAvailableBytes, config.softBudgetBytes / 2,
+                                  "Memory warning should trim to soft/2")
+    }
+
+    func testClearIsQuiescentReset() throws {
+        let pool = TexturePool(device: device)
+
+        let t1 = try XCTUnwrap(pool.acquireColorTexture(size: (32, 32)))
+        let t2 = try XCTUnwrap(pool.acquireColorTexture(size: (32, 32)))
+        pool.release(t1)
+        // t2 still in use
+
+        pool.clear()
+
+        XCTAssertEqual(pool.totalAvailableBytes, 0, "Clear should remove all available")
+
+        // t2 should not be reused after clear (it was in inUse which was also cleared)
+        let t3 = pool.acquireColorTexture(size: (32, 32))
+        XCTAssertFalse(t2 === t3, "Should create new texture after clear")
+    }
+
+    func testTrimSoftInteractiveStop() throws {
+        let config = TexturePoolConfiguration(
+            softBudgetBytes: 10000,
+            hardBudgetBytes: 200000,
+            maxAvailableTextures: 1000,
+            maxAvailablePerKey: 1000,
+            maxIdleGenerations: 100000
+        )
+        let pool = TexturePool(device: device, configuration: config)
+
+        var textures: [MTLTexture] = []
+        for _ in 0..<20 {
+            let t = try XCTUnwrap(pool.acquireR8Texture(size: (16, 16)))
+            textures.append(t)
+        }
+        for t in textures { pool.release(t) }
+
+        pool.trim(policy: .softInteractiveStop)
+
+        XCTAssertLessThanOrEqual(pool.totalAvailableBytes, config.softBudgetBytes,
+                                  "softInteractiveStop should trim to soft budget")
+    }
+
+    func testIdleGenerationsEviction() throws {
+        // R8 16x16 = 256 bytes. maxIdleGenerations = 3.
+        // softBudgetBytes / 4 = 25000 >> 256, so textures are cacheable.
+        let config = TexturePoolConfiguration(
+            softBudgetBytes: 100000,
+            hardBudgetBytes: 200000,
+            maxAvailableTextures: 1000,
+            maxAvailablePerKey: 1000,
+            maxIdleGenerations: 3
+        )
+        let pool = TexturePool(device: device, configuration: config)
+
+        // Acquire and release an "old" texture
+        let old = try XCTUnwrap(pool.acquireR8Texture(size: (16, 16)))
+        pool.release(old)
+        XCTAssertGreaterThan(pool.totalAvailableBytes, 0, "Old texture should be cached")
+
+        // Burn through generations by acquiring new textures (different size to avoid reuse)
+        var burners: [MTLTexture] = []
+        for _ in 0..<5 {
+            let t = try XCTUnwrap(pool.acquireR8Texture(size: (8, 8)))
+            burners.append(t)
+        }
+        // Release one burner — this triggers eviction, and old texture is now idle > 3 generations
+        pool.release(burners[0])
+
+        // Try to reacquire the old texture — it should have been evicted
+        let old2 = try XCTUnwrap(pool.acquireR8Texture(size: (16, 16)))
+        XCTAssertFalse(old === old2, "Idle texture should have been evicted after maxIdleGenerations")
+    }
+}
+
 // MARK: - GPU Mask Pipeline Tests
 
 final class GPUMaskPipelineTests: XCTestCase {

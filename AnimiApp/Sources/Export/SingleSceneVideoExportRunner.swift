@@ -67,8 +67,18 @@ internal final class SingleSceneVideoExportRunner {
         resolvedBgURLs: [MediaRef: URL],
         progress: @escaping (Double) -> Void
     ) {
+        #if DEBUG
+        let setupStartNs = DispatchTime.now().uptimeNanoseconds
+        #else
+        let setupStartNs: UInt64 = 0
+        #endif
         // Warm all scene assets (unified API — same behavior as old preloadAll)
         workItem.textureProvider.warm(assetIds: allAssetIds, commandQueue: workItem.renderer.commandQueue)
+        #if DEBUG
+        let warmEndNs = DispatchTime.now().uptimeNanoseconds
+        #else
+        let warmEndNs: UInt64 = 0
+        #endif
 
         // Load user photos on export queue (not MainActor)
         if let mediaSnapshot = workItem.mediaSnapshot {
@@ -96,6 +106,12 @@ internal final class SingleSceneVideoExportRunner {
             }
         }
 
+        #if DEBUG
+        let photoEndNs = DispatchTime.now().uptimeNanoseconds
+        #else
+        let photoEndNs: UInt64 = 0
+        #endif
+
         // Load background textures on export queue (URLs pre-resolved above)
         if let bgSnapshot = workItem.backgroundSnapshot {
             let commandQueue = workItem.renderer.commandQueue
@@ -113,12 +129,26 @@ internal final class SingleSceneVideoExportRunner {
             }
         }
 
+        #if DEBUG
+        let bgEndNs = DispatchTime.now().uptimeNanoseconds
+        #else
+        let bgEndNs: UInt64 = 0
+        #endif
+
         guard !session.isCancelled else {
             session.complete(with: .failure(VideoExportError.cancelled))
             return
         }
 
-        runExportLoop(workItem: workItem, session: session, progress: progress)
+        runExportLoop(
+            workItem: workItem,
+            session: session,
+            progress: progress,
+            debugSetupStartNs: setupStartNs,
+            debugWarmEndNs: warmEndNs,
+            debugPhotoEndNs: photoEndNs,
+            debugBgEndNs: bgEndNs
+        )
     }
 
     // MARK: - Export Loop
@@ -126,8 +156,15 @@ internal final class SingleSceneVideoExportRunner {
     private static func runExportLoop(
         workItem: WorkItem,
         session: ExportSession,
-        progress: @escaping (Double) -> Void
+        progress: @escaping (Double) -> Void,
+        debugSetupStartNs: UInt64 = 0,
+        debugWarmEndNs: UInt64 = 0,
+        debugPhotoEndNs: UInt64 = 0,
+        debugBgEndNs: UInt64 = 0
     ) {
+        #if DEBUG
+        let loopSetupStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
         let runtime = workItem.runtime
         let snapshot = workItem.snapshot
         let renderer = workItem.renderer
@@ -160,6 +197,9 @@ internal final class SingleSceneVideoExportRunner {
                 return
             }
         }
+        #if DEBUG
+        let audioEndNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         // 2. Create pipeline (replaces ~100 lines of writer setup)
         let pipeline: ExportWriterPipeline
@@ -176,6 +216,9 @@ internal final class SingleSceneVideoExportRunner {
             session.complete(with: .failure(error))
             return
         }
+        #if DEBUG
+        let writerEndNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         // 3. Create CVMetalTextureCache
         let metalDevice = renderer.commandQueue.device
@@ -193,6 +236,10 @@ internal final class SingleSceneVideoExportRunner {
             session.complete(with: .failure(VideoExportError.failedToCreateTextureCache))
             return
         }
+        #if DEBUG
+        MemoryDiagnostics.event("CVTextureCache.create", "owner=SingleSceneExport")
+        let cacheEndNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         // 4. Setup video slots coordinator
         var videoSlotsCoordinator: ExportVideoSlotsCoordinator?
@@ -210,11 +257,26 @@ internal final class SingleSceneVideoExportRunner {
             coordinator.configure(videoSelectionsByBlockId: videoSelections)
             videoSlotsCoordinator = coordinator
         }
+        #if DEBUG
+        let slotsEndNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         session.setCleanup(
-            onSuccess: { videoSlotsCoordinator?.finish() },
-            onFailure: { videoSlotsCoordinator?.cancel() },
-            onCancel:  { videoSlotsCoordinator?.cancel() }
+            onSuccess: {
+                videoSlotsCoordinator?.finish()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            },
+            onFailure: {
+                videoSlotsCoordinator?.cancel()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            },
+            onCancel: {
+                videoSlotsCoordinator?.cancel()
+                CVMetalTextureCacheFlush(textureCache, 0)
+                renderer.trimTransientResources(policy: .exportFinished)
+            }
         )
         session.transitionToRendering()
 
@@ -225,10 +287,46 @@ internal final class SingleSceneVideoExportRunner {
         let semaphore = DispatchSemaphore(value: renderer.maxFramesInFlight)
         let videoGroup = DispatchGroup()
 
+        #if DEBUG
+        do {
+            let nowNs = DispatchTime.now().uptimeNanoseconds
+            let knownNs = (debugWarmEndNs - debugSetupStartNs)
+                + (debugPhotoEndNs - debugWarmEndNs)
+                + (debugBgEndNs - debugPhotoEndNs)
+                + (audioEndNs - loopSetupStartNs)
+                + (writerEndNs - audioEndNs)
+                + (cacheEndNs - writerEndNs)
+                + (slotsEndNs - cacheEndNs)
+            let totalNs = nowNs - debugSetupStartNs
+            let otherNs = totalNs > knownNs ? totalNs - knownNs : 0
+
+            MemoryDiagnostics.event(
+                "export.runnerSetup.summary",
+                String(format: "mode=single warm=%.2fs photos=%.2fs background=%.2fs audio=%.2fs writer=%.2fs cache=%.2fs videoSlots=%.2fs other=%.2fs total=%.2fs",
+                       Double(debugWarmEndNs - debugSetupStartNs) / 1e9,
+                       Double(debugPhotoEndNs - debugWarmEndNs) / 1e9,
+                       Double(debugBgEndNs - debugPhotoEndNs) / 1e9,
+                       Double(audioEndNs - loopSetupStartNs) / 1e9,
+                       Double(writerEndNs - audioEndNs) / 1e9,
+                       Double(cacheEndNs - writerEndNs) / 1e9,
+                       Double(slotsEndNs - cacheEndNs) / 1e9,
+                       Double(otherNs) / 1e9,
+                       Double(totalNs) / 1e9)
+            )
+        }
+        #endif
+
         // 6. Video export loop
         let totalFrames = runtime.durationFrames
+        #if DEBUG
+        var renderedFrames = 0
+        let renderStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         for frameIndex in 0..<totalFrames {
+            #if DEBUG
+            if frameIndex % 300 == 0 { MemoryDiagnostics.checkpoint("export.frame.\(frameIndex)", metal: metalDevice) }
+            #endif
             if session.shouldStop { break }
 
             semaphore.wait()
@@ -322,6 +420,10 @@ internal final class SingleSceneVideoExportRunner {
                     return
                 }
 
+                #if DEBUG
+                renderedFrames += 1
+                #endif
+
                 pipeline.enqueueVideoFrame(pixelBuffer, presentationTime: pts) {
                     videoGroup.leave()
                     semaphore.signal()
@@ -333,6 +435,19 @@ internal final class SingleSceneVideoExportRunner {
 
         // 7. Wait for all enqueued frames to finish
         videoGroup.wait()
+
+        #if DEBUG
+        let renderEndNs = DispatchTime.now().uptimeNanoseconds
+        let elapsedSec = Double(renderEndNs - renderStartNs) / 1_000_000_000.0
+        let fps = elapsedSec > 0 ? Double(renderedFrames) / elapsedSec : 0
+        let renderOutcome = session.shouldStop ? (session.isCancelled ? "cancelled" : "failure") : "success"
+        MemoryDiagnostics.event(
+            "export.render.summary",
+            String(format: "mode=single frames=%d/%d duration=%.2fs fps=%.2f renderOutcome=%@",
+                   renderedFrames, totalFrames, elapsedSec, fps, renderOutcome)
+        )
+        MemoryDiagnostics.checkpoint("export.render.after", metal: metalDevice)
+        #endif
 
         // 8. Finish or cancel — cleanup closures fire inside complete()
         if session.shouldStop {

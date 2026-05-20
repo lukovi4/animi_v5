@@ -32,7 +32,7 @@ public struct ExportResourceBudget: Sendable, Equatable {
     public init(
         maxResidentScenes: Int = 2,
         maxActiveVideoProviders: Int = 4,
-        videoPrefetchFrames: Int = 30,
+        videoPrefetchFrames: Int = 15,
         maxFramesInFlight: Int = 3,
         targetImageMaxDimensionPx: Int = 2048
     ) {

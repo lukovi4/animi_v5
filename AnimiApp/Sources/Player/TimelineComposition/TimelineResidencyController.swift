@@ -30,6 +30,9 @@ internal final class TimelineResidencyController {
             sceneItems: math.sceneItems
         )
 
+        // Cancel in-flight creation tasks for evicted instances
+        engine.cancelRuntimeCreationTasks(for: Set(toEvict))
+
         for instanceId in toEvict {
             if let runtime = engine.instanceRuntimes.removeValue(forKey: instanceId) {
                 runtime.pause()

@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreVideo
+import Metal
 
 /// Owns the full export lifecycle: pre-pipeline (preparing) through post-pipeline (finishing/completed/failed/cancelled).
 ///
@@ -40,6 +41,11 @@ internal final class ExportSession {
 
     // Finishing hook — fires once when finishWriting() begins (before pipeline.finishWriting)
     private var onFinishing: (() -> Void)?
+
+    #if DEBUG
+    /// Metal device stored for diagnostic checkpoint at completion.
+    var diagnosticDevice: MTLDevice?
+    #endif
 
     // MARK: - Init
 
@@ -153,6 +159,14 @@ internal final class ExportSession {
 
         cleanup?()
         terminalHook?()
+        #if DEBUG
+        let outcome: String
+        if wasAlreadyCancelled { outcome = "cancelled" }
+        else if case .failure = finalResult { outcome = "failure" }
+        else { outcome = "success" }
+        MemoryDiagnostics.checkpoint("export.complete.\(outcome)", metal: diagnosticDevice)
+        MemoryDiagnostics.signpostEvent("export.complete")
+        #endif
         DispatchQueue.main.async { [completionCallback] in completionCallback(finalResult) }
     }
 
@@ -240,7 +254,22 @@ internal final class ExportSession {
         // Emit .finishing BEFORE pipeline.finishWriting — real lifecycle phase
         finishing?()
 
+        #if DEBUG
+        let finishStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         pipeline?.finishWriting { [self] result in
+            #if DEBUG
+            let finishEndNs = DispatchTime.now().uptimeNanoseconds
+            let elapsedSec = Double(finishEndNs - finishStartNs) / 1_000_000_000.0
+            let outcome: String
+            if case .success = result { outcome = "success" } else { outcome = "failure" }
+            MemoryDiagnostics.event(
+                "export.finishWriting.summary",
+                String(format: "duration=%.2fs outcome=%@", elapsedSec, outcome)
+            )
+            #endif
+
             self.complete(with: result)
         }
     }

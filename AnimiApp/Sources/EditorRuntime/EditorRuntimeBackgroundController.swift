@@ -241,6 +241,8 @@ internal final class EditorRuntimeBackgroundController {
     }
 
     func reloadBackgroundTextures() async {
+        // Bail if runtime has re-entered exporting (stale restore from prior cancel)
+        guard runtime.state != .exporting else { return }
         let proj = runtime.session.state?.draft.background
         let scene = currentSceneBackgroundOverride()
         guard let effState = effectiveBackgroundState else { return }

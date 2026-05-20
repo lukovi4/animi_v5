@@ -100,8 +100,28 @@ internal final class OverlayRenderResourceCache: @unchecked Sendable {
 
     /// Called on UIKit memory warning. Preview cache owner subscribes; export cache does not.
     func purgeOnMemoryPressure() {
+        #if DEBUG
+        MemoryDiagnostics.event("OverlayCache.purge")
+        #endif
         invalidateAll()
     }
+
+    #if DEBUG
+    struct DebugSnapshot {
+        let entryCount: Int
+        let estimatedBytes: Int
+    }
+
+    func debugSnapshot() -> DebugSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        var totalBytes = 0
+        for entry in entries.values {
+            totalBytes += entry.contentWidth * entry.contentHeight * 4
+        }
+        return DebugSnapshot(entryCount: entries.count, estimatedBytes: totalBytes)
+    }
+    #endif
 
     // MARK: - Text Rasterization
 

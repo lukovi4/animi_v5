@@ -16,6 +16,10 @@ internal final class EditorRuntimeExportController {
         let id: UUID
         let exporter: VideoExporter
         let deliveryPolicy: ExportDeliveryPolicy
+        #if DEBUG
+        let debugStartNs: UInt64
+        var debugRenderStartNs: UInt64?
+        #endif
 
         var deliveryFlow: ExportDeliveryFlow?
 
@@ -23,11 +27,22 @@ internal final class EditorRuntimeExportController {
             self.id = id
             self.exporter = exporter
             self.deliveryPolicy = deliveryPolicy
+            #if DEBUG
+            self.debugStartNs = DispatchTime.now().uptimeNanoseconds
+            #endif
         }
 
         func isActive(for requestId: UUID) -> Bool {
             id == requestId
         }
+    }
+
+    // MARK: - Export Teardown State
+
+    enum ExportTeardownState {
+        case idle
+        case entering
+        case completed
     }
 
     // MARK: - Stored Properties
@@ -36,9 +51,18 @@ internal final class EditorRuntimeExportController {
     var activeExportRequest: ActiveExportRequest?
     var preExportState: EditorRuntimeState?
     var preflightContinuation: CheckedContinuation<EditorRuntime.ExportPreflightChoice, Never>?
-    var exportTeardownOccurred = false
+    private(set) var exportTeardownState: ExportTeardownState = .idle
+    private var cancelRequestedDuringEnter = false
     private(set) var isRestoringPreviewAfterExport = false
     var makeDeliverer: () -> ExportDelivering = { ExportDeliveryCoordinator() }
+
+    /// Legacy compat: true when teardown has fully completed (used by restore path).
+    var exportTeardownOccurred: Bool { exportTeardownState == .completed }
+
+    /// Blocks preview presentation resolve during export enter/completed.
+    var blocksPreviewPresentationDuringExport: Bool {
+        exportTeardownState == .entering || exportTeardownState == .completed
+    }
 
     var isExporting: Bool { activeExportRequest != nil }
 
@@ -72,13 +96,18 @@ internal final class EditorRuntimeExportController {
         preflightContinuation?.resume(returning: .cancel)
         preflightContinuation = nil
         clearActiveExportRequest()
-        if exportTeardownOccurred {
+        switch exportTeardownState {
+        case .completed:
             Task { [weak self, weak runtime] in
                 guard let self, let runtime else { return }
                 await self.restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
                 runtime.onOutput?(.exportCancelled)
             }
-        } else {
+        case .entering:
+            // Teardown is in-flight (suspended at await). Mark cancellation.
+            // enterExportMode() will check this on resume and abort.
+            cancelRequestedDuringEnter = true
+        case .idle:
             restorePreExportState()
             runtime.onOutput?(.exportCancelled)
         }
@@ -119,7 +148,8 @@ internal final class EditorRuntimeExportController {
 
         let route = resolveExportRoute()
 
-        enterExportMode()
+        let entered = await enterExportMode()
+        guard entered, runtime.state == .exporting else { return }
 
         switch route {
         case .timeline:
@@ -150,22 +180,57 @@ internal final class EditorRuntimeExportController {
     func setRestoringForTesting(_ value: Bool) {
         isRestoringPreviewAfterExport = value
     }
+
+    func setExportTeardownStateForTesting(_ state: ExportTeardownState) {
+        exportTeardownState = state
+    }
     #endif
 
     // MARK: - Export Mode Management
 
-    func enterExportMode() {
+    /// Performs export teardown: stops playback, drains preview resources, clears textures.
+    /// Returns `true` if teardown completed successfully, `false` if cancelled during drain.
+    @discardableResult
+    func enterExportMode() async -> Bool {
+        exportTeardownState = .entering
+        cancelRequestedDuringEnter = false
+        #if DEBUG
+        MemoryDiagnostics.checkpoint("export.enter.before", metal: runtime.metalContext?.device)
+        MemoryDiagnostics.event("export.enter")
+        MemoryDiagnostics.signpostEvent("export.enter")
+        #endif
         runtime.stopPlayback()
         runtime.cancelPendingPlayheadResolve()
         runtime.previewAudio.controller.teardown()
         runtime.previewAudio.cancelBuild()
+        // Clear background textures early (before await window opens)
         runtime.background.backgroundTextureService?.clearAllTrackedTextures()
-        runtime.userMediaService?.releasePreviewResources()
-        runtime.timelineCompositionEngine?.releaseForExport()
-        exportTeardownOccurred = true
+        await runtime.userMediaService?.releasePreviewResources()
+        await runtime.timelineCompositionEngine?.releasePreviewResources(evictTypeCache: false)
+
+        // Check if export was cancelled during async drain
+        guard !cancelRequestedDuringEnter else {
+            // Resources were released during drain — must restore them
+            exportTeardownState = .completed
+            cancelRequestedDuringEnter = false
+            await restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
+            runtime.onOutput?(.exportCancelled)
+            return false
+        }
+
+        // Clear background textures after async drain to prevent re-entrancy reload
+        runtime.background.backgroundTextureService?.clearAllTrackedTextures()
+        exportTeardownState = .completed
+        #if DEBUG
+        MemoryDiagnostics.checkpoint("export.enter.after", metal: runtime.metalContext?.device)
+        #endif
+        return true
     }
 
     func exitExportModeToIdle() async {
+        #if DEBUG
+        MemoryDiagnostics.event("export.exit")
+        #endif
         await restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
     }
 
@@ -183,12 +248,17 @@ internal final class EditorRuntimeExportController {
             await runtime.background.reloadBackgroundTextures()
         }
         await runtime.restorePreviewResourcesAfterExport()
+        #if DEBUG
+        MemoryDiagnostics.event("export.previewRestored")
+        MemoryDiagnostics.signpostEvent("preview.restore")
+        MemoryDiagnostics.checkpoint("preview.restore.after", metal: runtime.metalContext?.device)
+        #endif
     }
 
     func restorePreExportState() {
         runtime.state = preExportState ?? .timelinePreview
         preExportState = nil
-        exportTeardownOccurred = false
+        exportTeardownState = .idle
     }
 
     func clearActiveExportRequest() {
@@ -218,6 +288,7 @@ internal final class EditorRuntimeExportController {
     // MARK: - Single Scene Export
 
     private func executeSingleSceneExport(ctx: EditorRuntimeMetalContext) async {
+        guard runtime.state == .exporting, exportTeardownState == .completed else { return }
         guard let compiled = runtime.compiledScene,
               let player = runtime.scenePlayer,
               let resolver = runtime.assetResolver else {
@@ -339,6 +410,18 @@ internal final class EditorRuntimeExportController {
             return
         }
 
+        #if DEBUG
+        if let request = activeExportRequest, request.isActive(for: requestId) {
+            let renderStartNs = DispatchTime.now().uptimeNanoseconds
+            request.debugRenderStartNs = renderStartNs
+            let prepareSec = Double(renderStartNs - request.debugStartNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "export.prepare.summary",
+                String(format: "mode=single duration=%.2fs outcome=success", prepareSec)
+            )
+        }
+        #endif
+
         await exporter.exportVideo(
             compiledScene: compiled,
             scenePlayer: player,
@@ -373,6 +456,7 @@ internal final class EditorRuntimeExportController {
     // MARK: - Timeline Export
 
     private func executeTimelineExport(ctx: EditorRuntimeMetalContext) async {
+        guard runtime.state == .exporting, exportTeardownState == .completed else { return }
         guard let engine = runtime.timelineCompositionEngine,
               let transitionMath = engine.transitionMath else {
             await abortExportAfterTeardown(message: "No timeline configured for timeline export")
@@ -476,6 +560,29 @@ internal final class EditorRuntimeExportController {
             return
         }
 
+        #if DEBUG
+        MemoryDiagnostics.event(
+            "export.timeline.config",
+            String(format: "scenes=%d videoSlots=%d bgRegions=%d size=%dx%d fps=%d preset=%@ hasAudio=%d",
+                   sceneCount,
+                   totalVideoSlots,
+                   backgroundRegionCount,
+                   exportSizePx.width, exportSizePx.height,
+                   engine.fps,
+                   String(describing: exportPreset),
+                   audioPlan.items.isEmpty ? 0 : 1)
+        )
+        if let request = activeExportRequest, request.isActive(for: requestId) {
+            let renderStartNs = DispatchTime.now().uptimeNanoseconds
+            request.debugRenderStartNs = renderStartNs
+            let prepareSec = Double(renderStartNs - request.debugStartNs) / 1_000_000_000.0
+            MemoryDiagnostics.event(
+                "export.prepare.summary",
+                String(format: "mode=timeline duration=%.2fs outcome=success", prepareSec)
+            )
+        }
+        #endif
+
         exporter.exportTimeline(
             engine: engine,
             sceneBackgrounds: sceneBackgrounds,
@@ -507,7 +614,23 @@ internal final class EditorRuntimeExportController {
         }
         Task { [weak self, weak runtime] in
             guard let self, let runtime else { return }
+
+            #if DEBUG
+            let restoreStartNs = DispatchTime.now().uptimeNanoseconds
+            #endif
+
             await self.restorePreviewAfterExportTeardownIfNeeded(runtime: runtime)
+
+            #if DEBUG
+            let restoreEndNs = DispatchTime.now().uptimeNanoseconds
+            let restoreSec = Double(restoreEndNs - restoreStartNs) / 1_000_000_000.0
+            let restoreOutcome = self.isActiveExportRequest(requestId) ? "success" : "stale"
+            MemoryDiagnostics.event(
+                "export.previewRestore.summary",
+                String(format: "duration=%.2fs outcome=%@", restoreSec, restoreOutcome)
+            )
+            #endif
+
             guard self.isActiveExportRequest(requestId) else { return }
             self.emitExportCompletionOutput(result: result, requestId: requestId)
         }
@@ -523,11 +646,17 @@ internal final class EditorRuntimeExportController {
 
         case .failure(let error as VideoExportError) where error.isCancelled:
             logger.info("[Export] Cancelled")
+            #if DEBUG
+            logExportTotalSummary(requestId: requestId, outcome: "cancelled")
+            #endif
             clearActiveExportRequest()
             runtime.onOutput?(.exportCancelled)
 
         case .failure(let error):
             logger.error("[Export] ERROR: \(error.localizedDescription)")
+            #if DEBUG
+            logExportTotalSummary(requestId: requestId, outcome: "failure")
+            #endif
             clearActiveExportRequest()
             runtime.onOutput?(.exportRenderFailed(error))
         }
@@ -536,8 +665,23 @@ internal final class EditorRuntimeExportController {
     private func saveExportedVideoToPhotos(_ url: URL, requestId: UUID) {
         let deliverer = makeDeliverer()
         let policy = activeExportRequest?.deliveryPolicy ?? .photoLibraryOnly
+        #if DEBUG
+        let debugStartNs = activeExportRequest?.debugStartNs
+        #endif
         let shareHandoff: ((URL) -> Void)? = policy == .photoLibraryThenShare
-            ? { [weak self] url in self?.runtime.onOutput?(.exportDeliveryShareHandoff(url)) }
+            ? { [weak self] url in
+                #if DEBUG
+                if let debugStartNs {
+                    let endNs = DispatchTime.now().uptimeNanoseconds
+                    let elapsedSec = Double(endNs - debugStartNs) / 1_000_000_000.0
+                    MemoryDiagnostics.event(
+                        "export.total.summary",
+                        String(format: "duration=%.2fs outcome=savedToPhotosShareReady", elapsedSec)
+                    )
+                }
+                #endif
+                self?.runtime.onOutput?(.exportDeliveryShareHandoff(url))
+            }
             : nil
         let flow = ExportDeliveryFlow(
             requestId: requestId,
@@ -546,6 +690,23 @@ internal final class EditorRuntimeExportController {
             isRequestActive: { [weak self] id in self?.isActiveExportRequest(id) ?? false },
             clearRequestIfCurrent: { [weak self] id in self?.clearExportRequestIfCurrent(id) },
             completion: { [weak self] outcome in
+                #if DEBUG
+                let shouldLogTotalInCompletion: Bool
+                switch (policy, outcome) {
+                case (.photoLibraryThenShare, .savedToPhotos):
+                    shouldLogTotalInCompletion = false
+                default:
+                    shouldLogTotalInCompletion = true
+                }
+                if shouldLogTotalInCompletion, let debugStartNs {
+                    let endNs = DispatchTime.now().uptimeNanoseconds
+                    let elapsedSec = Double(endNs - debugStartNs) / 1_000_000_000.0
+                    MemoryDiagnostics.event(
+                        "export.total.summary",
+                        String(format: "duration=%.2fs outcome=%@", elapsedSec, String(describing: outcome))
+                    )
+                }
+                #endif
                 self?.runtime.onOutput?(.exportDeliveryCompleted(outcome))
             },
             shareHandoff: shareHandoff
@@ -553,6 +714,19 @@ internal final class EditorRuntimeExportController {
         activeExportRequest?.deliveryFlow = flow
         flow.start(fileURL: url, destination: .photoLibrary)
     }
+
+    #if DEBUG
+    private func logExportTotalSummary(requestId: UUID, outcome: String) {
+        guard let request = activeExportRequest,
+              request.isActive(for: requestId) else { return }
+        let endNs = DispatchTime.now().uptimeNanoseconds
+        let elapsedSec = Double(endNs - request.debugStartNs) / 1_000_000_000.0
+        MemoryDiagnostics.event(
+            "export.total.summary",
+            String(format: "duration=%.2fs outcome=%@", elapsedSec, outcome)
+        )
+    }
+    #endif
 
     // MARK: - Per-Scene Background
 

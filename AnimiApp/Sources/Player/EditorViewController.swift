@@ -63,9 +63,16 @@ final class EditorViewController: UIViewController {
     }
 
     deinit {
+        #if DEBUG
+        MemoryDiagnostics.event("EditorViewController.deinit", "obj=\(ObjectIdentifier(self).hashValue)")
+        MemoryDiagnostics.signpostEvent("editor.close")
+        #endif
         autosaveCoordinator?.stopFromDeinit()
         NotificationCenter.default.removeObserver(self, name: .appDidEnterBackground, object: nil)
         _mediaIngestCoordinator?.cancelAllFromDeinit()
+        #if DEBUG
+        MemoryDiagnostics.checkpoint("editor.close.after")
+        #endif
     }
 
     @objc private func appDidEnterBackground() {
@@ -94,6 +101,9 @@ final class EditorViewController: UIViewController {
 
     private lazy var _commandQueue: MTLCommandQueue? = { metalView.device?.makeCommandQueue() }()
     private var renderer: MetalRenderer?
+    #if DEBUG
+    var debugRenderer: MetalRenderer? { renderer }
+    #endif
 
     // MARK: - Scrub Render Throttle (A/B Testing)
     var isScrubDragging = false
@@ -171,6 +181,9 @@ final class EditorViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        #if DEBUG
+        MemoryDiagnostics.checkpoint("editor.boot.before")
+        #endif
         view.backgroundColor = .systemBackground
         setupRenderer()
         setupEditorLayout()
@@ -407,8 +420,31 @@ final class EditorViewController: UIViewController {
         perfLogger.stop()
         #endif
         if Self.shouldCleanupOnDisappear(isMovingFromParent: isMovingFromParent, isBeingDismissed: isBeingDismissed) {
-            runtime?.clearAllBackgroundTextures()
+            #if DEBUG
+            MemoryDiagnostics.checkpoint("editor.close.before")
+            #endif
+            // Synchronous: stop playback immediately (cancels displayLink + playbackStartTask)
+            runtime?.stopPlayback()
+            trimRendererTransientResources(policy: .editorClose)
+            // Async teardown: drain in-flight setup tasks then release resources
+            let runtime = self.runtime
+            let device = metalView.device
+            Task { @MainActor in
+                await runtime?.releasePreviewResourcesForClose()
+                runtime?.clearAllBackgroundTextures()
+                #if DEBUG
+                MemoryDiagnostics.checkpoint("editor.close.afterTeardown", metal: device)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    guard MemoryDiagnostics.isEnabled else { return }
+                    MemoryDiagnostics.checkpoint("editor.close.after.2s", metal: device)
+                }
+                #endif
+            }
         }
+    }
+
+    func trimRendererTransientResources(policy: TrimPolicy) {
+        renderer?.trimTransientResources(policy: policy)
     }
 
     static func shouldCleanupOnDisappear(isMovingFromParent: Bool, isBeingDismissed: Bool) -> Bool {

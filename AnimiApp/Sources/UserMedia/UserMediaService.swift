@@ -92,31 +92,58 @@ extension ScenePlayer: ScenePlayerForMedia {}
 
 /// Simple async semaphore for limiting concurrent operations.
 /// P1: Used to throttle poster generation to avoid memory spikes.
+/// Cancellation-aware: acquire() throws CancellationError if task is cancelled while waiting.
+/// Uses withTaskCancellationHandler so that task.cancel() immediately unblocks waiters.
 private actor AsyncSemaphore {
     private let limit: Int
     private var current: Int = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
 
     init(limit: Int) {
         self.limit = limit
     }
 
-    func acquire() async {
+    /// Acquires a permit. Throws CancellationError if the task is cancelled while waiting.
+    /// Uses withTaskCancellationHandler to ensure task.cancel() immediately resumes the waiter.
+    func acquire() async throws {
+        // Fast path: permit available
         if current < limit {
             current += 1
             return
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let waiterId = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                waiters.append((id: waiterId, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: waiterId) }
         }
+    }
+
+    /// Removes a specific waiter and resumes with CancellationError.
+    /// Called from cancellation handler when a task is cancelled while waiting.
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let removed = waiters.remove(at: index)
+        removed.continuation.resume(throwing: CancellationError())
     }
 
     func release() {
         if let waiter = waiters.first {
             waiters.removeFirst()
-            waiter.resume()
+            waiter.continuation.resume()
         } else {
             current = max(0, current - 1)
+        }
+    }
+
+    /// Cancels all waiting tasks. Used during bulk teardown as safety net.
+    func cancelAllWaiters() {
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.continuation.resume(throwing: CancellationError())
         }
     }
 }
@@ -429,6 +456,11 @@ public final class UserMediaService {
         self.scenePlayer = scenePlayer
         self.scenePlayerForTest = nil
         self.textureProvider = textureProvider
+
+        #if DEBUG
+        MemoryDiagnostics.increment("UserMediaService")
+        MemoryDiagnostics.event("UserMediaService.init", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
     }
 
     /// Internal initializer for testing.
@@ -673,10 +705,25 @@ public final class UserMediaService {
         let setupTask = Task { @MainActor [weak self] in
             guard let self = self else { return }
 
-            // P1: Throttle concurrent poster extractions
-            await self.posterSemaphore.acquire()
-
             do {
+                // P1: Throttle concurrent poster extractions (cancellation-aware)
+                try await self.posterSemaphore.acquire()
+            } catch {
+                // Semaphore acquire cancelled — task never got a permit, exit cleanly
+                #if DEBUG
+                logger.debug("[UserMediaService] setVideo: semaphore acquire cancelled for blockId=\(blockId)")
+                #endif
+                if self.mediaSetupGenerationByBlock[blockId] == token {
+                    self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
+                }
+                return
+            }
+
+            // From here on, we hold the semaphore permit — must release before returning
+            do {
+                // Early cancellation check after semaphore wait
+                try Task.checkCancellation()
+
                 // PR1 FIX: requestPoster waits for ready internally, no need for separate polling
                 // PR7: Request poster at trimStart so the initial frame matches the selection
                 let posterTime = persistedSelection.trimStart
@@ -687,7 +734,6 @@ public final class UserMediaService {
                     #if DEBUG
                     logger.debug("[UserMediaService] setVideo: stale task ignored for blockId=\(blockId)")
                     #endif
-                    // P0: Token-safe remove task (only if we're still current generation)
                     if self.mediaSetupGenerationByBlock[blockId] == token {
                         self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                     }
@@ -773,7 +819,6 @@ public final class UserMediaService {
                 logger.debug("[UserMediaService] setVideo success: blockId=\(blockId), duration=\(duration)s, needsDisplay fired")
                 #endif
 
-                // P1: Release semaphore on success
                 await self.posterSemaphore.release()
 
             } catch is CancellationError {
@@ -781,19 +826,15 @@ public final class UserMediaService {
                 #if DEBUG
                 logger.debug("[UserMediaService] setVideo: cancelled for blockId=\(blockId)")
                 #endif
-                // P0: Token-safe remove task (only if we're still current generation)
                 if self.mediaSetupGenerationByBlock[blockId] == token {
                     self.mediaSetupTasksByBlock.removeValue(forKey: blockId)
                 }
                 await self.posterSemaphore.release()
             } catch {
                 // PR-async-race: Only mark failed if still current generation
-                guard self.mediaSetupGenerationByBlock[blockId] == token else {
-                    await self.posterSemaphore.release()
-                    return
+                if self.mediaSetupGenerationByBlock[blockId] == token {
+                    self.markVideoSetupFailed(blockId: blockId, reason: "poster generation error - \(error.localizedDescription)", token: token)
                 }
-                // P0: Use failure helper to preserve failure state
-                self.markVideoSetupFailed(blockId: blockId, reason: "poster generation error - \(error.localizedDescription)", token: token)
                 await self.posterSemaphore.release()
             }
         }
@@ -1245,6 +1286,9 @@ public final class UserMediaService {
     /// PR-async-race: Increments generation and cancels setup task to prevent stale updates.
     /// All media files are persistent (owned by MediaAssetStore), so no file deletion here.
     private func cleanupVideoResources(for blockId: String) {
+        #if DEBUG
+        MemoryDiagnostics.event("UMS.cleanupVideo", "obj=\(ObjectIdentifier(self).hashValue) blockId=\(blockId)")
+        #endif
         // PR-async-race: Invalidate pending async operations for this blockId
         mediaSetupGenerationByBlock[blockId, default: 0] += 1
         mediaSetupTasksByBlock[blockId]?.cancel()
@@ -1343,6 +1387,10 @@ public final class UserMediaService {
     deinit {
         // VideoFrameProvider.deinit handles its own cleanup (release()).
         // All media files are persistent (owned by MediaAssetStore), no temp cleanup needed.
+        #if DEBUG
+        MemoryDiagnostics.decrement("UserMediaService")
+        MemoryDiagnostics.event("UserMediaService.deinit", "obj=\(ObjectIdentifier(self).hashValue) videoProviders=\(videoProviders.count)")
+        #endif
     }
 
     // MARK: - State Query
@@ -1473,7 +1521,28 @@ public final class UserMediaService {
     ///
     /// Preserves `mediaState` (contains VideoSelection metadata needed for `exportVideoSelectionsSnapshot()`).
     /// After calling this, preview video playback is no longer functional, but snapshot APIs still work.
-    public func releasePreviewResources() {
+    public func releasePreviewResources() async {
+        #if DEBUG
+        MemoryDiagnostics.event("UMS.releasePreview", "obj=\(ObjectIdentifier(self).hashValue) videoProviders=\(videoProviders.count) setupTasks=\(mediaSetupTasksByBlock.count) stillTasks=\(stillTasksByBlock.count) trimTasks=\(trimPreviewTasksByBlock.count) activeVideo=\(activeVideoBlockIds.count)")
+        #endif
+        // Snapshot and cancel all pending media setup tasks
+        let setupTasks = Array(mediaSetupTasksByBlock.values)
+        for task in setupTasks {
+            task.cancel()
+        }
+        mediaSetupTasksByBlock.removeAll()
+        // Bump all generations so any in-flight setup that survives cancellation
+        // fails the generation guard and does not create new providers
+        for key in Array(mediaSetupGenerationByBlock.keys) {
+            mediaSetupGenerationByBlock[key, default: 0] += 1
+        }
+        // Unblock any tasks waiting on semaphore so they can observe cancellation
+        await posterSemaphore.cancelAllWaiters()
+        // Drain: wait for all setup tasks to actually exit
+        for task in setupTasks {
+            await task.value
+        }
+
         // PR2: Cancel all pending still frame tasks
         for (_, task) in stillTasksByBlock {
             task.cancel()
@@ -1501,6 +1570,14 @@ public final class UserMediaService {
     #if DEBUG
     /// Test seam: number of active video providers (re-created by setVideo/bind).
     public var activeVideoProviderCount: Int { videoProviders.count }
+
+    func debugFlushAllTextureCaches() {
+        for (_, provider) in videoProviders {
+            if let vfp = provider as? VideoFrameProvider {
+                vfp.debugFlushTextureFactory()
+            }
+        }
+    }
     #endif
 
     // MARK: - Export Snapshot (PR-E3)

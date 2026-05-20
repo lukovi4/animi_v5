@@ -28,6 +28,14 @@ final class ExportWriterPipeline {
     private let audioComposition: AVComposition?
     private let audioMix: AVAudioMix?
 
+    // MARK: - Writer Start Diagnostics
+
+    #if DEBUG
+    private let videoConfig: VideoConfig
+    private static var writerStartCounter = 0
+    private static let writerStartLock = NSLock()
+    #endif
+
     // MARK: - Error Aggregator (first-error-wins)
 
     private let errorLock = NSLock()
@@ -44,8 +52,16 @@ final class ExportWriterPipeline {
 
     /// Creates writer, inputs, adaptor, and pumps. Does NOT start writing.
     init(outputURL: URL, video: VideoConfig, audio: AudioConfig?) throws {
+        #if DEBUG
+        let initStartNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         // 1. AVAssetWriter
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+
+        #if DEBUG
+        let writerCreateNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         // 2. Video input
         let videoSettings: [String: Any] = [
@@ -68,6 +84,10 @@ final class ExportWriterPipeline {
         }
         writer.add(videoInput)
 
+        #if DEBUG
+        let videoInputNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         // 3. Pixel buffer adaptor
         let pixelBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
@@ -81,6 +101,10 @@ final class ExportWriterPipeline {
             assetWriterInput: videoInput,
             sourcePixelBufferAttributes: pixelBufferAttributes
         )
+
+        #if DEBUG
+        let adaptorNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         // 4. Audio input (optional)
         var audioWriterInput: AVAssetWriterInput?
@@ -114,6 +138,10 @@ final class ExportWriterPipeline {
             }
         }
 
+        #if DEBUG
+        let audioInputNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         // Store all properties before creating videoPump (which needs self for onError)
         self.writer = writer
         self.videoInput = videoInput
@@ -123,6 +151,9 @@ final class ExportWriterPipeline {
         self.expectedPumps = numPumps
         self.audioComposition = storedComposition
         self.audioMix = storedMix
+        #if DEBUG
+        self.videoConfig = video
+        #endif
 
         // 5. Video pump — onError wired to self.setError
         let videoQueue = DispatchQueue(label: "com.animi.videowriterpump")
@@ -134,18 +165,88 @@ final class ExportWriterPipeline {
                 self?.setError(error)
             }
         )
+
+        #if DEBUG
+        let initEndNs = DispatchTime.now().uptimeNanoseconds
+        MemoryDiagnostics.event(
+            "export.writer.init.summary",
+            String(format: "writerCreate=%.2fs videoInput=%.2fs adaptor=%.2fs audioInput=%.2fs pump=%.2fs total=%.2fs",
+                   Double(writerCreateNs - initStartNs) / 1e9,
+                   Double(videoInputNs - writerCreateNs) / 1e9,
+                   Double(adaptorNs - videoInputNs) / 1e9,
+                   Double(audioInputNs - adaptorNs) / 1e9,
+                   Double(initEndNs - audioInputNs) / 1e9,
+                   Double(initEndNs - initStartNs) / 1e9)
+        )
+        #endif
     }
 
     // MARK: - Public API
 
     /// Start writing session and both pumps.
     func startWriting() throws {
+        #if DEBUG
+        let startNs = DispatchTime.now().uptimeNanoseconds
+
+        let writerStartIndex: Int
+        let firstWriterInProcess: Bool
+        Self.writerStartLock.lock()
+        writerStartIndex = Self.writerStartCounter
+        firstWriterInProcess = Self.writerStartCounter == 0
+        Self.writerStartCounter += 1
+        Self.writerStartLock.unlock()
+
+        let outputExists = FileManager.default.fileExists(atPath: writer.outputURL.path)
+        MemoryDiagnostics.event(
+            "export.writer.startWriting.begin",
+            String(format: "writerStartIndex=%d firstWriterInProcess=%d outputExists=%d size=%dx%d fps=%d bitrate=%d hasAudio=%d writerStatus=%ld",
+                   writerStartIndex,
+                   firstWriterInProcess ? 1 : 0,
+                   outputExists ? 1 : 0,
+                   videoConfig.sizePx.width, videoConfig.sizePx.height,
+                   videoConfig.fps,
+                   videoConfig.bitrate,
+                   audioPump != nil ? 1 : 0,
+                   writer.status.rawValue)
+        )
+        #endif
+
         guard writer.startWriting() else {
+            #if DEBUG
+            MemoryDiagnostics.event(
+                "export.writer.startWriting.end",
+                String(format: "writerStartIndex=%d duration=%.3fs writerStatus=%ld error=%@",
+                       writerStartIndex,
+                       Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1e9,
+                       writer.status.rawValue,
+                       writer.error?.localizedDescription ?? "none")
+            )
+            #endif
             throw VideoExportError.writerStartFailed(writer.error)
         }
+
+        #if DEBUG
+        let writerStartNs = DispatchTime.now().uptimeNanoseconds
+        MemoryDiagnostics.event(
+            "export.writer.startWriting.end",
+            String(format: "writerStartIndex=%d duration=%.3fs writerStatus=%ld error=none",
+                   writerStartIndex,
+                   Double(writerStartNs - startNs) / 1e9,
+                   writer.status.rawValue)
+        )
+        #endif
+
         writer.startSession(atSourceTime: .zero)
 
+        #if DEBUG
+        let sessionNs = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         videoPump.start()
+
+        #if DEBUG
+        let videoPumpNs = DispatchTime.now().uptimeNanoseconds
+        #endif
 
         if let audioPump = audioPump,
            let audioInput = audioInput,
@@ -158,6 +259,19 @@ final class ExportWriterPipeline {
                 completion: { [weak self] in self?.onPumpFinished() }
             )
         }
+
+        #if DEBUG
+        let endNs = DispatchTime.now().uptimeNanoseconds
+        MemoryDiagnostics.event(
+            "export.writer.start.summary",
+            String(format: "writerStart=%.2fs session=%.2fs videoPump=%.2fs audioPump=%.2fs total=%.2fs",
+                   Double(writerStartNs - startNs) / 1e9,
+                   Double(sessionNs - writerStartNs) / 1e9,
+                   Double(videoPumpNs - sessionNs) / 1e9,
+                   Double(endNs - videoPumpNs) / 1e9,
+                   Double(endNs - startNs) / 1e9)
+        )
+        #endif
     }
 
     /// Pixel buffer pool (available after startWriting).
@@ -216,8 +330,17 @@ final class ExportWriterPipeline {
         }
     }
 
+    deinit {
+        #if DEBUG
+        MemoryDiagnostics.event("ExportWriterPipeline.deinit", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
+    }
+
     /// Cancel: stop pumps, cancel writer, delete file.
     func cancel() {
+        #if DEBUG
+        MemoryDiagnostics.event("ExportWriterPipeline.cancel", "obj=\(ObjectIdentifier(self).hashValue)")
+        #endif
         let outputURL = writer.outputURL
         videoPump.cancel()
         audioPump?.cancel()
