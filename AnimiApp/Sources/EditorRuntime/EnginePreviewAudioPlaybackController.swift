@@ -1,0 +1,429 @@
+@preconcurrency import AVFoundation
+
+// MARK: - Engine Preview Audio Playback Controller
+
+/// `PreviewAudioControlling` implementation using AVAudioEngine + AVAudioPlayerNode.
+///
+/// Offline-renders the composition to a PCM file via AVAssetReader, then plays
+/// with AVAudioPlayerNode for sub-ms start latency. Export path stays unchanged.
+@MainActor
+final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
+
+    // MARK: - State
+
+    private(set) var readiness: PreviewAudioReadiness = .idle
+    var onReady: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (PreviewAudioFailureReason) -> Void)?
+    var onPrerollFinished: (@MainActor (PreviewAudioPrerollResult) -> Void)?
+
+    private var engine: AVAudioEngine?
+    private var playerNode: AVAudioPlayerNode?
+    private var audioFile: AVAudioFile?
+    private var cacheFileURL: URL?
+    private var renderTask: Task<Void, Never>?
+    private var readinessToken: UInt = 0
+
+    #if DEBUG
+    var onRenderComplete: ((URL) -> Void)?
+    var onEngineStart: (() -> Void)?
+    var onScheduleSegment: ((AVAudioFramePosition, AVAudioFrameCount) -> Void)?
+    var onPlayerPlay: (() -> Void)?
+    var onProbe: ((Int) -> Void)?
+    private var probeToken: UInt = 0
+    #endif
+
+    var hasActivePipeline: Bool { audioFile != nil || renderTask != nil }
+
+    // MARK: - Render Format
+
+    private static let renderSampleRate: Double = 44100.0
+    private static let renderChannels: AVAudioChannelCount = 2
+
+    private nonisolated static var renderFormat: AVAudioFormat {
+        AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: renderSampleRate,
+            channels: renderChannels,
+            interleaved: true
+        )!
+    }
+
+    private nonisolated static var readerOutputSettings: [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: false,
+            AVSampleRateKey: renderSampleRate,
+            AVNumberOfChannelsKey: renderChannels,
+        ]
+    }
+
+    // MARK: - Failure Transition
+
+    private func transitionToFailed(_ reason: PreviewAudioFailureReason) {
+        guard readiness != .failed else { return }
+        readiness = .failed
+        #if DEBUG
+        MemoryDiagnostics.event("preview.audio.engine.failure", "reason=\(reason)")
+        #endif
+        onReady = nil
+        onPrerollFinished = nil
+        onFailure?(reason)
+    }
+
+    // MARK: - Replace Pipeline
+
+    func replacePipeline(_ pipeline: BuiltAudioPipeline) {
+        renderTask?.cancel()
+        renderTask = nil
+        deleteCacheFile()
+        engine?.stop()
+        engine = nil
+        playerNode = nil
+        audioFile = nil
+        readiness = .preparing
+
+        readinessToken &+= 1
+        let token = readinessToken
+        let comp = pipeline.composition as AVComposition
+        let mix = pipeline.audioMix
+
+        #if DEBUG
+        let tracks = pipeline.composition.tracks(withMediaType: .audio).count
+        let dur = CMTimeGetSeconds(pipeline.composition.duration)
+        MemoryDiagnostics.event("preview.audio.engine.render.begin", "generation=\(token) tracks=\(tracks) duration=\(dur)")
+        #endif
+
+        renderTask = Task.detached { [weak self] in
+            let fileURL: URL
+            do {
+                fileURL = try Self.renderToFile(composition: comp, audioMix: mix)
+            } catch is CancellationError {
+                await MainActor.run { [weak self] in
+                    guard let self, self.readinessToken == token else { return }
+                    self.renderTask = nil
+                    #if DEBUG
+                    MemoryDiagnostics.event("preview.audio.engine.render.cancelled", "")
+                    #endif
+                }
+                return
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self, self.readinessToken == token else { return }
+                    self.renderTask = nil
+                    #if DEBUG
+                    MemoryDiagnostics.event("preview.audio.engine.render.failed", "error=\(error.localizedDescription)")
+                    #endif
+                    self.transitionToFailed(.renderFailed(error: error.localizedDescription))
+                }
+                return
+            }
+            await MainActor.run { [weak self] in
+                guard let self, self.readinessToken == token else {
+                    try? FileManager.default.removeItem(at: fileURL)
+                    return
+                }
+                self.renderTask = nil
+                self.cacheFileURL = fileURL
+
+                #if DEBUG
+                self.onRenderComplete?(fileURL)
+                #endif
+
+                do {
+                    let file = try AVAudioFile(forReading: fileURL)
+                    self.audioFile = file
+                    #if DEBUG
+                    let frames = file.length
+                    let sr = file.processingFormat.sampleRate
+                    let ch = file.processingFormat.channelCount
+                    MemoryDiagnostics.event("preview.audio.engine.render.end", "durationMs=\(Double(frames) / sr * 1000) frames=\(frames) sampleRate=\(sr) channels=\(ch)")
+                    MemoryDiagnostics.event("preview.audio.engine.ready", "generation=\(token)")
+                    #endif
+                    self.readiness = .ready
+                    let cb = self.onReady
+                    self.onReady = nil
+                    cb?()
+                } catch {
+                    #if DEBUG
+                    MemoryDiagnostics.event("preview.audio.engine.render.failed", "error=\(error.localizedDescription)")
+                    #endif
+                    self.transitionToFailed(.renderFailed(error: error.localizedDescription))
+                }
+            }
+        }
+    }
+
+    // MARK: - Prepare for Immediate Playback
+
+    func prepareForImmediatePlayback() {
+        guard readiness == .ready else { return }
+        guard let file = audioFile else { return }
+
+        let eng = AVAudioEngine()
+        let node = AVAudioPlayerNode()
+        eng.attach(node)
+        eng.connect(node, to: eng.mainMixerNode, format: file.processingFormat)
+        eng.prepare()
+
+        self.engine = eng
+        self.playerNode = node
+
+        #if DEBUG
+        MemoryDiagnostics.event("preview.audio.engine.prepare", "nodeAttached=1")
+        #endif
+
+        readiness = .primed
+        let cb = onPrerollFinished
+        onPrerollFinished = nil
+        cb?(.primed)
+    }
+
+    // MARK: - Start Playback
+
+    func startPlayback(fromSeconds: Double, hostTime: CFTimeInterval) {
+        guard readiness == .primed else {
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.engine.startPlayback.notPrimed", "readiness=\(readiness)")
+            #endif
+            return
+        }
+        guard let eng = engine, let node = playerNode, let file = audioFile else { return }
+
+        // Start engine if not running (requires active audio session)
+        if !eng.isRunning {
+            #if DEBUG
+            let startTime = CACurrentMediaTime()
+            MemoryDiagnostics.event("preview.audio.engine.start.begin", "")
+            #endif
+            do {
+                try eng.start()
+                #if DEBUG
+                let durationMs = (CACurrentMediaTime() - startTime) * 1000
+                MemoryDiagnostics.event("preview.audio.engine.start.end", "durationMs=\(durationMs) ok=1")
+                onEngineStart?()
+                #endif
+            } catch {
+                #if DEBUG
+                let durationMs = (CACurrentMediaTime() - startTime) * 1000
+                MemoryDiagnostics.event("preview.audio.engine.start.end", "durationMs=\(durationMs) ok=0 error=\(error.localizedDescription)")
+                #endif
+                transitionToFailed(.playerFailed(error: error.localizedDescription))
+                return
+            }
+        }
+
+        node.stop()
+
+        let sampleRate = file.processingFormat.sampleRate
+        let totalFrames = file.length
+        let startFrame = max(0, min(AVAudioFramePosition(fromSeconds * sampleRate), totalFrames - 1))
+        let remainingFrames = AVAudioFrameCount(totalFrames - startFrame)
+
+        guard remainingFrames > 0 else { return }
+
+        #if DEBUG
+        MemoryDiagnostics.event("preview.audio.engine.scheduleSegment", "target=\(fromSeconds) frame=\(startFrame) remaining=\(remainingFrames)")
+        onScheduleSegment?(startFrame, remainingFrames)
+        #endif
+
+        node.scheduleSegment(file, startingFrame: startFrame, frameCount: remainingFrames, at: nil)
+        node.play()
+
+        #if DEBUG
+        MemoryDiagnostics.event("preview.audio.engine.play", "startFrame=\(startFrame)")
+        onPlayerPlay?()
+        scheduleDebugProbes(startFrame: startFrame, sampleRate: sampleRate, node: node)
+        #endif
+    }
+
+    // MARK: - Debug Probes
+
+    #if DEBUG
+    private func scheduleDebugProbes(startFrame: AVAudioFramePosition, sampleRate: Double, node: AVAudioPlayerNode) {
+        probeToken &+= 1
+        let token = probeToken
+        let capturedReadinessToken = readinessToken
+        for delayMs in [100, 500, 1000, 2000] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delayMs)) { [weak self] in
+                guard let self,
+                      self.probeToken == token,
+                      self.readinessToken == capturedReadinessToken,
+                      self.playerNode === node else { return }
+                if let nodeTime = node.lastRenderTime,
+                   let playerTime = node.playerTime(forNodeTime: nodeTime),
+                   playerTime.isSampleTimeValid {
+                    let advancedMs = Double(playerTime.sampleTime) / playerTime.sampleRate * 1000
+                    MemoryDiagnostics.event("preview.audio.engine.probe", "afterMs=\(delayMs) advancedMs=\(advancedMs) sampleTime=\(playerTime.sampleTime) startFrame=\(startFrame) rate=\(playerTime.sampleRate)")
+                } else {
+                    MemoryDiagnostics.event("preview.audio.engine.probe", "afterMs=\(delayMs) advancedMs=n/a sampleTime=n/a rate=n/a")
+                }
+                self.onProbe?(delayMs)
+            }
+        }
+    }
+    #endif
+
+    // MARK: - Pause
+
+    func pause() {
+        let wasRunning = engine?.isRunning == true
+        playerNode?.stop()
+        engine?.stop()
+        #if DEBUG
+        probeToken &+= 1
+        MemoryDiagnostics.event("preview.audio.engine.pause", "engineWasRunning=\(wasRunning ? 1 : 0)")
+        #endif
+        // graph/file/cache stay alive; readiness stays .primed
+        // next startPlayback() will call engine.start() after session activation
+    }
+
+    // MARK: - Teardown
+
+    func teardown() {
+        readinessToken &+= 1
+        #if DEBUG
+        probeToken &+= 1
+        MemoryDiagnostics.event("preview.audio.engine.teardown", "")
+        #endif
+        playerNode?.stop()
+        engine?.stop()
+        engine = nil
+        playerNode = nil
+        audioFile = nil
+        renderTask?.cancel()
+        renderTask = nil
+        deleteCacheFile()
+        readiness = .idle
+        onReady = nil
+        onPrerollFinished = nil
+        onFailure = nil
+    }
+
+    // MARK: - Offline Render
+
+    private nonisolated static func renderToFile(
+        composition: AVComposition,
+        audioMix: AVAudioMix?
+    ) throws -> URL {
+        let reader = try AVAssetReader(asset: composition)
+
+        let audioTracks = composition.tracks(withMediaType: .audio)
+        guard !audioTracks.isEmpty else {
+            throw NSError(domain: "EnginePreviewAudio", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "No audio tracks in composition",
+            ])
+        }
+
+        let output = AVAssetReaderAudioMixOutput(
+            audioTracks: audioTracks,
+            audioSettings: readerOutputSettings
+        )
+        output.audioMix = audioMix
+
+        guard reader.canAdd(output) else {
+            throw NSError(domain: "EnginePreviewAudio", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Cannot add audio mix output to reader",
+            ])
+        }
+        reader.add(output)
+
+        guard reader.startReading() else {
+            throw NSError(domain: "EnginePreviewAudio", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Reader failed to start: \(reader.error?.localizedDescription ?? "unknown")",
+            ])
+        }
+
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engine_preview_\(UUID().uuidString).caf")
+
+        let format = renderFormat
+        let audioFile = try AVAudioFile(
+            forWriting: fileURL,
+            settings: format.settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: true
+        )
+
+        while reader.status == .reading {
+            guard !Task.isCancelled else {
+                reader.cancelReading()
+                try? FileManager.default.removeItem(at: fileURL)
+                throw CancellationError()
+            }
+
+            guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                break
+            }
+
+            let pcmBuffer = try convertToPCMBuffer(sampleBuffer, format: format)
+            try audioFile.write(from: pcmBuffer)
+        }
+
+        if reader.status == .failed {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw NSError(domain: "EnginePreviewAudio", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "Reader failed: \(reader.error?.localizedDescription ?? "unknown")",
+            ])
+        }
+
+        return fileURL
+    }
+
+    // MARK: - CMSampleBuffer → AVAudioPCMBuffer
+
+    private nonisolated static func convertToPCMBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        format: AVAudioFormat
+    ) throws -> AVAudioPCMBuffer {
+        var blockBuffer: CMBlockBuffer?
+        var srcBufferList = AudioBufferList()
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: nil,
+            bufferListOut: &srcBufferList,
+            bufferListSize: MemoryLayout<AudioBufferList>.size,
+            blockBufferAllocator: nil,
+            blockBufferMemoryAllocator: nil,
+            flags: 0,
+            blockBufferOut: &blockBuffer
+        )
+        guard status == noErr else {
+            throw NSError(domain: "EnginePreviewAudio", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "CMSampleBufferGetAudioBufferList failed: \(status)",
+            ])
+        }
+
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard let pcmBuffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(frameCount)
+        ) else {
+            throw NSError(domain: "EnginePreviewAudio", code: 6, userInfo: [
+                NSLocalizedDescriptionKey: "Failed to create AVAudioPCMBuffer",
+            ])
+        }
+        pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
+
+        let src = srcBufferList.mBuffers
+        let dst = pcmBuffer.mutableAudioBufferList.pointee.mBuffers
+
+        #if DEBUG
+        assert(src.mDataByteSize <= dst.mDataByteSize, "Source exceeds destination capacity")
+        #endif
+
+        memcpy(dst.mData, src.mData, min(Int(dst.mDataByteSize), Int(src.mDataByteSize)))
+
+        return pcmBuffer
+    }
+
+    // MARK: - Cache File
+
+    private func deleteCacheFile() {
+        if let url = cacheFileURL {
+            try? FileManager.default.removeItem(at: url)
+            cacheFileURL = nil
+        }
+    }
+}

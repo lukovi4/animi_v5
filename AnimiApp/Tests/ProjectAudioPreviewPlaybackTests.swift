@@ -13,12 +13,14 @@ final class MockPreviewAudioController: PreviewAudioControlling {
     var startPlaybackCallCount = 0
     var pauseCallCount = 0
     var teardownCallCount = 0
+    var prepareForImmediatePlaybackCallCount = 0
     var lastStartFromSeconds: Double?
     var lastStartHostTime: CFTimeInterval?
     var hasActivePipeline = false
     var readiness: PreviewAudioReadiness = .idle
     var onReady: (@MainActor () -> Void)?
     var onFailure: (@MainActor (PreviewAudioFailureReason) -> Void)?
+    var onPrerollFinished: (@MainActor (PreviewAudioPrerollResult) -> Void)?
     var simulateImmediateReady = true
 
     func replacePipeline(_ pipeline: BuiltAudioPipeline) {
@@ -43,7 +45,20 @@ final class MockPreviewAudioController: PreviewAudioControlling {
         hasActivePipeline = false
         readiness = .idle
         onReady = nil
+        onPrerollFinished = nil
         onFailure = nil
+    }
+
+    func prepareForImmediatePlayback() {
+        prepareForImmediatePlaybackCallCount += 1
+        if simulateImmediateReady {
+            readiness = .primed
+            let cb = onPrerollFinished
+            onPrerollFinished = nil
+            cb?(.primed)
+        } else {
+            readiness = .prerolling
+        }
     }
 
     func simulateReady() {
@@ -51,6 +66,26 @@ final class MockPreviewAudioController: PreviewAudioControlling {
         let cb = onReady
         onReady = nil
         cb?()
+    }
+
+    func simulatePrimed() {
+        readiness = .primed
+        let cb = onPrerollFinished
+        onPrerollFinished = nil
+        cb?(.primed)
+    }
+
+    func simulatePrerollFailed() {
+        readiness = .ready
+        let cb = onPrerollFinished
+        onPrerollFinished = nil
+        cb?(.readyFallback)
+    }
+
+    func simulatePlayerNotReady() {
+        let cb = onPrerollFinished
+        onPrerollFinished = nil
+        cb?(.deferredPlayerNotReady)
     }
 
     func simulateFailed() {
@@ -1044,9 +1079,9 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         controller.teardown()
     }
 
-    // MARK: - Test 21: dirty rebuild defers start until onReady
+    // MARK: - Test 21: dirty rebuild defers start until preroll finishes
 
-    func test_dirtyRebuild_defersStartUntilOnReady() async throws {
+    func test_dirtyRebuild_defersStartUntilPrerollFinished() async throws {
         guard let (_, runtime) = await makePlayableRuntime() else {
             throw XCTSkip("Metal device not available")
         }
@@ -1073,25 +1108,31 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
 
         XCTAssertEqual(mock.replacePipelineCallCount, 1, "Pipeline should be replaced")
         XCTAssertEqual(mock.startPlaybackCallCount, 0,
-                       "startPlayback must be deferred until onReady")
+                       "startPlayback must be deferred until preroll finishes")
         XCTAssertTrue(runtime.previewAudioDirty,
-                      "dirty must remain true until onReady fires")
+                      "dirty must remain true until preroll finishes")
 
-        // Simulate readiness → onReady fires → startPlayback called
+        // Simulate readiness → onReady fires → prepareForImmediatePlayback (stays prerolling)
         mock.simulateReady()
+        XCTAssertEqual(mock.prepareForImmediatePlaybackCallCount, 1)
+        XCTAssertEqual(mock.startPlaybackCallCount, 0,
+                       "startPlayback must still be deferred during preroll")
+
+        // Simulate preroll complete → startPlayback called
+        mock.simulatePrimed()
 
         XCTAssertEqual(mock.startPlaybackCallCount, 1,
-                       "startPlayback must be called after onReady")
+                       "startPlayback must be called after preroll finishes")
         XCTAssertFalse(runtime.previewAudioDirty,
-                       "dirty must be cleared on successful readiness")
+                       "dirty must be cleared on successful preroll")
 
         runtime.stopPlayback()
         controllable.drainAll()
     }
 
-    // MARK: - Test 22: onReady uses fresh transport time
+    // MARK: - Test 22: preroll finish uses fresh transport time
 
-    func test_onReady_usesFreshTransportTime() async throws {
+    func test_prerollFinish_usesFreshTransportTime() async throws {
         guard let (_, runtime) = await makePlayableRuntime() else {
             throw XCTSkip("Metal device not available")
         }
@@ -1114,17 +1155,21 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
 
         XCTAssertEqual(mock.startPlaybackCallCount, 0, "Start deferred")
 
-        // Inject fresh transport time before readiness fires
+        // Simulate ready → preroll starts
+        mock.simulateReady()
+        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Start still deferred during preroll")
+
+        // Inject fresh transport time before preroll finishes
         runtime.setPreviewAudioPlaybackTimeForTesting(
             projectTimeUs: 2_000_000, hostTime: CACurrentMediaTime()
         )
 
-        mock.simulateReady()
+        mock.simulatePrimed()
 
         XCTAssertEqual(mock.startPlaybackCallCount, 1)
         XCTAssertNotNil(mock.lastStartFromSeconds)
         XCTAssertEqual(mock.lastStartFromSeconds!, 2.0, accuracy: 0.001,
-                       "onReady must use fresh transport time, not stale captured values")
+                       "preroll finish must use fresh transport time, not stale captured values")
 
         runtime.stopPlayback()
         controllable.drainAll()
@@ -1577,10 +1622,14 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
 
         XCTAssertEqual(mock.replacePipelineCallCount, 1, "Should install pipeline once")
 
-        // Simulate ready
+        // Simulate ready → triggers prepareForImmediatePlayback (stays prerolling)
         mock.simulateReady()
+        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Start deferred during preroll")
 
-        XCTAssertEqual(mock.startPlaybackCallCount, 1, "Should start playback after joined prepare completes")
+        // Simulate preroll complete → starts playback
+        mock.simulatePrimed()
+
+        XCTAssertEqual(mock.startPlaybackCallCount, 1, "Should start playback after preroll completes")
 
         runtime.stopPlayback()
         controllable.drainAll()
@@ -2269,5 +2318,898 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
                        "readiness must be .failed after terminal failure")
         XCTAssertFalse(readyFired,
                        "onReady must not fire during failure transition")
+    }
+
+    // MARK: - Preroll Tests
+
+    // T1: prepareForImmediatePlayback transitions to prerolling then primed
+    func test_prepareForImmediatePlayback_transitionsToPrerollingOrPrimed() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        XCTAssertEqual(controller.readiness, .ready)
+        controller.prepareForImmediatePlayback()
+
+        // Preroll completes async — wait for .primed
+        await waitUntil(timeout: 2.0) { controller.readiness == .primed }
+        XCTAssertEqual(controller.readiness, .primed,
+                       "prepareForImmediatePlayback must reach .primed after preroll completes")
+    }
+
+    // T2: preroll completion true fires onPrerollFinished(.primed)
+    func test_preroll_completionTrue_firesOnPrerollFinished() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        var capturedCompletion: ((Bool) -> Void)?
+        controller.onPreroll = { rate, completion in
+            XCTAssertEqual(rate, 1.0)
+            capturedCompletion = completion
+        }
+
+        var prerollResult: PreviewAudioPrerollResult?
+        controller.onPrerollFinished = { result in
+            prerollResult = result
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .prerolling)
+        XCTAssertNotNil(capturedCompletion, "onPreroll must capture the completion")
+
+        capturedCompletion?(true)
+        XCTAssertEqual(controller.readiness, .primed)
+        XCTAssertEqual(prerollResult, .primed, "onPrerollFinished must fire with .primed")
+    }
+
+    // T3: preroll completion false falls back to .ready
+    func test_preroll_completionFalse_fallsBackToReady() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        var capturedCompletion: ((Bool) -> Void)?
+        controller.onPreroll = { _, completion in
+            capturedCompletion = completion
+        }
+
+        var prerollResult: PreviewAudioPrerollResult?
+        controller.onPrerollFinished = { result in
+            prerollResult = result
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .prerolling)
+
+        capturedCompletion?(false)
+        XCTAssertEqual(controller.readiness, .ready,
+                       "Preroll false must fall back to .ready")
+        XCTAssertEqual(prerollResult, .readyFallback, "onPrerollFinished must fire with .readyFallback")
+    }
+
+    // T4: stale preroll token is ignored
+    func test_preroll_staleToken_ignored() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        var capturedCompletion: ((Bool) -> Void)?
+        controller.onPreroll = { _, completion in
+            capturedCompletion = completion
+        }
+
+        var prerollFired = false
+        controller.onPrerollFinished = { _ in
+            prerollFired = true
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .prerolling)
+
+        // pause() bumps preroll token, invalidating the pending completion
+        controller.pause()
+
+        // Fire the old completion — should be ignored
+        capturedCompletion?(true)
+        XCTAssertFalse(prerollFired, "Stale preroll completion must not fire onPrerollFinished")
+        XCTAssertNotEqual(controller.readiness, .primed, "Must not transition to primed on stale token")
+    }
+
+    // T5: failed item during preroll transitions to failed
+    func test_preroll_failedItemDuringPreroll_transitionsFailed() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        var capturedCompletion: ((Bool) -> Void)?
+        controller.onPreroll = { _, completion in
+            capturedCompletion = completion
+        }
+
+        var failureReason: PreviewAudioFailureReason?
+        controller.onFailure = { reason in
+            failureReason = reason
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .prerolling)
+
+        // Invalidate item, then fire completion with true
+        controller.invalidateCurrentItemForTesting()
+        capturedCompletion?(true)
+
+        XCTAssertEqual(controller.readiness, .failed,
+                       "Must transition to failed when item invalidated during preroll")
+        XCTAssertEqual(failureReason, .startOnFailedItem)
+    }
+
+    // T6: startPlayback accepts .primed state
+    func test_startPlayback_acceptsPrimed() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        // Get to primed
+        controller.prepareForImmediatePlayback()
+        await waitUntil(timeout: 2.0) { controller.readiness == .primed }
+        guard controller.readiness == .primed else {
+            throw XCTSkip("Could not reach primed state")
+        }
+
+        var playImmediatelyCount = 0
+        controller.onPlayImmediately = { _ in
+            playImmediatelyCount += 1
+        }
+
+        controller.startPlayback(fromSeconds: 0.0, hostTime: CACurrentMediaTime())
+        XCTAssertEqual(playImmediatelyCount, 1,
+                       "startPlayback must use playImmediately from .primed state")
+    }
+
+    // T7: startPlayback rejects .prerolling state
+    func test_startPlayback_rejectsPrerolling() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        controller.onPreroll = { _, _ in
+            // Hold — never call completion
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .prerolling)
+
+        var scheduleCallCount = 0
+        controller.onSchedulePlayback = { _, _, _ in
+            scheduleCallCount += 1
+        }
+
+        controller.startPlayback(fromSeconds: 0.0, hostTime: CACurrentMediaTime())
+        XCTAssertEqual(scheduleCallCount, 0,
+                       "startPlayback must be no-op while prerolling")
+    }
+
+    // T7b: pause during preroll calls cancelPendingPrerolls
+    func test_pause_duringPreroll_callsCancelPendingPrerolls() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        controller.onPreroll = { _, _ in
+            // Hold — never call completion
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .prerolling)
+
+        var cancelPrerollCallCount = 0
+        controller.onCancelPendingPrerolls = {
+            cancelPrerollCallCount += 1
+        }
+
+        controller.pause()
+        XCTAssertEqual(cancelPrerollCallCount, 1,
+                       "pause() must call cancelPendingPrerolls via cancelPendingPrerollAndInvalidate")
+    }
+
+    // T7c: startPlayback during primed calls cancelPendingPrerolls
+    func test_startPlayback_fromPrimed_callsCancelPendingPrerolls() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        controller.prepareForImmediatePlayback()
+        await waitUntil(timeout: 2.0) { controller.readiness == .primed }
+        guard controller.readiness == .primed else {
+            throw XCTSkip("Could not reach primed state")
+        }
+
+        var cancelPrerollCallCount = 0
+        controller.onCancelPendingPrerolls = {
+            cancelPrerollCallCount += 1
+        }
+        controller.onSchedulePlayback = { _, _, _ in }
+
+        controller.startPlayback(fromSeconds: 0.0, hostTime: CACurrentMediaTime())
+        XCTAssertGreaterThanOrEqual(cancelPrerollCallCount, 1,
+                       "startPlayback must call cancelPendingPrerolls before scheduling")
+    }
+
+    // T8: coordinator onReady triggers preroll
+    func test_coordinator_onReady_triggersPreroll() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        mock.simulateImmediateReady = false
+        runtime.setPreviewAudioController(mock)
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1)
+
+        // Complete build → replacePipeline called but simulateImmediateReady=false
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(mock.replacePipelineCallCount, 1)
+        XCTAssertEqual(mock.prepareForImmediatePlaybackCallCount, 0,
+                       "Preroll should not happen until ready")
+
+        // Simulate ready → onReady fires → prepareForImmediatePlayback called
+        mock.simulateReady()
+        XCTAssertEqual(mock.prepareForImmediatePlaybackCallCount, 1,
+                       "onReady must trigger prepareForImmediatePlayback")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    // T9: coordinator prerollFinished marks clean and starts playback
+    func test_coordinator_prerollFinished_marksCleanAndStartsPlayback() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        mock.simulateImmediateReady = false
+        runtime.setPreviewAudioController(mock)
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertTrue(runtime.previewAudioDirty, "dirty must remain true until preroll finishes")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0)
+
+        // Simulate ready → prepareForImmediatePlayback (stays prerolling) → simulate primed
+        mock.simulateReady()
+        XCTAssertEqual(mock.readiness, .prerolling)
+
+        mock.simulatePrimed()
+
+        XCTAssertFalse(runtime.previewAudioDirty, "dirty must be false after preroll finishes")
+        XCTAssertEqual(mock.startPlaybackCallCount, 1,
+                       "startPlayback must be called after preroll finishes while playing")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    // T10: coordinator prerollFalse still starts playback
+    func test_coordinator_prerollFalse_stillStartsPlayback() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        mock.simulateImmediateReady = false
+        runtime.setPreviewAudioController(mock)
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<10 { await Task.yield() }
+
+        // Simulate ready → prepareForImmediatePlayback (stays prerolling)
+        mock.simulateReady()
+        XCTAssertEqual(mock.readiness, .prerolling)
+
+        // Simulate preroll failure (falls back to .ready)
+        mock.simulatePrerollFailed()
+
+        XCTAssertFalse(runtime.previewAudioDirty, "dirty must be false even on preroll fallback")
+        XCTAssertEqual(mock.startPlaybackCallCount, 1,
+                       "startPlayback must be called even when preroll falls back to .ready")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    // T11: deferredPlayerNotReady during idle prepare does NOT mark clean
+    func test_prerollPlayerUnknown_idlePrepare_doesNotMarkClean() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        mock.simulateImmediateReady = false
+        runtime.setPreviewAudioController(mock)
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        // Idle prepare (not playing)
+        runtime.previewAudio.prepareForTimelinePreview()
+
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(mock.replacePipelineCallCount, 1)
+
+        // Simulate ready → prepareForImmediatePlayback (stays prerolling)
+        mock.simulateReady()
+        XCTAssertEqual(mock.prepareForImmediatePlaybackCallCount, 1)
+
+        // Simulate player.status == .unknown → deferredPlayerNotReady
+        mock.simulatePlayerNotReady()
+
+        XCTAssertTrue(runtime.previewAudioDirty,
+                      "deferredPlayerNotReady during idle prepare must NOT clear dirty")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0,
+                       "Must not start playback during idle prepare")
+
+        controllable.drainAll()
+    }
+
+    // T12: deferredPlayerNotReady during active play starts fallback playback
+    func test_prerollPlayerUnknown_activePlay_startsFallbackPlayback() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        mock.simulateImmediateReady = false
+        runtime.setPreviewAudioController(mock)
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<10 { await Task.yield() }
+
+        // Simulate ready → prepareForImmediatePlayback (stays prerolling)
+        mock.simulateReady()
+        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Not started yet")
+
+        // Simulate player.status == .unknown → deferredPlayerNotReady
+        mock.simulatePlayerNotReady()
+
+        XCTAssertEqual(mock.startPlaybackCallCount, 1,
+                       "deferredPlayerNotReady during active play must start fallback playback")
+        XCTAssertTrue(runtime.previewAudioDirty,
+                      "dirty must remain true so next cycle retries preroll")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    // T13: readyFallback marks clean and starts playback
+    func test_prerollResult_readyFallback_marksCleanAndStartsPlayback() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        mock.simulateImmediateReady = false
+        runtime.setPreviewAudioController(mock)
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        for _ in 0..<10 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<10 { await Task.yield() }
+
+        // Simulate ready → preroll starts
+        mock.simulateReady()
+
+        // Simulate preroll interrupted but item still valid → readyFallback
+        mock.simulatePrerollFailed()
+
+        XCTAssertFalse(runtime.previewAudioDirty,
+                       "readyFallback must mark dirty=false")
+        XCTAssertEqual(mock.startPlaybackCallCount, 1,
+                       "readyFallback must start playback")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    // MARK: - PR-4: Immediate Start For Primed Preview Audio
+
+    func test_startPlayback_fromPrimedDirect_usesPlayImmediately() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        // Transition to .primed via test seam
+        var prerollCompletion: ((Bool) -> Void)?
+        controller.onPreroll = { _, completion in
+            prerollCompletion = completion
+        }
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .prerolling)
+        prerollCompletion?(true)
+        XCTAssertEqual(controller.readiness, .primed)
+
+        var playImmediatelyCount = 0
+        var scheduleCount = 0
+        controller.onPlayImmediately = { rate in
+            XCTAssertEqual(rate, 1.0)
+            playImmediatelyCount += 1
+        }
+        controller.onSchedulePlayback = { _, _, _ in
+            scheduleCount += 1
+        }
+
+        // drift = 0.0 < 0.15 → direct path, primed → playImmediately
+        controller.startPlayback(fromSeconds: 0.0, hostTime: CACurrentMediaTime())
+
+        XCTAssertEqual(playImmediatelyCount, 1,
+                       "Primed direct path must use playImmediately")
+        XCTAssertEqual(scheduleCount, 0,
+                       "Primed direct path must NOT use scheduled start")
+    }
+
+    func test_startPlayback_fromPrimedAfterSeek_usesPlayImmediately() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        // Transition to .primed
+        var prerollCompletion: ((Bool) -> Void)?
+        controller.onPreroll = { _, completion in
+            prerollCompletion = completion
+        }
+        controller.prepareForImmediatePlayback()
+        prerollCompletion?(true)
+        XCTAssertEqual(controller.readiness, .primed)
+
+        var seekCount = 0
+        var playImmediatelyCount = 0
+        var scheduleCount = 0
+        var capturedSeekCompletion: ((Bool) -> Void)?
+
+        controller.onSeek = { (_: CMTime, completion: @escaping (Bool) -> Void) in
+            seekCount += 1
+            capturedSeekCompletion = completion
+        }
+        controller.onPlayImmediately = { _ in
+            playImmediatelyCount += 1
+        }
+        controller.onSchedulePlayback = { _, _, _ in
+            scheduleCount += 1
+        }
+
+        // drift = 5.0 > 0.15 → seek path
+        controller.startPlayback(fromSeconds: 5.0, hostTime: CACurrentMediaTime())
+        XCTAssertEqual(seekCount, 1, "Must seek when drift exceeds threshold")
+
+        // Complete seek
+        capturedSeekCompletion?(true)
+        // Yield for DispatchQueue.main.async in seek completion
+        for _ in 0..<10 { await Task.yield() }
+        let exp = expectation(description: "mainQ")
+        DispatchQueue.main.async { exp.fulfill() }
+        await fulfillment(of: [exp], timeout: 1.0)
+
+        XCTAssertEqual(playImmediatelyCount, 1,
+                       "Primed seek path must use playImmediately after seek")
+        XCTAssertEqual(scheduleCount, 0,
+                       "Primed seek path must NOT use scheduled start")
+    }
+
+    func test_startPlayback_fromReadyDirect_keepsScheduledStart() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        // Stay in .ready — do NOT preroll
+
+        var playImmediatelyCount = 0
+        var scheduleCount = 0
+        controller.onPlayImmediately = { _ in
+            playImmediatelyCount += 1
+        }
+        controller.onSchedulePlayback = { rate, _, _ in
+            XCTAssertEqual(rate, 1.0)
+            scheduleCount += 1
+        }
+
+        // drift = 0.0 < 0.15 → direct path, ready → scheduled
+        controller.startPlayback(fromSeconds: 0.0, hostTime: CACurrentMediaTime())
+
+        XCTAssertEqual(scheduleCount, 1,
+                       "Ready direct path must use scheduled start")
+        XCTAssertEqual(playImmediatelyCount, 0,
+                       "Ready direct path must NOT use playImmediately")
+    }
+
+    func test_startPlayback_fromReadyAfterSeek_keepsScheduledStart() async throws {
+        let (controller, wavURL) = try await makeReadyProductionController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        // Stay in .ready — do NOT preroll
+
+        var seekCount = 0
+        var playImmediatelyCount = 0
+        var scheduleCount = 0
+        var capturedSeekCompletion: ((Bool) -> Void)?
+
+        controller.onSeek = { (_: CMTime, completion: @escaping (Bool) -> Void) in
+            seekCount += 1
+            capturedSeekCompletion = completion
+        }
+        controller.onPlayImmediately = { _ in
+            playImmediatelyCount += 1
+        }
+        controller.onSchedulePlayback = { _, _, _ in
+            scheduleCount += 1
+        }
+
+        // drift = 5.0 > 0.15 → seek path
+        controller.startPlayback(fromSeconds: 5.0, hostTime: CACurrentMediaTime())
+        XCTAssertEqual(seekCount, 1, "Must seek when drift exceeds threshold")
+
+        // Complete seek
+        capturedSeekCompletion?(true)
+        for _ in 0..<10 { await Task.yield() }
+        let exp = expectation(description: "mainQ")
+        DispatchQueue.main.async { exp.fulfill() }
+        await fulfillment(of: [exp], timeout: 1.0)
+
+        XCTAssertEqual(scheduleCount, 1,
+                       "Ready seek path must use scheduled start")
+        XCTAssertEqual(playImmediatelyCount, 0,
+                       "Ready seek path must NOT use playImmediately")
+    }
+
+    // MARK: - Engine Controller Tests
+
+    /// Creates an EnginePreviewAudioPlaybackController with a real silent audio pipeline,
+    /// waits for render to complete and readiness == .ready.
+    /// Returns (controller, wavURL). Caller must call controller.teardown() and clean up wavURL.
+    private func makeReadyEngineController() async throws -> (EnginePreviewAudioPlaybackController, URL) {
+        let (pipeline, wavURL) = try await makeRealSilentAudioPipeline()
+        let controller = EnginePreviewAudioPlaybackController()
+        controller.replacePipeline(pipeline)
+
+        await waitUntil(timeout: 5.0) { controller.readiness == .ready }
+        if controller.readiness != .ready {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+            XCTFail("Engine controller did not become ready in time (readiness=\(controller.readiness))")
+        }
+        return (controller, wavURL)
+    }
+
+    // MARK: - Engine Test 1: replacePipeline renders and becomes ready
+
+    func test_engineController_replacePipeline_rendersAndBecomesReady() async throws {
+        let (pipeline, wavURL) = try await makeRealSilentAudioPipeline()
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+
+        let controller = EnginePreviewAudioPlaybackController()
+        defer { controller.teardown() }
+
+        var readyFired = false
+        controller.onReady = { readyFired = true }
+        controller.replacePipeline(pipeline)
+
+        XCTAssertEqual(controller.readiness, .preparing)
+
+        await waitUntil(timeout: 5.0) { controller.readiness == .ready }
+
+        XCTAssertEqual(controller.readiness, .ready)
+        XCTAssertTrue(readyFired)
+        XCTAssertTrue(controller.hasActivePipeline)
+    }
+
+    // MARK: - Engine Test 2: prepareForImmediatePlayback becomes primed
+
+    func test_engineController_prepareForImmediatePlayback_becomesPrimed() async throws {
+        let (controller, wavURL) = try await makeReadyEngineController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        var prerollResult: PreviewAudioPrerollResult?
+        controller.onPrerollFinished = { result in prerollResult = result }
+        controller.prepareForImmediatePlayback()
+
+        XCTAssertEqual(controller.readiness, .primed)
+        XCTAssertEqual(prerollResult, .primed)
+    }
+
+    // MARK: - Engine Test 3: startPlayback plays from offset
+
+    func test_engineController_startPlayback_playsFromOffset() async throws {
+        let (controller, wavURL) = try await makeReadyEngineController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .primed)
+
+        var segmentFrame: AVAudioFramePosition?
+        var segmentCount: AVAudioFrameCount?
+        var playFired = false
+        controller.onScheduleSegment = { frame, count in
+            segmentFrame = frame
+            segmentCount = count
+        }
+        controller.onPlayerPlay = { playFired = true }
+
+        controller.startPlayback(fromSeconds: 0.05, hostTime: CACurrentMediaTime())
+
+        XCTAssertNotNil(segmentFrame)
+        XCTAssertNotNil(segmentCount)
+        XCTAssertTrue(playFired)
+        // 0.05s * 44100 = 2205
+        XCTAssertEqual(segmentFrame, AVAudioFramePosition(0.05 * 44100))
+    }
+
+    // MARK: - Engine Test 4: startPlayback clamps frame
+
+    func test_engineController_startPlayback_clampsFrame() async throws {
+        let (controller, wavURL) = try await makeReadyEngineController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .primed)
+
+        var segmentFrame: AVAudioFramePosition?
+        controller.onScheduleSegment = { frame, _ in segmentFrame = frame }
+
+        // Request playback far beyond duration — should clamp
+        controller.startPlayback(fromSeconds: 999.0, hostTime: CACurrentMediaTime())
+
+        // Should have clamped to totalFrames - 1
+        XCTAssertNotNil(segmentFrame)
+    }
+
+    // MARK: - Engine Test 5: pause keeps engine alive
+
+    func test_engineController_pause_keepsEngineAlive() async throws {
+        let (controller, wavURL) = try await makeReadyEngineController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        controller.prepareForImmediatePlayback()
+        controller.startPlayback(fromSeconds: 0, hostTime: CACurrentMediaTime())
+        controller.pause()
+
+        XCTAssertTrue(controller.hasActivePipeline)
+    }
+
+    // MARK: - Engine Test 6: teardown deletes cache
+
+    func test_engineController_teardown_deletesCache() async throws {
+        let (controller, wavURL) = try await makeReadyEngineController()
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+
+        var cacheURL: URL?
+        controller.onRenderComplete = { url in cacheURL = url }
+
+        // Re-replace to capture the cache URL via test seam
+        let (pipeline2, wavURL2) = try await makeRealSilentAudioPipeline()
+        defer { try? FileManager.default.removeItem(at: wavURL2) }
+        controller.replacePipeline(pipeline2)
+        await waitUntil(timeout: 5.0) { controller.readiness == .ready }
+
+        let capturedURL = try XCTUnwrap(cacheURL, "Render did not produce cache URL")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: capturedURL.path))
+
+        controller.teardown()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: capturedURL.path))
+        XCTAssertEqual(controller.readiness, .idle)
+    }
+
+    // MARK: - Engine Test 7: replacePipeline cancels in-flight render
+
+    func test_engineController_replacePipeline_cancelsInFlightRender() async throws {
+        let (pipeline1, wavURL1) = try await makeRealSilentAudioPipeline()
+        defer { try? FileManager.default.removeItem(at: wavURL1) }
+        let (pipeline2, wavURL2) = try await makeRealSilentAudioPipeline()
+        defer { try? FileManager.default.removeItem(at: wavURL2) }
+
+        let controller = EnginePreviewAudioPlaybackController()
+        defer { controller.teardown() }
+
+        var readyCount = 0
+        controller.onReady = { readyCount += 1 }
+
+        controller.replacePipeline(pipeline1)
+        // Immediately replace again — first render should be cancelled
+        controller.replacePipeline(pipeline2)
+
+        await waitUntil(timeout: 5.0) { controller.readiness == .ready }
+
+        // Only one ready callback should fire (from the second pipeline)
+        XCTAssertEqual(readyCount, 1)
+        XCTAssertEqual(controller.readiness, .ready)
+    }
+
+    // MARK: - Engine Test 8: stale render ignored after teardown (deterministic)
+
+    func test_engineController_staleRenderIgnored() async throws {
+        let (pipeline, wavURL) = try await makeRealSilentAudioPipeline()
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+
+        let controller = EnginePreviewAudioPlaybackController()
+
+        // Start render — let it complete fully
+        controller.replacePipeline(pipeline)
+        await waitUntil(timeout: 5.0) { controller.readiness == .ready }
+        if controller.readiness != .ready {
+            controller.teardown()
+            XCTFail("Engine controller did not become ready")
+            return
+        }
+
+        // Now start a second render, teardown immediately — the token bump
+        // in teardown() must prevent the stale success callback from resurrecting state.
+        let (pipeline2, wavURL2) = try await makeRealSilentAudioPipeline()
+        defer { try? FileManager.default.removeItem(at: wavURL2) }
+
+        controller.replacePipeline(pipeline2)
+        XCTAssertEqual(controller.readiness, .preparing)
+
+        // Teardown while render is in flight — bumps readinessToken
+        controller.teardown()
+        XCTAssertEqual(controller.readiness, .idle)
+
+        // Wait for the detached render task to complete and attempt its MainActor callback
+        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+
+        // Stale callback must NOT have resurrected state
+        XCTAssertEqual(controller.readiness, .idle, "Stale render must not change readiness after teardown")
+        XCTAssertFalse(controller.hasActivePipeline, "Stale render must not set audioFile after teardown")
+    }
+
+    // MARK: - Engine Test 9: render failure clears renderTask and pipeline state
+
+    func test_engineController_renderFailureClearsRenderTaskAndPipelineState() async throws {
+        let controller = EnginePreviewAudioPlaybackController()
+        defer { controller.teardown() }
+
+        // Create a pipeline with empty composition — no audio tracks → render will fail
+        let emptyComposition = AVMutableComposition()
+        let pipeline = BuiltAudioPipeline(composition: emptyComposition, audioMix: nil)
+
+        var failureReason: PreviewAudioFailureReason?
+        controller.onFailure = { reason in failureReason = reason }
+        controller.replacePipeline(pipeline)
+
+        await waitUntil(timeout: 5.0) { controller.readiness == .failed }
+
+        XCTAssertEqual(controller.readiness, .failed)
+        XCTAssertFalse(controller.hasActivePipeline)
+        XCTAssertNotNil(failureReason)
+    }
+
+    // MARK: - Engine Test 10: render failure reports renderFailed reason
+
+    func test_engineController_renderFailureReportsRenderFailed() async throws {
+        let controller = EnginePreviewAudioPlaybackController()
+        defer { controller.teardown() }
+
+        let emptyComposition = AVMutableComposition()
+        let pipeline = BuiltAudioPipeline(composition: emptyComposition, audioMix: nil)
+
+        var failureReason: PreviewAudioFailureReason?
+        controller.onFailure = { reason in failureReason = reason }
+        controller.replacePipeline(pipeline)
+
+        await waitUntil(timeout: 5.0) { controller.readiness == .failed }
+
+        // Must be .renderFailed, not .itemFailed
+        if case .renderFailed = failureReason {
+            // expected
+        } else {
+            XCTFail("Expected .renderFailed, got \(String(describing: failureReason))")
+        }
+    }
+
+    // MARK: - Engine Test 11: startPlayback schedules debug probes
+
+    func test_engineController_startPlaybackSchedulesDebugProbes() async throws {
+        let (controller, wavURL) = try await makeReadyEngineController()
+        defer {
+            controller.teardown()
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        controller.prepareForImmediatePlayback()
+        XCTAssertEqual(controller.readiness, .primed)
+
+        var probeDelays: [Int] = []
+        controller.onProbe = { delay in probeDelays.append(delay) }
+
+        controller.startPlayback(fromSeconds: 0, hostTime: CACurrentMediaTime())
+
+        // Wait for all probes to fire (last at 2000ms + margin)
+        await waitUntil(timeout: 3.0) { probeDelays.count >= 4 }
+
+        XCTAssertEqual(probeDelays.sorted(), [100, 500, 1000, 2000])
     }
 }

@@ -8,10 +8,16 @@ private let logger = Logger(subsystem: "com.animi.app", category: "EditorRuntime
 @MainActor
 internal final class EditorRuntimePreviewAudioCoordinator {
     unowned let runtime: EditorRuntime
+    let backendMode: PreviewAudioBackendMode
 
     // MARK: - Stored Properties
 
-    lazy var controller: PreviewAudioControlling = PreviewAudioPlaybackController()
+    lazy var controller: PreviewAudioControlling = {
+        switch backendMode {
+        case .avPlayer: return PreviewAudioPlaybackController()
+        case .audioEngine: return EnginePreviewAudioPlaybackController()
+        }
+    }()
     var dirty: Bool = true
     var generation: UInt = 0
     var orchestrationTask: Task<Void, Never>?
@@ -33,8 +39,9 @@ internal final class EditorRuntimePreviewAudioCoordinator {
     var installedPipelineGenerationForTesting: UInt? { installedPipelineGeneration }
     #endif
 
-    init(runtime: EditorRuntime) {
+    init(runtime: EditorRuntime, backendMode: PreviewAudioBackendMode = .audioEngine) {
         self.runtime = runtime
+        self.backendMode = backendMode
     }
 
     // MARK: - Public API
@@ -123,7 +130,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
 
         if !dirty {
             if controller.hasActivePipeline,
-               controller.readiness == .ready {
+               (controller.readiness == .ready || controller.readiness == .primed) {
                 let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
                 #if DEBUG
                 MemoryDiagnostics.event("preview.audio.start.resume", "seconds=\(seconds) hostTime=\(runtime.playbackCurrentHostTime) generation=\(generation)")
@@ -154,7 +161,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         // Pipeline ready from finished prepare — reuse only if generation matches
         if controller.hasActivePipeline, installedPipelineGeneration == generation {
             switch controller.readiness {
-            case .ready:
+            case .primed:
                 dirty = false
                 let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
                 #if DEBUG
@@ -164,8 +171,15 @@ internal final class EditorRuntimePreviewAudioCoordinator {
                     fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime
                 )
                 return
+            case .ready:
+                installCallbacks(generation: generation, startWhenReady: true)
+                controller.prepareForImmediatePlayback()
+                return
+            case .prerolling:
+                installCallbacks(generation: generation, startWhenReady: true)
+                return
             case .preparing:
-                installOnReady(generation: generation, startWhenReady: true)
+                installCallbacks(generation: generation, startWhenReady: true)
                 #if DEBUG
                 MemoryDiagnostics.event("preview.audio.start.awaitReady", "generation=\(generation) pipelineGen=\(String(describing: installedPipelineGeneration))")
                 #endif
@@ -255,7 +269,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
                 break
             case .pipeline(let pipeline):
                 self.installedPipelineGeneration = gen
-                self.installOnReady(generation: gen, startWhenReady: shouldStart)
+                self.installCallbacks(generation: gen, startWhenReady: shouldStart)
                 self.controller.replacePipeline(pipeline)
             }
         }
@@ -328,24 +342,55 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         return .pipeline(result)
     }
 
-    private func installOnReady(generation gen: UInt, startWhenReady: Bool) {
+    private func installCallbacks(generation gen: UInt, startWhenReady: Bool) {
         controller.onReady = { [weak self] in
             guard let self, self.generation == gen,
                   self.runtime.state == .timelinePreview else { return }
-            self.dirty = false
             #if DEBUG
             MemoryDiagnostics.event("preview.audio.ready", "generation=\(gen) startWhenReady=\(startWhenReady ? 1 : 0)")
             #endif
-            guard startWhenReady else { return }
-            guard self.runtime.isPlaying else { return }
-            let seconds = usToSeconds(self.runtime.playbackCurrentProjectTimeUs)
-            self.controller.startPlayback(
-                fromSeconds: seconds, hostTime: self.runtime.playbackCurrentHostTime
-            )
+            self.controller.prepareForImmediatePlayback()
+        }
+        controller.onPrerollFinished = { [weak self] result in
+            guard let self, self.generation == gen,
+                  self.runtime.state == .timelinePreview else { return }
+            self.handlePrerollFinished(result: result, generation: gen, startWhenReady: startWhenReady)
         }
         controller.onFailure = { [weak self] reason in
             guard let self else { return }
             self.handleControllerFailure(reason: reason, generation: gen)
+        }
+    }
+
+    private func handlePrerollFinished(
+        result: PreviewAudioPrerollResult,
+        generation gen: UInt,
+        startWhenReady: Bool
+    ) {
+        #if DEBUG
+        MemoryDiagnostics.event("preview.audio.prerollFinished", "generation=\(gen) result=\(result) startWhenReady=\(startWhenReady ? 1 : 0)")
+        #endif
+
+        switch result {
+        case .primed, .readyFallback:
+            dirty = false
+            guard startWhenReady else { return }
+            guard runtime.isPlaying else { return }
+            let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
+            controller.startPlayback(
+                fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime
+            )
+
+        case .deferredPlayerNotReady:
+            // Player not ready for preroll. Don't mark clean.
+            if startWhenReady, runtime.isPlaying {
+                // Active play — start playback from .ready as fallback so user hears audio.
+                let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
+                controller.startPlayback(
+                    fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime
+                )
+            }
+            // Idle prepare: dirty stays true, next play/prepare will retry preroll.
         }
     }
 

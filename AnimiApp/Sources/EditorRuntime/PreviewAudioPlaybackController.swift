@@ -5,7 +5,9 @@
 enum PreviewAudioReadiness: Equatable {
     case idle       // no pipeline loaded
     case preparing  // pipeline loaded, AVPlayerItem not yet ready
-    case ready      // AVPlayerItem.status == .readyToPlay
+    case ready      // AVPlayerItem ready, preroll not done
+    case prerolling // preroll(atRate:) in flight
+    case primed     // preroll complete, ready for instant playback
     case failed     // AVPlayerItem.status == .failed
 }
 
@@ -14,6 +16,16 @@ enum PreviewAudioReadiness: Equatable {
 enum PreviewAudioFailureReason: Equatable {
     case itemFailed(error: String?)
     case startOnFailedItem
+    case playerFailed(error: String?)
+    case renderFailed(error: String?)
+}
+
+// MARK: - Preview Audio Preroll Result
+
+enum PreviewAudioPrerollResult: Equatable {
+    case primed
+    case readyFallback
+    case deferredPlayerNotReady
 }
 
 // MARK: - Preview Audio Controlling Protocol
@@ -36,6 +48,10 @@ protocol PreviewAudioControlling: AnyObject {
     var onReady: (@MainActor () -> Void)? { get set }
     /// Callback fired when the item fails after being ready, or when startPlayback detects a failed item.
     var onFailure: (@MainActor (PreviewAudioFailureReason) -> Void)? { get set }
+    /// Callback fired when preroll completes or cannot start.
+    var onPrerollFinished: (@MainActor (PreviewAudioPrerollResult) -> Void)? { get set }
+    /// Initiates AVPlayer.preroll(atRate:) to prime for instant playback.
+    func prepareForImmediatePlayback()
 }
 
 // MARK: - Production Implementation
@@ -49,14 +65,19 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
     private(set) var readiness: PreviewAudioReadiness = .idle
     var onReady: (@MainActor () -> Void)?
     var onFailure: (@MainActor (PreviewAudioFailureReason) -> Void)?
+    var onPrerollFinished: (@MainActor (PreviewAudioPrerollResult) -> Void)?
     private var statusObservation: NSKeyValueObservation?
     private var readinessToken: UInt = 0
     private var playbackStartToken: UInt = 0
+    private var prerollToken: UInt = 0
 
     #if DEBUG
     var onSchedulePlayback: ((Float, CMTime, CMTime) -> Void)?
+    var onPlayImmediately: ((Float) -> Void)?
     var onSeek: ((CMTime, @escaping (Bool) -> Void) -> Void)?
     var onCancelPendingSeeks: (() -> Void)?
+    var onCancelPendingPrerolls: (() -> Void)?
+    var onPreroll: ((Float, @escaping (Bool) -> Void) -> Void)?
     private var debugObservations: [NSKeyValueObservation] = []
     private var debugNotificationObservers: [Any] = []
     private var debugStartSequence: UInt = 0
@@ -69,9 +90,11 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
     /// Centralized terminal failure transition. All failure paths must use this.
     private func transitionToFailed(_ reason: PreviewAudioFailureReason) {
         guard readiness != .failed else { return }
+        cancelPendingPrerollAndInvalidate()
         readiness = .failed
         statusObservation = nil
         onReady = nil
+        onPrerollFinished = nil
         onFailure?(reason)
     }
 
@@ -99,6 +122,7 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
     /// Internal reset: clears player, item, KVO — but preserves onReady.
     /// Used inside replacePipeline so the incoming onReady survives the reset.
     private func resetPlayer() {
+        cancelPendingPrerollAndInvalidate()
         statusObservation = nil
         #if DEBUG
         debugObservations.removeAll()
@@ -160,7 +184,7 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
                 guard let currentItem = self.playerItem else { return }
                 switch currentItem.status {
                 case .readyToPlay:
-                    guard self.readiness != .ready else { return }
+                    guard self.readiness == .preparing else { return }
                     #if DEBUG
                     MemoryDiagnostics.event("preview.audio.playerReady", "token=\(token) via=kvo")
                     #endif
@@ -187,7 +211,7 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
         // Some items (cached/short compositions) may already be in terminal state.
         switch item.status {
         case .readyToPlay:
-            guard readiness != .ready else { break }
+            guard readiness == .preparing else { break }
             #if DEBUG
             MemoryDiagnostics.event("preview.audio.playerReady", "token=\(token) via=sync")
             #endif
@@ -205,6 +229,104 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
             break
         @unknown default:
             break
+        }
+    }
+
+    // MARK: - Preroll
+
+    func prepareForImmediatePlayback() {
+        guard let p = player else { return }
+        guard readiness == .ready else { return }
+        guard validateCurrentItemForStart() else { return }
+
+        switch p.status {
+        case .readyToPlay:
+            break
+        case .failed:
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.preroll.playerFailed", "error=\(p.error?.localizedDescription ?? "none")")
+            #endif
+            transitionToFailed(.playerFailed(error: p.error?.localizedDescription))
+            return
+        case .unknown:
+            // Player not ready for preroll yet — stay in .ready, signal coordinator.
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.preroll.playerNotReady", "playerStatus=\(p.status.rawValue)")
+            #endif
+            let cb = onPrerollFinished
+            onPrerollFinished = nil
+            cb?(.deferredPlayerNotReady)
+            return
+        @unknown default:
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.preroll.unknownPlayerStatus", "playerStatus=\(p.status.rawValue)")
+            #endif
+            let cb = onPrerollFinished
+            onPrerollFinished = nil
+            cb?(.deferredPlayerNotReady)
+            return
+        }
+
+        cancelPendingPrerollAndInvalidate()
+        let token = prerollToken
+        readiness = .prerolling
+
+        #if DEBUG
+        MemoryDiagnostics.event("preview.audio.preroll.begin", "token=\(token)")
+        if let onPreroll {
+            onPreroll(1.0) { [weak self] finished in
+                self?.handlePrerollCompletion(finished: finished, token: token)
+            }
+            return
+        }
+        #endif
+
+        p.preroll(atRate: 1.0) { [weak self] finished in
+            DispatchQueue.main.async {
+                self?.handlePrerollCompletion(finished: finished, token: token)
+            }
+        }
+    }
+
+    private func cancelPendingPrerollAndInvalidate() {
+        prerollToken &+= 1
+        #if DEBUG
+        if let onCancelPendingPrerolls {
+            onCancelPendingPrerolls()
+            return
+        }
+        #endif
+        player?.cancelPendingPrerolls()
+    }
+
+    private func handlePrerollCompletion(finished: Bool, token: UInt) {
+        guard prerollToken == token else {
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.preroll.stale", "token=\(token) currentToken=\(prerollToken)")
+            #endif
+            return
+        }
+        guard readiness == .prerolling else { return }
+
+        #if DEBUG
+        MemoryDiagnostics.event("preview.audio.preroll.end", "token=\(token) finished=\(finished ? 1 : 0) itemStatus=\(playerItem?.status.rawValue ?? -1) error=\(playerItem?.error?.localizedDescription ?? "none")")
+        #endif
+
+        if finished {
+            guard validateCurrentItemForStart() else { return }
+            readiness = .primed
+            let cb = onPrerollFinished
+            onPrerollFinished = nil
+            cb?(.primed)
+        } else {
+            guard let item = playerItem, item.status == .readyToPlay, item.error == nil else {
+                transitionToFailed(.startOnFailedItem)
+                return
+            }
+            readiness = .ready
+            let cb = onPrerollFinished
+            onPrerollFinished = nil
+            cb?(.readyFallback)
         }
     }
 
@@ -242,6 +364,29 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
         player.setRate(rate, time: time, atHostTime: hostTime)
     }
 
+    // MARK: - Immediate Playback
+
+    private enum PlaybackStartMode {
+        case scheduled
+        case immediatePrimed
+    }
+
+    private var resolvedStartMode: PlaybackStartMode {
+        readiness == .primed ? .immediatePrimed : .scheduled
+    }
+
+    /// Single choke-point for immediate playback start (primed path).
+    /// All code paths that use playImmediately(atRate:) MUST use this.
+    private func startPlaybackNow(_ player: AVPlayer, rate: Float) {
+        #if DEBUG
+        if let onPlayImmediately {
+            onPlayImmediately(rate)
+            return
+        }
+        #endif
+        player.playImmediately(atRate: rate)
+    }
+
     /// Cancels any in-flight seek on the current player item.
     /// Called before new seeks, on pause, and on teardown.
     private func cancelPendingSeeks() {
@@ -273,7 +418,7 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
             #endif
             return
         }
-        guard readiness == .ready else {
+        guard readiness == .ready || readiness == .primed else {
             #if DEBUG
             MemoryDiagnostics.event("preview.audio.startPlayback.notReady", "readiness=\(String(describing: readiness))")
             #endif
@@ -283,6 +428,7 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
 
         playbackStartToken &+= 1
         let startToken = playbackStartToken
+        cancelPendingPrerollAndInvalidate()
         cancelPendingSeeks()
 
         #if DEBUG
@@ -310,18 +456,33 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
 
         if drift <= Self.seekDriftThreshold {
             // Direct path — player is close enough
-            #if DEBUG
-            let hostClockNow = CMClockGetTime(CMClockGetHostTimeClock())
-            let hostLeadMs = (CMTimeGetSeconds(hostClockTime) - CMTimeGetSeconds(hostClockNow)) * 1000
-            MemoryDiagnostics.event("preview.audio.startPlayback.schedule", "startId=\(startId) mode=setRateAtHostTime target=\(fromSeconds) hostClock=\(CMTimeGetSeconds(hostClockTime)) hostLeadMs=\(hostLeadMs)")
-            #endif
+            switch resolvedStartMode {
+            case .immediatePrimed:
+                #if DEBUG
+                MemoryDiagnostics.event("preview.audio.startPlayback.schedule", "startId=\(startId) mode=playImmediatelyPrimed target=\(fromSeconds)")
+                #endif
 
-            schedulePlayback(p, rate: 1.0, time: targetTime, hostTime: hostClockTime)
+                startPlaybackNow(p, rate: 1.0)
 
-            #if DEBUG
-            MemoryDiagnostics.event("preview.audio.startPlayback.scheduled", "startId=\(startId) \(playerSnapshot())")
-            scheduleDebugProbes(startId: startId, player: p, target: fromSeconds)
-            #endif
+                #if DEBUG
+                MemoryDiagnostics.event("preview.audio.startPlayback.scheduled", "startId=\(startId) \(playerSnapshot())")
+                scheduleDebugProbes(startId: startId, player: p, target: fromSeconds)
+                #endif
+
+            case .scheduled:
+                #if DEBUG
+                let hostClockNow = CMClockGetTime(CMClockGetHostTimeClock())
+                let hostLeadMs = (CMTimeGetSeconds(hostClockTime) - CMTimeGetSeconds(hostClockNow)) * 1000
+                MemoryDiagnostics.event("preview.audio.startPlayback.schedule", "startId=\(startId) mode=setRateAtHostTime target=\(fromSeconds) hostClock=\(CMTimeGetSeconds(hostClockTime)) hostLeadMs=\(hostLeadMs)")
+                #endif
+
+                schedulePlayback(p, rate: 1.0, time: targetTime, hostTime: hostClockTime)
+
+                #if DEBUG
+                MemoryDiagnostics.event("preview.audio.startPlayback.scheduled", "startId=\(startId) \(playerSnapshot())")
+                scheduleDebugProbes(startId: startId, player: p, target: fromSeconds)
+                #endif
+            }
         } else {
             // Seek path — player too far from target
             let capturedReadinessToken = readinessToken
@@ -348,7 +509,7 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
                     }
                     guard self.readinessToken == capturedReadinessToken,
                           self.player === capturedPlayer,
-                          self.readiness == .ready else {
+                          (self.readiness == .ready || self.readiness == .primed) else {
                         #if DEBUG
                         MemoryDiagnostics.event("preview.audio.startPlayback.seek.stale", "startId=\(startId) reason=readinessOrPlayer")
                         #endif
@@ -362,10 +523,20 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
                     MemoryDiagnostics.event("preview.audio.startPlayback.seek.end", "startId=\(startId) postSeekCurrent=\(postSeekCurrent) target=\(fromSeconds) postSeekDriftMs=\(postSeekDrift * 1000) finished=\(finished)")
                     #endif
 
-                    let freshHostClockTime = VideoFrameProvider.scheduledHostClockTime(
-                        forTransportHostTime: CACurrentMediaTime()
-                    )
-                    self.schedulePlayback(capturedPlayer, rate: 1.0, time: targetTime, hostTime: freshHostClockTime)
+                    switch self.resolvedStartMode {
+                    case .immediatePrimed:
+                        #if DEBUG
+                        MemoryDiagnostics.event("preview.audio.startPlayback.schedule", "startId=\(startId) mode=playImmediatelyAfterSeek target=\(fromSeconds)")
+                        #endif
+
+                        self.startPlaybackNow(capturedPlayer, rate: 1.0)
+
+                    case .scheduled:
+                        let freshHostClockTime = VideoFrameProvider.scheduledHostClockTime(
+                            forTransportHostTime: CACurrentMediaTime()
+                        )
+                        self.schedulePlayback(capturedPlayer, rate: 1.0, time: targetTime, hostTime: freshHostClockTime)
+                    }
 
                     #if DEBUG
                     MemoryDiagnostics.event("preview.audio.startPlayback.scheduled", "startId=\(startId) \(self.playerSnapshot())")
@@ -406,6 +577,7 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
 
     func pause() {
         playbackStartToken &+= 1
+        cancelPendingPrerollAndInvalidate()
         cancelPendingSeeks()
         #if DEBUG
         if let p = player {
@@ -427,6 +599,7 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
         #endif
         resetPlayer()
         onReady = nil
+        onPrerollFinished = nil
         onFailure = nil
     }
 
