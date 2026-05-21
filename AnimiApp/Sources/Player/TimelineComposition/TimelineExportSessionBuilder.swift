@@ -202,6 +202,11 @@ internal enum TimelineExportSessionBuilder {
             ))
         }
 
+        #if DEBUG
+        let totalVideoSelections = audioSceneData.reduce(0) { $0 + $1.videoSelections.count }
+        MemoryDiagnostics.event("audio.sceneData.end", "scenes=\(audioSceneData.count) totalVideoSelections=\(totalVideoSelections)")
+        #endif
+
         return AudioSceneDataBuildResult(sceneData: audioSceneData, resourcesBySceneType: resourcesBySceneType)
     }
 
@@ -254,11 +259,17 @@ internal enum TimelineExportSessionBuilder {
                 ))
             } catch {
                 #if DEBUG
-                print("[PreviewAudio] Skipping scene \(index) (\(sceneTypeId)): \(error)")
+                MemoryDiagnostics.event("audio.sceneData.skip", "scene=\(index) sceneTypeId=\(sceneTypeId) error=\(error.localizedDescription)")
                 #endif
                 continue
             }
         }
+
+        #if DEBUG
+        let scanned = context.transitionMath.sceneItems.count
+        let skipped = scanned - audioSceneData.count
+        MemoryDiagnostics.event("audio.sceneData.end", "scenes=\(audioSceneData.count) scanned=\(scanned) skipped=\(skipped) mode=resilient")
+        #endif
 
         return audioSceneData
     }

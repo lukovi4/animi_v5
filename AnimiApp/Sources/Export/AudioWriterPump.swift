@@ -17,6 +17,7 @@ final class AudioWriterPump {
     private var isFinished = false
     private var completionCalled = false
     private var completionBlock: (() -> Void)?
+    private var samplesAppended = 0
 
     // MARK: - Init
 
@@ -53,6 +54,9 @@ final class AudioWriterPump {
         do {
             reader = try AVAssetReader(asset: composition)
         } catch {
+            #if DEBUG
+            MemoryDiagnostics.event("export.audioPump.readerCreateFail", "error=\(error.localizedDescription)")
+            #endif
             onError(VideoExportError.audioReaderStartFailed(error))
             completion()
             return
@@ -65,6 +69,9 @@ final class AudioWriterPump {
         // Create audio mix output
         let audioTracks = composition.tracks(withMediaType: .audio)
         guard !audioTracks.isEmpty else {
+            #if DEBUG
+            MemoryDiagnostics.event("export.audioPump.noTracks", "")
+            #endif
             completion()
             return
         }
@@ -73,6 +80,9 @@ final class AudioWriterPump {
         output.audioMix = audioMix
 
         guard reader.canAdd(output) else {
+            #if DEBUG
+            MemoryDiagnostics.event("export.audioPump.canAddFail", "readerStatus=\(reader.status.rawValue)")
+            #endif
             onError(VideoExportError.audioReaderStartFailed(nil))
             completion()
             return
@@ -139,8 +149,14 @@ final class AudioWriterPump {
                 guard let sampleBuffer = output.copyNextSampleBuffer() else {
                     // EOF or error
                     if reader.status == .completed {
+                        #if DEBUG
+                        MemoryDiagnostics.event("export.audioPump.eof", "samples=\(self.samplesAppended)")
+                        #endif
                         audioInput.markAsFinished()
                     } else {
+                        #if DEBUG
+                        MemoryDiagnostics.event("export.audioPump.sampleFail", "readerStatus=\(reader.status.rawValue) error=\(reader.error?.localizedDescription ?? "none") samples=\(self.samplesAppended)")
+                        #endif
                         onError(VideoExportError.audioReaderStartFailed(reader.error))
                     }
                     self.callCompletion()
@@ -150,10 +166,14 @@ final class AudioWriterPump {
                 // Append sample
                 let ok = audioInput.append(sampleBuffer)
                 if !ok {
+                    #if DEBUG
+                    MemoryDiagnostics.event("export.audioPump.appendFail", "samples=\(self.samplesAppended)")
+                    #endif
                     onError(VideoExportError.audioAppendFailed(nil))
                     self.callCompletion()
                     return
                 }
+                self.samplesAppended += 1
             }
         }
 
@@ -175,6 +195,9 @@ final class AudioWriterPump {
 
     /// Cancels the pump. Completion is called if not yet called.
     func cancel() {
+        #if DEBUG
+        MemoryDiagnostics.event("export.audioPump.cancel", "")
+        #endif
         lock.lock()
         isFinished = true
         lock.unlock()

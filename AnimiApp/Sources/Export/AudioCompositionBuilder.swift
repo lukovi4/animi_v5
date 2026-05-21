@@ -240,7 +240,12 @@ public final class AudioCompositionBuilder {
     ) throws -> AVMutableAudioMixInputParameters? {
         // Volume=0 means silence — skip track entirely
         let volume = max(0, min(1, selection.volume))
-        guard volume > 0 else { return nil }
+        guard volume > 0 else {
+            #if DEBUG
+            MemoryDiagnostics.event("audio.build.videoSlot.skip", "reason=volumeZero blockId=\(block.blockId)")
+            #endif
+            return nil
+        }
 
         let asset = AVURLAsset(url: selection.url)
 
@@ -257,6 +262,9 @@ public final class AudioCompositionBuilder {
             withMediaType: .audio,
             preferredTrackID: kCMPersistentTrackID_Invalid
         ) else {
+            #if DEBUG
+            MemoryDiagnostics.event("audio.build.videoSlot.skip", "reason=noCompTrack blockId=\(block.blockId)")
+            #endif
             return nil
         }
 
@@ -300,7 +308,12 @@ public final class AudioCompositionBuilder {
         // insertDuration = min(windowDuration, availableProject, blockVisibility)
         let insertDuration = min(windowDuration, availableProject, blockVisibility)
 
-        guard insertDuration > 0 else { return nil }
+        guard insertDuration > 0 else {
+            #if DEBUG
+            MemoryDiagnostics.event("audio.build.videoSlot.skip", "reason=zeroDuration blockId=\(block.blockId)")
+            #endif
+            return nil
+        }
 
         // Source time range (starts at trimStart)
         let sourceStartTime = CMTime(seconds: selection.winStart, preferredTimescale: Self.timescale)
@@ -314,6 +327,9 @@ public final class AudioCompositionBuilder {
         do {
             try compositionTrack.insertTimeRange(sourceTimeRange, of: sourceTrack, at: destinationTime)
         } catch {
+            #if DEBUG
+            MemoryDiagnostics.event("audio.build.videoSlot.skip", "reason=insertFailed blockId=\(block.blockId) error=\(error.localizedDescription)")
+            #endif
             // Video slot audio insert failure is non-fatal (video might not have audio)
             return nil
         }
@@ -400,7 +416,12 @@ public final class AudioCompositionBuilder {
 
         let projectDuration = Double(transitionMath.compressedDurationFrames) / Double(fps)
 
+        #if DEBUG
+        MemoryDiagnostics.event("audio.build.begin", "mode=timeline scenes=\(sceneData.count) planItems=\(plan.items.count) includeOriginal=\(plan.includeOriginalFromVideoSlots ? 1 : 0) projectDuration=\(String(format: "%.2f", projectDuration))")
+        #endif
+
         // 1. Add all audio items from plan
+        var planInsertedCount = 0
         for item in plan.items {
             let params = try insertAudioTrack(
                 config: item.toTrackConfig(),
@@ -408,10 +429,18 @@ public final class AudioCompositionBuilder {
                 projectDuration: projectDuration,
                 label: item.role.rawValue
             )
-            if let params { mixParameters.append(params) }
+            if let params {
+                mixParameters.append(params)
+                planInsertedCount += 1
+            }
         }
 
+        #if DEBUG
+        MemoryDiagnostics.event("audio.build.planInserted", "count=\(planInsertedCount)")
+        #endif
+
         // 2. Add original audio from video slots for each scene (if enabled)
+        var originalInsertedCount = 0
         if plan.includeOriginalFromVideoSlots {
             for data in sceneData {
                 // Compute outgoing transition tail frames for this scene (once per scene)
@@ -425,9 +454,24 @@ public final class AudioCompositionBuilder {
                 }
 
                 for block in data.runtime.blocks {
-                    guard let selection = data.videoSelections[block.blockId] else { continue }
-                    guard selection.isValid else { continue }
-                    guard !selection.isMuted else { continue }
+                    guard let selection = data.videoSelections[block.blockId] else {
+                        #if DEBUG
+                        MemoryDiagnostics.event("audio.build.videoSlot.skip", "reason=noSelection scene=\(data.sceneIndex) blockId=\(block.blockId)")
+                        #endif
+                        continue
+                    }
+                    guard selection.isValid else {
+                        #if DEBUG
+                        MemoryDiagnostics.event("audio.build.videoSlot.skip", "reason=invalid scene=\(data.sceneIndex) blockId=\(block.blockId)")
+                        #endif
+                        continue
+                    }
+                    guard !selection.isMuted else {
+                        #if DEBUG
+                        MemoryDiagnostics.event("audio.build.videoSlot.skip", "reason=muted scene=\(data.sceneIndex) blockId=\(block.blockId)")
+                        #endif
+                        continue
+                    }
 
                     let params = try insertVideoSlotAudio(
                         selection: selection,
@@ -442,7 +486,17 @@ public final class AudioCompositionBuilder {
                         nativeSceneDurationFrames: data.runtime.durationFrames,
                         outgoingTransitionTailFrames: outgoingTailFrames
                     )
-                    if let params { mixParameters.append(params) }
+                    if let params {
+                        #if DEBUG
+                        MemoryDiagnostics.event("audio.build.videoSlot.insert", "scene=\(data.sceneIndex) blockId=\(block.blockId)")
+                        #endif
+                        mixParameters.append(params)
+                        originalInsertedCount += 1
+                    } else {
+                        #if DEBUG
+                        MemoryDiagnostics.event("audio.build.videoSlot.skip", "reason=insertReturnedNil scene=\(data.sceneIndex) blockId=\(block.blockId)")
+                        #endif
+                    }
                 }
             }
         }
@@ -453,6 +507,11 @@ public final class AudioCompositionBuilder {
             mix.inputParameters = mixParameters
             audioMix = mix
         }
+
+        #if DEBUG
+        let trackCount = composition.tracks(withMediaType: .audio).count
+        MemoryDiagnostics.event("audio.build.end", "mode=timeline planInserted=\(planInsertedCount) originalInserted=\(originalInsertedCount) tracks=\(trackCount) mixInputs=\(mixParameters.count) duration=\(String(format: "%.2f", projectDuration))")
+        #endif
 
         return BuiltAudioPipeline(composition: composition, audioMix: audioMix)
     }

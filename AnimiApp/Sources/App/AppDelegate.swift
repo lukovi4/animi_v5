@@ -1,4 +1,5 @@
 import UIKit
+import os.log
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -12,7 +13,16 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             PhotoProxyCache.shared.collectExpired()
             VideoPosterCache.shared.collectExpired()
         }
-        AppAudioSessionController.configure()
+        do {
+            try AudioSessionManager.configureOnLaunch()
+        } catch {
+            // Log but don't crash — per-runtime manager will re-attempt.
+            Logger(subsystem: "com.animi.app", category: "AudioSession")
+                .error("audio.session.configureOnLaunch.failed: \(error.localizedDescription)")
+            #if DEBUG
+            MemoryDiagnostics.event("audio.session.configureOnLaunch", "ok=0 error=\(error.localizedDescription)")
+            #endif
+        }
         return true
     }
 

@@ -115,6 +115,12 @@ final class ExportWriterPipeline {
 
         if let audioConfig = audio {
             let hasAudioTracks = !audioConfig.composition.tracks(withMediaType: .audio).isEmpty
+            #if DEBUG
+            let audioTrackCount = audioConfig.composition.tracks(withMediaType: .audio).count
+            let audioDuration = audioConfig.composition.duration.seconds
+            let audioMixInputCount = audioConfig.audioMix?.inputParameters.count ?? 0
+            MemoryDiagnostics.event("export.writer.audioConfig", "requested=1 tracks=\(audioTrackCount) duration=\(String(format: "%.2f", audioDuration)) mixInputs=\(audioMixInputCount) expectedAudio=\(hasAudioTracks ? 1 : 0)")
+            #endif
             if hasAudioTracks {
                 let aacSettings: [String: Any] = [
                     AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -127,6 +133,9 @@ final class ExportWriterPipeline {
                 aInput.expectsMediaDataInRealTime = false
 
                 guard writer.canAdd(aInput) else {
+                    #if DEBUG
+                    MemoryDiagnostics.event("export.writer.audioInput.canAddFail", "")
+                    #endif
                     throw VideoExportError.cannotAddAudioInput
                 }
                 writer.add(aInput)
@@ -135,7 +144,18 @@ final class ExportWriterPipeline {
                 numPumps = 2
                 storedComposition = audioConfig.composition
                 storedMix = audioConfig.audioMix
+                #if DEBUG
+                MemoryDiagnostics.event("export.writer.audioInput", "added=1")
+                #endif
+            } else {
+                #if DEBUG
+                MemoryDiagnostics.event("export.writer.audioInput", "added=0 reason=noTracks")
+                #endif
             }
+        } else {
+            #if DEBUG
+            MemoryDiagnostics.event("export.writer.audioConfig", "requested=0 tracks=0 duration=0 mixInputs=0 expectedAudio=0")
+            #endif
         }
 
         #if DEBUG
@@ -292,10 +312,14 @@ final class ExportWriterPipeline {
     /// Report error (from render loop, pump, or coordinator). First-error-wins.
     func setError(_ error: Error) {
         errorLock.lock()
-        if _firstError == nil {
+        let isFirst = _firstError == nil
+        if isFirst {
             _firstError = error
         }
         errorLock.unlock()
+        #if DEBUG
+        MemoryDiagnostics.event("export.pipeline.error", "first=\(isFirst ? 1 : 0) error=\(error.localizedDescription)")
+        #endif
     }
 
     /// Current first error. Thread-safe read.
@@ -311,6 +335,10 @@ final class ExportWriterPipeline {
 
         videoPump.finishEnqueuing { [self] in
             self.onPumpFinished { [self] in
+                #if DEBUG
+                MemoryDiagnostics.event("export.pipeline.finish.begin", "firstError=\(self.firstError?.localizedDescription ?? "none")")
+                #endif
+
                 if let error = self.firstError {
                     self.writer.cancelWriting()
                     try? FileManager.default.removeItem(at: outputURL)
@@ -319,6 +347,9 @@ final class ExportWriterPipeline {
                 }
 
                 self.writer.finishWriting {
+                    #if DEBUG
+                    MemoryDiagnostics.event("export.pipeline.finish.end", "ok=\(self.writer.status == .completed ? 1 : 0) writerStatus=\(self.writer.status.rawValue) error=\(self.writer.error?.localizedDescription ?? "none")")
+                    #endif
                     if self.writer.status == .completed {
                         completion(.success(outputURL))
                     } else {
@@ -354,6 +385,7 @@ final class ExportWriterPipeline {
     private func onPumpFinished(callback: (() -> Void)? = nil) {
         completionLock.lock()
         pumpsFinished += 1
+        let currentCount = pumpsFinished
         if let callback = callback {
             allPumpsCallback = callback
         }
@@ -361,6 +393,10 @@ final class ExportWriterPipeline {
         let cb = done ? allPumpsCallback : nil
         if done { allPumpsCallback = nil }
         completionLock.unlock()
+
+        #if DEBUG
+        MemoryDiagnostics.event("export.pipeline.pumpFinished", "count=\(currentCount)/\(expectedPumps)")
+        #endif
 
         if done {
             cb?()

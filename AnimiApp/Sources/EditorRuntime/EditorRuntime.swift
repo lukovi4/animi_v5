@@ -98,6 +98,8 @@ final class EditorRuntime {
     var textureProvider: (any MutableTextureProvider)?
     var assetResolver: CompositeAssetResolver?
 
+    var audioSessionManager: AudioSessionManaging?
+
     var userMediaService: UserMediaService?
 
     #if DEBUG
@@ -269,6 +271,15 @@ final class EditorRuntime {
     var isRestoringPreviewAfterExport: Bool {
         exportController.isRestoringPreviewAfterExport
     }
+
+    /// Test seam: whether a playback startup task is pending.
+    var hasPlaybackStartTask: Bool {
+        playbackStartTask != nil
+    }
+
+    /// Test seam: gate that suspends inside playbackStartTask before engine.prepareForPlayback.
+    /// Set before calling startPlayback() in tests to hold the task in a pending state.
+    var playbackStartGate: (() async -> Void)?
     #endif
 
     func boot(metalContext: EditorRuntimeMetalContext, library: SceneLibrarySnapshot) {
@@ -434,6 +445,7 @@ final class EditorRuntime {
     /// Transitions to timeline preview after subsystem setup completes.
     func transitionToTimelinePreview() {
         state = .timelinePreview
+        previewAudio.prepareForTimelinePreview()
         onOutput?(.runtimeReady)
     }
 
@@ -945,12 +957,34 @@ final class EditorRuntime {
         guard playbackStartTask == nil else { return }
         guard let engine = timelineCompositionEngine else { return }
 
-        AppAudioSessionController.activate()
+        guard let manager = audioSessionManager else {
+            logger.error("playback.audio.sessionActivate.failed: no audio session manager")
+            #if DEBUG
+            MemoryDiagnostics.event("playback.audio.sessionActivate.failed", "error=noManager")
+            #endif
+            return
+        }
+        do {
+            try manager.activateForPlayback()
+        } catch {
+            logger.error("playback.audio.sessionActivate.failed: \(error.localizedDescription)")
+            #if DEBUG
+            MemoryDiagnostics.event("playback.audio.sessionActivate.failed", "error=\(error.localizedDescription)")
+            #endif
+            return
+        }
 
         let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         let fps = Float(sceneFPS)
 
         playbackStartTask = Task { @MainActor in
+            #if DEBUG
+            if let gate = self.playbackStartGate { await gate() }
+            guard !Task.isCancelled else {
+                self.playbackStartTask = nil
+                return
+            }
+            #endif
             await engine.prepareForPlayback(startingAt: compressedFrame)
 
             guard !Task.isCancelled else {
@@ -963,6 +997,10 @@ final class EditorRuntime {
             let startProjectTimeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
             let hostTime = CACurrentMediaTime()
             self.playbackCurrentHostTime = hostTime
+
+            #if DEBUG
+            MemoryDiagnostics.event("playback.audio.start.begin", "compressedFrame=\(compressedFrame) projectTimeUs=\(startProjectTimeUs) state=\(String(describing: self.state)) isPlayingBefore=\(self.isPlaying ? 1 : 0)")
+            #endif
 
             self.playbackCurrentCompressedFrame = compressedFrame
             self.playbackCurrentProjectTimeUs = startProjectTimeUs
@@ -988,6 +1026,10 @@ final class EditorRuntime {
             engine.startPlayback(at: compressedFrame, hostTime: hostTime)
 
             self.onOutput?(.playbackStateChanged(isPlaying: true))
+
+            #if DEBUG
+            MemoryDiagnostics.event("playback.audio.previewStart.call", "projectTimeUs=\(startProjectTimeUs) hostTime=\(hostTime)")
+            #endif
             self.previewAudio.startForTimelinePlayback()
             self.playbackStartTask = nil
         }
@@ -1002,6 +1044,10 @@ final class EditorRuntime {
 
         playbackStartTask?.cancel()
         playbackStartTask = nil
+
+        #if DEBUG
+        MemoryDiagnostics.event("playback.audio.stop.begin", "")
+        #endif
         previewAudio.controller.pause()
         previewAudio.generation &+= 1
         previewAudio.cancelBuild()
@@ -1033,7 +1079,11 @@ final class EditorRuntime {
         rendererResourceTrimmer?(.softInteractiveStop)
 
         onOutput?(.playbackStateChanged(isPlaying: false))
-        AppAudioSessionController.deactivate()
+
+        #if DEBUG
+        MemoryDiagnostics.event("playback.audio.sessionDeactivate.call", "")
+        #endif
+        try? audioSessionManager?.deactivateAfterPlayback()
 
         #if DEBUG
         if MemoryDiagnostics.isEnabled {
@@ -1045,6 +1095,78 @@ final class EditorRuntime {
             }
         }
         #endif
+    }
+
+    // MARK: - Audio Session Events
+
+    func bindAudioSessionEvents(_ manager: AudioSessionManaging) {
+        manager.onEvent = { [weak self] event in
+            guard let self else { return }
+            self.handleAudioSessionEvent(event)
+        }
+    }
+
+    enum PlaybackAbortReason: String {
+        case mediaServicesReset
+        case interruption
+        case activationFailure
+    }
+
+    /// Cancels both active playback and pending startup in a single path.
+    private func abortPlaybackStartupAndStop(reason: PlaybackAbortReason) {
+        let hadStartTask = playbackStartTask != nil
+        let wasPlaying = isPlaying
+
+        #if DEBUG
+        MemoryDiagnostics.event("playback.audio.abort", "reason=\(reason.rawValue) hadStartTask=\(hadStartTask ? 1 : 0) playing=\(wasPlaying ? 1 : 0)")
+        #endif
+
+        playbackStartTask?.cancel()
+        playbackStartTask = nil
+
+        previewAudio.controller.pause()
+        previewAudio.cancelBuild()
+
+        playbackTransport.stop()
+
+        if let link = displayLink {
+            link.invalidate()
+            #if DEBUG
+            MemoryDiagnostics.event("displayLink.invalidate", "obj=\(ObjectIdentifier(self).hashValue) reason=\(reason.rawValue)")
+            #endif
+            displayLink = nil
+        }
+
+        if isPlaying {
+            timelineCompositionEngine?.stopPlayback()
+            isPlaying = false
+        }
+
+        if wasPlaying || hadStartTask {
+            onOutput?(.playbackStateChanged(isPlaying: false))
+        }
+
+        try? audioSessionManager?.deactivateAfterPlayback()
+    }
+
+    private func handleAudioSessionEvent(_ event: AudioSessionEvent) {
+        switch event {
+        case .interruptionBegan:
+            guard isPlaying || playbackStartTask != nil else { return }
+            abortPlaybackStartupAndStop(reason: .interruption)
+        case .interruptionEnded:
+            break
+        case .routeChanged:
+            break
+        case .mediaServicesReset:
+            #if DEBUG
+            MemoryDiagnostics.event("audio.session.mediaServicesReset.handleInRuntime", "isPlaying=\(isPlaying ? 1 : 0) hadStartTask=\(playbackStartTask != nil ? 1 : 0)")
+            #endif
+            abortPlaybackStartupAndStop(reason: .mediaServicesReset)
+            previewAudio.invalidateForMediaServicesReset()
+        case .activationFailed:
+            break
+        }
     }
 
     #if DEBUG
@@ -1143,7 +1265,13 @@ final class EditorRuntime {
         includeOriginalFromVideoSlots: Bool = true,
         originalDefaultVolume: Float = 1.0
     ) async -> AudioExportPlan {
+        #if DEBUG
+        MemoryDiagnostics.event("audio.plan.begin", "hasState=\(session.state != nil ? 1 : 0) includeOriginal=\(includeOriginalFromVideoSlots ? 1 : 0)")
+        #endif
         guard let state = session.state else {
+            #if DEBUG
+            MemoryDiagnostics.event("audio.plan.end", "items=0 reason=noState")
+            #endif
             return AudioExportPlan(
                 items: [],
                 includeOriginalFromVideoSlots: includeOriginalFromVideoSlots,
@@ -1163,6 +1291,10 @@ final class EditorRuntime {
                 candidates.append((startUs: item.startUs ?? 0, trackIndex: trackIndex, itemIndex: itemIndex, item: item, payload: payload))
             }
         }
+
+        #if DEBUG
+        MemoryDiagnostics.event("audio.plan.candidates", "audioTracks=\(timeline.audioTracks.count) candidates=\(candidates.count)")
+        #endif
 
         // Sort deterministically by (startUs, trackIndex, itemIndex)
         candidates.sort {
@@ -1210,6 +1342,10 @@ final class EditorRuntime {
                 ))
             }
         }
+
+        #if DEBUG
+        MemoryDiagnostics.event("audio.plan.end", "items=\(planItems.count) includeOriginal=\(includeOriginalFromVideoSlots ? 1 : 0)")
+        #endif
 
         return AudioExportPlan(
             items: planItems,

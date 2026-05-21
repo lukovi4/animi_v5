@@ -247,6 +247,7 @@ internal final class EditorRuntimeExportController {
             await runtime.background.reloadBackgroundTextures()
         }
         await runtime.restorePreviewResourcesAfterExport()
+        runtime.previewAudio.prepareForTimelinePreview()
         #if DEBUG
         MemoryDiagnostics.event("export.previewRestored")
         MemoryDiagnostics.signpostEvent("preview.restore")

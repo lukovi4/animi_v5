@@ -193,6 +193,9 @@ internal final class EditorBootstrapController {
         let vc = viewController
         let library = vc.sceneLibrarySnapshot!
         let rt = EditorRuntime(session: vc.session)
+        let audioManager = AudioSessionManager()
+        rt.audioSessionManager = audioManager
+        rt.bindAudioSessionEvents(audioManager)
         rt.onOutput = { [weak vc] output in vc?.bootstrapController.handleRuntimeOutput(output) }
         rt.rendererResourceTrimmer = { [weak vc] policy in
             vc?.trimRendererTransientResources(policy: policy)

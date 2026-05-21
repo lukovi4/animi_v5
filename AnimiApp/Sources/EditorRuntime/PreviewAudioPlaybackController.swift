@@ -9,6 +9,13 @@ enum PreviewAudioReadiness: Equatable {
     case failed     // AVPlayerItem.status == .failed
 }
 
+// MARK: - Preview Audio Failure Reason
+
+enum PreviewAudioFailureReason: Equatable {
+    case itemFailed(error: String?)
+    case startOnFailedItem
+}
+
 // MARK: - Preview Audio Controlling Protocol
 
 @MainActor
@@ -27,30 +34,79 @@ protocol PreviewAudioControlling: AnyObject {
     var readiness: PreviewAudioReadiness { get }
     /// Callback fired (at most once) when readiness transitions to `.ready`.
     var onReady: (@MainActor () -> Void)? { get set }
+    /// Callback fired when the item fails after being ready, or when startPlayback detects a failed item.
+    var onFailure: (@MainActor (PreviewAudioFailureReason) -> Void)? { get set }
 }
 
 // MARK: - Production Implementation
 
 @MainActor
 final class PreviewAudioPlaybackController: PreviewAudioControlling {
+    private static let seekDriftThreshold: Double = 0.15 // seconds
+
     private var player: AVPlayer?
     private var playerItem: AVPlayerItem?
     private(set) var readiness: PreviewAudioReadiness = .idle
     var onReady: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (PreviewAudioFailureReason) -> Void)?
     private var statusObservation: NSKeyValueObservation?
     private var readinessToken: UInt = 0
+    private var playbackStartToken: UInt = 0
 
     #if DEBUG
     var onSchedulePlayback: ((Float, CMTime, CMTime) -> Void)?
-    var onSeek: ((CMTime) -> Void)?
+    var onSeek: ((CMTime, @escaping (Bool) -> Void) -> Void)?
+    var onCancelPendingSeeks: (() -> Void)?
+    private var debugObservations: [NSKeyValueObservation] = []
+    private var debugNotificationObservers: [Any] = []
+    private var debugStartSequence: UInt = 0
     #endif
 
     var hasActivePipeline: Bool { player != nil }
+
+    // MARK: - Failure Transition
+
+    /// Centralized terminal failure transition. All failure paths must use this.
+    private func transitionToFailed(_ reason: PreviewAudioFailureReason) {
+        guard readiness != .failed else { return }
+        readiness = .failed
+        statusObservation = nil
+        onReady = nil
+        onFailure?(reason)
+    }
+
+    /// Validates the current item is startable. If not, transitions to failed.
+    /// Returns true only when item is non-nil, `.readyToPlay`, and has no error.
+    private func validateCurrentItemForStart() -> Bool {
+        guard let item = playerItem, item.status == .readyToPlay, item.error == nil else {
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.startPlayback.itemInvalid", "readiness=\(readiness) itemStatus=\(playerItem?.status.rawValue ?? -1) error=\(playerItem?.error?.localizedDescription ?? "none")")
+            #endif
+            transitionToFailed(.startOnFailedItem)
+            return false
+        }
+        return true
+    }
+
+    #if DEBUG
+    /// Test seam: invalidates the current playerItem (nils it) so
+    /// validateCurrentItemForStart returns false. Only available in DEBUG.
+    func invalidateCurrentItemForTesting() {
+        playerItem = nil
+    }
+    #endif
 
     /// Internal reset: clears player, item, KVO — but preserves onReady.
     /// Used inside replacePipeline so the incoming onReady survives the reset.
     private func resetPlayer() {
         statusObservation = nil
+        #if DEBUG
+        debugObservations.removeAll()
+        for observer in debugNotificationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        debugNotificationObservers.removeAll()
+        #endif
         player?.pause()
         player = nil
         playerItem = nil
@@ -58,6 +114,13 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
     }
 
     func replacePipeline(_ pipeline: BuiltAudioPipeline) {
+        #if DEBUG
+        let tracks = pipeline.composition.tracks(withMediaType: .audio).count
+        let hasMix = pipeline.audioMix != nil
+        let mixInputs = pipeline.audioMix?.inputParameters.count ?? 0
+        let dur = CMTimeGetSeconds(pipeline.composition.duration)
+        MemoryDiagnostics.event("preview.audio.replacePipeline", "tracks=\(tracks) hasMix=\(hasMix ? 1 : 0) mixInputs=\(mixInputs) duration=\(dur)")
+        #endif
         resetPlayer()
         readinessToken &+= 1
         let token = readinessToken
@@ -70,24 +133,47 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
         self.playerItem = item
         self.readiness = .preparing
 
+        #if DEBUG
+        debugObservations.append(p.observe(\.rate, options: [.new, .old]) { player, change in
+            let old = change.oldValue ?? -1
+            let new = change.newValue ?? -1
+            MemoryDiagnostics.event("preview.audio.player.rate", "old=\(old) new=\(new)")
+        })
+        debugObservations.append(p.observe(\.timeControlStatus, options: [.new]) { player, _ in
+            MemoryDiagnostics.event("preview.audio.player.timeControl", "status=\(player.timeControlStatus.rawValue)")
+        })
+        let nc = NotificationCenter.default
+        debugNotificationObservers.append(nc.addObserver(forName: .AVPlayerItemPlaybackStalled, object: item, queue: .main) { _ in
+            MemoryDiagnostics.event("preview.audio.player.stalled", "")
+        })
+        debugNotificationObservers.append(nc.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { note in
+            let err = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription ?? "none"
+            MemoryDiagnostics.event("preview.audio.player.failedToEnd", "error=\(err)")
+        })
+        #endif
+
         statusObservation = item.observe(\.status, options: [.new]) {
             [weak self] _, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard token == self.readinessToken else { return }
-                guard self.readiness == .preparing else { return }
                 guard let currentItem = self.playerItem else { return }
                 switch currentItem.status {
                 case .readyToPlay:
+                    guard self.readiness != .ready else { return }
+                    #if DEBUG
+                    MemoryDiagnostics.event("preview.audio.playerReady", "token=\(token) via=kvo")
+                    #endif
                     self.readiness = .ready
-                    self.statusObservation = nil
+                    // Keep statusObservation alive to catch post-ready failures
                     let cb = self.onReady
                     self.onReady = nil
                     cb?()
                 case .failed:
-                    self.readiness = .failed
-                    self.statusObservation = nil
-                    self.onReady = nil
+                    #if DEBUG
+                    MemoryDiagnostics.event("preview.audio.playerFailed", "token=\(token) via=kvo error=\(currentItem.error?.localizedDescription ?? "none")")
+                    #endif
+                    self.transitionToFailed(.itemFailed(error: currentItem.error?.localizedDescription))
                 case .unknown:
                     break
                 @unknown default:
@@ -101,21 +187,46 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
         // Some items (cached/short compositions) may already be in terminal state.
         switch item.status {
         case .readyToPlay:
+            guard readiness != .ready else { break }
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.playerReady", "token=\(token) via=sync")
+            #endif
             readiness = .ready
-            statusObservation = nil
+            // Keep statusObservation alive to catch post-ready failures
             let cb = onReady
             onReady = nil
             cb?()
         case .failed:
-            readiness = .failed
-            statusObservation = nil
-            onReady = nil
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.playerFailed", "token=\(token) via=sync error=\(item.error?.localizedDescription ?? "none")")
+            #endif
+            transitionToFailed(.itemFailed(error: item.error?.localizedDescription))
         case .unknown:
             break
         @unknown default:
             break
         }
     }
+
+    #if DEBUG
+    private func playerSnapshot() -> String {
+        guard let p = player else { return "hasPlayer=0" }
+        let item = p.currentItem
+        let itemStatus: String = {
+            switch item?.status {
+            case .readyToPlay: return "readyToPlay"
+            case .failed: return "failed"
+            case .unknown: return "unknown"
+            case .none: return "nil"
+            @unknown default: return "other"
+            }
+        }()
+        let current = CMTimeGetSeconds(p.currentTime())
+        let dur = item.map { CMTimeGetSeconds($0.duration) } ?? -1
+        let err = item?.error?.localizedDescription ?? "none"
+        return "hasPlayer=1 readiness=\(readiness) itemStatus=\(itemStatus) rate=\(p.rate) timeControl=\(p.timeControlStatus.rawValue) current=\(current) duration=\(dur) volume=\(p.volume) muted=\(p.isMuted ? 1 : 0) error=\(err)"
+    }
+    #endif
 
     // MARK: - AVPlayer Operation Helpers
 
@@ -131,32 +242,195 @@ final class PreviewAudioPlaybackController: PreviewAudioControlling {
         player.setRate(rate, time: time, atHostTime: hostTime)
     }
 
-    /// Single choke-point for seek operations.
-    /// All code paths that need seek MUST use this.
-    private func seek(_ player: AVPlayer, to time: CMTime) {
+    /// Cancels any in-flight seek on the current player item.
+    /// Called before new seeks, on pause, and on teardown.
+    private func cancelPendingSeeks() {
         #if DEBUG
-        if let onSeek {
-            onSeek(time)
+        if let onCancelPendingSeeks {
+            onCancelPendingSeeks()
             return
         }
         #endif
-        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        playerItem?.cancelPendingSeeks()
+    }
+
+    /// Single choke-point for seek operations.
+    /// All code paths that need seek MUST use this.
+    private func seek(_ player: AVPlayer, to time: CMTime, completion: @escaping @Sendable (Bool) -> Void) {
+        #if DEBUG
+        if let onSeek {
+            onSeek(time, completion)
+            return
+        }
+        #endif
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: completion)
     }
 
     func startPlayback(fromSeconds: Double, hostTime: CFTimeInterval) {
-        guard let p = player else { return }
-        guard readiness == .ready else { return }
+        guard let p = player else {
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.startPlayback.noPlayer", "")
+            #endif
+            return
+        }
+        guard readiness == .ready else {
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.startPlayback.notReady", "readiness=\(String(describing: readiness))")
+            #endif
+            return
+        }
+        guard validateCurrentItemForStart() else { return }
+
+        playbackStartToken &+= 1
+        let startToken = playbackStartToken
+        cancelPendingSeeks()
+
+        #if DEBUG
+        debugStartSequence &+= 1
+        let startId = debugStartSequence
+        let nowMedia = CACurrentMediaTime()
+        let hostDeltaMs = (nowMedia - hostTime) * 1000
+        MemoryDiagnostics.event("preview.audio.startPlayback.begin", "startId=\(startId) \(playerSnapshot()) seconds=\(fromSeconds) transportHost=\(hostTime) nowMedia=\(nowMedia) hostDeltaMs=\(hostDeltaMs) target=\(fromSeconds)")
+        #endif
+
         let targetTime = CMTime(seconds: fromSeconds, preferredTimescale: 44100)
         let hostClockTime = VideoFrameProvider.scheduledHostClockTime(
             forTransportHostTime: hostTime
         )
-        schedulePlayback(p, rate: 1.0, time: targetTime, hostTime: hostClockTime)
+
+        let currentSeconds = p.currentTime().seconds
+        let drift = currentSeconds.isNaN ? .infinity : abs(currentSeconds - fromSeconds)
+
+        #if DEBUG
+        let driftMs = drift * 1000
+        let thresholdMs = Self.seekDriftThreshold * 1000
+        let path = drift <= Self.seekDriftThreshold ? "direct" : "seek"
+        MemoryDiagnostics.event("preview.audio.startPlayback.drift", "startId=\(startId) current=\(currentSeconds) target=\(fromSeconds) driftMs=\(driftMs) thresholdMs=\(thresholdMs) path=\(path)")
+        #endif
+
+        if drift <= Self.seekDriftThreshold {
+            // Direct path — player is close enough
+            #if DEBUG
+            let hostClockNow = CMClockGetTime(CMClockGetHostTimeClock())
+            let hostLeadMs = (CMTimeGetSeconds(hostClockTime) - CMTimeGetSeconds(hostClockNow)) * 1000
+            MemoryDiagnostics.event("preview.audio.startPlayback.schedule", "startId=\(startId) mode=setRateAtHostTime target=\(fromSeconds) hostClock=\(CMTimeGetSeconds(hostClockTime)) hostLeadMs=\(hostLeadMs)")
+            #endif
+
+            schedulePlayback(p, rate: 1.0, time: targetTime, hostTime: hostClockTime)
+
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.startPlayback.scheduled", "startId=\(startId) \(playerSnapshot())")
+            scheduleDebugProbes(startId: startId, player: p, target: fromSeconds)
+            #endif
+        } else {
+            // Seek path — player too far from target
+            let capturedReadinessToken = readinessToken
+            let capturedPlayer = p
+            #if DEBUG
+            MemoryDiagnostics.event("preview.audio.startPlayback.seek.begin", "startId=\(startId) current=\(currentSeconds) target=\(fromSeconds) driftMs=\(driftMs)")
+            #endif
+
+            seek(p, to: targetTime) { [weak self] finished in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard finished else {
+                        #if DEBUG
+                        MemoryDiagnostics.event("preview.audio.startPlayback.seek.cancelled", "startId=\(startId)")
+                        #endif
+                        return
+                    }
+                    // Production stale guard: newer startPlayback supersedes this seek
+                    guard self.playbackStartToken == startToken else {
+                        #if DEBUG
+                        MemoryDiagnostics.event("preview.audio.startPlayback.seek.stale", "startId=\(startId) reason=startToken expected=\(startToken) actual=\(self.playbackStartToken)")
+                        #endif
+                        return
+                    }
+                    guard self.readinessToken == capturedReadinessToken,
+                          self.player === capturedPlayer,
+                          self.readiness == .ready else {
+                        #if DEBUG
+                        MemoryDiagnostics.event("preview.audio.startPlayback.seek.stale", "startId=\(startId) reason=readinessOrPlayer")
+                        #endif
+                        return
+                    }
+                    guard self.validateCurrentItemForStart() else { return }
+
+                    #if DEBUG
+                    let postSeekCurrent = capturedPlayer.currentTime().seconds
+                    let postSeekDrift = abs(postSeekCurrent - fromSeconds)
+                    MemoryDiagnostics.event("preview.audio.startPlayback.seek.end", "startId=\(startId) postSeekCurrent=\(postSeekCurrent) target=\(fromSeconds) postSeekDriftMs=\(postSeekDrift * 1000) finished=\(finished)")
+                    #endif
+
+                    let freshHostClockTime = VideoFrameProvider.scheduledHostClockTime(
+                        forTransportHostTime: CACurrentMediaTime()
+                    )
+                    self.schedulePlayback(capturedPlayer, rate: 1.0, time: targetTime, hostTime: freshHostClockTime)
+
+                    #if DEBUG
+                    MemoryDiagnostics.event("preview.audio.startPlayback.scheduled", "startId=\(startId) \(self.playerSnapshot())")
+                    self.scheduleDebugProbes(startId: startId, player: capturedPlayer, target: fromSeconds)
+                    #endif
+                }
+            }
+        }
     }
 
-    func pause() { player?.pause() }
+    #if DEBUG
+    private func scheduleDebugProbes(startId: UInt, player probePlayer: AVPlayer, target probeTarget: Double) {
+        let probeToken = readinessToken
+        for delayMs in [100, 500, 1000, 2000] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delayMs)) { [weak self] in
+                guard let self,
+                      self.readinessToken == probeToken,
+                      self.debugStartSequence == startId,
+                      self.player === probePlayer else { return }
+                let current = CMTimeGetSeconds(probePlayer.currentTime())
+                let advanced = current - probeTarget
+                let item = probePlayer.currentItem
+                let itemStatus: String = {
+                    switch item?.status {
+                    case .readyToPlay: return "readyToPlay"
+                    case .failed: return "failed"
+                    case .unknown: return "unknown"
+                    case .none: return "nil"
+                    @unknown default: return "other"
+                    }
+                }()
+                let err = item?.error?.localizedDescription ?? "none"
+                MemoryDiagnostics.event("preview.audio.startPlayback.probe", "startId=\(startId) afterMs=\(delayMs) rate=\(probePlayer.rate) timeControl=\(probePlayer.timeControlStatus.rawValue) current=\(current) advancedMs=\(advanced * 1000) itemStatus=\(itemStatus) error=\(err)")
+            }
+        }
+    }
+    #endif
+
+    func pause() {
+        playbackStartToken &+= 1
+        cancelPendingSeeks()
+        #if DEBUG
+        if let p = player {
+            MemoryDiagnostics.event("preview.audio.pause", "rate=\(p.rate) timeControl=\(p.timeControlStatus.rawValue) current=\(CMTimeGetSeconds(p.currentTime())) itemStatus=\(p.currentItem?.status.rawValue ?? -1)")
+        }
+        #endif
+        player?.pause()
+    }
 
     func teardown() {
+        playbackStartToken &+= 1
+        cancelPendingSeeks()
+        #if DEBUG
+        if let p = player {
+            MemoryDiagnostics.event("preview.audio.controller.teardown", "hasPlayer=1 rate=\(p.rate) timeControl=\(p.timeControlStatus.rawValue) current=\(CMTimeGetSeconds(p.currentTime())) readiness=\(readiness) itemStatus=\(p.currentItem?.status.rawValue ?? -1)")
+        } else {
+            MemoryDiagnostics.event("preview.audio.controller.teardown", "hasPlayer=0")
+        }
+        #endif
         resetPlayer()
         onReady = nil
+        onFailure = nil
     }
+
+    #if DEBUG
+    var hasActiveStatusObservation: Bool { statusObservation != nil }
+    #endif
 }
