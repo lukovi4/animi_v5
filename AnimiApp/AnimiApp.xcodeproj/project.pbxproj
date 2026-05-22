@@ -22,9 +22,8 @@
 		0402365D45452BE0FFA85FE7 /* EditorStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17978D254FF4A01AF6C27265 /* EditorStore.swift */; };
 		062F11DB804AC6EE7B144AE2 /* VideoTrimThumbnailProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3482F876497C40A328903189 /* VideoTrimThumbnailProvider.swift */; };
 		06F4BD64A3830B694451236C /* PlaybackTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C886CC5608D8B70F583C0D84 /* PlaybackTransport.swift */; };
-		07A1B2C3D4E5F6A7B8C9D0E1 /* PreviewAudioPlaybackController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07A1B2C3D4E5F6A7B8C9D0E2 /* PreviewAudioPlaybackController.swift */; };
+		07A1B2C3D4E5F6A7B8C9D0E1 /* PreviewAudioControlling.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07A1B2C3D4E5F6A7B8C9D0E2 /* PreviewAudioControlling.swift */; };
 		07B5E1A2C3D4F6A7B8C9D0F1 /* EnginePreviewAudioPlaybackController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07B5E1A2C3D4F6A7B8C9D0F2 /* EnginePreviewAudioPlaybackController.swift */; };
-		07B5E1A2C3D4F6A7B8C9D0F3 /* PreviewAudioBackendMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07B5E1A2C3D4F6A7B8C9D0F4 /* PreviewAudioBackendMode.swift */; };
 		07A1B2C3D4E5F6A7B8C9D0E3 /* ProjectAudioPreviewPlaybackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07A1B2C3D4E5F6A7B8C9D0E4 /* ProjectAudioPreviewPlaybackTests.swift */; };
 		0857D39D4C35C9487EDE14B2 /* EditorViewControllerLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 752804E109B26C1D093BBBC5 /* EditorViewControllerLifecycleTests.swift */; };
 		0AF81261425E3AB5C7322D54 /* OverlayCompositor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25FDDDA3FE43A3C49259142 /* OverlayCompositor.swift */; };
@@ -652,9 +651,8 @@
 		652BDE4DE45E448D927D5A2C /* ExportFrameClamping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportFrameClamping.swift; sourceTree = "<group>"; };
 		C66B4720BBCFE380FEF3BC84 /* SavedProjectSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectSummary.swift; sourceTree = "<group>"; };
 		C886CC5608D8B70F583C0D84 /* PlaybackTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackTransport.swift; sourceTree = "<group>"; };
-		07A1B2C3D4E5F6A7B8C9D0E2 /* PreviewAudioPlaybackController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewAudioPlaybackController.swift; sourceTree = "<group>"; };
+		07A1B2C3D4E5F6A7B8C9D0E2 /* PreviewAudioControlling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewAudioControlling.swift; sourceTree = "<group>"; };
 		07B5E1A2C3D4F6A7B8C9D0F2 /* EnginePreviewAudioPlaybackController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnginePreviewAudioPlaybackController.swift; sourceTree = "<group>"; };
-		07B5E1A2C3D4F6A7B8C9D0F4 /* PreviewAudioBackendMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewAudioBackendMode.swift; sourceTree = "<group>"; };
 		07A1B2C3D4E5F6A7B8C9D0E4 /* ProjectAudioPreviewPlaybackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectAudioPreviewPlaybackTests.swift; sourceTree = "<group>"; };
 		CA08D7E49AF2FAED41B3739D /* EditorConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorConfig.swift; sourceTree = "<group>"; };
 		CA0A2B411C42C0C947DA93AC /* TimelineExportRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineExportRuntime.swift; sourceTree = "<group>"; };
@@ -1274,8 +1272,7 @@
 				1D2FED3CC56A1D3581FF8392 /* EditorRuntimeState.swift */,
 				C886CC5608D8B70F583C0D84 /* PlaybackTransport.swift */,
 				07B5E1A2C3D4F6A7B8C9D0F2 /* EnginePreviewAudioPlaybackController.swift */,
-				07B5E1A2C3D4F6A7B8C9D0F4 /* PreviewAudioBackendMode.swift */,
-				07A1B2C3D4E5F6A7B8C9D0E2 /* PreviewAudioPlaybackController.swift */,
+				07A1B2C3D4E5F6A7B8C9D0E2 /* PreviewAudioControlling.swift */,
 			);
 			path = EditorRuntime;
 			sourceTree = "<group>";
@@ -1599,8 +1596,7 @@
 				A1B2C3D4E5F60004 /* EditorRuntimeSceneEditController.swift in Sources */,
 				06F4BD64A3830B694451236C /* PlaybackTransport.swift in Sources */,
 				07B5E1A2C3D4F6A7B8C9D0F1 /* EnginePreviewAudioPlaybackController.swift in Sources */,
-				07B5E1A2C3D4F6A7B8C9D0F3 /* PreviewAudioBackendMode.swift in Sources */,
-				07A1B2C3D4E5F6A7B8C9D0E1 /* PreviewAudioPlaybackController.swift in Sources */,
+				07A1B2C3D4E5F6A7B8C9D0E1 /* PreviewAudioControlling.swift in Sources */,
 				84BC210E2D786C3B5B85AA1A /* EditorRuntimeOutput.swift in Sources */,
 				8B9DB9B318C4DCEB43084A99 /* EditorRuntimeRenderSource.swift in Sources */,
 				7DD71A383FF5DF545B1E272A /* EditorRuntimeState.swift in Sources */,

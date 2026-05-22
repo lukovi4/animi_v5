@@ -8,16 +8,10 @@ private let logger = Logger(subsystem: "com.animi.app", category: "EditorRuntime
 @MainActor
 internal final class EditorRuntimePreviewAudioCoordinator {
     unowned let runtime: EditorRuntime
-    let backendMode: PreviewAudioBackendMode
 
     // MARK: - Stored Properties
 
-    lazy var controller: PreviewAudioControlling = {
-        switch backendMode {
-        case .avPlayer: return PreviewAudioPlaybackController()
-        case .audioEngine: return EnginePreviewAudioPlaybackController()
-        }
-    }()
+    lazy var controller: PreviewAudioControlling = EnginePreviewAudioPlaybackController()
     var dirty: Bool = true
     var generation: UInt = 0
     var orchestrationTask: Task<Void, Never>?
@@ -39,9 +33,8 @@ internal final class EditorRuntimePreviewAudioCoordinator {
     var installedPipelineGenerationForTesting: UInt? { installedPipelineGeneration }
     #endif
 
-    init(runtime: EditorRuntime, backendMode: PreviewAudioBackendMode = .audioEngine) {
+    init(runtime: EditorRuntime) {
         self.runtime = runtime
-        self.backendMode = backendMode
     }
 
     // MARK: - Public API
@@ -174,9 +167,6 @@ internal final class EditorRuntimePreviewAudioCoordinator {
             case .ready:
                 installCallbacks(generation: generation, startWhenReady: true)
                 controller.prepareForImmediatePlayback()
-                return
-            case .prerolling:
-                installCallbacks(generation: generation, startWhenReady: true)
                 return
             case .preparing:
                 installCallbacks(generation: generation, startWhenReady: true)
@@ -351,10 +341,10 @@ internal final class EditorRuntimePreviewAudioCoordinator {
             #endif
             self.controller.prepareForImmediatePlayback()
         }
-        controller.onPrerollFinished = { [weak self] result in
+        controller.onPrepareFinished = { [weak self] result in
             guard let self, self.generation == gen,
                   self.runtime.state == .timelinePreview else { return }
-            self.handlePrerollFinished(result: result, generation: gen, startWhenReady: startWhenReady)
+            self.handlePrepareFinished(result: result, generation: gen, startWhenReady: startWhenReady)
         }
         controller.onFailure = { [weak self] reason in
             guard let self else { return }
@@ -362,17 +352,17 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         }
     }
 
-    private func handlePrerollFinished(
-        result: PreviewAudioPrerollResult,
+    private func handlePrepareFinished(
+        result: PreviewAudioPrepareResult,
         generation gen: UInt,
         startWhenReady: Bool
     ) {
         #if DEBUG
-        MemoryDiagnostics.event("preview.audio.prerollFinished", "generation=\(gen) result=\(result) startWhenReady=\(startWhenReady ? 1 : 0)")
+        MemoryDiagnostics.event("preview.audio.prepareFinished", "generation=\(gen) result=\(result) startWhenReady=\(startWhenReady ? 1 : 0)")
         #endif
 
         switch result {
-        case .primed, .readyFallback:
+        case .primed:
             dirty = false
             guard startWhenReady else { return }
             guard runtime.isPlaying else { return }
@@ -380,17 +370,6 @@ internal final class EditorRuntimePreviewAudioCoordinator {
             controller.startPlayback(
                 fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime
             )
-
-        case .deferredPlayerNotReady:
-            // Player not ready for preroll. Don't mark clean.
-            if startWhenReady, runtime.isPlaying {
-                // Active play — start playback from .ready as fallback so user hears audio.
-                let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
-                controller.startPlayback(
-                    fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime
-                )
-            }
-            // Idle prepare: dirty stays true, next play/prepare will retry preroll.
         }
     }
 

@@ -14,7 +14,7 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
     private(set) var readiness: PreviewAudioReadiness = .idle
     var onReady: (@MainActor () -> Void)?
     var onFailure: (@MainActor (PreviewAudioFailureReason) -> Void)?
-    var onPrerollFinished: (@MainActor (PreviewAudioPrerollResult) -> Void)?
+    var onPrepareFinished: (@MainActor (PreviewAudioPrepareResult) -> Void)?
 
     private var engine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
@@ -68,7 +68,7 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
         MemoryDiagnostics.event("preview.audio.engine.failure", "reason=\(reason)")
         #endif
         onReady = nil
-        onPrerollFinished = nil
+        onPrepareFinished = nil
         onFailure?(reason)
     }
 
@@ -175,8 +175,8 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
         #endif
 
         readiness = .primed
-        let cb = onPrerollFinished
-        onPrerollFinished = nil
+        let cb = onPrepareFinished
+        onPrepareFinished = nil
         cb?(.primed)
     }
 
@@ -297,7 +297,7 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
         deleteCacheFile()
         readiness = .idle
         onReady = nil
-        onPrerollFinished = nil
+        onPrepareFinished = nil
         onFailure = nil
     }
 
