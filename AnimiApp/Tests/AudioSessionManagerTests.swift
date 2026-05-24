@@ -147,6 +147,13 @@ final class AudioSessionManagerTests: XCTestCase {
         return (runtime, mockAudio, mockPreview)
     }
 
+    private func waitUntil(timeout: TimeInterval, condition: @MainActor () -> Bool) async {
+        let deadline = CFAbsoluteTimeGetCurrent() + timeout
+        while !condition() && CFAbsoluteTimeGetCurrent() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
     // MARK: - Activation Success
 
     func testActivateSuccess_startsPlayback() async throws {
@@ -332,6 +339,89 @@ final class AudioSessionManagerTests: XCTestCase {
         XCTAssertFalse(runtime.isPlaying)
     }
 
+    // MARK: - Route Change: Old Device Unavailable Stops Playback
+
+    func testRouteChangeOldDeviceUnavailable_stopsPlayback() async throws {
+        guard let (runtime, mockAudio, _) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal unavailable")
+        }
+
+        runtime.startPlayback()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(runtime.isPlaying)
+
+        mockAudio.simulateEvent(.routeChanged(reason: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue))
+        await Task.yield()
+
+        XCTAssertFalse(runtime.isPlaying)
+    }
+
+    func testRouteChangeOldDeviceUnavailableDuringPendingStart_cancelsStartup() async throws {
+        guard let (runtime, mockAudio, mockPreview) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal unavailable")
+        }
+
+        let gateReached = expectation(description: "gate reached")
+        runtime.playbackStartGate = {
+            gateReached.fulfill()
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+        }
+
+        runtime.startPlayback()
+        await fulfillment(of: [gateReached], timeout: 2.0)
+
+        XCTAssertTrue(runtime.hasPlaybackStartTask)
+        XCTAssertFalse(runtime.isPlaying)
+
+        mockAudio.simulateEvent(.routeChanged(reason: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue))
+        await Task.yield()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertFalse(runtime.isPlaying)
+        XCTAssertFalse(runtime.hasPlaybackStartTask)
+        XCTAssertEqual(mockPreview.startPlaybackCallCount, 0)
+    }
+
+    func testRouteChangeNewDeviceAvailable_restartsPreviewAudio() async throws {
+        guard let (runtime, mockAudio, mockPreview) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal unavailable")
+        }
+
+        // Set up mock so coordinator's startForTimelinePlayback() reaches controller
+        mockPreview.hasActivePipeline = true
+        mockPreview.readiness = .primed
+        runtime.previewAudio.dirty = false
+
+        runtime.startPlayback()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(runtime.isPlaying)
+
+        let startCountBefore = mockPreview.startPlaybackCallCount
+        let reprepareCountBefore = mockPreview.reprepareForRouteChangeCallCount
+
+        mockAudio.simulateEvent(.routeChanged(reason: AVAudioSession.RouteChangeReason.newDeviceAvailable.rawValue))
+        await Task.yield()
+
+        XCTAssertTrue(runtime.isPlaying, "Playback must continue")
+        XCTAssertGreaterThan(mockPreview.reprepareForRouteChangeCallCount, reprepareCountBefore, "Engine graph must be recreated")
+        XCTAssertGreaterThan(mockPreview.startPlaybackCallCount, startCountBefore, "Preview audio must restart")
+    }
+
+    func testRouteChangeOtherReason_doesNotStopPlayback() async throws {
+        guard let (runtime, mockAudio, _) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal unavailable")
+        }
+
+        runtime.startPlayback()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(runtime.isPlaying)
+
+        mockAudio.simulateEvent(.routeChanged(reason: AVAudioSession.RouteChangeReason.categoryChange.rawValue))
+        await Task.yield()
+
+        XCTAssertTrue(runtime.isPlaying)
+    }
+
     // MARK: - Deactivate on Stop
 
     func testStopPlayback_deactivatesSession() async throws {
@@ -344,7 +434,7 @@ final class AudioSessionManagerTests: XCTestCase {
         XCTAssertTrue(runtime.isPlaying)
 
         runtime.stopPlayback()
-        await Task.yield()
+        await waitUntil(timeout: 1.0) { mockAudio.deactivateCallCount == 1 }
 
         XCTAssertEqual(mockAudio.deactivateCallCount, 1)
     }

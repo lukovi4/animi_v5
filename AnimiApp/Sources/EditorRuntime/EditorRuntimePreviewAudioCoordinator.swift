@@ -7,7 +7,7 @@ private let logger = Logger(subsystem: "com.animi.app", category: "EditorRuntime
 /// Owns preview-audio pipeline lifecycle: build, install, teardown.
 @MainActor
 internal final class EditorRuntimePreviewAudioCoordinator {
-    unowned let runtime: EditorRuntime
+    private weak var runtime: EditorRuntime?
 
     // MARK: - Stored Properties
 
@@ -40,6 +40,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
     // MARK: - Public API
 
     func markDirty() {
+        guard let runtime else { return }
         dirty = true
         generation &+= 1
         #if DEBUG
@@ -114,6 +115,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
     // MARK: - Playback Integration
 
     func startForTimelinePlayback() {
+        guard let runtime else { return }
         guard runtime.state == .timelinePreview else { return }
         cancelScheduledPrepare()
 
@@ -197,6 +199,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
 
     /// Starts idle build. Only when: dirty, timelinePreview, not playing.
     func prepareForTimelinePreview() {
+        guard let runtime else { return }
         guard runtime.state == .timelinePreview else { return }
         guard dirty else { return }
         guard !runtime.isPlaying else { return }
@@ -233,11 +236,9 @@ internal final class EditorRuntimePreviewAudioCoordinator {
             }
             guard self.activeBuildToken == token else { return }
             guard self.generation == gen else { return }
+            guard let runtime = self.runtime else { return }
 
-            let shouldStart = self.pendingStartWhenReady
-            if shouldStart {
-                guard self.runtime.isPlaying else { return }
-            }
+            let shouldStart = self.pendingStartWhenReady && runtime.isPlaying
 
             #if DEBUG
             switch buildResult {
@@ -268,6 +269,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
     // MARK: - Private
 
     func buildConfig(includeOriginalFromVideoSlots: Bool) async -> AudioExportConfig? {
+        guard let runtime else { return nil }
         let music = await runtime.buildProjectMusicTrackConfig()
         return AudioExportConfig(
             music: music,
@@ -284,6 +286,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         }
         #endif
 
+        guard let runtime else { return .failed }
         let plan = await runtime.buildAudioExportPlan(includeOriginalFromVideoSlots: true)
 
         #if DEBUG
@@ -334,16 +337,16 @@ internal final class EditorRuntimePreviewAudioCoordinator {
 
     private func installCallbacks(generation gen: UInt, startWhenReady: Bool) {
         controller.onReady = { [weak self] in
-            guard let self, self.generation == gen,
-                  self.runtime.state == .timelinePreview else { return }
+            guard let self, let runtime = self.runtime, self.generation == gen,
+                  runtime.state == .timelinePreview else { return }
             #if DEBUG
             MemoryDiagnostics.event("preview.audio.ready", "generation=\(gen) startWhenReady=\(startWhenReady ? 1 : 0)")
             #endif
             self.controller.prepareForImmediatePlayback()
         }
         controller.onPrepareFinished = { [weak self] result in
-            guard let self, self.generation == gen,
-                  self.runtime.state == .timelinePreview else { return }
+            guard let self, let runtime = self.runtime, self.generation == gen,
+                  runtime.state == .timelinePreview else { return }
             self.handlePrepareFinished(result: result, generation: gen, startWhenReady: startWhenReady)
         }
         controller.onFailure = { [weak self] reason in
@@ -365,6 +368,7 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         case .primed:
             dirty = false
             guard startWhenReady else { return }
+            guard let runtime else { return }
             guard runtime.isPlaying else { return }
             let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
             controller.startPlayback(

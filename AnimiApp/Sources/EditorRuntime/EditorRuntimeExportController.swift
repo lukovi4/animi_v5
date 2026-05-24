@@ -640,7 +640,7 @@ internal final class EditorRuntimeExportController {
         switch result {
         case .success(let url):
             logger.info("[Export] SUCCESS: \(url.lastPathComponent)")
-            Task { await runtime.session.commitAfterExportSuccess() }
+            Task { [weak runtime] in await runtime?.session.commitAfterExportSuccess() }
             runtime.onOutput?(.exportRenderSucceeded(url))
             saveExportedVideoToPhotos(url, requestId: requestId)
 

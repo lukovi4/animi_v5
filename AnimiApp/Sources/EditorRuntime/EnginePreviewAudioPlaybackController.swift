@@ -30,6 +30,7 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
     var onPlayerPlay: (() -> Void)?
     var onProbe: ((Int) -> Void)?
     private var probeToken: UInt = 0
+    private var lastTargetHostTime: CFTimeInterval = 0
     #endif
 
     var hasActivePipeline: Bool { audioFile != nil || renderTask != nil }
@@ -218,23 +219,31 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
 
         let sampleRate = file.processingFormat.sampleRate
         let totalFrames = file.length
-        let startFrame = max(0, min(AVAudioFramePosition(fromSeconds * sampleRate), totalFrames - 1))
-        let remainingFrames = AVAudioFrameCount(totalFrames - startFrame)
+        let now = CACurrentMediaTime()
 
-        guard remainingFrames > 0 else { return }
+        guard let timing = Self.makePlaybackTiming(
+            fromSeconds: fromSeconds,
+            anchorHostTime: hostTime,
+            now: now,
+            sampleRate: sampleRate,
+            totalFrames: totalFrames
+        ) else { return }
 
         #if DEBUG
-        MemoryDiagnostics.event("preview.audio.engine.scheduleSegment", "target=\(fromSeconds) frame=\(startFrame) remaining=\(remainingFrames)")
-        onScheduleSegment?(startFrame, remainingFrames)
+        MemoryDiagnostics.event("preview.audio.engine.scheduleSegment", "target=\(fromSeconds) frame=\(timing.startFrame) remaining=\(timing.remainingFrames) catchUpMs=\(timing.catchUpSeconds * 1000) effectiveStart=\(timing.effectiveStartSeconds)")
+        onScheduleSegment?(timing.startFrame, timing.remainingFrames)
         #endif
 
-        node.scheduleSegment(file, startingFrame: startFrame, frameCount: remainingFrames, at: nil)
-        node.play()
+        node.scheduleSegment(file, startingFrame: timing.startFrame, frameCount: timing.remainingFrames, at: nil)
+
+        let playTime = AVAudioTime(hostTime: timing.playHostTime)
+        node.play(at: playTime)
 
         #if DEBUG
-        MemoryDiagnostics.event("preview.audio.engine.play", "startFrame=\(startFrame)")
+        lastTargetHostTime = timing.targetHostTime
+        MemoryDiagnostics.event("preview.audio.engine.play", "startFrame=\(timing.startFrame) targetHostTime=\(timing.targetHostTime) catchUpMs=\(timing.catchUpSeconds * 1000)")
         onPlayerPlay?()
-        scheduleDebugProbes(startFrame: startFrame, sampleRate: sampleRate, node: node)
+        scheduleDebugProbes(startFrame: timing.startFrame, sampleRate: sampleRate, node: node)
         #endif
     }
 
@@ -255,7 +264,9 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
                    let playerTime = node.playerTime(forNodeTime: nodeTime),
                    playerTime.isSampleTimeValid {
                     let advancedMs = Double(playerTime.sampleTime) / playerTime.sampleRate * 1000
-                    MemoryDiagnostics.event("preview.audio.engine.probe", "afterMs=\(delayMs) advancedMs=\(advancedMs) sampleTime=\(playerTime.sampleTime) startFrame=\(startFrame) rate=\(playerTime.sampleRate)")
+                    let expectedMs = max(0, CACurrentMediaTime() - self.lastTargetHostTime) * 1000
+                    let driftMs = advancedMs - expectedMs
+                    MemoryDiagnostics.event("preview.audio.engine.probe", "afterMs=\(delayMs) advancedMs=\(advancedMs) expectedMs=\(expectedMs) driftMs=\(driftMs) sampleTime=\(playerTime.sampleTime) startFrame=\(startFrame) rate=\(playerTime.sampleRate)")
                 } else {
                     MemoryDiagnostics.event("preview.audio.engine.probe", "afterMs=\(delayMs) advancedMs=n/a sampleTime=n/a rate=n/a")
                 }
@@ -264,6 +275,34 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
         }
     }
     #endif
+
+    // MARK: - Reprepare for Route Change
+
+    func reprepareForRouteChange() {
+        guard readiness == .primed || readiness == .ready else { return }
+        guard let file = audioFile else { return }
+
+        // Tear down old engine graph
+        playerNode?.stop()
+        engine?.stop()
+        engine = nil
+        playerNode = nil
+
+        // Rebuild fresh engine + player node
+        let eng = AVAudioEngine()
+        let node = AVAudioPlayerNode()
+        eng.attach(node)
+        eng.connect(node, to: eng.mainMixerNode, format: file.processingFormat)
+        eng.prepare()
+
+        self.engine = eng
+        self.playerNode = node
+        readiness = .primed
+
+        #if DEBUG
+        MemoryDiagnostics.event("preview.audio.engine.reprepareForRouteChange", "nodeAttached=1")
+        #endif
+    }
 
     // MARK: - Pause
 
@@ -416,6 +455,45 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
         memcpy(dst.mData, src.mData, min(Int(dst.mDataByteSize), Int(src.mDataByteSize)))
 
         return pcmBuffer
+    }
+
+    // MARK: - Playback Timing
+
+    struct PlaybackTiming {
+        let startFrame: AVAudioFramePosition
+        let remainingFrames: AVAudioFrameCount
+        let playHostTime: UInt64
+        let targetHostTime: CFTimeInterval
+        let effectiveStartSeconds: Double
+        let catchUpSeconds: Double
+    }
+
+    static func makePlaybackTiming(
+        fromSeconds: Double,
+        anchorHostTime: CFTimeInterval,
+        now: CFTimeInterval,
+        sampleRate: Double,
+        totalFrames: AVAudioFramePosition,
+        scheduleLeadTime: CFTimeInterval = 0.02
+    ) -> PlaybackTiming? {
+        let targetHostTime = max(anchorHostTime, now + scheduleLeadTime)
+        let catchUpSeconds = max(0, targetHostTime - anchorHostTime)
+        let effectiveStartSeconds = fromSeconds + catchUpSeconds
+
+        let rawFrame = AVAudioFramePosition(effectiveStartSeconds * sampleRate)
+        guard rawFrame >= 0, rawFrame < totalFrames else { return nil }
+        let remaining = totalFrames - rawFrame
+
+        let playHostTime = AVAudioTime.hostTime(forSeconds: targetHostTime)
+
+        return PlaybackTiming(
+            startFrame: rawFrame,
+            remainingFrames: AVAudioFrameCount(remaining),
+            playHostTime: playHostTime,
+            targetHostTime: targetHostTime,
+            effectiveStartSeconds: effectiveStartSeconds,
+            catchUpSeconds: catchUpSeconds
+        )
     }
 
     // MARK: - Cache File

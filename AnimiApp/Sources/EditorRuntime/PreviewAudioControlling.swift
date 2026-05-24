@@ -47,4 +47,6 @@ protocol PreviewAudioControlling: AnyObject {
     var onPrepareFinished: (@MainActor (PreviewAudioPrepareResult) -> Void)? { get set }
     /// Prepares the engine graph for instant playback.
     func prepareForImmediatePlayback()
+    /// Recreate engine graph after audio route change (e.g. headphones connected).
+    func reprepareForRouteChange()
 }

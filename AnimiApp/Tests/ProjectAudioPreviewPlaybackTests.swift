@@ -49,6 +49,13 @@ final class MockPreviewAudioController: PreviewAudioControlling {
         onFailure = nil
     }
 
+    var reprepareForRouteChangeCallCount = 0
+
+    func reprepareForRouteChange() {
+        reprepareForRouteChangeCallCount += 1
+        readiness = .primed
+    }
+
     func prepareForImmediatePlayback() {
         prepareForImmediatePlaybackCallCount += 1
         if simulateImmediateReady {
@@ -414,15 +421,16 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         XCTAssertEqual(mock.pauseCallCount, 1)
     }
 
-    // MARK: - Test 2: stopPlayback bumps generation
+    // MARK: - Test 2: stopPlayback preserves preview audio generation
 
-    func test_stopPlayback_bumpsGeneration() async {
+    func test_stopPlayback_preservesPreviewAudioGeneration() async {
         let (_, runtime) = await makeBootedRuntime()
         let genBefore = runtime.previewAudioGeneration
 
         runtime.stopPlayback()
 
-        XCTAssertGreaterThan(runtime.previewAudioGeneration, genBefore)
+        XCTAssertEqual(runtime.previewAudioGeneration, genBefore,
+                       "Normal pause must not invalidate an in-flight or prepared audio pipeline")
     }
 
     // MARK: - Test 3: enterExportMode tears down preview audio
@@ -689,16 +697,18 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         mock.replacePipelineCallCount = 0
         mock.startPlaybackCallCount = 0
 
-        // Stop → cancels rebuild task, bumps generation, isPlaying=false
+        // Stop must not discard the in-flight audio build. It should preserve the
+        // prepared pipeline for the next Play, but must not auto-start while stopped.
         runtime.stopPlayback()
         XCTAssertFalse(runtime.isPlaying)
 
-        // Complete the pending build — guard should reject (gen mismatch + !isPlaying)
+        // Complete the pending build — it should install/prepare for reuse, not start.
         controllable.completeNext(with: makeDummyPipeline())
         for _ in 0..<5 { await Task.yield() }
 
-        XCTAssertEqual(mock.replacePipelineCallCount, 0, "Stale build after stop must not replace pipeline")
-        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Stale build after stop must not start playback")
+        XCTAssertEqual(mock.replacePipelineCallCount, 1, "Build after stop should preserve the pipeline")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Build after stop must not start playback")
+        XCTAssertFalse(runtime.previewAudioDirty, "Prepared pipeline after stop should clear dirty")
 
         controllable.drainAll()
     }
@@ -793,9 +803,9 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         controllable.drainAll()
     }
 
-    // MARK: - Test 14: stop cancels startPlayback-triggered audio build
+    // MARK: - Test 14: stop preserves startPlayback-triggered audio build
 
-    func test_stopCancelsStartPlaybackTriggeredAudioBuild() async throws {
+    func test_stopPreservesStartPlaybackTriggeredAudioBuild() async throws {
         guard let (_, runtime) = await makePlayableRuntime() else {
             throw XCTSkip("Metal device not available")
         }
@@ -820,22 +830,23 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         mock.replacePipelineCallCount = 0
         mock.startPlaybackCallCount = 0
 
-        // Stop → cancels rebuild task and bumps generation
+        // Stop preserves the in-flight build for next Play.
         runtime.stopPlayback()
 
-        // Complete the pending build — it should be rejected
+        // Complete the pending build — it should install/prepare for reuse, not start.
         controllable.completeNext(with: makeDummyPipeline())
         for _ in 0..<5 { await Task.yield() }
 
-        XCTAssertEqual(mock.replacePipelineCallCount, 0, "Cancelled build must not replace pipeline")
-        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Cancelled build must not start audio playback")
+        XCTAssertEqual(mock.replacePipelineCallCount, 1, "Build after stop should preserve the pipeline")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Build after stop must not start audio playback")
+        XCTAssertFalse(runtime.previewAudioDirty, "Prepared pipeline after stop should clear dirty")
 
         controllable.drainAll()
     }
 
-    // MARK: - Test 15: cancelPreviewAudioBuild cancels both orchestration and detached build tasks
+    // MARK: - Test 15: close cancels both orchestration and detached build tasks
 
-    func test_cancelPreviewAudioBuild_cancelsBothTasks() async throws {
+    func test_releasePreviewResourcesForClose_cancelsBothTasks() async throws {
         guard let (_, runtime) = await makePlayableRuntime() else {
             throw XCTSkip("Metal device not available")
         }
@@ -855,17 +866,17 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1)
 
-        // stopPlayback calls cancelPreviewAudioBuild which nils both task handles
-        runtime.stopPlayback()
+        // Editor close still owns destructive cancellation of preview audio work.
+        await runtime.releasePreviewResourcesForClose()
         XCTAssertFalse(runtime.hasActivePreviewAudioOrchestration,
-                       "Both task handles must be nil'd after cancel")
+                       "Both task handles must be nil'd after close cleanup")
 
         controllable.drainAll()
     }
 
-    // MARK: - Test 16: production build path — gate-held build rejected on stop
+    // MARK: - Test 16: production build path — gate-held build completes after stop
 
-    func test_productionBuildPath_detachedTaskOwnedAndCancelled() async throws {
+    func test_productionBuildPath_gateHeldBuildCompletesAfterStopWithoutStartingAudio() async throws {
         guard let (runtime, tempDir) = try await makePlayableRuntimeWithAudio() else {
             throw XCTSkip("Metal device not available")
         }
@@ -900,20 +911,22 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         XCTAssertFalse(runtime.hasActivePreviewAudioBuildTask,
                        "Detached build task should not exist yet (gate is before it)")
 
-        // Stop → cancels rebuild task + bumps generation
+        // Stop must preserve the build so the result can be reused or marked clean.
         runtime.stopPlayback()
         XCTAssertFalse(runtime.isPlaying)
 
-        // Release the gate — generation check after gate rejects, detached task not created
+        // Release the gate — build may complete after stop, but must not start playback.
         gateContinuation?.resume()
-        for _ in 0..<20 { await Task.yield() }
+        await waitUntil(timeout: 2.0) { !runtime.hasActivePreviewAudioOrchestration }
 
         XCTAssertEqual(mock.replacePipelineCallCount, 0,
-                       "Stale production build must not replace pipeline after stop")
+                       "Invalid stub audio should not produce a replacement pipeline")
         XCTAssertEqual(mock.startPlaybackCallCount, 0,
-                       "Stale production build must not start audio playback after stop")
+                       "Production build after stop must not start audio playback")
         XCTAssertFalse(runtime.hasActivePreviewAudioBuildTask,
-                       "Build task handle must be clean after rejected build")
+                       "Build task handle must be clean after build completion")
+        XCTAssertFalse(runtime.previewAudioDirty,
+                       "No-audio result after stop should clear dirty to avoid rebuild churn")
     }
 
     // MARK: - Test 17: production build normal completion clears build task handle
@@ -947,9 +960,9 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         runtime.stopPlayback()
     }
 
-    // MARK: - Test 18: stop during plan resolution prevents detached build
+    // MARK: - Test 18: stop during plan resolution completes without starting audio
 
-    func test_stopDuringPlanResolution_preventsDetachedBuild() async throws {
+    func test_stopDuringPlanResolution_completesWithoutStartingAudio() async throws {
         guard let (runtime, tempDir) = try await makePlayableRuntimeWithAudio() else {
             throw XCTSkip("Metal device not available")
         }
@@ -958,26 +971,28 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let mock = MockPreviewAudioController()
         runtime.setPreviewAudioController(mock)
         // NO injected builder and NO gate — production path runs freely.
-        // Generation check after plan resolution catches the stale wave.
 
         // Start playback to get into playing state
         runtime.startPlayback()
         await waitForPlaybackStart(runtime)
         XCTAssertTrue(runtime.isPlaying)
 
-        // Stop immediately — bumps generation while plan resolution may be in-flight
-        // (buildPreviewAudioConfig does async file resolution via mediaLocator).
-        // The generation captured before first await no longer matches after plan resolves.
+        // Stop immediately while plan resolution may be in-flight. Normal pause should not
+        // invalidate this work; it only prevents auto-start while stopped.
         runtime.stopPlayback()
 
         // Let any in-flight work complete
-        for _ in 0..<20 { await Task.yield() }
+        await waitUntil(timeout: 2.0) { !runtime.hasActivePreviewAudioOrchestration }
 
-        // Verify: no pipeline applied and no dangling build task
+        // Verify: no playback start and no dangling build task
         XCTAssertEqual(mock.replacePipelineCallCount, 0,
-                       "Stop during plan resolution must prevent pipeline apply")
+                       "Invalid stub audio should not produce a replacement pipeline")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0,
+                       "Stop during plan resolution must prevent audio auto-start")
         XCTAssertFalse(runtime.hasActivePreviewAudioBuildTask,
-                       "No detached build should be created after generation mismatch")
+                       "Detached build task should be clean after completion")
+        XCTAssertFalse(runtime.previewAudioDirty,
+                       "Completed no-audio result should clear dirty after stop")
     }
 
     // MARK: - Test 21: dirty rebuild defers start until prepare finishes
@@ -1102,14 +1117,17 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         XCTAssertEqual(mock.replacePipelineCallCount, 1)
         mock.startPlaybackCallCount = 0
 
-        // Stop bumps generation
+        // Stop must not invalidate the preparing audio pipeline.
         runtime.stopPlayback()
 
-        // Simulate readiness after stop → generation guard prevents start
+        // Simulate readiness after stop → prepare may finish, but playback must not start.
         mock.simulateReady()
+        mock.simulatePrimed()
 
         XCTAssertEqual(mock.startPlaybackCallCount, 0,
-                       "onReady after stop must not call startPlayback (generation guard)")
+                       "onReady after stop must not call startPlayback while stopped")
+        XCTAssertFalse(runtime.previewAudioDirty,
+                       "Ready audio pipeline after stop should be kept for the next Play")
 
         controllable.drainAll()
     }
@@ -2024,7 +2042,8 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         }
         controller.onPlayerPlay = { playFired = true }
 
-        controller.startPlayback(fromSeconds: 0.05, hostTime: CACurrentMediaTime())
+        // Use a future anchor so catch-up is zero and frame matches fromSeconds exactly
+        controller.startPlayback(fromSeconds: 0.05, hostTime: CACurrentMediaTime() + 1.0)
 
         XCTAssertNotNil(segmentFrame)
         XCTAssertNotNil(segmentCount)
@@ -2035,7 +2054,7 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
 
     // MARK: - Engine Test 4: startPlayback clamps frame
 
-    func test_engineController_startPlayback_clampsFrame() async throws {
+    func test_engineController_startPlayback_beyondEOF_skips() async throws {
         let (controller, wavURL) = try await makeReadyEngineController()
         defer {
             controller.teardown()
@@ -2048,11 +2067,10 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         var segmentFrame: AVAudioFramePosition?
         controller.onScheduleSegment = { frame, _ in segmentFrame = frame }
 
-        // Request playback far beyond duration — should clamp
+        // Request playback far beyond duration — should skip (no segment scheduled)
         controller.startPlayback(fromSeconds: 999.0, hostTime: CACurrentMediaTime())
 
-        // Should have clamped to totalFrames - 1
-        XCTAssertNotNil(segmentFrame)
+        XCTAssertNil(segmentFrame, "Beyond-EOF playback should not schedule a segment")
     }
 
     // MARK: - Engine Test 5: pause keeps engine alive
@@ -2222,5 +2240,237 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         await waitUntil(timeout: 3.0) { probeDelays.count >= 4 }
 
         XCTAssertEqual(probeDelays.sorted(), [100, 500, 1000, 2000])
+    }
+
+    // MARK: - Instant Pause Response
+
+    func test_stopPlayback_emitsPlaybackStateBeforeCleanup() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal unavailable")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        var events: [String] = []
+        runtime.onOutput = { output in
+            if case .playbackStateChanged(let isPlaying) = output, !isPlaying {
+                events.append("stateChanged")
+            }
+        }
+        runtime.rendererResourceTrimmer = { _ in
+            events.append("trimmer")
+        }
+
+        runtime.stopPlayback()
+
+        // Immediately after stopPlayback returns: state changed emitted, cleanup not yet
+        XCTAssertEqual(events, ["stateChanged"])
+
+        // Let deferred cleanup run
+        await waitUntil(timeout: 1.0) { events.count >= 2 }
+
+        XCTAssertEqual(events, ["stateChanged", "trimmer"])
+    }
+
+    func test_stopPlayback_setsIsPlayingFalseBeforeCleanup() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal unavailable")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        var capturedIsPlaying: Bool?
+        runtime.rendererResourceTrimmer = { [weak runtime] _ in
+            capturedIsPlaying = runtime?.isPlaying
+        }
+
+        runtime.stopPlayback()
+        await waitUntil(timeout: 1.0) { capturedIsPlaying != nil }
+
+        XCTAssertEqual(capturedIsPlaying, false)
+    }
+
+    func test_stopPlayback_cleanupGuardedByGeneration() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal unavailable")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        var trimmerCallCount = 0
+        runtime.rendererResourceTrimmer = { _ in
+            trimmerCallCount += 1
+        }
+
+        // Two rapid stops: first cleanup should be invalidated by second via generation guard
+        runtime.stopPlayback()
+        runtime.stopPlayback()
+
+        // Let both deferred cleanup Tasks execute
+        await waitUntil(timeout: 1.0) { trimmerCallCount >= 1 }
+
+        // Only ONE cleanup should have run (the second), first is stale
+        XCTAssertEqual(trimmerCallCount, 1, "Only the latest stop's cleanup should execute")
+    }
+
+    func test_stopPlayback_cleanupSkippedWhenStartPending() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal unavailable")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        var trimmerCalled = false
+        runtime.rendererResourceTrimmer = { _ in
+            trimmerCalled = true
+        }
+
+        // Stop schedules deferred cleanup
+        runtime.stopPlayback()
+
+        // Immediately start again — playbackStartTask is non-nil, generation bumped
+        // isPlaying is still false (async prepare hasn't finished), but cleanup must not run
+        runtime.startPlayback()
+        XCTAssertFalse(runtime.isPlaying, "isPlaying should still be false during async prepare")
+
+        // Let deferred cleanup Task execute — all guards should reject it
+        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+
+        XCTAssertFalse(trimmerCalled, "Cleanup must not run while a new startPlayback is pending")
+    }
+}
+
+// MARK: - PlaybackTiming Tests
+
+final class PlaybackTimingTests: XCTestCase {
+
+    private let sampleRate: Double = 44100.0
+    private let totalFrames: AVAudioFramePosition = 441000 // 10 seconds
+
+    @MainActor
+    func testFutureAnchor_playsExactlyAtAnchor() {
+        let now: CFTimeInterval = 1000.0
+        let anchor: CFTimeInterval = 1000.1 // 100ms in the future (> lead 20ms)
+
+        let timing = EnginePreviewAudioPlaybackController.makePlaybackTiming(
+            fromSeconds: 2.0,
+            anchorHostTime: anchor,
+            now: now,
+            sampleRate: sampleRate,
+            totalFrames: totalFrames
+        )
+
+        XCTAssertNotNil(timing)
+        guard let t = timing else { return }
+
+        XCTAssertEqual(t.targetHostTime, anchor, accuracy: 1e-9, "Should schedule at anchor when it's in the future")
+        XCTAssertEqual(t.catchUpSeconds, 0.0, accuracy: 1e-9, "No catch-up needed for future anchor")
+        XCTAssertEqual(t.effectiveStartSeconds, 2.0, accuracy: 1e-9)
+
+        let expectedFrame = AVAudioFramePosition(2.0 * sampleRate)
+        XCTAssertEqual(t.startFrame, expectedFrame)
+        XCTAssertEqual(t.remainingFrames, AVAudioFrameCount(totalFrames - expectedFrame))
+    }
+
+    @MainActor
+    func testPastAnchor_compensatesElapsedTime() {
+        let anchor: CFTimeInterval = 1000.0
+        let now: CFTimeInterval = 1000.05 // 50ms after anchor
+
+        let timing = EnginePreviewAudioPlaybackController.makePlaybackTiming(
+            fromSeconds: 1.0,
+            anchorHostTime: anchor,
+            now: now,
+            sampleRate: sampleRate,
+            totalFrames: totalFrames
+        )
+
+        XCTAssertNotNil(timing)
+        guard let t = timing else { return }
+
+        let expectedTarget = now + 0.02 // 1000.07
+        XCTAssertEqual(t.targetHostTime, expectedTarget, accuracy: 1e-9)
+        let expectedCatchUp = expectedTarget - anchor // 0.07
+        XCTAssertEqual(t.catchUpSeconds, expectedCatchUp, accuracy: 1e-9)
+        XCTAssertEqual(t.effectiveStartSeconds, 1.0 + expectedCatchUp, accuracy: 1e-9)
+
+        let expectedFrame = AVAudioFramePosition((1.0 + expectedCatchUp) * sampleRate)
+        XCTAssertEqual(t.startFrame, expectedFrame)
+    }
+
+    @MainActor
+    func testRecentAnchor_withinLeadTime() {
+        let anchor: CFTimeInterval = 1000.0
+        let now: CFTimeInterval = 1000.01 // 10ms after anchor (< 20ms lead)
+
+        let timing = EnginePreviewAudioPlaybackController.makePlaybackTiming(
+            fromSeconds: 0.5,
+            anchorHostTime: anchor,
+            now: now,
+            sampleRate: sampleRate,
+            totalFrames: totalFrames
+        )
+
+        XCTAssertNotNil(timing)
+        guard let t = timing else { return }
+
+        let expectedTarget = now + 0.02 // 1000.03
+        XCTAssertEqual(t.targetHostTime, expectedTarget, accuracy: 1e-9)
+        let expectedCatchUp = expectedTarget - anchor // 0.03
+        XCTAssertEqual(t.catchUpSeconds, expectedCatchUp, accuracy: 1e-9)
+    }
+
+    @MainActor
+    func testNearEOF_returnsNil() {
+        let anchor: CFTimeInterval = 1000.0
+        let now: CFTimeInterval = 1000.05
+        let duration = Double(totalFrames) / sampleRate // 10.0s
+
+        // fromSeconds = duration (10s) + catch-up (0.07s) → rawFrame >= totalFrames → nil
+        let timing = EnginePreviewAudioPlaybackController.makePlaybackTiming(
+            fromSeconds: duration,
+            anchorHostTime: anchor,
+            now: now,
+            sampleRate: sampleRate,
+            totalFrames: totalFrames
+        )
+
+        XCTAssertNil(timing, "Should return nil when rawFrame >= totalFrames")
+    }
+
+    @MainActor
+    func testExactStart_withLeadCompensation() {
+        let now: CFTimeInterval = 1000.0
+        let anchor: CFTimeInterval = 1000.0 // anchor == now
+
+        let timing = EnginePreviewAudioPlaybackController.makePlaybackTiming(
+            fromSeconds: 0.0,
+            anchorHostTime: anchor,
+            now: now,
+            sampleRate: sampleRate,
+            totalFrames: totalFrames
+        )
+
+        XCTAssertNotNil(timing)
+        guard let t = timing else { return }
+
+        // anchor == now, so targetHostTime = max(1000, 1000.02) = 1000.02
+        let expectedTarget = now + 0.02
+        XCTAssertEqual(t.targetHostTime, expectedTarget, accuracy: 1e-9)
+        XCTAssertEqual(t.catchUpSeconds, 0.02, accuracy: 1e-9)
+        XCTAssertEqual(t.effectiveStartSeconds, 0.02, accuracy: 1e-9)
+
+        // Allow ±1 frame tolerance for floating-point rounding
+        let expectedFrame = AVAudioFramePosition(0.02 * sampleRate)
+        XCTAssertTrue(abs(t.startFrame - expectedFrame) <= 1, "startFrame \(t.startFrame) should be within 1 of \(expectedFrame)")
+        XCTAssertEqual(t.remainingFrames, AVAudioFrameCount(totalFrames - t.startFrame))
     }
 }

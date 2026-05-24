@@ -1,3 +1,4 @@
+import AVFAudio
 import Foundation
 import MetalKit
 import TVECore
@@ -134,6 +135,7 @@ final class EditorRuntime {
     private var playbackStartTask: Task<Void, Never>?
     var lastStillSyncFrame: Int = -1
     private let playbackTransport = PlaybackTransport()
+    private var playbackStopGeneration: UInt = 0
     private var playbackCurrentCompressedFrame: Int = 0
     var playbackCurrentProjectTimeUs: TimeUs = 0
 
@@ -974,6 +976,9 @@ final class EditorRuntime {
             return
         }
 
+        // Invalidate any pending deferred stop-cleanup before async prepare
+        playbackStopGeneration &+= 1
+
         let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         let fps = Float(sceneFPS)
 
@@ -1036,11 +1041,7 @@ final class EditorRuntime {
     }
 
     func stopPlayback() {
-        #if DEBUG
-        if MemoryDiagnostics.isEnabled {
-            MemoryDiagnostics.checkpoint("playback.stop.before", metal: metalContext?.device, resources: gatherResourceContext())
-        }
-        #endif
+        // -- Phase 1: Urgent stop (synchronous, returns to runloop fast) --
 
         playbackStartTask?.cancel()
         playbackStartTask = nil
@@ -1049,11 +1050,10 @@ final class EditorRuntime {
         MemoryDiagnostics.event("playback.audio.stop.begin", "")
         #endif
         previewAudio.controller.pause()
-        previewAudio.generation &+= 1
-        previewAudio.cancelBuild()
 
         playbackTransport.stop()
         isPlaying = false
+
         if let link = displayLink {
             link.invalidate()
             #if DEBUG
@@ -1061,6 +1061,31 @@ final class EditorRuntime {
             #endif
             displayLink = nil
         }
+
+        let cleanupGeneration = playbackStopGeneration &+ 1
+        playbackStopGeneration = cleanupGeneration
+
+        onOutput?(.playbackStateChanged(isPlaying: false))
+
+        // -- Phase 2: Deferred cleanup (next runloop turn, guarded) --
+
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            guard !self.isPlaying else { return }
+            guard self.playbackStartTask == nil else { return }
+            guard self.playbackStopGeneration == cleanupGeneration else { return }
+
+            self.performPlaybackCleanup()
+        }
+    }
+
+    private func performPlaybackCleanup() {
+        #if DEBUG
+        if MemoryDiagnostics.isEnabled {
+            MemoryDiagnostics.checkpoint("playback.stop.cleanup", metal: metalContext?.device, resources: gatherResourceContext())
+        }
+        #endif
 
         if timelineCompositionEngine != nil {
             timelineCompositionEngine?.stopPlayback()
@@ -1077,8 +1102,6 @@ final class EditorRuntime {
         #endif
 
         rendererResourceTrimmer?(.softInteractiveStop)
-
-        onOutput?(.playbackStateChanged(isPlaying: false))
 
         #if DEBUG
         MemoryDiagnostics.event("playback.audio.sessionDeactivate.call", "")
@@ -1156,8 +1179,27 @@ final class EditorRuntime {
             abortPlaybackStartupAndStop(reason: .interruption)
         case .interruptionEnded:
             break
-        case .routeChanged:
-            break
+        case .routeChanged(let reason):
+            if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+                guard isPlaying || playbackStartTask != nil else { return }
+                #if DEBUG
+                MemoryDiagnostics.event(
+                    "audio.session.routeChange.oldDeviceUnavailable.handleInRuntime",
+                    "isPlaying=\(isPlaying ? 1 : 0) hadStartTask=\(playbackStartTask != nil ? 1 : 0)"
+                )
+                #endif
+                stopPlayback()
+            } else if reason == AVAudioSession.RouteChangeReason.newDeviceAvailable.rawValue {
+                guard isPlaying else { return }
+                #if DEBUG
+                MemoryDiagnostics.event(
+                    "audio.session.routeChange.newDeviceAvailable.handleInRuntime",
+                    "isPlaying=\(isPlaying ? 1 : 0)"
+                )
+                #endif
+                previewAudio.controller.reprepareForRouteChange()
+                previewAudio.startForTimelinePlayback()
+            }
         case .mediaServicesReset:
             #if DEBUG
             MemoryDiagnostics.event("audio.session.mediaServicesReset.handleInRuntime", "isPlaying=\(isPlaying ? 1 : 0) hadStartTask=\(playbackStartTask != nil ? 1 : 0)")
