@@ -70,6 +70,8 @@ internal final class TimelineVideoExportRunner {
         #else
         let setupStartNs: UInt64 = 0
         #endif
+        if exportSession.completeIfCancelled() { return }
+
         // Load background textures on export queue (off MainActor).
         // Loads per-scene background snapshots into a single texture provider.
         // Slot keys are unique per preset+region, so different scene overrides coexist.
@@ -97,6 +99,8 @@ internal final class TimelineVideoExportRunner {
         let bgEndNs: UInt64 = 0
         #endif
 
+        if exportSession.completeIfCancelled() { return }
+
         var audioPipeline: BuiltAudioPipeline?
         if let plan = workItem.settings.audioPlan ?? workItem.settings.audio?.toPlan() {
             do {
@@ -118,6 +122,8 @@ internal final class TimelineVideoExportRunner {
         #else
         let audioEndNs: UInt64 = 0
         #endif
+
+        if exportSession.completeIfCancelled() { return }
 
         runTimelineExportLoop(
             workItem: workItem,
@@ -157,6 +163,8 @@ internal final class TimelineVideoExportRunner {
         // Delete existing file
         try? FileManager.default.removeItem(at: settings.outputURL)
 
+        if exportSession.completeIfCancelled() { return }
+
         // 1. Create pipeline (replaces writer/input/adaptor/audio setup)
         let pipeline: ExportWriterPipeline
         do {
@@ -167,11 +175,13 @@ internal final class TimelineVideoExportRunner {
                 audio: audioPipeline.map { .init(composition: $0.composition, audioMix: $0.audioMix) }
             )
             exportSession.attachPipeline(pipeline)
+            if exportSession.completeIfCancelled() { return }
             try pipeline.startWriting()
         } catch {
             exportSession.complete(with: .failure(error))
             return
         }
+        if exportSession.completeIfCancelled() { return }
         #if DEBUG
         let writerEndNs = DispatchTime.now().uptimeNanoseconds
         #endif
@@ -234,6 +244,7 @@ internal final class TimelineVideoExportRunner {
                 renderer.trimTransientResources(policy: .exportFinished)
             }
         )
+        if exportSession.completeIfCancelled() { return }
         exportSession.transitionToRendering()
 
         // 4. Video export loop (semaphore capped by budget)

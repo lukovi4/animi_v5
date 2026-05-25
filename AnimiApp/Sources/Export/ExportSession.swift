@@ -82,12 +82,7 @@ internal final class ExportSession {
     func attachPipeline(_ pipeline: ExportWriterPipeline) {
         lock.lock()
         _pipeline = pipeline
-        let alreadyCancelled = isTerminal(state)
         lock.unlock()
-
-        if alreadyCancelled {
-            pipeline.cancel()
-        }
     }
 
     // MARK: - State Transitions
@@ -106,16 +101,33 @@ internal final class ExportSession {
 
     // MARK: - Cancel (cooperative)
 
-    /// Sets `.cancelled` flag and cancels pipeline if attached.
-    /// Does NOT call cleanup or fire completion — the render loop does that via `complete(with:)`.
+    /// Phase-aware cancel. Only performs destructive `pipeline.cancel()` during `.rendering`.
+    /// In `.preparing` and `.finishing`, sets the flag only — runner-side `completeIfCancelled()`
+    /// handles destructive cleanup on the export queue where it is safe.
     func requestCancel() {
+        let pipelineToCancel: ExportWriterPipeline?
+
         lock.lock()
         guard !isTerminal(state) else { lock.unlock(); return }
-        state = .cancelled
-        let pipeline = _pipeline
+        switch state {
+        case .preparing:
+            // startWriting() may be in progress — only set flag, no destructive cancel.
+            state = .cancelled
+            pipelineToCancel = nil
+        case .rendering:
+            // Render loop running, startWriting() completed — safe to cancel pipeline.
+            state = .cancelled
+            pipelineToCancel = _pipeline
+        case .finishing:
+            // pipeline.finishWriting() in progress — do not race with pipeline.cancel().
+            state = .cancelled
+            pipelineToCancel = nil
+        case .completed, .failed, .cancelled:
+            pipelineToCancel = nil
+        }
         lock.unlock()
 
-        pipeline?.cancel()
+        pipelineToCancel?.cancel()
     }
 
     // MARK: - Terminal Completion
@@ -187,6 +199,35 @@ internal final class ExportSession {
         defer { lock.unlock() }
         if case .cancelled = state { return true }
         return false
+    }
+
+    /// Cancellation fence.
+    /// Safe before pipeline attachment from any context.
+    /// If a pipeline is already attached, this must be called from the export lifecycle path
+    /// that owns writer startup/cancel, normally the exportQueue runner.
+    ///
+    /// If cancelled:
+    /// 1. Cancels the pipeline (destructive — safe because caller owns the writer lifecycle).
+    /// 2. Fires `complete()` with `.cancelled` (triggers cleanup closures if registered).
+    /// Returns `true` if cancelled, `false` if active.
+    ///
+    /// **Cleanup ordering:** call after `setCleanup()` if resources requiring cleanup exist.
+    /// Calling before `setCleanup()` is safe when no resources have been created yet.
+    @discardableResult
+    func completeIfCancelled() -> Bool {
+        let pipelineToCancel: ExportWriterPipeline?
+
+        lock.lock()
+        guard case .cancelled = state else {
+            lock.unlock()
+            return false
+        }
+        pipelineToCancel = _pipeline
+        lock.unlock()
+
+        pipelineToCancel?.cancel()
+        complete(with: .failure(VideoExportError.cancelled))
+        return true
     }
 
     /// First error from the pipeline, if any.

@@ -337,10 +337,11 @@ final class VideoExportSessionTests: XCTestCase {
         XCTAssertTrue(session.isCancelled, "Session should accept cancel before pipeline attachment")
     }
 
-    // MARK: - test_attachPipelineAfterCancel_cancelsPipeline
+    // MARK: - Phase-aware cancel tests (PR-4B)
 
-    func test_attachPipelineAfterCancel_cancelsPipeline() throws {
+    func test_attachPipelineAfterCancel_doesNotCancelImmediately() throws {
         let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
 
         let session = ExportSession { _ in }
         session.requestCancel()
@@ -351,9 +352,75 @@ final class VideoExportSessionTests: XCTestCase {
 
         session.attachPipeline(pipeline)
 
-        // Pipeline should be cancelled since session was already cancelled
+        // Pipeline should NOT be cancelled immediately — runner's completeIfCancelled() handles it
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
+                      "attachPipeline should not destructively cancel during preparing phase")
+    }
+
+    func test_requestCancelDuringPreparing_doesNotCancelPipeline() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let session = ExportSession { _ in }
+        let pipeline = try makePipeline(url: url)
+        session.attachPipeline(pipeline)
+        try pipeline.startWriting()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+
+        // Cancel during preparing — should NOT call pipeline.cancel()
+        session.requestCancel()
+        XCTAssertTrue(session.isCancelled)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
+                      "requestCancel during preparing should not destructively cancel pipeline")
+    }
+
+    func test_completeIfCancelled_cancelsPipelineAndFiresCleanup() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let exp = expectation(description: "completion")
+        var cancelCleanupFired = false
+
+        let session = ExportSession { _ in exp.fulfill() }
+        let pipeline = try makePipeline(url: url)
+        session.attachPipeline(pipeline)
+        try pipeline.startWriting()
+
+        session.setCleanup(
+            onSuccess: { },
+            onFailure: { },
+            onCancel: { cancelCleanupFired = true }
+        )
+
+        session.requestCancel()
+        // Pipeline still alive (preparing phase)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+
+        // Runner-side fence — destructive cancel happens here
+        XCTAssertTrue(session.completeIfCancelled())
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertTrue(cancelCleanupFired)
+        // Pipeline now cancelled — file removed
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func test_requestCancelDuringRendering_cancelsPipelineImmediately() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let session = ExportSession { _ in }
+        let pipeline = try makePipeline(url: url)
+        session.attachPipeline(pipeline)
+        try pipeline.startWriting()
+        session.transitionToRendering()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+
+        // Cancel during rendering — destructive cancel allowed
+        session.requestCancel()
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
-                       "Attaching pipeline to cancelled session should cancel the pipeline")
+                       "requestCancel during rendering should cancel pipeline immediately")
     }
 
     // MARK: - test_terminalError
@@ -628,6 +695,78 @@ final class VideoExportSessionTests: XCTestCase {
         } else {
             XCTFail("Expected .cancelled, got \(String(describing: receivedResult))")
         }
+    }
+
+    // MARK: - PR4: completeIfCancelled Tests
+
+    func test_completeIfCancelled_noopsWhenActive() {
+        let exp = expectation(description: "completion")
+        var receivedResult: Result<URL, Error>?
+
+        let session = ExportSession { result in
+            receivedResult = result
+            exp.fulfill()
+        }
+
+        // Active session — completeIfCancelled should return false and not fire completion
+        XCTAssertFalse(session.completeIfCancelled())
+        XCTAssertFalse(session.isCancelled)
+
+        // Session is still usable — complete normally
+        session.complete(with: .failure(VideoExportError.failedToCreateCommandBuffer))
+        wait(for: [exp], timeout: 2.0)
+
+        if case .failure(let error) = receivedResult,
+           let exportError = error as? VideoExportError,
+           case .failedToCreateCommandBuffer = exportError {
+            // correct — session still worked after no-op completeIfCancelled
+        } else {
+            XCTFail("Expected .failedToCreateCommandBuffer, got \(String(describing: receivedResult))")
+        }
+    }
+
+    func test_completeIfCancelled_completesCancelled() {
+        let exp = expectation(description: "completion")
+        var receivedResult: Result<URL, Error>?
+
+        let session = ExportSession { result in
+            receivedResult = result
+            exp.fulfill()
+        }
+
+        session.requestCancel()
+        XCTAssertTrue(session.completeIfCancelled())
+
+        wait(for: [exp], timeout: 2.0)
+
+        if case .failure(let error) = receivedResult,
+           let exportError = error as? VideoExportError,
+           exportError.isCancelled {
+            // correct
+        } else {
+            XCTFail("Expected .cancelled, got \(String(describing: receivedResult))")
+        }
+    }
+
+    /// completeIfCancelled before pipeline attachment — safe from any context.
+    func test_completeIfCancelled_beforePipelineAttached_cleansViaCancelPath() {
+        let exp = expectation(description: "completion")
+        var cancelCleanupFired = false
+
+        let session = ExportSession { _ in exp.fulfill() }
+
+        session.setCleanup(
+            onSuccess: { },
+            onFailure: { },
+            onCancel: { cancelCleanupFired = true }
+        )
+
+        session.requestCancel()
+        XCTAssertTrue(session.completeIfCancelled())
+
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertTrue(cancelCleanupFired, "onCancel cleanup should fire when completeIfCancelled triggers before pipeline attachment")
     }
 
     /// Proves VideoExporter.TimelineExportSettings resolves through the

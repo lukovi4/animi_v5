@@ -72,6 +72,8 @@ internal final class SingleSceneVideoExportRunner {
         #else
         let setupStartNs: UInt64 = 0
         #endif
+        if session.completeIfCancelled() { return }
+
         // Warm all scene assets (unified API — same behavior as old preloadAll)
         workItem.textureProvider.warm(assetIds: allAssetIds, commandQueue: workItem.renderer.commandQueue)
         #if DEBUG
@@ -79,6 +81,8 @@ internal final class SingleSceneVideoExportRunner {
         #else
         let warmEndNs: UInt64 = 0
         #endif
+
+        if session.completeIfCancelled() { return }
 
         // Load user photos on export queue (not MainActor)
         if let mediaSnapshot = workItem.mediaSnapshot {
@@ -111,6 +115,8 @@ internal final class SingleSceneVideoExportRunner {
         #else
         let photoEndNs: UInt64 = 0
         #endif
+
+        if session.completeIfCancelled() { return }
 
         // Load background textures on export queue (URLs pre-resolved above)
         if let bgSnapshot = workItem.backgroundSnapshot {
@@ -180,6 +186,8 @@ internal final class SingleSceneVideoExportRunner {
         // Delete existing file if present
         try? FileManager.default.removeItem(at: settings.outputURL)
 
+        if session.completeIfCancelled() { return }
+
         // 1. Build audio pipeline (prefer plan, fallback to legacy config)
         var audioPipeline: BuiltAudioPipeline?
 
@@ -201,6 +209,8 @@ internal final class SingleSceneVideoExportRunner {
         let audioEndNs = DispatchTime.now().uptimeNanoseconds
         #endif
 
+        if session.completeIfCancelled() { return }
+
         // 2. Create pipeline (replaces ~100 lines of writer setup)
         let pipeline: ExportWriterPipeline
         do {
@@ -211,11 +221,13 @@ internal final class SingleSceneVideoExportRunner {
                 audio: audioPipeline.map { .init(composition: $0.composition, audioMix: $0.audioMix) }
             )
             session.attachPipeline(pipeline)
+            if session.completeIfCancelled() { return }
             try pipeline.startWriting()
         } catch {
             session.complete(with: .failure(error))
             return
         }
+        if session.completeIfCancelled() { return }
         #if DEBUG
         let writerEndNs = DispatchTime.now().uptimeNanoseconds
         #endif
@@ -278,6 +290,7 @@ internal final class SingleSceneVideoExportRunner {
                 renderer.trimTransientResources(policy: .exportFinished)
             }
         )
+        if session.completeIfCancelled() { return }
         session.transitionToRendering()
 
         // Export-owned overlay cache — lives for the duration of the export session.

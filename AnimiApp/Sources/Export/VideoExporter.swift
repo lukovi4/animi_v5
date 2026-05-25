@@ -110,6 +110,8 @@ public final class VideoExporter: @unchecked Sendable {
         }
         if let onFinishing { session.setOnFinishing(onFinishing) }
 
+        if session.completeIfCancelled() { return }
+
         // Validate FPS match
         guard settings.fps == compiledScene.runtime.fps else {
             session.complete(with: .failure(VideoExportError.fpsMismatch(
@@ -159,6 +161,8 @@ public final class VideoExporter: @unchecked Sendable {
 
         // Pre-resolve background media URLs in async context before dispatching to sync queue
         let resolvedBgURLs = await resolveBackgroundURLs(from: backgroundSnapshot, registry: assetRegistry)
+
+        if session.completeIfCancelled() { return }
 
         // Run export on background queue
         #if DEBUG
@@ -297,9 +301,14 @@ public final class VideoExporter: @unchecked Sendable {
             // Pre-resolve background media URLs from all scene snapshots
             var resolvedBgURLs: [MediaRef: URL] = [:]
             for (_, sceneBg) in sceneBackgrounds {
+                guard !exportSession.isCancelled else {
+                    exportSession.complete(with: .failure(VideoExportError.cancelled))
+                    return
+                }
                 let sceneURLs = await self.resolveBackgroundURLs(from: sceneBg.snapshot, registry: effectiveRegistry)
                 resolvedBgURLs.merge(sceneURLs) { _, new in new }
             }
+            if exportSession.completeIfCancelled() { return }
 
             #if DEBUG
             let handoffSec = Double(DispatchTime.now().uptimeNanoseconds - handoffStartNs) / 1_000_000_000.0
