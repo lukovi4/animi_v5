@@ -2474,3 +2474,116 @@ final class PlaybackTimingTests: XCTestCase {
         XCTAssertEqual(t.remainingFrames, AVAudioFrameCount(totalFrames - t.startFrame))
     }
 }
+
+// MARK: - AudioBufferList Conversion Tests
+
+final class PreviewAudioBufferListConversionTests: XCTestCase {
+
+    func testCopyAudioBufferList_singleInterleavedBufferCopiesBytes() throws {
+        let floats: [Float] = [1.0, 2.0, 3.0, 4.0]
+        let byteCount = floats.count * MemoryLayout<Float>.size
+
+        let source = AudioBufferList.allocate(maximumBuffers: 1)
+        defer { source.unsafeMutablePointer.deallocate() }
+
+        let srcPtr = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: MemoryLayout<Float>.alignment)
+        defer { srcPtr.deallocate() }
+        floats.withUnsafeBytes { srcPtr.copyMemory(from: $0.baseAddress!, byteCount: byteCount) }
+
+        source[0] = AudioBuffer(
+            mNumberChannels: 2,
+            mDataByteSize: UInt32(byteCount),
+            mData: srcPtr
+        )
+
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: true)!
+        let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2)!
+        pcmBuffer.frameLength = 2
+
+        try EnginePreviewAudioPlaybackController.copyAudioBufferList(source, to: pcmBuffer)
+
+        let dstABL = UnsafeMutableAudioBufferListPointer(pcmBuffer.mutableAudioBufferList)
+        let dstPtr = dstABL[0].mData!.assumingMemoryBound(to: Float.self)
+        for i in 0..<floats.count {
+            XCTAssertEqual(dstPtr[i], floats[i], accuracy: 1e-9, "Mismatch at index \(i)")
+        }
+    }
+
+    func testCopyAudioBufferList_nonInterleavedCopiesBothChannels() throws {
+        let ch0: [Float] = [1.0, 2.0]
+        let ch1: [Float] = [3.0, 4.0]
+        let byteCount = ch0.count * MemoryLayout<Float>.size
+
+        let source = AudioBufferList.allocate(maximumBuffers: 2)
+        defer { source.unsafeMutablePointer.deallocate() }
+
+        let ptr0 = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: MemoryLayout<Float>.alignment)
+        defer { ptr0.deallocate() }
+        ch0.withUnsafeBytes { ptr0.copyMemory(from: $0.baseAddress!, byteCount: byteCount) }
+
+        let ptr1 = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: MemoryLayout<Float>.alignment)
+        defer { ptr1.deallocate() }
+        ch1.withUnsafeBytes { ptr1.copyMemory(from: $0.baseAddress!, byteCount: byteCount) }
+
+        source[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(byteCount), mData: ptr0)
+        source[1] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(byteCount), mData: ptr1)
+
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false)!
+        let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2)!
+        pcmBuffer.frameLength = 2
+
+        try EnginePreviewAudioPlaybackController.copyAudioBufferList(source, to: pcmBuffer)
+
+        let channelData = pcmBuffer.floatChannelData!
+        for i in 0..<ch0.count {
+            XCTAssertEqual(channelData[0][i], ch0[i], accuracy: 1e-9)
+            XCTAssertEqual(channelData[1][i], ch1[i], accuracy: 1e-9)
+        }
+    }
+
+    func testCopyAudioBufferList_rejectsBufferCountMismatch() throws {
+        let source = AudioBufferList.allocate(maximumBuffers: 1)
+        defer { source.unsafeMutablePointer.deallocate() }
+
+        let byteCount = 2 * MemoryLayout<Float>.size
+        let srcPtr = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: MemoryLayout<Float>.alignment)
+        defer { srcPtr.deallocate() }
+        source[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(byteCount), mData: srcPtr)
+
+        // Non-interleaved stereo → 2 destination buffers vs 1 source buffer
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false)!
+        let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2)!
+        pcmBuffer.frameLength = 2
+
+        XCTAssertThrowsError(
+            try EnginePreviewAudioPlaybackController.copyAudioBufferList(source, to: pcmBuffer)
+        ) { error in
+            let nsError = error as NSError
+            XCTAssertEqual(nsError.code, 7)
+            XCTAssertEqual(nsError.domain, "EnginePreviewAudio")
+        }
+    }
+
+    func testCopyAudioBufferList_rejectsSourceLargerThanDestination() throws {
+        let source = AudioBufferList.allocate(maximumBuffers: 1)
+        defer { source.unsafeMutablePointer.deallocate() }
+
+        let largeByteCount = 1024
+        let srcPtr = UnsafeMutableRawPointer.allocate(byteCount: largeByteCount, alignment: MemoryLayout<Float>.alignment)
+        defer { srcPtr.deallocate() }
+        source[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(largeByteCount), mData: srcPtr)
+
+        // 1 frame interleaved stereo → 8 bytes capacity, but source claims 1024 bytes
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: true)!
+        let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1)!
+        pcmBuffer.frameLength = 1
+
+        XCTAssertThrowsError(
+            try EnginePreviewAudioPlaybackController.copyAudioBufferList(source, to: pcmBuffer)
+        ) { error in
+            let nsError = error as NSError
+            XCTAssertEqual(nsError.code, 9)
+            XCTAssertEqual(nsError.domain, "EnginePreviewAudio")
+        }
+    }
+}

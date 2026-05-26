@@ -66,16 +66,20 @@ Status legend:
    - Tests added: direct eviction state-machine coverage for `.preparing`, `.created`, `.ready`; orphan eviction integration; pending still-frame cancellation; suspended preparation unblocked from still-await; production `UserMediaService` blocked still-task cancellation.
    - Device validation: not required. This is a deterministic MainActor lifecycle/resource fix covered by unit/integration tests.
 
+6. `FIXED` Preview audio `AudioBufferList` conversion no longer assumes a single-buffer layout.
+   - Original issue: `EnginePreviewAudioPlaybackController.convertToPCMBuffer(...)` used a stack-allocated `AudioBufferList` sized with `MemoryLayout<AudioBufferList>.size` and copied only `.mBuffers`, which is only safe for single-buffer/interleaved output.
+   - Risk: fragile conversion if preview audio output ever becomes multi-buffer/non-interleaved; release builds also lacked hard validation for buffer count and byte-size overflow.
+   - Fix applied:
+     - `convertToPCMBuffer(...)` now uses `CMSampleBuffer.withAudioBufferList(...)`, delegating buffer-list sizing, allocation, and retained block-buffer lifetime to the system wrapper.
+     - `copyAudioBufferList(_:to:)` iterates over every source/destination buffer and throws explicit errors for buffer-count mismatch, nil `mData`, and source byte-size overflow.
+   - Tests added: interleaved copy, non-interleaved copy, buffer-count mismatch rejection, and source-larger-than-destination rejection.
+   - Device validation: not required. This is a static memory/layout correctness fix; preview audio smoke remains useful after broader audio changes.
+
 ## P1 / Must Fix
 
-No open P1 issues after PR-5.
+No open P1 issues after PR-6.
 
 ## P2 / Should Fix
-
-6. `STATIC` Preview audio `AudioBufferList` conversion assumes single-buffer layout.
-   - Risk: fragile if audio output format changes from current interleaved layout.
-   - Fix: allocate/copy buffer list using the size reported by the CoreMedia API.
-   - Device validation: not required for the fix, but preview audio smoke is useful.
 
 7. `STATIC` `deactivateAfterPlayback()` errors are swallowed with `try?`.
    - Risk: audio session failures lose diagnostics.

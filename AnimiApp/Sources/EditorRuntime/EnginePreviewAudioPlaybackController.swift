@@ -416,24 +416,6 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
         _ sampleBuffer: CMSampleBuffer,
         format: AVAudioFormat
     ) throws -> AVAudioPCMBuffer {
-        var blockBuffer: CMBlockBuffer?
-        var srcBufferList = AudioBufferList()
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: &srcBufferList,
-            bufferListSize: MemoryLayout<AudioBufferList>.size,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: 0,
-            blockBufferOut: &blockBuffer
-        )
-        guard status == noErr else {
-            throw NSError(domain: "EnginePreviewAudio", code: 5, userInfo: [
-                NSLocalizedDescriptionKey: "CMSampleBufferGetAudioBufferList failed: \(status)",
-            ])
-        }
-
         let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
         guard let pcmBuffer = AVAudioPCMBuffer(
             pcmFormat: format,
@@ -445,16 +427,45 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
         }
         pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
 
-        let src = srcBufferList.mBuffers
-        let dst = pcmBuffer.mutableAudioBufferList.pointee.mBuffers
-
-        #if DEBUG
-        assert(src.mDataByteSize <= dst.mDataByteSize, "Source exceeds destination capacity")
-        #endif
-
-        memcpy(dst.mData, src.mData, min(Int(dst.mDataByteSize), Int(src.mDataByteSize)))
+        try sampleBuffer.withAudioBufferList(
+            flags: .audioBufferListAssure16ByteAlignment
+        ) { srcBufferList, blockBuffer in
+            try withExtendedLifetime(blockBuffer) {
+                try copyAudioBufferList(srcBufferList, to: pcmBuffer)
+            }
+        }
 
         return pcmBuffer
+    }
+
+    /// Copies audio data from source AudioBufferList into destination AVAudioPCMBuffer.
+    /// Validates buffer counts and sizes before copying.
+    nonisolated static func copyAudioBufferList(
+        _ sourceList: UnsafeMutableAudioBufferListPointer,
+        to pcmBuffer: AVAudioPCMBuffer
+    ) throws {
+        let dst = UnsafeMutableAudioBufferListPointer(pcmBuffer.mutableAudioBufferList)
+
+        guard sourceList.count == dst.count else {
+            throw NSError(domain: "EnginePreviewAudio", code: 7, userInfo: [
+                NSLocalizedDescriptionKey: "Buffer count mismatch: source \(sourceList.count) vs destination \(dst.count)",
+            ])
+        }
+
+        for i in 0..<sourceList.count {
+            guard let srcData = sourceList[i].mData, let dstData = dst[i].mData else {
+                throw NSError(domain: "EnginePreviewAudio", code: 8, userInfo: [
+                    NSLocalizedDescriptionKey: "Nil mData at buffer index \(i)",
+                ])
+            }
+            guard sourceList[i].mDataByteSize <= dst[i].mDataByteSize else {
+                throw NSError(domain: "EnginePreviewAudio", code: 9, userInfo: [
+                    NSLocalizedDescriptionKey: "Source buffer[\(i)] size \(sourceList[i].mDataByteSize) exceeds destination \(dst[i].mDataByteSize)",
+                ])
+            }
+            memcpy(dstData, srcData, Int(sourceList[i].mDataByteSize))
+            dst[i].mDataByteSize = sourceList[i].mDataByteSize
+        }
     }
 
     // MARK: - Playback Timing
