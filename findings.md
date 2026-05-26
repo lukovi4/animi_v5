@@ -55,16 +55,22 @@ Status legend:
    - Tests added: active no-op, cancelled completion, before-pipeline cleanup path, attach-after-cancel no immediate cancel, preparing cancel no destructive pipeline cancel, runner-side destructive fence, rendering cancel immediate pipeline cancel.
    - Device validation: passed. Early cancel during a 16.2s `writer.startWriting` setup completed as `.cancelled` without crash and restored preview; render-phase cancel also completed cleanly with provider cleanup.
 
+5. `FIXED` Timeline runtime eviction now cancels in-flight preparation and pending still-frame work.
+   - Original issue: budget eviction and orphan cleanup removed runtimes from `instanceRuntimes` through `runtime.pause()`, but `pause()` only stopped video playback. A `.preparing` runtime could keep its preparation loop alive after eviction.
+   - Follow-up issue: when preparation was suspended inside `awaitPendingStillFrames()`, cancelling only `preparationTask` did not cancel the underlying still-frame tasks owned by `UserMediaService`.
+   - Fix applied:
+     - `SceneInstanceRuntime.evictFromTimeline()` cancels `preparationTask`, transitions `.preparing` to `.failed(reason: "evicted")`, cancels pending still-frame work through `SceneMediaSyncing`, then pauses playback.
+     - `TimelineResidencyController` and `TimelineCompositionEngine` orphan cleanup now call `evictFromTimeline()` instead of `pause()`.
+     - `UserMediaService.cancelPendingStillFrames()` synchronously bumps still generations, cancels still tasks, and removes pending still task handles.
+     - `releasePreviewResources()` reuses `cancelPendingStillFrames()` for the still-frame cleanup section.
+   - Tests added: direct eviction state-machine coverage for `.preparing`, `.created`, `.ready`; orphan eviction integration; pending still-frame cancellation; suspended preparation unblocked from still-await; production `UserMediaService` blocked still-task cancellation.
+   - Device validation: not required. This is a deterministic MainActor lifecycle/resource fix covered by unit/integration tests.
+
 ## P1 / Must Fix
 
-No open P1 issues after PR-4B.
+No open P1 issues after PR-5.
 
 ## P2 / Should Fix
-
-5. `STATIC` Timeline runtime eviction calls `runtime.pause()` but does not cancel `preparationTask`.
-   - Risk: evicted runtime can continue preparation/polling until timeout.
-   - Fix: cancel preparation explicitly on eviction or in a dedicated eviction/release path.
-   - Device validation: not required; unit/integration test is enough.
 
 6. `STATIC` Preview audio `AudioBufferList` conversion assumes single-buffer layout.
    - Risk: fragile if audio output format changes from current interleaved layout.

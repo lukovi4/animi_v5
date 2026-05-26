@@ -206,7 +206,7 @@ public final class TimelineCompositionEngine {
         // Evict orphaned runtimes (scenes that were removed)
         for orphanId in orphanedIds {
             if let runtime = instanceRuntimes.removeValue(forKey: orphanId) {
-                runtime.pause()
+                runtime.evictFromTimeline()
                 #if DEBUG
                 print("[TimelineCompositionEngine] Evicted orphaned runtime: \(orphanId)")
                 #endif

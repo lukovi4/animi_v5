@@ -12,6 +12,7 @@ protocol SceneMediaSyncing: AnyObject {
     // MARK: Frame Update APIs
     func updateVideoStillFrames(sceneFrameIndex: Int, mediaFrameIndex: Int)
     func awaitPendingStillFrames() async
+    func cancelPendingStillFrames()
     func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int)
     func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int)
 
@@ -580,6 +581,18 @@ public final class SceneInstanceRuntime {
         let visibilityFrame = clampedLocalFrame(localFrame)
         let mediaFrame = max(localFrame, 0)
         mediaSyncing.startVideoPlayback(sceneFrameIndex: visibilityFrame, mediaFrameIndex: mediaFrame)
+    }
+
+    /// Lightweight eviction: cancels in-flight preparation and pauses playback.
+    /// Called by budget eviction and orphan cleanup paths.
+    func evictFromTimeline() {
+        preparationTask?.cancel()
+        preparationTask = nil
+        if case .preparing = readinessState {
+            readinessState = .failed(reason: "evicted")
+        }
+        mediaSyncing.cancelPendingStillFrames()
+        pause()
     }
 
     /// Pauses playback.

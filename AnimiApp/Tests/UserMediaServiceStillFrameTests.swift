@@ -87,8 +87,13 @@ final class UserMediaServiceStillFrameTests: XCTestCase {
             stillRequestTimes.append(videoTimeSeconds)
 
             if shouldBlockStill {
-                return try await withCheckedThrowingContinuation { continuation in
-                    stillContinuation = continuation
+                return try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        self.stillContinuation = continuation
+                    }
+                } onCancel: {
+                    self.stillContinuation?.resume(throwing: CancellationError())
+                    self.stillContinuation = nil
                 }
             }
 
@@ -271,6 +276,29 @@ final class UserMediaServiceStillFrameTests: XCTestCase {
         await sut.awaitPendingStillFrames()
 
         // If we get here without hanging, cleanup works correctly
+    }
+
+    // MARK: - Test: cancelPendingStillFrames cancels blocked tasks
+
+    /// PR5: cancelPendingStillFrames cancels in-flight still tasks without full cleanup.
+    func testCancelPendingStillFrames_cancelsBlockedStillTasks() async throws {
+        provider.shouldBlockStill = true
+
+        await setupVideoBlock()
+
+        // Trigger still frame update (will block in provider)
+        sut.updateVideoStillFrames(sceneFrameIndex: 0, mediaFrameIndex: 0)
+
+        // Give the task time to start
+        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+
+        // Cancel pending still frames
+        sut.cancelPendingStillFrames()
+
+        // awaitPendingStillFrames should complete immediately (task was cancelled)
+        await sut.awaitPendingStillFrames()
+
+        // If we get here without hanging, cancellation works correctly
     }
 
     // MARK: - Playback Window

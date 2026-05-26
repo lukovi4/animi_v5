@@ -521,6 +521,104 @@ final class SceneInstanceRuntimeReadinessTests: XCTestCase {
         XCTAssertEqual(spy.stillFrames.count, frozenCountBefore)
     }
 
+    // MARK: - PR5: Eviction Cancels Preparation
+
+    /// PR5: evictFromTimeline cancels in-flight preparation and transitions to .failed
+    @MainActor
+    func test_evictFromTimeline_cancelsPreparing() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = false
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        runtime.startPreparingForPresentation(at: 50)
+        XCTAssertEqual(runtime.readinessState, .preparing(targetLocalFrame: 50))
+
+        runtime.evictFromTimeline()
+
+        if case .failed(let reason) = runtime.readinessState {
+            XCTAssertEqual(reason, "evicted")
+        } else {
+            XCTFail("Expected .failed(reason: \"evicted\"), got \(runtime.readinessState)")
+        }
+
+        // Let cancelled task settle
+        await Task.yield()
+
+        // State must NOT have become .ready
+        if case .ready = runtime.readinessState {
+            XCTFail("Evicted runtime must not transition to .ready")
+        }
+    }
+
+    /// PR5: evictFromTimeline from .created is a no-op (only .preparing transitions to .failed)
+    @MainActor
+    func test_evictFromTimeline_fromCreated_isNoOp() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        XCTAssertEqual(runtime.readinessState, .created)
+
+        runtime.evictFromTimeline()
+
+        XCTAssertEqual(runtime.readinessState, .created)
+    }
+
+    /// PR5: evictFromTimeline from .ready does not downgrade state
+    @MainActor
+    func test_evictFromTimeline_fromReady_doesNotDowngrade() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        _ = await runtime.waitUntilReadyForPresentation(at: 0)
+        XCTAssertEqual(runtime.readinessState, .ready(targetLocalFrame: 0))
+
+        runtime.evictFromTimeline()
+
+        XCTAssertEqual(runtime.readinessState, .ready(targetLocalFrame: 0),
+                       "Eviction should not downgrade .ready state")
+    }
+
     // MARK: - PR2: Readiness Holds Until Still Frames Delivered
 
     /// PR2: Runtime stays in .preparing until awaitPendingStillFrames completes.

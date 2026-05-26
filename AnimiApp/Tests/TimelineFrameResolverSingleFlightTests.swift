@@ -339,6 +339,70 @@ final class TimelineFrameResolverSingleFlightTests: XCTestCase {
         XCTAssertNil(engine.runtime(for: instanceId1), "Orphaned runtime should be evicted")
     }
 
+    /// setTimeline orphan eviction cancels preparation on a stored .preparing runtime.
+    @MainActor
+    func testSetTimelineOrphanEvictsStoredPreparingRuntimeCancelsPreparation() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let instanceId1 = UUID()
+        let resources = makeMinimalResources()
+        let timeline1 = makeSingleSceneTimeline(instanceId: instanceId1)
+
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = false  // Never becomes ready — stays .preparing
+
+        let counter = FactoryCounter()
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        cache.addToCache(resources)
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            maxActiveDecoders: 3,
+            mediaLocator: SFStubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                counter.count += 1
+                return SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+        engine.setTimeline(timeline1, sceneStates: [:])
+
+        // Create and cache the runtime via resolveFrame (won't await readiness)
+        _ = await engine.resolveFrame(0, policy: .presentation)
+        let runtime = engine.runtime(for: instanceId1)
+        XCTAssertNotNil(runtime)
+
+        // Runtime should be in .preparing since isSceneMediaReady = false
+        XCTAssertEqual(runtime!.readinessState, .preparing(targetLocalFrame: 0))
+
+        // Replace timeline — instanceId1 becomes orphan
+        let instanceId2 = UUID()
+        let timeline2 = makeSingleSceneTimeline(instanceId: instanceId2)
+        engine.setTimeline(timeline2, sceneStates: [:])
+
+        // Runtime removed from engine
+        XCTAssertNil(engine.runtime(for: instanceId1),
+                     "Orphaned runtime should be removed from engine")
+
+        // Retained local reference should show preparation was cancelled
+        if case .failed(let reason) = runtime!.readinessState {
+            XCTAssertEqual(reason, "evicted")
+        } else {
+            XCTFail("Expected .failed(reason: \"evicted\"), got \(runtime!.readinessState)")
+        }
+    }
+
     /// releaseForExport clears stored runtimes.
     @MainActor
     func testReleaseForExportClearsStoredRuntimes() async throws {

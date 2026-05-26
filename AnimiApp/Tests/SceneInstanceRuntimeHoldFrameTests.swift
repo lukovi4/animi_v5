@@ -144,6 +144,17 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         func stopVideoPlaybackPreservingTextures() {
             softStopPreservingTexturesCalls += 1
         }
+
+        var cancelPendingStillFramesCalls: Int = 0
+
+        func cancelPendingStillFrames() {
+            cancelPendingStillFramesCalls += 1
+            // Release blocked still-await to simulate cancellation unblocking
+            if shouldBlockStillAwait {
+                stillAwaitContinuation?.resume()
+                stillAwaitContinuation = nil
+            }
+        }
     }
 
     // MARK: - Behavior Tests: makeRenderContext
@@ -687,5 +698,76 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
         // Then: All calls should be tracked
         XCTAssertEqual(spy.softStopPreservingTexturesCalls, 3)
+    }
+
+    // MARK: - PR5: Eviction Cancels Pending Still-Frame Tasks
+
+    /// Behavior: evictFromTimeline() calls cancelPendingStillFrames on media syncing.
+    @MainActor
+    func test_evictFromTimeline_cancelsPendingStillFrames() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        let spy = MediaSyncingSpy()
+        spy.isSceneMediaReady = false
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // When
+        runtime.evictFromTimeline()
+
+        // Then
+        XCTAssertEqual(spy.cancelPendingStillFramesCalls, 1)
+    }
+
+    /// Behavior: evictFromTimeline() unblocks prep loop stuck on awaitPendingStillFrames.
+    @MainActor
+    func test_evictFromTimeline_unblocksPrepLoopStuckOnStillAwait() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        let spy = MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+        spy.shouldBlockStillAwait = true
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // Start preparation — will block on awaitPendingStillFrames
+        runtime.startPreparingForPresentation(at: 50)
+        try await Task.sleep(nanoseconds: 50_000_000) // let prep loop reach await
+
+        XCTAssertEqual(spy.awaitPendingStillFramesCalls, 1)
+        XCTAssertEqual(runtime.readinessState, .preparing(targetLocalFrame: 50))
+
+        // When: evict
+        runtime.evictFromTimeline()
+
+        // Then
+        XCTAssertEqual(runtime.readinessState, .failed(reason: "evicted"))
+        XCTAssertEqual(spy.cancelPendingStillFramesCalls, 1)
+
+        // Let cancelled prep task exit
+        await Task.yield()
+
+        // State must NOT have become .ready
+        XCTAssertEqual(runtime.readinessState, .failed(reason: "evicted"))
     }
 }

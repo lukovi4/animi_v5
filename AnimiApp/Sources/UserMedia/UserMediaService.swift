@@ -1146,6 +1146,19 @@ public final class UserMediaService {
         }
     }
 
+    /// Cancels all in-flight still frame tasks and bumps generations to invalidate
+    /// any task that completes between cancel and removal.
+    /// Synchronous — safe to call from eviction paths.
+    public func cancelPendingStillFrames() {
+        for key in Array(stillGenerationByBlock.keys) {
+            stillGenerationByBlock[key, default: 0] += 1
+        }
+        for task in stillTasksByBlock.values {
+            task.cancel()
+        }
+        stillTasksByBlock.removeAll()
+    }
+
     /// PR2: Awaits all in-flight still tasks to complete.
     /// Used by readiness loop to ensure still frame is actually delivered before marking `.ready`.
     public func awaitPendingStillFrames() async {
@@ -1544,10 +1557,7 @@ public final class UserMediaService {
         }
 
         // PR2: Cancel all pending still frame tasks
-        for (_, task) in stillTasksByBlock {
-            task.cancel()
-        }
-        stillTasksByBlock.removeAll()
+        cancelPendingStillFrames()
         stillGenerationByBlock.removeAll()
 
         // Cancel all interactive trim preview tasks

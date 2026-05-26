@@ -35,7 +35,7 @@ internal final class TimelineResidencyController {
 
         for instanceId in toEvict {
             if let runtime = engine.instanceRuntimes.removeValue(forKey: instanceId) {
-                runtime.pause()
+                runtime.evictFromTimeline()
                 engine.runtimeDiagnosticsSink?.receive(.evictionDecision(instanceId: instanceId, tier: "evictable"))
                 #if DEBUG
                 print("[TimelineCompositionEngine] TT-03: Evicted non-resident runtime: \(instanceId)")
