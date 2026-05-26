@@ -53,6 +53,7 @@ final class FakeAudioSessionAdapter: AudioSessionAdapting {
     var lastSetActiveValue: Bool?
     var lastSetActiveOptions: AVAudioSession.SetActiveOptions?
     var shouldFailSetActive = false
+    var shouldFailDeactivation = false
 
     struct FakeError: Error, LocalizedError {
         var errorDescription: String? { "Fake setActive failure" }
@@ -69,6 +70,9 @@ final class FakeAudioSessionAdapter: AudioSessionAdapting {
         lastSetActiveValue = active
         lastSetActiveOptions = options
         if shouldFailSetActive && active {
+            throw FakeError()
+        }
+        if shouldFailDeactivation && !active {
             throw FakeError()
         }
     }
@@ -523,6 +527,19 @@ final class AudioSessionManagerAdapterTests: XCTestCase {
         let manager = AudioSessionManager(session: fake, notificationCenter: NotificationCenter())
 
         try manager.deactivateAfterPlayback()
+
+        XCTAssertEqual(fake.lastSetActiveValue, false)
+        XCTAssertEqual(fake.lastSetActiveOptions, .notifyOthersOnDeactivation)
+    }
+
+    func testDeactivateAfterPlayback_propagatesDeactivationFailure() throws {
+        let fake = FakeAudioSessionAdapter()
+        fake.shouldFailDeactivation = true
+        let manager = AudioSessionManager(session: fake, notificationCenter: NotificationCenter())
+
+        XCTAssertThrowsError(try manager.deactivateAfterPlayback()) { error in
+            XCTAssertTrue(error is FakeAudioSessionAdapter.FakeError)
+        }
 
         XCTAssertEqual(fake.lastSetActiveValue, false)
         XCTAssertEqual(fake.lastSetActiveOptions, .notifyOthersOnDeactivation)

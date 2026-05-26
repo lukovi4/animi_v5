@@ -75,16 +75,15 @@ Status legend:
    - Tests added: interleaved copy, non-interleaved copy, buffer-count mismatch rejection, and source-larger-than-destination rejection.
    - Device validation: not required. This is a static memory/layout correctness fix; preview audio smoke remains useful after broader audio changes.
 
+7. `FIXED` `deactivateAfterPlayback()` errors now logged via `logger.error` + `MemoryDiagnostics` before rethrow.
+   Callers in `EditorRuntime` still use `try?` — deactivation failure remains non-fatal.
+   Direct callers and tests receive the rethrown error. Closed as PR-7.
+
 ## P1 / Must Fix
 
-No open P1 issues after PR-6.
+No open P1 issues after PR-7.
 
 ## P2 / Should Fix
-
-7. `STATIC` `deactivateAfterPlayback()` errors are swallowed with `try?`.
-   - Risk: audio session failures lose diagnostics.
-   - Fix: log the error.
-   - Device validation: not required.
 
 8. `NOT REPRODUCED / HARDENING` Preview video `CVMetalTexture` is not retained together with returned `MTLTexture`.
    - Device evidence: stress logs did not show `texture=nil`, Metal validation errors, black frames, or crash.

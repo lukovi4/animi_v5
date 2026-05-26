@@ -109,7 +109,17 @@ final class AudioSessionManager: AudioSessionManaging {
         #if DEBUG
         MemoryDiagnostics.event("audio.session.deactivate.begin", "")
         #endif
-        try session.setActive(false, options: .notifyOthersOnDeactivation)
+
+        do {
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            logger.error("audio.session.deactivate failed error=\(error.localizedDescription, privacy: .public)")
+            #if DEBUG
+            MemoryDiagnostics.event("audio.session.deactivate.end", "ok=0 error=\(error.localizedDescription)")
+            #endif
+            throw error
+        }
+
         #if DEBUG
         MemoryDiagnostics.event("audio.session.deactivate.end", "ok=1")
         #endif
