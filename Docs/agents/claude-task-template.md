@@ -23,7 +23,13 @@ Do not create or modify Codex-owned files:
 
 ## Required First Step
 
-Use the `animi-planning-pass` skill before editing production code.
+The user must invoke the manual Planning Pass skill with this exact slash command:
+
+```text
+/animi-planning-pass <task-folder>
+```
+
+Do not ask Claude to "use the Planning Pass workflow" in prose. The skill has `disable-model-invocation: true`, so Claude must not call it through `Skill(...)` or emulate it manually.
 
 Write the Planning Pass result to:
 

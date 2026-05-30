@@ -51,6 +51,7 @@ Use [task-folder-template.md](task-folder-template.md) when creating a task fold
 - Codex workflow skills live under `.agents/skills/`.
 - Claude workflow skills live under `.claude/skills/`.
 - Gate skills that should only run by explicit user command must use `disable-model-invocation: true`.
+- Manual Claude gate skills must be invoked by the user as slash commands. Do not hand Claude a prose prompt like "use the Planning Pass workflow"; provide the exact slash command.
 
 ## Artifact Ownership
 
@@ -99,17 +100,21 @@ Claude proposes implementation plans in `claude-plan.md`. Codex approval lives o
 7. User approves or rejects the draft plan.
 8. Codex writes `plan.approved.md` with `Status: APPROVED`.
 9. Codex writes `claude-task.md`.
-10. Claude reads `plan.approved.md` and `claude-task.md`.
-11. Claude runs the Planning Pass skill, analyzes real code, writes only `claude-plan.md`, and stops.
-12. Codex reviews `claude-plan.md` against `plan.approved.md` and writes `codex-plan-review.md`.
-13. The user explicitly approves implementation.
-14. Codex creates `.codex-local/active-implementation.json` as a scoped implementation marker.
-15. Claude runs the implementation skill and changes only marker-approved paths.
-16. Claude writes `claude-summary.md`.
-17. Codex reviews implementation and writes `codex-review.md`.
-18. Codex closes/removes the marker, or lets it expire as a backstop.
-19. If review finds blockers, Codex creates a follow-up task/plan.
-20. The task closes only after evidence-based verification or explicit accepted risk.
+10. Codex gives the user the exact Claude slash command: `/animi-planning-pass <task-folder>`.
+11. The user invokes that slash command in Claude.
+12. Claude reads `plan.approved.md` and `claude-task.md`.
+13. Claude runs the Planning Pass skill, analyzes real code, writes only `claude-plan.md`, and stops.
+14. Codex reviews `claude-plan.md` against `plan.approved.md` and writes `codex-plan-review.md`.
+15. The user explicitly approves implementation.
+16. Codex creates `.codex-local/active-implementation.json` as a scoped implementation marker.
+17. Codex gives the user the exact Claude slash command: `/animi-implement-approved-plan <task-folder>`.
+18. The user invokes that slash command in Claude.
+19. Claude runs the implementation skill and changes only marker-approved paths.
+20. Claude writes `claude-summary.md`.
+21. Codex reviews implementation and writes `codex-review.md`.
+22. Codex closes/removes the marker, or lets it expire as a backstop.
+23. If review finds blockers, Codex creates a follow-up task/plan.
+24. The task closes only after evidence-based verification or explicit accepted risk.
 
 ## Approval Gates
 
@@ -139,6 +144,8 @@ Claude can implement only from `plan.approved.md`.
 For production code changes, Claude must write `claude-plan.md` before editing code. The plan must stay inside approved scope. Any conflict or missing decision stops implementation.
 
 The Animi gate is not Claude's built-in Plan Mode. Claude must use the project Planning Pass skill, write only `claude-plan.md`, and stop. Production files, tests, project files, build scripts, and dependencies must not be edited during the Planning Pass.
+
+Because the Planning Pass skill is manual-only, Claude must not call it through `Skill(...)` or emulate it from prose instructions. The user must invoke `/animi-planning-pass <task-folder>` directly.
 
 ### Codex Plan Review Gate
 

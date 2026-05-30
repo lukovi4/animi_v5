@@ -66,6 +66,7 @@ codex-plan-review.md
 ## `claude-task.md` Minimum
 
 - source of truth: `plan.approved.md`;
+- exact user-run slash command: `/animi-planning-pass .codex-local/tasks/<task-id>`;
 - required Planning Pass output: `claude-plan.md`;
 - stop after `claude-plan.md`;
 - implementation requires `codex-plan-review.md` with `Status: APPROVED`, explicit user approval, and a valid `.codex-local/active-implementation.json` marker;

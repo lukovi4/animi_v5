@@ -11,6 +11,8 @@ arguments: task_folder
 
 Use this skill only when the user explicitly invokes `/animi-planning-pass <task-folder>`.
 
+Do not run this skill from the `Skill(...)` tool. This skill is manual-only because `disable-model-invocation: true`.
+
 ## Purpose
 
 Analyze the approved task against the real codebase, write `claude-plan.md`, and stop. This replaces Claude's built-in Plan Mode for Animi.

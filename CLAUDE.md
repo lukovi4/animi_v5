@@ -54,12 +54,18 @@ Before any production code change, run a planning-only pass:
 
 1. Read `plan.approved.md`.
 2. Read `claude-task.md`.
-3. Use the `animi-planning-pass` skill.
+3. Use the `animi-planning-pass` skill only when the user directly invokes `/animi-planning-pass <task-folder>`.
 4. Write `claude-plan.md`.
 5. Confirm the plan stays inside approved scope.
 6. Stop. Do not edit production code, tests, project files, build scripts, or dependencies in the same pass.
 
-The built-in Claude Plan Mode is not the Animi gate. Use the project Planning Pass workflow instead.
+The built-in Claude Plan Mode is not the Animi gate. The Animi Planning Pass gate is the manual slash command `/animi-planning-pass <task-folder>`.
+
+The Animi gate skills have `disable-model-invocation: true`. Do not try to call them through the `Skill(...)` tool, and do not emulate them manually from a prose prompt like "use the Planning Pass workflow". If the user did not invoke the slash command directly, stop and ask the user to run:
+
+```text
+/animi-planning-pass <task-folder>
+```
 
 During the Planning Pass, do not suggest that the user runs shell commands with `! <command>` as a substitute for blocked Bash. Use allowed read-only Claude tools or stop.
 
@@ -74,7 +80,7 @@ Implementation may start only after all are true:
 - the user explicitly told Claude to implement after Codex plan review;
 - `.codex-local/active-implementation.json` is valid for this task.
 
-When implementing, use the `animi-implement-approved-plan` skill and stay within approved paths. If the marker is missing, expired, invalid, or does not include a path you need, stop and ask.
+When implementing, use the `animi-implement-approved-plan` skill only when the user directly invokes `/animi-implement-approved-plan <task-folder>`, and stay within approved paths. Do not try to call it through the `Skill(...)` tool or emulate it manually from a prose prompt like "implement the approved plan". If the marker is missing, expired, invalid, or does not include a path you need, stop and ask.
 
 Do not change product behavior, architecture decisions, or scope from the approved plan. Do not edit `plan.approved.md`.
 

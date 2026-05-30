@@ -42,7 +42,11 @@ After explicit user approval:
 
 1. Create `plan.approved.md` with `Status: APPROVED`.
 2. Create `claude-task.md`.
-3. Give the user the exact Claude prompt to run the Planning Pass and write `claude-plan.md`.
+3. Give the user only the exact Claude slash command to run the Planning Pass:
+   ```text
+   /animi-planning-pass .codex-local/tasks/<task-id>
+   ```
+   Do not give a prose workflow prompt; Claude cannot invoke this skill through `Skill(...)` because it is manual-only.
 4. Do not tell Claude to implement until Codex reviews `claude-plan.md`, writes `codex-plan-review.md` with `Status: APPROVED`, the user explicitly approves implementation, and Codex creates a valid implementation marker.
 
 ## Stop Conditions

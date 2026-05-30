@@ -10,6 +10,8 @@ arguments: task_folder
 
 Use this skill only when the user explicitly invokes `/animi-implement-approved-plan <task-folder>` after Codex plan review and user implementation approval.
 
+Do not run this skill from the `Skill(...)` tool. This skill is manual-only because `disable-model-invocation: true`.
+
 ## Required Gates
 
 Before editing anything, verify `$task_folder` contains:

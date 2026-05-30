@@ -38,3 +38,9 @@ If any required input is missing, write `codex-plan-review.md` with `Status: BLO
 - `APPROVED`: plan is inside approved scope and ready for user implementation approval.
 - `CHANGES_REQUESTED`: plan is close but needs Claude revision.
 - `BLOCKED`: missing inputs, product decision needed, scope conflict, or unsafe implementation path.
+
+If the review is `APPROVED`, do not tell Claude to implement with a prose prompt. After explicit user implementation approval and marker creation, give the user this exact slash command:
+
+```text
+/animi-implement-approved-plan .codex-local/tasks/<task-id>
+```
