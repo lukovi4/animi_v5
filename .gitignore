@@ -53,3 +53,11 @@ build/
 
 # Test Output
 *.xcresult
+
+# Local Codex scratch output
+.codex-local/
+*.local.md
+*.local.log
+
+# Local Claude Code permissions
+.claude/settings.local.json
