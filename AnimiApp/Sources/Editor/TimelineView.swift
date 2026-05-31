@@ -441,7 +441,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// - Parameters:
     ///   - compressedFrame: Compressed frame index
     ///   - mapper: Playhead mapper for coordinate conversion
-    func setCurrentCompressedFrame(_ compressedFrame: Int, mapper: TimelinePlayheadMapper) {
+    func setCurrentCompressedFrame(_ compressedFrame: Int, mapper: TimelinePlayheadMapper, animated: Bool = false) {
         // TT-01 Phase 2: Always update authoritative frame (even during drag)
         // This syncs store echo to local state without interrupting scroll
         currentCompressedFrame = compressedFrame
@@ -451,7 +451,7 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         // TT-01: Direct frame-based positioning without TimeUs roundtrip
         let offsetX = mapper.offsetX(forCompressedFrame: compressedFrame, pxPerSecond: pxPerSecond)
-        centerOnOffsetX(offsetX)
+        centerOnOffsetX(offsetX, animated: animated)
     }
 
     // MARK: - State Snapshot/Restore (Phase 2.1: Compressed Frame Domain)
@@ -595,10 +595,20 @@ final class TimelineView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// Centers the timeline on a specific X offset.
     /// TT-01: This is the acceptance path for playhead positioning.
     /// - Parameter offsetX: X offset in pixels
-    private func centerOnOffsetX(_ offsetX: CGFloat) {
+    private func centerOnOffsetX(_ offsetX: CGFloat, animated: Bool = false) {
         let clampedX = clampOffsetX(offsetX)
         let currentY = scrollView.contentOffset.y
-        scrollView.contentOffset = CGPoint(x: clampedX, y: currentY)
+        let target = CGPoint(x: clampedX, y: currentY)
+        if animated {
+            // Smooth focus centering for user-initiated different-scene focus.
+            // Continuous scrollViewDidScroll during the animation keeps the ruler synced.
+            UIView.animate(withDuration: 0.25, delay: 0,
+                           options: [.curveEaseOut, .beginFromCurrentState]) {
+                self.scrollView.contentOffset = target
+            }
+        } else {
+            scrollView.contentOffset = target
+        }
     }
 
     /// Centers the given time under the playhead.

@@ -1450,7 +1450,21 @@ private extension EditorReducer {
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
 
-        // Move playhead to scene boundary start frame
+        // Active scene = the scene currently under the playhead. Tapping it must
+        // preserve the playhead (including single-scene timelines), selecting it
+        // only if needed. This does NOT jump the playhead to the scene start.
+        if state.sceneIdAtPlayhead() == sceneId {
+            // Already selected → fully unchanged.
+            if newState.selection == .scene(id: sceneId) {
+                return ReducerResult(state: state, shouldPushSnapshot: false)
+            }
+            // Select without moving the playhead; activate follow mode.
+            newState.selection = .scene(id: sceneId)
+            newState.timelineSceneSelectionMode = .followPlayhead
+            return ReducerResult(state: newState, shouldPushSnapshot: false)
+        }
+
+        // Different scene → move playhead to scene boundary start frame.
         let mapper = state.makePlayheadMapper()
         newState.playheadCompressedFrame = mapper.sceneBoundaryCompressedFrame(forSceneAt: index)
 

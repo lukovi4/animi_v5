@@ -773,9 +773,9 @@ final class EditorLayoutContainerView: UIView {
     /// - Parameters:
     ///   - compressedFrame: Compressed frame index
     ///   - mapper: Playhead mapper for coordinate conversion
-    func setCurrentCompressedFrame(_ compressedFrame: Int, mapper: TimelinePlayheadMapper) {
+    func setCurrentCompressedFrame(_ compressedFrame: Int, mapper: TimelinePlayheadMapper, animated: Bool = false) {
         // PR2.6: Ruler sync happens via onScrollChanged callback from centerOnTimeUs()
-        timelineView.setCurrentCompressedFrame(compressedFrame, mapper: mapper)
+        timelineView.setCurrentCompressedFrame(compressedFrame, mapper: mapper, animated: animated)
     }
 
     /// Sets the playhead mapper for timeline.

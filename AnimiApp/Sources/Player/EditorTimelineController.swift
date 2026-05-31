@@ -17,6 +17,22 @@ internal final class EditorTimelineController {
         logger.info("\(message)")
     }
 
+    // MARK: - Focus Animation Intent
+
+    /// One-shot flag: when true, the next focus-driven playhead-centering update
+    /// should animate the timeline scroll instead of jumping. Set only
+    /// immediately before a user-initiated `.focusScene` to a different scene and
+    /// consumed once in the store playhead callback.
+    private var pendingFocusAnimation = false
+
+    /// Returns the pending focus-animation intent and resets it to false.
+    /// Called exactly once from the `onPlayheadChanged` callback.
+    func consumePendingFocusAnimation() -> Bool {
+        let animated = pendingFocusAnimation
+        pendingFocusAnimation = false
+        return animated
+    }
+
     // MARK: - Timeline Event Handling
 
     func handleTimelineEvent(_ event: TimelineEvent) {
@@ -41,6 +57,18 @@ internal final class EditorTimelineController {
             vc.presentationController_.presentTransitionPicker(fromSceneId: fromId, toSceneId: toId, anchorRect: anchorRect)
 
         case .focusScene(let sceneId):
+            // A scene tap during preview must stop playback first, mirroring the
+            // scrub/trim interaction guard, so the play/pause UI returns to the
+            // stopped state before focus is applied.
+            if vc.runtime?.isPlaying ?? false {
+                vc.runtime?.stopPlayback()
+            }
+            // User-initiated focus to a *different* scene should animate the
+            // timeline centering. Same-scene taps preserve the playhead (no move,
+            // no animation). The flag is one-shot: set before dispatch and
+            // guaranteed reset after, even if `onPlayheadChanged` does not fire.
+            pendingFocusAnimation = (vc.session.state?.sceneIdAtPlayhead() != sceneId)
+            defer { pendingFocusAnimation = false }
             vc.session.dispatch(.focusScene(sceneId: sceneId))
 
         case .moveOverlayItem(let itemId, let newStartUs, let phase):

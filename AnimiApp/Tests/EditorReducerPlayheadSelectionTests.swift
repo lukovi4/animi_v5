@@ -415,4 +415,112 @@ final class EditorReducerPlayheadSelectionTests: XCTestCase {
             XCTFail("Expected .scene selection after setBoundaryTransition in follow mode")
         }
     }
+
+    // MARK: - 18. focusScene on already-active scene → preserves playhead (no-op)
+
+    func test_focusScene_activeScene_preservesPlayhead() {
+        var state = makeLoadedState(sceneDurations: [1_000_000, 1_000_000, 1_000_000])
+        let scene2Id = state.sceneItems[1].id
+
+        // Focus scene 2 to activate selection + follow mode
+        let focusResult = EditorReducer.reduce(state: state, action: .focusScene(sceneId: scene2Id))
+        state = focusResult.state
+        XCTAssertEqual(state.selection, .scene(id: scene2Id))
+        XCTAssertEqual(state.timelineSceneSelectionMode, .followPlayhead)
+
+        // Move playhead to a non-boundary compressed frame inside scene 2
+        let mapper = state.makePlayheadMapper()
+        let scene2Start = mapper.sceneBoundaryCompressedFrame(forSceneAt: 1)
+        let playheadResult = EditorReducer.reduce(state: state, action: .setPlayhead(compressedFrame: scene2Start + 5))
+        state = playheadResult.state
+        let nonBoundaryFrame = state.playheadCompressedFrame
+        // Sanity: ensure we are genuinely off the scene boundary so the test
+        // cannot pass vacuously.
+        XCTAssertNotEqual(nonBoundaryFrame, scene2Start)
+
+        // Tap the already-active scene again → no-op
+        let result = EditorReducer.reduce(state: state, action: .focusScene(sceneId: scene2Id))
+
+        XCTAssertEqual(result.state.playheadCompressedFrame, nonBoundaryFrame,
+                       "Playhead must not jump to scene boundary on active-scene tap")
+        XCTAssertEqual(result.state.selection, .scene(id: scene2Id))
+        XCTAssertEqual(result.state.timelineSceneSelectionMode, .followPlayhead)
+        XCTAssertFalse(result.shouldPushSnapshot)
+    }
+
+    // MARK: - 19. focusScene on single-scene timeline under playhead → preserves playhead, selects
+
+    func test_focusScene_singleScene_underPlayhead_preservesPlayhead_andSelects() {
+        var state = makeLoadedState(sceneDurations: [2_000_000])
+        let scene1Id = state.sceneItems[0].id
+        // Loaded state: selection .none, mode .inactive.
+        XCTAssertEqual(state.selection, .none)
+        XCTAssertEqual(state.timelineSceneSelectionMode, .inactive)
+
+        // Move playhead to a mid-scene frame.
+        let mapper = state.makePlayheadMapper()
+        let scene1Start = mapper.sceneBoundaryCompressedFrame(forSceneAt: 0)
+        let playheadResult = EditorReducer.reduce(state: state, action: .setPlayhead(compressedFrame: scene1Start + 10))
+        state = playheadResult.state
+        let midFrame = state.playheadCompressedFrame
+        XCTAssertNotEqual(midFrame, scene1Start)
+
+        // Tap the only scene (which is under the playhead).
+        let result = EditorReducer.reduce(state: state, action: .focusScene(sceneId: scene1Id))
+
+        // Playhead preserved, scene selected, follow mode active, no snapshot.
+        XCTAssertEqual(result.state.playheadCompressedFrame, midFrame,
+                       "Single-scene tap must preserve mid-scene playhead")
+        XCTAssertEqual(result.state.selection, .scene(id: scene1Id))
+        XCTAssertEqual(result.state.timelineSceneSelectionMode, .followPlayhead)
+        XCTAssertFalse(result.shouldPushSnapshot)
+    }
+
+    // MARK: - 20. focusScene on scene under playhead but not selected → selects without moving
+
+    func test_focusScene_underPlayhead_notSelected_selectsWithoutMoving() {
+        var state = makeLoadedState(sceneDurations: [1_000_000, 1_000_000, 1_000_000])
+        let scene2Id = state.sceneItems[1].id
+
+        // Move playhead into scene 2 while selection stays .none / mode .inactive
+        // (i.e. scene 2 is under the playhead but not yet selected).
+        let mapper = state.makePlayheadMapper()
+        let scene2Start = mapper.sceneBoundaryCompressedFrame(forSceneAt: 1)
+        let playheadResult = EditorReducer.reduce(state: state, action: .setPlayhead(compressedFrame: scene2Start + 5))
+        state = playheadResult.state
+        let frameInScene2 = state.playheadCompressedFrame
+        XCTAssertEqual(state.selection, .none, "Precondition: scene 2 under playhead but not selected")
+        XCTAssertEqual(state.sceneIdAtPlayhead(), scene2Id)
+
+        // Tap scene 2.
+        let result = EditorReducer.reduce(state: state, action: .focusScene(sceneId: scene2Id))
+
+        // Selection moves to scene 2 without moving the playhead.
+        XCTAssertEqual(result.state.playheadCompressedFrame, frameInScene2,
+                       "Tapping the under-playhead scene must not move the playhead")
+        XCTAssertEqual(result.state.selection, .scene(id: scene2Id))
+        XCTAssertEqual(result.state.timelineSceneSelectionMode, .followPlayhead)
+        XCTAssertFalse(result.shouldPushSnapshot)
+    }
+
+    // MARK: - 21. focusScene on a different scene → moves to that scene's boundary
+
+    func test_focusScene_differentScene_movesToBoundary() {
+        let state = makeLoadedState(sceneDurations: [1_000_000, 1_000_000, 1_000_000])
+        let scene2Id = state.sceneItems[1].id
+        // Loaded state: playhead at frame 0 → scene 1 is under the playhead.
+        XCTAssertEqual(state.sceneIdAtPlayhead(), state.sceneItems[0].id)
+
+        // Tap scene 2 (a different scene).
+        let result = EditorReducer.reduce(state: state, action: .focusScene(sceneId: scene2Id))
+
+        // Playhead moves to scene 2 boundary start, scene 2 selected, follow mode.
+        let mapper = result.state.makePlayheadMapper()
+        let scene2Start = mapper.sceneBoundaryCompressedFrame(forSceneAt: 1)
+        XCTAssertEqual(result.state.playheadCompressedFrame, scene2Start,
+                       "Tapping a different scene must move the playhead to its boundary")
+        XCTAssertEqual(result.state.selection, .scene(id: scene2Id))
+        XCTAssertEqual(result.state.timelineSceneSelectionMode, .followPlayhead)
+        XCTAssertFalse(result.shouldPushSnapshot)
+    }
 }

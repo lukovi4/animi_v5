@@ -509,6 +509,13 @@ Not undoable (UI-only):
 - If the playhead was inside Scene B before reorder, after reorder it stays at the **same relative offset within Scene B**, mapped to Scene B’s new absolute start time.
 - If Scene B becomes shorter than that relative offset (should not happen from reorder alone), clamp within the scene.
 
+#### 11.6.3 Playhead on scene focus tap
+**Decision:** Scene focus taps are timeline-navigation interactions, not model edits.
+- If the tapped scene is already under the playhead, keep the playhead at its current frame. This includes single-scene timelines and scenes that are under the playhead but not yet selected.
+- If the tapped scene is different from the scene under the playhead, move the playhead to that scene's boundary start and center the timeline with the user-focus animation.
+- If preview playback is active when the user taps a scene, stop preview playback before applying the scene focus. This matches scrub behavior: user timeline navigation interrupts preview playback.
+- Scene focus taps do not push an undo snapshot.
+
 ### 11.7 Export alignment timing
 **Decision:** Export alignment is part of the V1 epic and must land **before** release.
 - Implementation can be staged after EditorStore/model unification, but release gating requires export to read the canonical timeline model.
@@ -722,4 +729,3 @@ This design is required to ensure:
 - Snapping (confirmed removed)
 - Split/Razor tool (confirmed future)
 - Linked/grouped items (confirmed future)
-

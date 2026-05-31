@@ -127,7 +127,11 @@ internal final class EditorBootstrapController {
                 vc.runtime?.handlePlayheadChanged(cf)
             }
             if let mapper = vc.session.state?.makePlayheadMapper() {
-                vc.editorLayoutContainer.setCurrentCompressedFrame(cf, mapper: mapper)
+                // Consume the one-shot focus-animation intent exactly once.
+                // Only a user focus to a different scene sets it; playback,
+                // scrub, and restore leave it false (immediate centering).
+                let animated = vc.timelineController.consumePendingFocusAnimation()
+                vc.editorLayoutContainer.setCurrentCompressedFrame(cf, mapper: mapper, animated: animated)
             }
         }
         callbacks.onSelectionChanged = { [weak vc] sel in vc?.timelineController.handleSelectionChanged(sel) }
