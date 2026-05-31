@@ -67,7 +67,9 @@ The Animi gate skills have `disable-model-invocation: true`. Do not try to call 
 /animi-planning-pass <task-folder>
 ```
 
-During the Planning Pass, do not suggest that the user runs shell commands with `! <command>` as a substitute for blocked Bash. Use allowed read-only Claude tools or stop.
+If a prose prompt includes the task folder, source files, or "write only claude-plan.md" but is not the direct slash command, it is still not authorization to emulate the skill. Do not read task files and do not write `claude-plan.md`; stop with the exact slash command.
+
+During the Planning Pass, do not suggest that the user runs shell commands with `! <command>` as a substitute for blocked Bash. Use Claude search/read tools first. If those are unavailable or insufficient, use only safe read-only inspection Bash allowed by the project hook.
 
 ## Implementation Gate
 
@@ -99,7 +101,9 @@ It must include plan compliance, files changed, exact verification commands, pas
 
 ## Context Rules
 
+- Use `Docs/agents/domain.md`, `Docs/agents/code-map.md`, and `Docs/agents/regression-map.md` as routing hints when relevant, but verify current code before relying on them.
 - Use Claude Code search/read tools for targeted context.
+- Safe read-only inspection Bash is allowed when needed for search/list/read fallback. Do not use mutating Bash, builds, tests, package managers, dependency tools, or long-running verification unless the approved implementation marker allows it.
 - Avoid reading large files end to end.
 - Do not read `logs.md`, `task*.md`, `findings.md`, `review.md`, `bug.md`, or `Docs/*.md` end to end unless the approved plan requires it.
 - Keep diffs and test output concise.

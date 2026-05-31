@@ -54,12 +54,16 @@ codex-plan-review.md
 - goal;
 - expected user-visible outcome;
 - non-goals;
+- pre-plan investigation: verified entry points, state/data flow, dependencies, and test seams;
 - approved product decisions;
+- product semantics and edge cases;
 - assumptions;
+- dependency/regression impact scan;
 - likely files/areas;
 - architecture constraints;
 - implementation plan for Claude;
 - verification commands;
+- manual QA requirement and exact steps when required;
 - stop conditions;
 - explicit permissions.
 

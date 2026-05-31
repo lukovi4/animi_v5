@@ -5,7 +5,7 @@ Use this for `codex-review.md`.
 ```markdown
 # Codex Review
 
-Status: Approved | Changes Requested | Blocked | Needs User Decision
+Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA Pending
 
 ## Findings
 
@@ -43,9 +43,27 @@ Status: Approved | Changes Requested | Blocked | Needs User Decision
 |---|---|---|---|
 | `<command>` | passed/failed/not run | yes/no/not rerun | <reason> |
 
+## Manual QA
+
+- Required: yes/no
+- Steps for user: <exact steps, or n/a>
+- Expected result: <observable expected result, or n/a>
+- Result: passed/failed/not run/not required
+
 ## Architecture / Invariants
 
 - <preview/export, TVECore boundary, media timing, persistence, etc.>
+
+## Code Cleanliness
+
+- Obsolete/legacy code removed: yes/no/n/a
+- Unrelated churn found: yes/no
+- Docs or knowledge maps updated: yes/no/n/a
+
+## Same-Task Repair
+
+- Fixes needed in same task: yes/no
+- New task required: yes/no and why
 
 ## Remaining Risks
 
@@ -66,3 +84,7 @@ Review order:
 6. Check architecture invariants.
 7. Check verification evidence.
 8. Decide whether heavy checks need rerun.
+9. Decide whether manual QA is required.
+10. Check code cleanliness and obsolete/legacy cleanup.
+11. Decide whether docs or knowledge maps need updates.
+12. Close, request same-task repair, or ask the user for a decision.

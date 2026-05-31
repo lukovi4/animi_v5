@@ -35,6 +35,13 @@ Reliability:
 
 - <error, log, screenshot, failing test, focused diff>
 
+## Code Trace
+
+- Entry point: `<path>` / <symbol>
+- State/data flow: <short trace>
+- Direct dependencies checked: <files/modules>
+- Adjacent regression surfaces: <from regression-map or current code>
+
 ## Hypotheses
 
 1. <hypothesis and falsifiable prediction>
@@ -51,4 +58,3 @@ Reliability:
 
 <diagnosis action or Codex plan step>
 ```
-

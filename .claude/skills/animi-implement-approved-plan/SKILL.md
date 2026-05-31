@@ -29,7 +29,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 - If a needed file is not listed, stop and ask for Codex review and a new marker.
 - Do not change product behavior beyond `plan.approved.md`.
 - Do not edit Codex-owned artifacts, marker files, hooks, settings, `.claude/`, `.agents/`, `AGENTS.md`, `CLAUDE.md`, or `Docs/agents/`.
-- Do not run Bash commands unless they exactly match `allowed_bash_exact` in the active marker.
+- Use safe read-only inspection Bash when needed to understand approved files or project structure. Verification/build/test Bash must exactly match `allowed_bash_exact` in the active marker.
 - Do not stage, commit, push, create PRs, change dependencies, change project files, or weaken tests unless explicitly approved in the plan and marker.
 - Preserve unrelated dirty worktree changes.
 
@@ -38,7 +38,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 1. Read `plan.approved.md`, `claude-task.md`, `claude-plan.md`, `codex-plan-review.md`, and the active marker.
 2. Confirm planned changes are still inside approved scope.
 3. Implement the smallest safe change that satisfies the approved plan.
-4. Run only verification allowed by the marker. If verification is blocked, record the blocker.
+4. Run verification only when allowed by the marker. Safe read-only inspection commands are not verification evidence unless they directly support the summary.
 5. Write `$task_folder/claude-summary.md` using `Docs/agents/claude-summary-template.md`.
 
 ## Summary Requirements
@@ -53,6 +53,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 - plan compliance;
 - exact verification commands and results;
 - checks not run and why;
+- manual QA notes from the approved plan;
 - deviations from plan, if any;
 - known risks or follow-ups for Codex.
 

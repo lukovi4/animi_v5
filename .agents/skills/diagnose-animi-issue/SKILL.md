@@ -22,6 +22,8 @@ Read only the sections needed:
 
 - `../../../Docs/agents/workflow.md`
 - `../../../Docs/agents/domain.md`
+- `../../../Docs/agents/code-map.md`
+- `../../../Docs/agents/regression-map.md`
 - `reproduction-template.md`
 
 ## Workflow
@@ -30,10 +32,11 @@ Read only the sections needed:
 2. Capture the observed symptom.
 3. Build the smallest reliable reproduction or explain why it is not yet possible.
 4. Identify the affected track: quick fix, feature/behavior, or architecture/media pipeline.
-5. List 3-5 ranked hypotheses when the cause is unclear.
-6. Add targeted instrumentation only when needed and keep it temporary.
-7. Convert the reproduction into a failing test when a valid seam exists.
-8. Produce a diagnosis plan or `claude-findings.md` handoff.
+5. Trace the relevant code path and adjacent dependencies before proposing a fix.
+6. List 3-5 ranked hypotheses when the cause is unclear.
+7. Add targeted instrumentation only when needed and keep it temporary.
+8. Convert the reproduction into a failing test when a valid seam exists.
+9. Produce a diagnosis plan or `claude-findings.md` handoff.
 
 ## Special Animi Surfaces
 
@@ -54,4 +57,3 @@ Stop and ask when:
 - product behavior is unclear;
 - three fix attempts have already failed;
 - diagnosis requires changing production code before approval.
-

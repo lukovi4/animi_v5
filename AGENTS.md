@@ -79,6 +79,7 @@ If any product, architecture, data, dependency, CI, git, test, or UX decision is
 ## Context Rules
 
 - Keep context small and targeted.
+- Use `Docs/agents/domain.md`, `Docs/agents/code-map.md`, and `Docs/agents/regression-map.md` as routing hints before broad repository exploration; verify current code before planning or reviewing.
 - Use `rg` / `rg --files` before targeted file reads.
 - Do not read `logs.md`, `task*.md`, `findings.md`, `review.md`, `bug.md`, or `Docs/*.md` end to end unless explicitly needed.
 - Do not dump full diffs into chat; use stats, names, or focused hunks.

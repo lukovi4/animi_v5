@@ -29,15 +29,19 @@ If any required input is missing, write `codex-plan-review.md` with `Status: BLO
 2. Read `claude-task.md`.
 3. Read `claude-plan.md`.
 4. Check planned files against approved scope.
-5. Check planned tests and verification against risk.
-6. Check that Claude introduced no product behavior, architecture, dependency, CI, git, hook, or project-file decision.
-7. Write `codex-plan-review.md` using `../../../Docs/agents/codex-plan-review-template.md`.
+5. Check that Claude's plan accounts for the approved code trace, state/data flow, dependency scan, and edge cases.
+6. Check planned tests and verification against risk.
+7. Check manual QA expectations from `plan.approved.md`.
+8. Check that Claude introduced no product behavior, architecture, dependency, CI, git, hook, or project-file decision.
+9. Write `codex-plan-review.md` using `../../../Docs/agents/codex-plan-review-template.md`.
 
 ## Status Rules
 
 - `APPROVED`: plan is inside approved scope and ready for user implementation approval.
 - `CHANGES_REQUESTED`: plan is close but needs Claude revision.
 - `BLOCKED`: missing inputs, product decision needed, scope conflict, or unsafe implementation path.
+
+Use `CHANGES_REQUESTED`, not a new task, when Claude can fix the plan inside the same approved scope.
 
 If the review is `APPROVED`, do not tell Claude to implement with a prose prompt. After explicit user implementation approval and marker creation, give the user this exact slash command:
 

@@ -14,14 +14,15 @@ It is based on the official Claude Code hook contract:
 ## Core Rules
 
 - Direct `/animi-planning-pass` and `/animi-implement-approved-plan` invocations are validated before expansion.
-- Planning mode has no Bash permission.
+- Planning mode allows safe read-only inspection Bash only.
 - Planning mode may write only `claude-plan.md` in a valid approved task folder.
 - Planning mode cannot write production code, tests, project files, build scripts, dependencies, settings, hooks, or gate files.
 - Implementation mode requires a valid `.codex-local/active-implementation.json` marker.
 - Implementation mode can write code/test files only when their exact canonical paths are listed in marker `approved_paths`.
 - Implementation mode may write only derived Claude task artifacts in the active task folder: `claude-summary.md` and files under `artifacts/`.
-- Implementation mode can run Bash only when the full trimmed command exactly matches marker `allowed_bash_exact`.
+- Implementation mode can run safe read-only inspection Bash and marker-listed verification Bash.
 - Git-mutating commands are blocked in all normal modes.
+- Dangerous direct shell commands, shell composition, redirection, and dependency/tool mutation are blocked in all normal modes.
 - Unknown tool input structure is blocked, not ignored.
 - Any ambiguity inside the hook script blocks the action.
 
@@ -52,7 +53,7 @@ Allowed:
 
 Denied:
 
-- Bash;
+- mutating, expensive, or unsafe Bash;
 - production/test/project writes;
 - `claude-summary.md`;
 - Codex-owned artifacts;
@@ -91,16 +92,29 @@ Denied writes:
 
 ## Bash Policy
 
-Bash is denied completely in planning mode.
+The hook favors Claude productivity for read/search work and strict control for writes and expensive commands.
 
-In implementation mode, Bash is allowed only when:
+Allowed in planning and implementation:
+
+- safe read-only inspection commands such as `pwd`, `ls`, `rg`, `grep`, `sed -n`, `head`, `tail`, `wc`, `find`, read-only `git status/diff` forms, and `plutil -lint`;
+- only repository-local path inspection;
+- no shell composition or redirection.
+
+Implementation verification Bash is additionally allowed when:
 
 - marker is valid;
 - the command equals one full string from `allowed_bash_exact` after trimming;
 - the allowed string does not contain shell composition or redirection such as `;`, `&&`, `||`, `|`, `>`, `<`, `$(`, backticks, heredoc, `tee`, `eval`, `bash -c`, or `sh -c`;
 - the command is not a git-mutating command.
 
-`allowed_bash_exact` is for verification commands, not general shell access.
+Denied in all normal modes:
+
+- mutating git commands;
+- build/test/package/dependency commands unless exact-listed in marker `allowed_bash_exact`;
+- `rm`, `mv`, `cp`, `chmod`, `chown`, `touch`, `mkdir`, scripting runtimes used as direct commands, `sed -i`, `find -exec`, `find -delete`, and similar mutation paths;
+- command composition, pipes, redirection, command substitution, heredocs, `tee`, `eval`, `bash -c`, and `sh -c`.
+
+`allowed_bash_exact` is for assigned verification commands, not general shell access. Read-only inspection commands do not need to be listed there.
 
 ## ConfigChange
 

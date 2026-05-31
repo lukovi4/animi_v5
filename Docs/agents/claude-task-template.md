@@ -31,6 +31,8 @@ The user must invoke the manual Planning Pass skill with this exact slash comman
 
 Do not ask Claude to "use the Planning Pass workflow" in prose. The skill has `disable-model-invocation: true`, so Claude must not call it through `Skill(...)` or emulate it manually.
 
+If Claude receives a prose prompt that describes the Planning Pass but is not the direct slash command, Claude must stop and ask for the slash command. It must not read task files or write `claude-plan.md` from that prose prompt.
+
 Write the Planning Pass result to:
 
 - `claude-plan.md`
@@ -59,6 +61,10 @@ Out of scope:
 
 - `<path>`: <why>
 
+## Edge Cases / Regression Risks
+
+- <edge case or adjacent behavior Codex expects Claude to preserve>
+
 ## Implementation Constraints
 
 - <architecture invariant>
@@ -69,6 +75,11 @@ Out of scope:
 - `<command>`: <expected evidence>
 
 If a check cannot run, record why in `claude-summary.md`.
+
+## Manual QA Expectation
+
+- Required: yes/no
+- If required: <exact user steps and expected result>
 
 ## Required Summary
 

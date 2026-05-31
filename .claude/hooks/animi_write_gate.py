@@ -84,6 +84,31 @@ SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 CURRENT_EVENT_NAME = ""
 
+READ_ONLY_BASH_COMMANDS = {
+    "pwd",
+    "ls",
+    "rg",
+    "grep",
+    "sed",
+    "head",
+    "tail",
+    "wc",
+    "find",
+    "git",
+    "plutil",
+}
+FIND_MUTATING_EXPRESSIONS = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls", "-fprint", "-fprintf"}
+GIT_DIFF_ALLOWED_FLAGS = {
+    "--cached",
+    "--staged",
+    "--name-only",
+    "--name-status",
+    "--stat",
+    "--numstat",
+    "--shortstat",
+    "--check",
+}
+
 
 class GateError(Exception):
     pass
@@ -442,6 +467,126 @@ def is_dangerous_direct_command(command: str) -> bool:
     return False
 
 
+def token_looks_like_path(token: str) -> bool:
+    if not token or token.startswith("-"):
+        return False
+    return token.startswith(("/", "./", "../", "~")) or "/" in token or token in {".", ".."}
+
+
+def validate_repo_path_token(root: Path, token: str) -> None:
+    path = Path(token)
+    if token.startswith("~"):
+        raise GateError(f"read-only Bash path is outside repository: {token}")
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.resolve(strict=False)
+    if not is_under(resolved, root):
+        raise GateError(f"read-only Bash path is outside repository: {token}")
+
+
+def validate_path_like_tokens(root: Path, tokens: Sequence[str], start_index: int = 1) -> None:
+    for token in tokens[start_index:]:
+        if token_looks_like_path(token):
+            validate_repo_path_token(root, token)
+
+
+def read_only_git_allowed(root: Path, tokens: Sequence[str]) -> bool:
+    args = list(strip_env_assignments(tokens))
+    if len(args) < 2 or args[0] != "git":
+        return False
+    subcommand = args[1]
+    rest = args[2:]
+
+    if subcommand == "status":
+        return all(not token.startswith("--porcelain=v1=") for token in rest)
+
+    if subcommand == "diff":
+        path_mode = False
+        for token in rest:
+            if path_mode:
+                validate_repo_path_token(root, token)
+                continue
+            if token == "--":
+                path_mode = True
+                continue
+            if token in GIT_DIFF_ALLOWED_FLAGS or re.match(r"^-U\d+$", token) or re.match(r"^--unified=\d+$", token):
+                continue
+            return False
+        return True
+
+    return False
+
+
+def read_only_find_allowed(root: Path, tokens: Sequence[str]) -> bool:
+    if any(token in FIND_MUTATING_EXPRESSIONS for token in tokens):
+        return False
+    args = list(tokens[1:])
+    path_tokens: List[str] = []
+    for token in args:
+        if token.startswith("-") or token in {"!", "(", ")"}:
+            break
+        path_tokens.append(token)
+    if not path_tokens:
+        path_tokens = ["."]
+    for token in path_tokens:
+        validate_repo_path_token(root, token)
+    validate_path_like_tokens(root, args, 0)
+    return True
+
+
+def read_only_plutil_allowed(root: Path, tokens: Sequence[str]) -> bool:
+    if "-lint" not in tokens[1:]:
+        return False
+    validate_path_like_tokens(root, tokens)
+    return True
+
+
+def read_only_sed_allowed(root: Path, tokens: Sequence[str]) -> bool:
+    if any(token == "-i" or token.startswith("-i") for token in tokens[1:]):
+        return False
+    if not any(token == "-n" or token.startswith("-n") for token in tokens[1:]):
+        return False
+    validate_path_like_tokens(root, tokens)
+    return True
+
+
+def read_only_tail_allowed(root: Path, tokens: Sequence[str]) -> bool:
+    if any(token == "-f" or token.startswith("-f") or token == "--follow" or token.startswith("--follow=") for token in tokens[1:]):
+        return False
+    validate_path_like_tokens(root, tokens)
+    return True
+
+
+def read_only_bash_allowed(root: Path, command: str) -> bool:
+    if not bash_string_is_simple(command):
+        return False
+    if is_mutating_git_command(command) or is_dangerous_direct_command(command):
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError as exc:
+        raise GateError(f"cannot parse Bash command: {exc}") from exc
+    tokens = strip_env_assignments(tokens)
+    if not tokens:
+        return False
+    if tokens[0] not in READ_ONLY_BASH_COMMANDS:
+        return False
+
+    if tokens[0] == "git":
+        return read_only_git_allowed(root, tokens)
+    if tokens[0] == "find":
+        return read_only_find_allowed(root, tokens)
+    if tokens[0] == "plutil":
+        return read_only_plutil_allowed(root, tokens)
+    if tokens[0] == "sed":
+        return read_only_sed_allowed(root, tokens)
+    if tokens[0] == "tail":
+        return read_only_tail_allowed(root, tokens)
+
+    validate_path_like_tokens(root, tokens)
+    return True
+
+
 def handle_bash(root: Path, tool_input: Dict[str, Any], marker: Optional[Marker]) -> None:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -451,11 +596,14 @@ def handle_bash(root: Path, tool_input: Dict[str, Any], marker: Optional[Marker]
     if is_mutating_git_command(command):
         raise GateError("git-mutating commands are blocked")
 
+    if read_only_bash_allowed(root, command):
+        return
+
     if marker is None:
-        raise GateError("Bash is blocked in Animi planning mode")
+        raise GateError("Bash command is not an allowed read-only inspection command")
 
     if command not in marker.allowed_bash:
-        raise GateError("Bash command is not in marker allowed_bash_exact")
+        raise GateError("Bash command is neither safe read-only inspection nor marker allowed_bash_exact")
     if not bash_string_is_simple(command):
         raise GateError("Bash command contains blocked shell composition")
     if is_dangerous_direct_command(command):

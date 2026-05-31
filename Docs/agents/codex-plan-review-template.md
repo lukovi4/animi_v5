@@ -15,6 +15,8 @@ Date: YYYY-MM-DD
 - Claude task followed: yes/no
 - Product behavior changed: no/yes
 - Files expected to change are within approved scope: yes/no
+- Approved edge cases and regression surfaces covered: yes/no
+- Manual QA expectation preserved: yes/no
 
 ## Findings
 

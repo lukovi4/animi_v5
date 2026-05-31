@@ -46,11 +46,17 @@ Skipped checks:
 
 - <area that deserves targeted review>
 
-## 7. Known Issues / Follow-ups
+## 7. Manual QA Notes
+
+- Required by approved plan: yes/no
+- Claude result: not run by Claude / n/a
+- Suggested focus for Codex/user: <manual area, or "None">
+
+## 8. Known Issues / Follow-ups
 
 - <issue or "None">
 
-## 8. Questions For Codex
+## 9. Questions For Codex
 
 - <question or "None">
 ```

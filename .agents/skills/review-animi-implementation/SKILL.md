@@ -47,7 +47,10 @@ Read only the sections needed:
 8. Review architecture invariants.
 9. Review verification evidence.
 10. Decide whether heavy checks need rerun.
-11. Write `codex-review.md`.
+11. Decide whether manual QA is required. If yes, provide exact steps and expected results.
+12. Check code cleanliness: no obsolete files, no unused legacy paths introduced by the task, no unrelated churn.
+13. Decide whether docs or knowledge maps need updates.
+14. Write `codex-review.md`.
 
 ## Verdicts
 
@@ -57,5 +60,8 @@ Use one:
 - `Changes Requested`
 - `Blocked`
 - `Needs User Decision`
+- `Manual QA Pending`
 
 Do not close while P0/P1 findings remain open.
+
+If fixes are required and they stay inside the same approved product scope, keep the same task open. Do not create a new task for same-scope repairs. Update the review and marker as needed, then send Claude back through `/animi-implement-approved-plan <task-folder>`.

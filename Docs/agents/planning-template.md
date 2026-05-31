@@ -20,13 +20,32 @@ User Approval: <required for APPROVED; include date/context>
 
 - <out of scope>
 
+## Pre-Plan Investigation
+
+- Relevant knowledge maps checked: <domain/code-map/regression-map sections or "none">
+- Code entry points verified: `<path>`: <what was checked>
+- State/data flow verified: <short trace>
+- Existing tests/seams verified: `<path>`: <what they cover>
+
 ## Approved Product Decisions
 
 - <decision and approval source>
 
+## Product Semantics And Edge Cases
+
+- Terms/semantics fixed by user approval: <definition>
+- Edge cases considered:
+  - <edge case>: <expected behavior or stop condition>
+
 ## Assumptions
 
 - <technical assumption that does not decide product behavior>
+
+## Dependency / Regression Impact Scan
+
+- Direct dependencies touched: <files/modules>
+- Adjacent behavior that could regress: <behavior>
+- Regression checks selected: <why these checks are enough>
 
 ## Likely Files / Areas
 
@@ -47,6 +66,12 @@ User Approval: <required for APPROVED; include date/context>
 |---|---|---:|---|
 | Focused tests | `<command>` | yes/no | <why> |
 | Lint/build/gate | `<command>` | yes/no | <why> |
+
+## Manual QA
+
+- Required: yes/no
+- Steps: <exact device/simulator steps, or "n/a">
+- Expected result: <observable expected result, or "n/a">
 
 ## Stop Conditions
 
@@ -73,9 +98,13 @@ Claude must write `claude-plan.md` during the Planning Pass and stop. Implementa
 Before marking a plan approved:
 
 - [ ] Product behavior decisions are approved or out of scope.
+- [ ] Relevant code was inspected enough to trace entry point, state/data flow, and test seams.
+- [ ] Edge cases and user-visible semantics are listed.
+- [ ] Dependency/regression impact scan is complete.
 - [ ] Scope and non-goals are clear.
 - [ ] Likely files/areas are named.
 - [ ] Verification commands are specific.
+- [ ] Manual QA requirement is explicit, with steps when required.
 - [ ] Stop conditions are explicit.
 - [ ] Sensitive actions are explicitly allowed or disallowed.
 - [ ] No placeholders remain.

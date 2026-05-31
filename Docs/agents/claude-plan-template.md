@@ -27,9 +27,18 @@ Status: Proposed | Blocked
 
 - `<path>`: <why>
 
+## Edge Cases / Regression Checks
+
+- <edge case or adjacent behavior from the approved plan>
+
 ## Tests / Verification Planned
 
 - `<command>`: <why>
+
+## Manual QA
+
+- Required by approved plan: yes/no
+- Claude notes for Codex: <anything Codex should verify manually, or "None">
 
 ## Risks
 

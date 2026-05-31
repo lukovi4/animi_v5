@@ -52,10 +52,10 @@ Hooks and markers are the deterministic protection layer, not the workflow itsel
 
 The intended write gate uses:
 
-- `PreToolUse` to block writes outside marker-approved paths and block Bash unless exact-allowed;
+- `PreToolUse` to block writes outside marker-approved paths, block mutating/dangerous Bash, allow safe read-only inspection Bash, and allow marker-listed verification Bash;
 - `ConfigChange` to block unauthorized changes to Claude settings, hooks, skills, marker, and gate files;
 - `PostToolBatch` to audit actual git changes after a tool batch and stop the session if a bypass is detected.
 
 The marker is `.codex-local/active-implementation.json`. It is created and removed only by Codex after explicit user approval.
 
-Planning mode has no Bash permission. Implementation mode allows Bash only by exact command allowlist from the marker.
+Planning mode allows only safe read-only inspection Bash. Implementation mode allows safe read-only inspection Bash plus exact verification commands from marker `allowed_bash_exact`.

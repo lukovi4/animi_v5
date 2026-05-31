@@ -53,6 +53,16 @@ Use [task-folder-template.md](task-folder-template.md) when creating a task fold
 - Gate skills that should only run by explicit user command must use `disable-model-invocation: true`.
 - Manual Claude gate skills must be invoked by the user as slash commands. Do not hand Claude a prose prompt like "use the Planning Pass workflow"; provide the exact slash command.
 
+## Knowledge Maps
+
+Use these files as routing hints before expensive repository exploration:
+
+- [domain.md](domain.md): stable glossary and product/architecture terms.
+- [code-map.md](code-map.md): high-level code ownership map and likely entry points.
+- [regression-map.md](regression-map.md): risk areas and focused verification seams.
+
+Knowledge maps are not source of truth. Codex and Claude must still verify relevant current code before planning, implementation, or review. Update maps only when a task reveals stable reusable knowledge; do not add temporary assumptions or task-specific scratch notes.
+
 ## Artifact Ownership
 
 Codex owns:
@@ -85,7 +95,7 @@ Status values are file-specific:
 - `claude-plan.md`: `Status: Proposed | Blocked`
 - `codex-plan-review.md`: `Status: APPROVED | CHANGES_REQUESTED | BLOCKED`
 - `claude-summary.md`: `Status: Done | Done With Concerns | Blocked`
-- `codex-review.md`: `Status: Approved | Changes Requested | Blocked | Needs User Decision`
+- `codex-review.md`: `Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA Pending`
 
 Claude proposes implementation plans in `claude-plan.md`. Codex approval lives only in `codex-plan-review.md`.
 
@@ -94,27 +104,30 @@ Claude proposes implementation plans in `claude-plan.md`. Codex approval lives o
 1. User gives a task.
 2. Codex creates a task folder.
 3. Codex classifies the task track.
-4. Codex gathers targeted context.
-5. Codex asks for user approval on any product behavior decision.
-6. Codex writes `plan.draft.md`.
-7. User approves or rejects the draft plan.
-8. Codex writes `plan.approved.md` with `Status: APPROVED`.
-9. Codex writes `claude-task.md`.
-10. Codex gives the user the exact Claude slash command: `/animi-planning-pass <task-folder>`.
-11. The user invokes that slash command in Claude.
-12. Claude reads `plan.approved.md` and `claude-task.md`.
-13. Claude runs the Planning Pass skill, analyzes real code, writes only `claude-plan.md`, and stops.
-14. Codex reviews `claude-plan.md` against `plan.approved.md` and writes `codex-plan-review.md`.
-15. The user explicitly approves implementation.
-16. Codex creates `.codex-local/active-implementation.json` as a scoped implementation marker.
-17. Codex gives the user the exact Claude slash command: `/animi-implement-approved-plan <task-folder>`.
-18. The user invokes that slash command in Claude.
-19. Claude runs the implementation skill and changes only marker-approved paths.
-20. Claude writes `claude-summary.md`.
-21. Codex reviews implementation and writes `codex-review.md`.
-22. Codex closes/removes the marker, or lets it expire as a backstop.
-23. If review finds blockers, Codex creates a follow-up task/plan.
-24. The task closes only after evidence-based verification or explicit accepted risk.
+4. Codex reads only the relevant knowledge-map sections, then verifies current code directly.
+5. Codex performs a pre-plan investigation: entry points, state/data flow, dependencies, test seams, and likely regression surfaces.
+6. Codex lists edge cases, product semantics, and consequences of likely fixes.
+7. Codex asks the user every required product/UX/behavior question. Do not write the draft plan until required answers are clear.
+8. Codex writes `task.md`, `product-decisions.md`, `plan.draft.md`, and `followups.md`.
+9. User approves or rejects the draft plan.
+10. Codex writes `plan.approved.md` with `Status: APPROVED`.
+11. Codex writes `claude-task.md`.
+12. Codex gives the user the exact Claude slash command: `/animi-planning-pass <task-folder>`.
+13. The user invokes that slash command in Claude.
+14. Claude reads `plan.approved.md` and `claude-task.md`.
+15. Claude runs the Planning Pass skill, analyzes real code, writes only `claude-plan.md`, and stops.
+16. Codex reviews `claude-plan.md` against `plan.approved.md` and writes `codex-plan-review.md`.
+17. The user explicitly approves implementation.
+18. Codex creates `.codex-local/active-implementation.json` as a scoped implementation marker.
+19. Codex gives the user the exact Claude slash command: `/animi-implement-approved-plan <task-folder>`.
+20. The user invokes that slash command in Claude.
+21. Claude runs the implementation skill and changes only marker-approved paths.
+22. Claude writes `claude-summary.md`.
+23. Codex reviews implementation and writes `codex-review.md`.
+24. If review finds issues that are within the same approved task, Codex keeps the same task open and sends Claude back through the same implementation skill after updating the review/marker as needed. Do not create a new task for same-scope repairs.
+25. Codex decides whether manual QA is required. If required, Codex gives the user exact device steps and expected results.
+26. Codex performs closure review: code cleanliness, obsolete/legacy cleanup, docs/map updates, marker cleanup, and commit readiness.
+27. The task closes only after evidence-based verification and required manual QA pass, unless the user explicitly accepts the remaining risk.
 
 ## Approval Gates
 
@@ -132,10 +145,14 @@ Claude can implement only from `plan.approved.md`.
 - user approval statement;
 - goal and expected outcome;
 - scope and non-goals;
+- pre-plan investigation evidence;
 - approved product decisions;
+- product semantics and edge cases;
+- dependency/regression impact scan;
 - likely files/areas;
 - implementation steps;
 - verification commands;
+- manual QA requirement;
 - stop conditions;
 - allowed sensitive actions.
 
@@ -172,7 +189,7 @@ Claude must not create, edit, rename, or delete the marker.
 The hook gate is the deterministic layer. The intended design is:
 
 - `UserPromptExpansion`: validate direct `/animi-planning-pass` and `/animi-implement-approved-plan` invocations;
-- `PreToolUse`: block writes outside marker-approved paths and block Bash unless exact-allowed;
+- `PreToolUse`: block writes outside marker-approved paths, block mutating/dangerous commands, allow safe read-only inspection Bash, and allow marker-listed verification Bash;
 - `ConfigChange`: block unauthorized edits to Claude settings, hooks, skills, marker, and gate files;
 - `PostToolBatch`: audit actual git changes after a tool batch and stop the session if a write bypass is detected.
 
@@ -198,6 +215,8 @@ Codex decides whether heavy checks must be re-run based on:
 - review findings;
 - architecture/media/persistence/export impact.
 
+Codex must also decide whether manual QA is required. Manual QA is required when automated tests cannot fully prove the user-visible behavior, animation/player timing, gesture flow, export output, device-only issue, or visual result. When required, Codex must provide exact steps and expected results, not a vague "test on device" instruction.
+
 ## Review
 
 Codex review order:
@@ -209,10 +228,21 @@ Codex review order:
 5. edge cases and regressions;
 6. performance/security when relevant;
 7. verification evidence;
-8. scope creep;
-9. closure or follow-up.
+8. manual QA need and result;
+9. scope creep;
+10. code cleanliness and obsolete/legacy cleanup;
+11. docs/map update need;
+12. closure, same-task repair, or follow-up.
 
 Use [review-template.md](review-template.md).
+
+## Same-Task Repair Loop
+
+Use the same task folder when Claude's implementation has defects inside the already approved product scope.
+
+Codex writes `codex-review.md` with `Status: Changes Requested`, lists exact findings, and keeps the marker active or issues a refreshed marker for the same task. Claude then reruns `/animi-implement-approved-plan <task-folder>` and fixes only the reviewed issues.
+
+Create a new task only when the fix needs a new product decision, new architecture decision, unrelated scope, dependency/tooling change, or a materially different implementation path.
 
 ## Closure Criteria
 
@@ -222,6 +252,10 @@ A task can close only when:
 - `codex-plan-review.md` approved Claude's plan before implementation;
 - Claude summary is complete;
 - required verification passed or skipped checks are explicitly accepted risks;
+- required manual QA passed or is explicitly accepted as not run;
 - Codex review has no blocking findings;
+- obsolete code/files introduced by the task are removed or explicitly retained;
+- required docs or knowledge-map updates are completed or explicitly unnecessary;
 - the active implementation marker is removed or expired;
-- follow-ups are documented separately.
+- follow-ups are documented separately;
+- git commit is created only after the user approves committing the reviewed final state.

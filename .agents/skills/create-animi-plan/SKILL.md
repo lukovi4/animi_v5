@@ -30,13 +30,16 @@ Read only the sections needed:
 
 1. Create or reuse a task folder under `.codex-local/tasks/YYYY-MM-DD-short-slug/`.
 2. Classify the task: quick fix, feature/behavior, or architecture/media pipeline.
-3. Gather targeted code context only when needed.
-4. Write `task.md`.
-5. Write `product-decisions.md`.
-6. Write `plan.draft.md`.
-7. Write `followups.md`.
-8. Run the readiness checklist.
-9. Ask the user to approve, reject, or revise the draft.
+3. Read only relevant knowledge-map sections from `Docs/agents/domain.md`, `Docs/agents/code-map.md`, and `Docs/agents/regression-map.md` when they help route investigation.
+4. Investigate the real code like a planning pass before drafting: entry points, state/data flow, direct dependencies, adjacent behavior, and existing test seams.
+5. Identify edge cases, product semantics, and possible consequences of the likely fix.
+6. Ask the user every required product/UX/behavior question. Do not write `plan.draft.md` until required answers are clear.
+7. Write `task.md`.
+8. Write `product-decisions.md`.
+9. Write `plan.draft.md`.
+10. Write `followups.md`.
+11. Run the readiness checklist.
+12. Ask the user to approve, reject, or revise the draft.
 
 After explicit user approval:
 
@@ -54,6 +57,7 @@ After explicit user approval:
 Stop and ask the user when:
 
 - product behavior is unclear;
+- active semantics, edge cases, or expected manual behavior cannot be inferred safely;
 - the task needs dependency, CI, hook, Xcode project, signing, or build-script changes;
 - existing dirty files conflict with the plan;
 - the plan would require production code edits by Codex.

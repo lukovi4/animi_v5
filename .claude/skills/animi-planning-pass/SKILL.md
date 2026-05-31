@@ -2,7 +2,6 @@
 name: Animi Planning Pass
 description: Create claude-plan.md for an approved Animi task without implementing. Manual gate skill for reading plan.approved.md and claude-task.md, analyzing real code read-only, writing only claude-plan.md, and stopping for Codex review.
 disable-model-invocation: true
-disallowed-tools: Bash
 argument-hint: <task-folder>
 arguments: task_folder
 ---
@@ -38,8 +37,9 @@ Do not edit production code, tests, build files, project files, dependencies, ho
 
 - Read `plan.approved.md` and `claude-task.md` first.
 - Use targeted code reads and search.
+- If normal search/read tools are unavailable or insufficient, safe read-only inspection Bash is allowed by the project hook. Use it only for inspection commands such as `pwd`, `ls`, `rg`, `grep`, `sed -n`, `head`, `tail`, `wc`, `find`, read-only `git status/diff` forms, or `plutil -lint`.
 - Use Explore/subagents when useful for focused read-only code investigation.
-- Do not use Bash in this pass.
+- Do not run mutating Bash, build commands, tests, package managers, dependency tools, or long-running verification in this pass.
 - Do not suggest that the user runs shell commands with `! <command>` as a substitute for blocked Bash.
 - Do not infer product behavior beyond the approved plan.
 - If code contradicts the approved plan, write a blocked `claude-plan.md` and stop.
@@ -56,6 +56,7 @@ It must include:
 - exact files expected to change;
 - implementation steps inside approved scope;
 - verification planned;
+- edge cases, regression checks, and manual QA expectations from the approved plan;
 - risks, blockers, or questions for Codex.
 
 Do not write `Status: APPROVED` in `claude-plan.md`. Claude proposes; Codex approves only through `codex-plan-review.md`.

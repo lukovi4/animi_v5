@@ -39,6 +39,25 @@
 - [ ] Bulky logs are in `artifacts/`.
 - [ ] Heavy rerun decision is justified.
 
+## Manual QA
+
+- [ ] Manual QA is marked required/not required.
+- [ ] If required, exact steps and expected result are written for the user.
+- [ ] If skipped, risk is explicitly accepted or not applicable.
+
+## Same-Task Repair
+
+- [ ] Fixable findings inside approved scope stay in this task.
+- [ ] New task is used only for new product/architecture/scope/dependency decisions.
+- [ ] Marker scope is refreshed only when needed for the same task.
+
+## Closure
+
+- [ ] Obsolete files/code introduced by the task are removed or justified.
+- [ ] Required docs or knowledge-map updates are completed or explicitly unnecessary.
+- [ ] Marker cleanup is handled.
+- [ ] Commit readiness is stated after review.
+
 ## Output
 
 Write `codex-review.md` using `../../../Docs/agents/review-template.md`.

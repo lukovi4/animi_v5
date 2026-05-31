@@ -50,7 +50,7 @@ Claude must not create task folders or `claude-task.md`.
 # Task: <short title>
 
 Date: YYYY-MM-DD
-Status: Draft | Approved | In Progress | In Review | Closed | Blocked
+Status: Draft | Approved | In Progress | In Review | Manual QA Pending | Closed | Blocked
 Track: Quick fix | Feature / behavior | Architecture / media pipeline
 
 ## User Request
@@ -68,6 +68,9 @@ Track: Quick fix | Feature / behavior | Architecture / media pipeline
 ## Context
 
 - <targeted context only>
+- Knowledge maps checked: <domain/code-map/regression-map sections or "none">
+- Pre-plan investigation summary: <entry points, state/data flow, dependencies, test seams>
+- Manual QA: <required/not required; exact steps live in plan/review when required>
 
 ## Links
 
