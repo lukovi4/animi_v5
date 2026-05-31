@@ -90,6 +90,7 @@ Claude must not create task folders, `plan.approved.md`, or `claude-task.md`.
 
 Status values are file-specific:
 
+- `task.md`: `Status: Draft | Approved | In Progress | In Review | Manual QA Pending | Closed | Blocked`
 - `plan.draft.md`: `Status: DRAFT`
 - `plan.approved.md`: `Status: APPROVED`
 - `claude-plan.md`: `Status: Proposed | Blocked`
@@ -186,12 +187,9 @@ Claude must not create, edit, rename, or delete the marker.
 
 ### Hook Gate
 
-The hook gate is the deterministic layer. The intended design is:
+The hook gate is the technical enforcement layer for writes, Bash, marker validation, settings changes, and post-tool repository audit.
 
-- `UserPromptExpansion`: validate direct `/animi-planning-pass` and `/animi-implement-approved-plan` invocations;
-- `PreToolUse`: block writes outside marker-approved paths, block mutating/dangerous commands, allow safe read-only inspection Bash, and allow marker-listed verification Bash;
-- `ConfigChange`: block unauthorized edits to Claude settings, hooks, skills, marker, and gate files;
-- `PostToolBatch`: audit actual git changes after a tool batch and stop the session if a write bypass is detected.
+`UserPromptExpansion` validates direct slash-command arguments. `PreToolUse` enforces allowed write/Bash shape. If deterministic slash provenance becomes required, implement it in the hook before documenting it as fully enforced.
 
 See [marker-schema.md](marker-schema.md) and [hook-write-gate.md](hook-write-gate.md).
 

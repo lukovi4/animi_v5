@@ -1,8 +1,10 @@
-# Create Animi Plan Template
+# Create Animi Plan Output Order
 
-Use this compact task plan shape. For full details, see `../../../Docs/agents/planning-template.md`.
+Use the canonical templates in `../../../Docs/agents/`.
 
-## Draft Output Files
+## Draft Pass
+
+Create:
 
 ```text
 task.md
@@ -12,70 +14,33 @@ followups.md
 artifacts/
 ```
 
-## Approved Handoff Files
+Use:
 
-Create only after explicit user approval:
+- `../../../Docs/agents/task-folder-template.md`
+- `../../../Docs/agents/planning-template.md`
+
+## Approved Handoff
+
+Only after explicit user approval, create:
 
 ```text
 plan.approved.md
 claude-task.md
 ```
 
-## Pre-Implementation Review Files
+Use:
 
-Created after Claude writes `claude-plan.md`:
+- `../../../Docs/agents/planning-template.md`
+- `../../../Docs/agents/claude-task-template.md`
+
+## Pre-Implementation Review
+
+After Claude writes `claude-plan.md`, create:
 
 ```text
 codex-plan-review.md
 ```
 
-## `task.md` Minimum
+Use:
 
-- title;
-- date;
-- status;
-- track;
-- user request;
-- goal;
-- non-goals;
-- targeted context;
-- links.
-
-## `product-decisions.md` Minimum
-
-- approved user decisions;
-- open product decisions;
-- recommended answer and impact for each open decision;
-- out-of-scope behavior.
-
-## `plan.draft.md` Minimum
-
-- `Status: DRAFT`;
-- goal;
-- expected user-visible outcome;
-- non-goals;
-- pre-plan investigation: verified entry points, state/data flow, dependencies, and test seams;
-- approved product decisions;
-- product semantics and edge cases;
-- assumptions;
-- dependency/regression impact scan;
-- likely files/areas;
-- architecture constraints;
-- implementation plan for Claude;
-- verification commands;
-- manual QA requirement and exact steps when required;
-- stop conditions;
-- explicit permissions.
-
-## `claude-task.md` Minimum
-
-- source of truth: `plan.approved.md`;
-- exact user-run slash command: `/animi-planning-pass .codex-local/tasks/<task-id>`;
-- required Planning Pass output: `claude-plan.md`;
-- stop after `claude-plan.md`;
-- implementation requires `codex-plan-review.md` with `Status: APPROVED`, explicit user approval, and a valid `.codex-local/active-implementation.json` marker;
-- scope/non-goals;
-- files to read first;
-- implementation constraints;
-- required verification;
-- stop-and-ask conditions.
+- `../../../Docs/agents/codex-plan-review-template.md`

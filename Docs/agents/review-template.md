@@ -74,17 +74,4 @@ Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA
 <approve, request fixes, or ask user for decision>
 ```
 
-Review order:
-
-1. Check `plan.approved.md`.
-2. Check `codex-plan-review.md` approved `claude-plan.md` before implementation.
-3. Check whether the implementation stayed within marker-approved paths.
-4. Review tests before implementation details.
-5. Check correctness and regressions.
-6. Check architecture invariants.
-7. Check verification evidence.
-8. Decide whether heavy checks need rerun.
-9. Decide whether manual QA is required.
-10. Check code cleanliness and obsolete/legacy cleanup.
-11. Decide whether docs or knowledge maps need updates.
-12. Close, request same-task repair, or ask the user for a decision.
+Review process is defined in `workflow.md`. This file defines the `codex-review.md` shape.

@@ -10,8 +10,6 @@ arguments: task_folder
 
 Use this skill only when the user explicitly invokes `/animi-implement-approved-plan <task-folder>` after Codex plan review and user implementation approval.
 
-Do not run this skill from the `Skill(...)` tool. This skill is manual-only because `disable-model-invocation: true`.
-
 ## Required Gates
 
 Before editing anything, verify `$task_folder` contains:
@@ -28,7 +26,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 - Edit only files listed in the active marker's `approved_paths`.
 - If a needed file is not listed, stop and ask for Codex review and a new marker.
 - Do not change product behavior beyond `plan.approved.md`.
-- Do not edit Codex-owned artifacts, marker files, hooks, settings, `.claude/`, `.agents/`, `AGENTS.md`, `CLAUDE.md`, or `Docs/agents/`.
+- Do not edit Codex-owned artifacts or protected infrastructure paths.
 - Use safe read-only inspection Bash when needed to understand approved files or project structure. Verification/build/test Bash must exactly match `allowed_bash_exact` in the active marker.
 - Do not stage, commit, push, create PRs, change dependencies, change project files, or weaken tests unless explicitly approved in the plan and marker.
 - Preserve unrelated dirty worktree changes.
@@ -48,6 +46,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 - task id;
 - marker id;
 - marker status and expiry;
+- marker snapshot fields required by `Docs/agents/claude-summary-template.md`;
 - Codex plan review status;
 - files changed;
 - plan compliance;
@@ -61,4 +60,4 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 
 Stop immediately if scope changes, a new product decision is needed, a required file is outside `approved_paths`, verification needs an unlisted command, or the marker is invalid.
 
-If a Codex-owned gate artifact is missing, do not offer to invoke, delegate to, install, or rescue Codex through plugins, connectors, slash commands, or automation. Stop and direct the user back to the Codex workflow.
+If a Codex-owned gate artifact is missing, stop and direct the user back to the Codex workflow.

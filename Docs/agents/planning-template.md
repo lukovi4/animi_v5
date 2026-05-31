@@ -91,20 +91,4 @@ User Approval: <required for APPROVED; include date/context>
 - artifacts under `artifacts/` when logs are bulky
 ```
 
-Claude must write `claude-plan.md` during the Planning Pass and stop. Implementation starts only after Codex writes `codex-plan-review.md` with `Status: APPROVED`, the user explicitly approves implementation, and Codex creates `.codex-local/active-implementation.json`.
-
-## Readiness Checklist
-
-Before marking a plan approved:
-
-- [ ] Product behavior decisions are approved or out of scope.
-- [ ] Relevant code was inspected enough to trace entry point, state/data flow, and test seams.
-- [ ] Edge cases and user-visible semantics are listed.
-- [ ] Dependency/regression impact scan is complete.
-- [ ] Scope and non-goals are clear.
-- [ ] Likely files/areas are named.
-- [ ] Verification commands are specific.
-- [ ] Manual QA requirement is explicit, with steps when required.
-- [ ] Stop conditions are explicit.
-- [ ] Sensitive actions are explicitly allowed or disallowed.
-- [ ] No placeholders remain.
+See `workflow.md` for Planning Pass, Codex plan review, user implementation approval, and marker gates.

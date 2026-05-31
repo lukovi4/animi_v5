@@ -1,6 +1,6 @@
 # Claude Task Template
 
-Use this for `claude-task.md`.
+Use this for `claude-task.md`. The workflow contract is `workflow.md`; this file is only the handoff shape for Claude.
 
 ```markdown
 # Claude Task: <title>
@@ -8,40 +8,22 @@ Use this for `claude-task.md`.
 ## Source Of Truth
 
 - Approved plan: `plan.approved.md`
-- You may implement only what is approved there.
-
-Do not create or modify Codex-owned files:
-
-- `task.md`
-- `product-decisions.md`
-- `plan.draft.md`
-- `plan.approved.md`
-- `claude-task.md`
-- `codex-plan-review.md`
-- `codex-review.md`
-- `followups.md`
+- Workflow: `Docs/agents/workflow.md`
+- Guardrails: `Docs/agents/guardrails.md`
 
 ## Required First Step
 
-The user must invoke the manual Planning Pass skill with this exact slash command:
+The user must invoke:
 
 ```text
 /animi-planning-pass <task-folder>
 ```
 
-Do not ask Claude to "use the Planning Pass workflow" in prose. The skill has `disable-model-invocation: true`, so Claude must not call it through `Skill(...)` or emulate it manually.
-
-If Claude receives a prose prompt that describes the Planning Pass but is not the direct slash command, Claude must stop and ask for the slash command. It must not read task files or write `claude-plan.md` from that prose prompt.
-
-Write the Planning Pass result to:
+Planning Pass output:
 
 - `claude-plan.md`
 
-After writing `claude-plan.md`, stop. Do not edit production code, tests, project files, build scripts, or dependencies in the same pass.
-
-Implementation may start only after Codex writes `codex-plan-review.md` with `Status: APPROVED`, the user explicitly tells Claude to implement, and `.codex-local/active-implementation.json` is valid for this task.
-
-Do not implement if your plan changes scope, product behavior, or architecture decisions from `plan.approved.md`.
+After `claude-plan.md`, stop for Codex plan review.
 
 ## Goal
 
@@ -89,16 +71,7 @@ Fill `claude-summary.md` using `Docs/agents/claude-summary-template.md`.
 
 - approved plan conflicts with code;
 - required product decision is missing;
-- required verification cannot be run;
-- implementation requires touching files not covered by the plan;
-- no valid `.codex-local/active-implementation.json` exists when implementation is requested;
+- implementation requires touching files not covered by the plan/marker;
+- required verification needs an unapproved command;
 - dependency, CI, project file, hook, signing, or git action is needed.
-
-If no approved plan exists, stop and ask for the path to `plan.approved.md`. Do not create a task folder or `claude-task.md`.
-
-Do not offer bypassing, ignoring, or overriding the contract as an option.
-
-Do not suggest that the user manually create, rename, or edit `plan.approved.md`, `claude-task.md`, `codex-plan-review.md`, or `.codex-local/active-implementation.json`. Those are created by Codex after user approval and review.
-
-Do not offer to invoke, delegate to, install, or rescue Codex through plugins, connectors, slash commands, or automation. When a Codex-owned artifact is missing, stop and tell the user to return to the Codex workflow.
 ```

@@ -14,6 +14,7 @@ It is based on the official Claude Code hook contract:
 ## Core Rules
 
 - Direct `/animi-planning-pass` and `/animi-implement-approved-plan` invocations are validated before expansion.
+- Current v1 does not persist a slash-invocation provenance token into later tool calls. `PreToolUse` enforces allowed output shape and marker scope; Claude instructions still require direct slash invocation.
 - Planning mode allows safe read-only inspection Bash only.
 - Planning mode may write only `claude-plan.md` in a valid approved task folder.
 - Planning mode cannot write production code, tests, project files, build scripts, dependencies, settings, hooks, or gate files.
@@ -46,7 +47,7 @@ Planning mode is active when no implementation marker exists.
 
 Allowed:
 
-- direct `/animi-planning-pass <task-folder>` only when the folder is under `.codex-local/tasks/` and contains:
+- `UserPromptExpansion` accepts direct `/animi-planning-pass <task-folder>` only when the folder is under `.codex-local/tasks/` and contains:
   - `plan.approved.md` with `Status: APPROVED`;
   - `claude-task.md`.
 - writing exactly `<task-folder>/claude-plan.md`.

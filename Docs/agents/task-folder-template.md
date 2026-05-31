@@ -24,25 +24,7 @@ artifacts/
 
 ## Ownership
 
-Codex creates and maintains:
-
-- `task.md`
-- `product-decisions.md`
-- `plan.draft.md`
-- `plan.approved.md`
-- `claude-task.md`
-- `codex-plan-review.md`
-- `codex-review.md`
-- `followups.md`
-
-Claude writes only:
-
-- `claude-plan.md`
-- `claude-summary.md`
-- approved `artifacts/`
-- `claude-findings.md` only when explicitly asked for read-only investigation
-
-Claude must not create task folders or `claude-task.md`.
+Artifact ownership is defined in `workflow.md`. This template only defines task-folder shape.
 
 ## `task.md`
 

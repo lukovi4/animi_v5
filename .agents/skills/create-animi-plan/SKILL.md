@@ -10,9 +10,8 @@ Use this skill to turn a user request into a Codex-owned task folder and plan fo
 ## Ground Rules
 
 - Do not edit production code.
-- Do not create `plan.approved.md` until the user approves the draft.
-- Do not create `claude-task.md` until `plan.approved.md` exists.
-- Do not decide product behavior. Recommend and ask for approval.
+- Follow `Docs/agents/workflow.md` and `Docs/agents/guardrails.md`.
+- Keep product decisions as recommendations until the user approves them.
 - Keep bulky logs and notes under task `artifacts/`.
 
 ## Required References
@@ -49,8 +48,7 @@ After explicit user approval:
    ```text
    /animi-planning-pass .codex-local/tasks/<task-id>
    ```
-   Do not give a prose workflow prompt; Claude cannot invoke this skill through `Skill(...)` because it is manual-only.
-4. Do not tell Claude to implement until Codex reviews `claude-plan.md`, writes `codex-plan-review.md` with `Status: APPROVED`, the user explicitly approves implementation, and Codex creates a valid implementation marker.
+4. Stop until Claude writes `claude-plan.md` and Codex reviews it.
 
 ## Stop Conditions
 

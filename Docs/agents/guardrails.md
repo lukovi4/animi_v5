@@ -1,61 +1,45 @@
 # Agent Guardrails
 
-These guardrails apply to Codex and Claude.
+These guardrails apply to Codex and Claude. Workflow sequencing lives in `workflow.md`; hook mechanics live in `hook-write-gate.md`; marker shape lives in `marker-schema.md`.
+
+## User-Owned Decisions
+
+Agents must not decide product behavior without user approval.
+
+Product decisions include user-visible behavior, UX, defaults, timing, export/rendering behavior, persistence semantics, compatibility, migration, and visible error handling.
 
 ## Always Protected
 
-- Uncommitted, untracked, or user-created files.
-- Product behavior without user approval.
-- Credentials, secrets, Keychain, signing, provisioning, `.env` files.
-- CI, hooks, Xcode project files, build scripts, release resources.
-- Test strength, lint/build standards, skip lists.
+Without explicit approval, agents must not:
+
+- delete uncommitted, untracked, or user-created files;
+- run destructive git commands;
+- stage, commit, push, create PRs, tag, or change remotes;
+- install, upgrade, or remove dependencies/tools;
+- change signing, secrets, credentials, Keychain, `.env`, CI, hooks, Xcode project files, build scripts, release resources, or dependency files;
+- weaken tests, add skips, silence failures, or lower lint/build standards.
 
 ## Codex
 
-Codex must not edit production code unless the user explicitly authorizes an exception.
-
-Codex may draft documentation, workflow files, plans, reviews, and task artifacts after user approval.
-
-Codex may stage, commit, push, or open PRs only after explicit user approval for that action.
+- Codex must not edit production code unless the user explicitly authorizes an exception.
+- Codex may draft documentation, workflow files, plans, reviews, task artifacts, and commits only after explicit user approval for that action.
+- Codex must verify relevant current code before planning or reviewing.
 
 ## Claude
 
-Claude may plan only from `plan.approved.md` and `claude-task.md`.
+- Claude implements only through the Animi gate skills and a valid marker.
+- Claude must not create or edit Codex-owned gate artifacts.
+- Claude must not expand scope, infer product behavior, rewrite approved plans, hide verification failures, or modify unrelated dirty worktree state.
 
-Claude may edit production code only after:
+## Infrastructure Paths
 
-- `plan.approved.md` has `Status: APPROVED`;
-- `claude-task.md` exists;
-- `claude-plan.md` exists;
-- `codex-plan-review.md` has `Status: APPROVED`;
-- the user explicitly approves implementation;
-- `.codex-local/active-implementation.json` is valid for the task.
+Normal implementation tasks must not modify:
 
-Claude must use the Planning Pass skill and write `claude-plan.md` before production code changes.
+- `.codex-local/active-implementation.json`
+- `.claude/**`
+- `.agents/**`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `Docs/agents/**`
 
-Claude must not:
-
-- create task folders;
-- create or modify `task.md`, `product-decisions.md`, `plan.draft.md`, `plan.approved.md`, `claude-task.md`, `codex-plan-review.md`, `codex-review.md`, `followups.md`, or `.codex-local/active-implementation.json`;
-- offer bypassing, ignoring, or overriding this contract as an option;
-- suggest that the user manually create, rename, or edit `plan.approved.md`, `claude-task.md`, `codex-plan-review.md`, or `.codex-local/active-implementation.json`;
-- rewrite `plan.approved.md`;
-- expand scope;
-- infer product behavior;
-- delete uncommitted files;
-- weaken tests;
-- hide verification failures.
-
-## Hook / Marker Policy
-
-Hooks and markers are the deterministic protection layer, not the workflow itself.
-
-The intended write gate uses:
-
-- `PreToolUse` to block writes outside marker-approved paths, block mutating/dangerous Bash, allow safe read-only inspection Bash, and allow marker-listed verification Bash;
-- `ConfigChange` to block unauthorized changes to Claude settings, hooks, skills, marker, and gate files;
-- `PostToolBatch` to audit actual git changes after a tool batch and stop the session if a bypass is detected.
-
-The marker is `.codex-local/active-implementation.json`. It is created and removed only by Codex after explicit user approval.
-
-Planning mode allows only safe read-only inspection Bash. Implementation mode allows safe read-only inspection Bash plus exact verification commands from marker `allowed_bash_exact`.
+Changes to these paths require a separate approved infrastructure task.

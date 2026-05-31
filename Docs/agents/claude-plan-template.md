@@ -51,9 +51,7 @@ Status: Proposed | Blocked
 
 Rules:
 
-- Do not introduce new product behavior.
-- Do not expand the approved scope.
-- Do not begin implementation if this plan is blocked.
+- Keep this plan inside `plan.approved.md` and `claude-task.md`.
+- Do not introduce new product behavior or scope.
 - Stop after writing `claude-plan.md`.
 - Do not edit production code, tests, project files, build scripts, or dependencies during the Planning Pass.
-- Implementation requires `codex-plan-review.md` with `Status: APPROVED`, explicit user approval, and a valid `.codex-local/active-implementation.json` marker.

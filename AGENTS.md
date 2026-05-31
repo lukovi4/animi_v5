@@ -1,6 +1,6 @@
 # Animi Codex Contract
 
-This file is for Codex sessions in the Animi repository.
+This file is the Codex entry point for the Animi repository. Keep it short; detailed workflow rules live in `Docs/agents/`.
 
 ## Role
 
@@ -12,99 +12,50 @@ This file is for Codex sessions in the Animi repository.
 
 ## Project Map
 
-- `AnimiApp/` is the iOS app target.
-- `TVECore/` is the Swift package runtime/compiler workspace.
-- `AnimiApp/Sources/` and `TVECore/Sources/` contain production code.
-- `AnimiApp/Tests/` and `TVECore/Tests/` contain tests.
-- `Scripts/` contains local and CI verification gates.
-- `Docs/agents/` contains the AI workflow contract and templates.
-- `.agents/skills/` contains project-local Codex workflow skills.
-- `.claude/skills/` contains project-local Claude workflow skills.
-- `.codex-local/tasks/` contains local task state and bulky artifacts.
+- `AnimiApp/`: iOS app target.
+- `TVECore/`: Swift package runtime/compiler workspace.
+- `Scripts/`: local and CI verification gates.
+- `Docs/agents/`: AI workflow contract, templates, maps, and guardrails.
+- `.agents/skills/`: project-local Codex workflow skills.
+- `.claude/skills/`: project-local Claude workflow skills.
+- `.codex-local/tasks/`: ignored local task state and bulky artifacts.
 
-## Workflow
+## Canonical References
 
-Use `Docs/agents/workflow.md` as the source of truth for agent workflow.
+- Workflow lifecycle: `Docs/agents/workflow.md`
+- Guardrails: `Docs/agents/guardrails.md`
+- Hook behavior: `Docs/agents/hook-write-gate.md`
+- Marker schema: `Docs/agents/marker-schema.md`
+- Project routing hints: `Docs/agents/domain.md`, `Docs/agents/code-map.md`, `Docs/agents/regression-map.md`
+- Review shape: `Docs/agents/review-template.md`
 
-Use project-local skills under `.agents/skills/` when the task matches planning, implementation review, or diagnosis.
+Do not restate these contracts in task files or skills unless the current artifact needs a short operational reminder.
 
-Default task folder:
+## Codex Skills
 
-```text
-.codex-local/tasks/YYYY-MM-DD-short-slug/
-```
+Use project-local skills when the request matches:
 
-Required handoff files:
+- `create-animi-plan`: create a task folder and Codex plan for Claude.
+- `diagnose-animi-issue`: investigate a bug/regression before planning a fix.
+- `review-animi-claude-plan`: review Claude's `claude-plan.md` before implementation.
+- `review-animi-implementation`: review Claude's code and `claude-summary.md`.
 
-- `task.md`
-- `product-decisions.md`
-- `plan.draft.md`
-- `plan.approved.md`
-- `claude-task.md`
-- `claude-plan.md`
-- `codex-plan-review.md`
-- `claude-summary.md`
-- `codex-review.md`
-- `followups.md`
-- `artifacts/`
+## Operating Rules
 
-Claude may implement only after `plan.approved.md`, `claude-task.md`, `claude-plan.md`, `codex-plan-review.md` with `Status: APPROVED`, explicit user implementation approval, and an active scoped implementation marker.
-
-## Product Decision Gate
-
-Codex must not decide app behavior without user approval.
-
-Product decisions include user-visible behavior, UX, defaults, limits, timing, export/rendering behavior, persistence semantics, compatibility, migration, and visible error handling.
-
-Codex may recommend a decision with tradeoffs, but the user must approve it before it becomes part of the plan.
-
-## Planning And Implementation Gates
-
-Before Claude writes production code:
-
-1. Codex creates `plan.draft.md`.
-2. The user approves the plan.
-3. Codex creates `plan.approved.md`.
-4. Codex creates `claude-task.md`.
-5. Claude runs the Planning Pass skill and writes only `claude-plan.md`, then stops.
-6. Codex reviews `claude-plan.md` and creates `codex-plan-review.md`.
-7. The user explicitly approves implementation.
-8. Codex creates `.codex-local/active-implementation.json` as a scoped marker.
-9. Claude implements only within marker-approved paths.
-10. Claude writes `claude-summary.md`.
-11. Codex reviews implementation, writes `codex-review.md`, and closes/removes the marker.
-
-If any product, architecture, data, dependency, CI, git, test, or UX decision is unclear, stop and ask.
+- Verify relevant current code before planning or reviewing.
+- Ask the user before approving product behavior, UX, timing, export/rendering, persistence, migration, or visible error handling.
+- Do not rely on chat memory as source of truth; use task artifacts.
+- Keep same-scope Claude fixes in the same task folder.
+- Do not stage, commit, push, create PRs, or change remotes without explicit user approval.
 
 ## Context Rules
 
-- Keep context small and targeted.
-- Use `Docs/agents/domain.md`, `Docs/agents/code-map.md`, and `Docs/agents/regression-map.md` as routing hints before broad repository exploration; verify current code before planning or reviewing.
-- Use `rg` / `rg --files` before targeted file reads.
-- Do not read `logs.md`, `task*.md`, `findings.md`, `review.md`, `bug.md`, or `Docs/*.md` end to end unless explicitly needed.
-- Do not dump full diffs into chat; use stats, names, or focused hunks.
+- Use knowledge maps as routing hints before broad exploration.
+- Use `rg` / `rg --files` before targeted reads.
+- Exclude bulky local research clones such as `.codex-local/tasks/**/repos/**` from normal searches.
+- Do not read `logs.md`, `task*.md`, `findings.md`, `review.md`, `bug.md`, or large docs end to end unless explicitly needed.
 - Put bulky logs and test output under task `artifacts/`.
 
-## Guardrails
+## Review
 
-Without explicit user approval, do not:
-
-- edit production code;
-- delete uncommitted, untracked, or user-created files;
-- run destructive git commands;
-- stage, commit, push, create PRs, tag, or change remotes;
-- install, upgrade, or remove dependencies/tools;
-- change signing, secrets, credentials, Keychain, `.env`, CI, hooks, Xcode project files, build scripts, or release resources;
-- weaken tests, expand skip lists, or lower lint/build standards.
-
-See `Docs/agents/guardrails.md`.
-
-Hook and marker details are defined in `Docs/agents/hook-write-gate.md` and `Docs/agents/marker-schema.md`.
-
-## Review Standard
-
-Codex reviews Claude's work through `Docs/agents/review-template.md`.
-
-Review must check plan compliance, tests first, correctness, architecture invariants, edge cases, scope creep, and verification evidence. Findings come first, ordered by severity, with file/line evidence when possible.
-
-Do not approve work based on plausibility. Completion requires evidence or an explicitly accepted risk.
+Codex review is findings-first and evidence-based. Use `Docs/agents/review-template.md`; do not approve work based on plausibility.

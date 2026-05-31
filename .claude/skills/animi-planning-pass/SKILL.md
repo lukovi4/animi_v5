@@ -10,8 +10,6 @@ arguments: task_folder
 
 Use this skill only when the user explicitly invokes `/animi-planning-pass <task-folder>`.
 
-Do not run this skill from the `Skill(...)` tool. This skill is manual-only because `disable-model-invocation: true`.
-
 ## Purpose
 
 Analyze the approved task against the real codebase, write `claude-plan.md`, and stop. This replaces Claude's built-in Plan Mode for Animi.
@@ -31,7 +29,7 @@ Write exactly one task artifact:
 
 - `$task_folder/claude-plan.md`
 
-Do not edit production code, tests, build files, project files, dependencies, hooks, settings, marker files, or Codex-owned task artifacts.
+Do not write anything else in this pass.
 
 ## Read-Only Research
 
@@ -64,5 +62,3 @@ Do not write `Status: APPROVED` in `claude-plan.md`. Claude proposes; Codex appr
 ## Stop Rule
 
 After writing `claude-plan.md`, stop. Do not implement. Tell the user that Codex must review the plan and create `codex-plan-review.md` before implementation can begin.
-
-Do not offer to invoke, delegate to, install, or rescue Codex through plugins, connectors, slash commands, or automation. Just stop and direct the user back to the Codex workflow.

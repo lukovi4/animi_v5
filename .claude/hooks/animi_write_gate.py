@@ -10,14 +10,17 @@ This hook is intentionally conservative:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
@@ -685,13 +688,251 @@ def handle_post_tool_batch(root: Path) -> None:
         deny(f"repository changed outside marker-approved scope: {joined}", "PostToolBatch")
 
 
+def self_test_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def self_test_make_task(root: Path) -> Path:
+    task = root / TASKS_REL / "2026-05-31-hook-self-test"
+    self_test_write(task / "plan.approved.md", "# Plan\n\nStatus: APPROVED\n")
+    self_test_write(task / "claude-task.md", "# Claude Task\n")
+    self_test_write(task / "claude-plan.md", "# Claude Plan\n\nStatus: Proposed\n")
+    self_test_write(task / "codex-plan-review.md", "# Codex Plan Review\n\nStatus: APPROVED\n")
+    return task
+
+
+def self_test_make_marker(root: Path, task: Path, allowed_bash: Optional[List[str]] = None) -> None:
+    codex_review = task / "codex-plan-review.md"
+    review_hash = hashlib.sha256(codex_review.read_bytes()).hexdigest()
+    now = dt.datetime.now(dt.timezone.utc)
+    data = {
+        "schema_version": 1,
+        "status": "IMPLEMENTATION_APPROVED",
+        "task_id": task.name,
+        "task_folder": f"{TASKS_REL}/{task.name}",
+        "approved_paths": [
+            "AnimiApp/Sources/Allowed.swift",
+        ],
+        "baseline_dirty_paths": [],
+        "allowed_bash_exact": allowed_bash if allowed_bash is not None else [
+            "ANIMI_HOOK_SELF_TEST=1 bash Scripts/run_animiapp_tests.sh",
+        ],
+        "codex_plan_review_sha256": review_hash,
+        "approved_by": "user",
+        "issued_by": "Codex",
+        "issued_at": now.isoformat(),
+        "expires_at": (now + dt.timedelta(hours=1)).isoformat(),
+        "marker_id": "hook-self-test",
+    }
+    self_test_write(root / MARKER_REL, json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def self_test_expect_pass(name: str, func: Any) -> int:
+    try:
+        func()
+    except BaseException as exc:
+        raise GateError(f"self-test expected pass but failed [{name}]: {exc}") from exc
+    return 1
+
+
+def self_test_expect_block(name: str, func: Any) -> int:
+    try:
+        func()
+    except GateError:
+        return 1
+    except SystemExit as exc:
+        if exc.code == 2:
+            return 1
+        raise GateError(f"self-test expected block but got SystemExit({exc.code}) [{name}]") from exc
+    raise GateError(f"self-test expected block but passed [{name}]")
+
+
+def self_test_expect_stop(name: str, func: Any) -> int:
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            func()
+    except SystemExit as exc:
+        if exc.code == 0:
+            return 1
+        raise GateError(f"self-test expected stop but got SystemExit({exc.code}) [{name}]") from exc
+    raise GateError(f"self-test expected stop but passed [{name}]")
+
+
+def run_self_test() -> int:
+    checks = 0
+    with tempfile.TemporaryDirectory(prefix="animi-write-gate-") as temp_dir:
+        root = Path(temp_dir).resolve(strict=False)
+        task = self_test_make_task(root)
+
+        checks += self_test_expect_pass(
+            "planning slash validates approved task",
+            lambda: handle_user_prompt_expansion(
+                root,
+                {
+                    "command_name": ANIMI_PLANNING_SKILL,
+                    "command_args": f"{TASKS_REL}/{task.name}",
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "planning may write claude-plan.md only",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": f"{TASKS_REL}/{task.name}/claude-plan.md"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "planning blocks production write",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": "AnimiApp/Sources/Blocked.swift"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "read-only bash is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "ls ."},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "expensive bash is blocked without marker",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "swift test --package-path TVECore"},
+                },
+            ),
+        )
+
+        self_test_make_marker(root, task)
+        checks += self_test_expect_pass(
+            "implementation slash matches active marker",
+            lambda: handle_user_prompt_expansion(
+                root,
+                {
+                    "command_name": ANIMI_IMPLEMENT_SKILL,
+                    "command_args": f"{TASKS_REL}/{task.name}",
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "marker-approved write is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Edit",
+                    "tool_input": {"file_path": "AnimiApp/Sources/Allowed.swift"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "unapproved implementation write is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Edit",
+                    "tool_input": {"file_path": "AnimiApp/Sources/Other.swift"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "eternal protected path is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Edit",
+                    "tool_input": {"file_path": "AGENTS.md"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "claude-summary.md is allowed during implementation",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": f"{TASKS_REL}/{task.name}/claude-summary.md"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "task artifacts are allowed during implementation",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": f"{TASKS_REL}/{task.name}/artifacts/log.txt"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "marker exact bash is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "ANIMI_HOOK_SELF_TEST=1 bash Scripts/run_animiapp_tests.sh"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "mutating git is always blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git reset --hard"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "unsafe allowed_bash_exact invalidates marker",
+            lambda: (
+                self_test_make_marker(root, task, ["echo ok && rm -rf x"]),
+                validate_marker(root),
+            ),
+        )
+
+        self_test_make_marker(root, task)
+        self_test_write(task / "codex-plan-review.md", "# Codex Plan Review\n\nStatus: APPROVED\n\nTampered.\n")
+        checks += self_test_expect_block(
+            "codex-plan-review hash mismatch invalidates marker",
+            lambda: validate_marker(root),
+        )
+
+        subprocess.run(["git", "init"], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        self_test_write(root / ".git" / "info" / "exclude", ".codex-local/\n")
+        self_test_make_task(root)
+        self_test_make_marker(root, task)
+        self_test_write(root / "Unapproved.swift", "// outside marker\n")
+        checks += self_test_expect_stop(
+            "post-tool audit stops on unapproved tree change",
+            lambda: handle_post_tool_batch(root),
+        )
+
+    print(f"animi_write_gate self-test passed ({checks} checks)")
+    return 0
+
+
 def main() -> int:
     global CURRENT_EVENT_NAME
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        return 0
+        return run_self_test()
 
     data = load_input()
     root = repo_root()

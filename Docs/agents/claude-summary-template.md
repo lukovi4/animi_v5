@@ -15,6 +15,21 @@ Status: Done | Done With Concerns | Blocked
 - Marker expires at: `<timestamp or n/a>`
 - Codex plan review status: APPROVED/CHANGES_REQUESTED/BLOCKED/not present
 
+Marker snapshot:
+
+```json
+{
+  "task_id": "<task-id>",
+  "marker_id": "<marker-id>",
+  "approved_paths": [],
+  "allowed_bash_exact": [],
+  "baseline_dirty_paths": [],
+  "codex_plan_review_sha256": "<sha256>",
+  "issued_at": "<timestamp>",
+  "expires_at": "<timestamp>"
+}
+```
+
 ## 2. Plan Compliance
 
 - Approved plan followed: yes/no
@@ -67,3 +82,4 @@ Requirements:
 - Do not write "should pass" as evidence.
 - Keep summaries short; put bulky logs in `artifacts/`.
 - Mark skipped verification as risk, not success.
+- Include the marker snapshot when implementation used an active marker.
