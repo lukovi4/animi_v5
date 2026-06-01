@@ -42,6 +42,7 @@ Use project-local skills when the request matches:
 
 ## Operating Rules
 
+- Communicate in the compressed style defined in `Docs/agents/workflow.md`.
 - Verify relevant current code before planning or reviewing.
 - Ask the user before approving product behavior, UX, timing, export/rendering, persistence, migration, or visible error handling.
 - Do not rely on chat memory as source of truth; use task artifacts.

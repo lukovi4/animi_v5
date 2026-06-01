@@ -31,14 +31,24 @@ Read only the sections needed:
 2. Classify the task: quick fix, feature/behavior, or architecture/media pipeline.
 3. Read only relevant knowledge-map sections from `Docs/agents/domain.md`, `Docs/agents/code-map.md`, and `Docs/agents/regression-map.md` when they help route investigation.
 4. Investigate the real code like a planning pass before drafting: entry points, state/data flow, direct dependencies, adjacent behavior, and existing test seams.
-5. Identify edge cases, product semantics, and possible consequences of the likely fix.
-6. Ask the user every required product/UX/behavior question. Do not write `plan.draft.md` until required answers are clear.
+5. Identify edge cases, product semantics, consequences of likely fixes, and the task decision tree.
+6. Run the grill loop before drafting:
+   - Interview the user until shared understanding.
+   - Walk each relevant branch of the task decision tree.
+   - Resolve dependencies between decisions one by one.
+   - Ask one question at a time.
+   - Include Codex's recommended answer and impact.
+   - Wait for the user's answer before asking the next question.
+   - If code or existing docs can answer the question, investigate instead of asking.
+   - Ask only questions whose answer can change approved behavior, scope, architecture boundary, regression risk, verification, or manual QA.
+   - Do not ask questions already answered by the user request, proven by code, or internal to Claude's implementation inside approved scope.
+   - Do not write `plan.draft.md` until all relevant decision-tree branches are resolved or explicitly out of scope.
 7. Write `task.md`.
 8. Write `product-decisions.md`.
 9. Write `plan.draft.md`.
 10. Write `followups.md`.
 11. Run the readiness checklist.
-12. Ask the user to approve, reject, or revise the draft.
+12. Ask the user to approve, reject, or revise the draft. Include 3-6 concrete investigation evidence bullets and a summary of approved product decisions in the chat response.
 
 After explicit user approval:
 

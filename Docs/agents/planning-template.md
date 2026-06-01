@@ -29,7 +29,11 @@ User Approval: <required for APPROVED; include date/context>
 
 ## Approved Product Decisions
 
-- <decision and approval source>
+- <decision, approver, and date/context>
+
+## Deferred Non-Blocking Decisions
+
+- <decision deliberately deferred; must not block implementation or change approved behavior>
 
 ## Product Semantics And Edge Cases
 
@@ -76,6 +80,7 @@ User Approval: <required for APPROVED; include date/context>
 ## Stop Conditions
 
 - <when Claude must stop and ask>
+- Any relevant product/UX/behavior decision-tree branch that was not approved, proven by code/docs, or explicitly out of scope before this plan.
 
 ## Explicit Permissions
 

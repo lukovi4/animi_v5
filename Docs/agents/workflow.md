@@ -8,6 +8,12 @@ This document is the stable workflow contract for Codex and Claude Code.
 - Codex: technical lead, planner, reviewer, and quality gate.
 - Claude: implementation engineer working only from an approved plan.
 
+## Communication
+
+Default to compressed technical communication: status, finding, next action. Avoid greetings, filler, repeated contract text, and long explanations in chat.
+
+Expand only for architecture decisions, product tradeoffs, security/hook risks, destructive actions, or when the user asks for detail.
+
 ## Task Tracks
 
 Use the lightest track that covers the risk.
@@ -107,8 +113,8 @@ Claude proposes implementation plans in `claude-plan.md`. Codex approval lives o
 3. Codex classifies the task track.
 4. Codex reads only the relevant knowledge-map sections, then verifies current code directly.
 5. Codex performs a pre-plan investigation: entry points, state/data flow, dependencies, test seams, and likely regression surfaces.
-6. Codex lists edge cases, product semantics, and consequences of likely fixes.
-7. Codex asks the user every required product/UX/behavior question. Do not write the draft plan until required answers are clear.
+6. Codex lists edge cases, product semantics, consequences of likely fixes, and the task decision tree.
+7. Codex runs the grill loop before drafting: walk each relevant decision-tree branch, resolve dependent decisions one by one, ask one necessary question at a time with Codex's recommended answer and impact, wait for the user's answer, and investigate code instead of asking when code can answer. Do not write the draft plan until all relevant branches are resolved or explicitly out of scope.
 8. Codex writes `task.md`, `product-decisions.md`, `plan.draft.md`, and `followups.md`.
 9. User approves or rejects the draft plan.
 10. Codex writes `plan.approved.md` with `Status: APPROVED`.
@@ -135,6 +141,10 @@ Claude proposes implementation plans in `claude-plan.md`. Codex approval lives o
 ### Product Gate
 
 Codex must ask the user before approving any user-visible behavior, UX, default, timing, export/rendering behavior, persistence semantics, compatibility, migration, or visible error handling.
+
+Ask only questions whose answer can change approved behavior, scope, architecture boundary, regression risk, verification, or manual QA. Do not ask questions already answered by the user request, proven by current code, or internal to Claude's implementation inside approved scope.
+
+Draft plans must not contain unresolved relevant product decisions. `product-decisions.md` may contain only approved decisions, rejected options, and explicitly deferred non-blocking decisions.
 
 ### Plan Gate
 

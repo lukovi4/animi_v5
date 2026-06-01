@@ -72,9 +72,13 @@ Track: Quick fix | Feature / behavior | Architecture / media pipeline
 
 - <decision, approver, date>
 
-## Open Decisions
+## Rejected Options
 
-- <question, recommended answer, impact>
+- <option rejected, reason>
+
+## Deferred Non-Blocking Decisions
+
+- <decision deliberately deferred; must not block implementation or change approved behavior>
 
 ## Out Of Scope
 

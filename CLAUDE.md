@@ -50,6 +50,7 @@ Do not create, rename, edit, or suggest manual edits to Codex-owned gate artifac
 
 ## Implementation Rules
 
+- Communicate in the compressed style defined in `Docs/agents/workflow.md`; keep evidence complete.
 - Stop if the approved plan is missing, ambiguous, contradicted by code, or requires a product decision.
 - Stay inside `plan.approved.md`, `claude-task.md`, `codex-plan-review.md`, and marker-approved paths.
 - Do not change product behavior, architecture decisions, dependencies, CI, hooks, project files, signing, or git state unless explicitly approved by Codex and the marker.
