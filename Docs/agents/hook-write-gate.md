@@ -97,7 +97,7 @@ The hook favors Claude productivity for read/search work and strict control for 
 
 Allowed in planning and implementation:
 
-- safe read-only inspection commands such as `pwd`, `ls`, `rg`, `grep`, `sed -n`, `head`, `tail`, `wc`, `find`, read-only `git status/diff` forms, and `plutil -lint`;
+- safe read-only inspection commands such as `date`, `pwd`, `ls`, `rg`, `grep`, `sed -n`, `stat`, `head`, `tail`, `wc`, `find`, read-only `git status/diff/log/show/ls-files/rev-parse/branch --show-current` forms, and `plutil -lint`;
 - only repository-local path inspection;
 - no shell composition or redirection.
 

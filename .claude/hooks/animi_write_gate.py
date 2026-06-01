@@ -91,11 +91,13 @@ ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 CURRENT_EVENT_NAME = ""
 
 READ_ONLY_BASH_COMMANDS = {
+    "date",
     "pwd",
     "ls",
     "rg",
     "grep",
     "sed",
+    "stat",
     "head",
     "tail",
     "wc",
@@ -114,6 +116,8 @@ GIT_DIFF_ALLOWED_FLAGS = {
     "--shortstat",
     "--check",
 }
+GIT_OUTPUT_FLAGS = ("--output", "-o")
+GIT_BRANCH_READ_ONLY_FLAGS = {"--show-current", "--list", "-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose"}
 
 
 class GateError(Exception):
@@ -502,6 +506,8 @@ def read_only_git_allowed(root: Path, tokens: Sequence[str]) -> bool:
         return False
     subcommand = args[1]
     rest = args[2:]
+    if any(token == flag or token.startswith(f"{flag}=") for token in rest for flag in GIT_OUTPUT_FLAGS):
+        return False
 
     if subcommand == "status":
         return all(not token.startswith("--porcelain=v1=") for token in rest)
@@ -520,7 +526,42 @@ def read_only_git_allowed(root: Path, tokens: Sequence[str]) -> bool:
             return False
         return True
 
+    if subcommand == "ls-files":
+        validate_path_like_tokens(root, rest, 0)
+        return True
+
+    if subcommand in {"log", "show"}:
+        path_mode = False
+        for token in rest:
+            if path_mode:
+                validate_repo_path_token(root, token)
+                continue
+            if token == "--":
+                path_mode = True
+        return True
+
+    if subcommand == "rev-parse":
+        return True
+
+    if subcommand == "branch":
+        return all(token in GIT_BRANCH_READ_ONLY_FLAGS or not token.startswith("-") for token in rest) and (
+            not rest or any(token in GIT_BRANCH_READ_ONLY_FLAGS for token in rest)
+        )
+
     return False
+
+
+def read_only_date_allowed(tokens: Sequence[str]) -> bool:
+    if len(tokens) == 1:
+        return True
+    return all(token == "-u" or token.startswith("+") for token in tokens[1:])
+
+
+def read_only_stat_allowed(root: Path, tokens: Sequence[str]) -> bool:
+    if len(tokens) < 2:
+        return False
+    validate_path_like_tokens(root, tokens)
+    return True
 
 
 def read_only_find_allowed(root: Path, tokens: Sequence[str]) -> bool:
@@ -580,6 +621,10 @@ def read_only_bash_allowed(root: Path, command: str) -> bool:
 
     if tokens[0] == "git":
         return read_only_git_allowed(root, tokens)
+    if tokens[0] == "date":
+        return read_only_date_allowed(tokens)
+    if tokens[0] == "stat":
+        return read_only_stat_allowed(root, tokens)
     if tokens[0] == "find":
         return read_only_find_allowed(root, tokens)
     if tokens[0] == "plutil":
@@ -807,6 +852,76 @@ def run_self_test() -> int:
                 {
                     "tool_name": "Bash",
                     "tool_input": {"command": "ls ."},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "date inspection is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": 'date "+%Y-%m-%dT%H:%M:%S%z"'},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "stat inspection is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "stat ."},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "read-only git metadata is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git branch --show-current"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "read-only git history is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git log --oneline -1"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "date mutation form is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "date 010101011970"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "git branch creation is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git branch new-branch"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "git output writes are blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git show --output=/tmp/out HEAD"},
                 },
             ),
         )
