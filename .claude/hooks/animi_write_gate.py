@@ -73,16 +73,9 @@ MUTATING_GIT_SUBCOMMANDS = {
     "update-ref",
 }
 
-UNSAFE_BASH_PATTERNS = (
-    ";",
-    "&&",
-    "||",
-    "|",
-    ">",
-    "<",
+UNSAFE_BASH_RAW_PATTERNS = (
     "$(",
     "`",
-    "<<",
 )
 UNSAFE_BASH_WORDS = re.compile(r"(^|\s)(tee|eval)(\s|$)")
 UNSAFE_BASH_SHELL_C = re.compile(r"(^|\s)(bash|sh)\s+-c(\s|$)")
@@ -250,11 +243,19 @@ def validate_string_list(data: Dict[str, Any], field: str, allow_empty: bool) ->
 def bash_string_is_simple(command: str) -> bool:
     if "\n" in command or "\r" in command:
         return False
-    if any(pattern in command for pattern in UNSAFE_BASH_PATTERNS):
+    if any(pattern in command for pattern in UNSAFE_BASH_RAW_PATTERNS):
         return False
     if UNSAFE_BASH_WORDS.search(command):
         return False
     if UNSAFE_BASH_SHELL_C.search(command):
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    if any(token and all(char in "|&;<>" for char in token) for token in tokens):
         return False
     return True
 
@@ -892,6 +893,26 @@ def run_self_test() -> int:
                 {
                     "tool_name": "Bash",
                     "tool_input": {"command": "git log --oneline -1"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "rg regex alternation is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": 'rg "TextPayload|StickerPayload" AnimiApp/Sources TVECore/Sources'},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "shell pipe is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": 'rg "TextPayload" AnimiApp/Sources | wc -l'},
                 },
             ),
         )
