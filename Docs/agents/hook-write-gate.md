@@ -145,6 +145,8 @@ It compares changed and new files against:
 - derived task artifacts: `claude-summary.md` and `artifacts/**`;
 - `baseline_dirty_paths`.
 
+Known Claude runtime lock files, such as `.claude/scheduled_tasks.lock`, are ignored by `PostToolBatch` because they are tool runtime state, not agent contract changes. They are still not approved implementation outputs.
+
 If it detects a path outside scope, it stops the Claude session and reports the violation. Baseline paths prevent false positives from pre-existing dirty files; they do not grant write permission because `PreToolUse` still blocks writes to non-approved paths.
 
 Eternal deny paths are never ignored by baseline. If `.claude/**`, `.agents/**`, root contracts, agent docs, hooks, settings, or the marker change during a normal implementation task, audit treats that as a violation even when the file was already dirty before marker creation.

@@ -41,6 +41,9 @@ ETERNAL_DENY_PREFIXES = (
     ".agents/",
     "Docs/agents/",
 )
+POST_TOOL_TRANSIENT_PATHS = {
+    ".claude/scheduled_tasks.lock",
+}
 
 MUTATING_GIT_SUBCOMMANDS = {
     "add",
@@ -671,6 +674,8 @@ def handle_post_tool_batch(root: Path) -> None:
 
     violations: List[str] = []
     for rel in sorted(changed):
+        if rel in POST_TOOL_TRANSIENT_PATHS:
+            continue
         target = canonicalize(root, rel)
         if is_eternal_denied(root, target):
             violations.append(rel)
