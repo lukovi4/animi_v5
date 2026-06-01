@@ -84,7 +84,12 @@ ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 CURRENT_EVENT_NAME = ""
 
 READ_ONLY_BASH_COMMANDS = {
+    "cat",
+    "cd",
     "date",
+    "diff",
+    "du",
+    "echo",
     "pwd",
     "ls",
     "rg",
@@ -94,6 +99,7 @@ READ_ONLY_BASH_COMMANDS = {
     "head",
     "tail",
     "wc",
+    "which",
     "find",
     "git",
     "plutil",
@@ -565,6 +571,20 @@ def read_only_stat_allowed(root: Path, tokens: Sequence[str]) -> bool:
     return True
 
 
+def read_only_cd_allowed(root: Path, tokens: Sequence[str]) -> bool:
+    if len(tokens) != 2:
+        return False
+    validate_repo_path_token(root, tokens[1])
+    return True
+
+
+def read_only_diff_allowed(root: Path, tokens: Sequence[str]) -> bool:
+    if any(token in GIT_OUTPUT_FLAGS or token.startswith("--output=") for token in tokens[1:]):
+        return False
+    validate_path_like_tokens(root, tokens)
+    return True
+
+
 def read_only_find_allowed(root: Path, tokens: Sequence[str]) -> bool:
     if any(token in FIND_MUTATING_EXPRESSIONS for token in tokens):
         return False
@@ -626,6 +646,10 @@ def read_only_bash_allowed(root: Path, command: str) -> bool:
         return read_only_date_allowed(tokens)
     if tokens[0] == "stat":
         return read_only_stat_allowed(root, tokens)
+    if tokens[0] == "cd":
+        return read_only_cd_allowed(root, tokens)
+    if tokens[0] == "diff":
+        return read_only_diff_allowed(root, tokens)
     if tokens[0] == "find":
         return read_only_find_allowed(root, tokens)
     if tokens[0] == "plutil":
@@ -875,6 +899,20 @@ def run_self_test() -> int:
                     "tool_input": {"command": "stat ."},
                 },
             ),
+        )
+        checks += self_test_expect_pass(
+            "official read-only commands are allowed",
+            lambda: [
+                handle_pre_tool_use(root, {"tool_name": "Bash", "tool_input": {"command": command}})
+                for command in (
+                    "cat README.md",
+                    "echo ok",
+                    "which git",
+                    "diff README.md README.md",
+                    "du -sh .",
+                    "cd .",
+                )
+            ],
         )
         checks += self_test_expect_pass(
             "read-only git metadata is allowed",
