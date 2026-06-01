@@ -98,7 +98,7 @@ The hook favors Claude productivity for read/search work and strict control for 
 Allowed in planning and implementation:
 
 - safe read-only inspection commands aligned with Claude Code's built-in read-only set: `ls`, `cat`, `echo`, `pwd`, `head`, `tail`, `grep`, `find`, `wc`, `which`, `diff`, `stat`, `du`, `cd`, read-only `git` forms, plus common local inspection commands `rg`, `date`, `sed -n`, and `plutil -lint`;
-- only repository-local path inspection;
+- repository-local path inspection, plus Claude-generated tool result logs under `~/.claude/projects/**/tool-results/**`;
 - no shell composition or redirection. Regex alternation inside a quoted `rg`/`grep` pattern is allowed; shell pipes are not.
 
 Implementation verification Bash is additionally allowed when:

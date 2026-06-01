@@ -117,6 +117,8 @@ GIT_DIFF_ALLOWED_FLAGS = {
 }
 GIT_OUTPUT_FLAGS = ("--output", "-o")
 GIT_BRANCH_READ_ONLY_FLAGS = {"--show-current", "--list", "-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose"}
+CLAUDE_TOOL_RESULTS_PART = "/.claude/projects/"
+CLAUDE_TOOL_RESULTS_DIR = "/tool-results/"
 
 
 class GateError(Exception):
@@ -490,21 +492,37 @@ def token_looks_like_path(token: str) -> bool:
     return token.startswith(("/", "./", "../", "~")) or "/" in token or token in {".", ".."}
 
 
+def is_allowed_external_read_path(path: Path) -> bool:
+    text = path.resolve(strict=False).as_posix()
+    return CLAUDE_TOOL_RESULTS_PART in text and CLAUDE_TOOL_RESULTS_DIR in text
+
+
+def validate_read_path_token(root: Path, token: str) -> None:
+    path = Path(token)
+    if token.startswith("~"):
+        path = path.expanduser()
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.resolve(strict=False)
+    if not is_under(resolved, root) and not is_allowed_external_read_path(resolved):
+        raise GateError(f"read-only Bash path is outside repository: {token}")
+
+
 def validate_repo_path_token(root: Path, token: str) -> None:
     path = Path(token)
     if token.startswith("~"):
-        raise GateError(f"read-only Bash path is outside repository: {token}")
+        raise GateError(f"repository path must not use home expansion: {token}")
     if not path.is_absolute():
         path = root / path
     resolved = path.resolve(strict=False)
     if not is_under(resolved, root):
-        raise GateError(f"read-only Bash path is outside repository: {token}")
+        raise GateError(f"path is outside repository: {token}")
 
 
 def validate_path_like_tokens(root: Path, tokens: Sequence[str], start_index: int = 1) -> None:
     for token in tokens[start_index:]:
         if token_looks_like_path(token):
-            validate_repo_path_token(root, token)
+            validate_read_path_token(root, token)
 
 
 def read_only_git_allowed(root: Path, tokens: Sequence[str]) -> bool:
@@ -1099,6 +1117,29 @@ def run_self_test() -> int:
         checks += self_test_expect_stop(
             "post-tool audit stops on unapproved tree change",
             lambda: handle_post_tool_batch(root),
+        )
+
+        tool_result = root.parent / ".claude" / "projects" / "fixture" / "tool-results" / "result.txt"
+        self_test_write(tool_result, "ok\n")
+        checks += self_test_expect_pass(
+            "Claude tool-result paths are readable",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": f"rg ok {tool_result.as_posix()}"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "other external paths stay blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "rg ok /tmp/outside.txt"},
+                },
+            ),
         )
 
     print(f"animi_write_gate self-test passed ({checks} checks)")
