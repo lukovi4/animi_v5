@@ -202,6 +202,92 @@ final class StickerOverlayIntegrationTests: XCTestCase {
         store.dispatch(.undo)
         XCTAssertEqual(store.state.canonicalTimeline.stickerItems.count, 1)
     }
+
+    // MARK: - Preview Overlay Tap Selection
+
+    private static let tapCanvasSize = SizeD(width: 1080, height: 1920)
+    private static let tapViewSize = CGSize(width: 540, height: 960)
+
+    private func viewPoint(centerX: CGFloat, centerY: CGFloat) -> CGPoint {
+        var mapper = EditorCanvasMapper()
+        mapper.canvasSize = Self.tapCanvasSize
+        mapper.viewSize = Self.tapViewSize
+        return mapper.canvasToView(CGPoint(
+            x: centerX * CGFloat(Self.tapCanvasSize.width),
+            y: centerY * CGFloat(Self.tapCanvasSize.height)
+        ))
+    }
+
+    private func resolvedSticker(itemId: UUID, centerX: CGFloat, centerY: CGFloat, zOrder: Int) -> ResolvedOverlayRenderItem {
+        ResolvedOverlayRenderItem(
+            stableId: itemId,
+            kind: .sticker,
+            content: .sticker(stickerId: "star", imageURL: URL(fileURLWithPath: "/tmp/star.png")),
+            presentation: .default(centerX: centerX, centerY: centerY),
+            zOrder: zOrder
+        )
+    }
+
+    private func resolvedText(itemId: UUID, centerX: CGFloat, centerY: CGFloat, zOrder: Int) -> ResolvedOverlayRenderItem {
+        ResolvedOverlayRenderItem(
+            stableId: itemId,
+            kind: .text,
+            content: .text(text: "Hi", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF"),
+            presentation: .default(centerX: centerX, centerY: centerY),
+            zOrder: zOrder
+        )
+    }
+
+    /// Tapping a visible sticker overlay in the preview selects `.sticker(itemId:)`.
+    func testPreviewTap_onVisibleSticker_selectsStickerItem() {
+        let itemId = UUID()
+        let item = resolvedSticker(itemId: itemId, centerX: 0.5, centerY: 0.5, zOrder: 0)
+
+        let hit = OverlayPreviewHitTester.hitTest(
+            viewPoint: viewPoint(centerX: 0.5, centerY: 0.5),
+            items: [item],
+            canvasSize: Self.tapCanvasSize,
+            viewSize: Self.tapViewSize,
+            minTouchTargetPoints: 44,
+            // 15% canvas width square (native aspect 1:1)
+            contentCanvasSize: { _ in
+                OverlayPreviewHitTester.contentCanvasSize(
+                    kind: .sticker, contentWidth: 100, contentHeight: 100,
+                    canvasSize: Self.tapCanvasSize, canvasPixelWidth: 1080
+                )
+            }
+        )
+
+        XCTAssertEqual(hit, .sticker(itemId: itemId))
+    }
+
+    /// Overlapping text and sticker hit areas select the top rendered item.
+    /// Items are provided in render z-order (sticker below text); text must win.
+    func testPreviewTap_overlapTextAndSticker_textWins() {
+        let stickerId = UUID()
+        let textId = UUID()
+        // Render order: stickers first (lower z), then text (higher z).
+        let sticker = resolvedSticker(itemId: stickerId, centerX: 0.5, centerY: 0.5, zOrder: 0)
+        let text = resolvedText(itemId: textId, centerX: 0.5, centerY: 0.5, zOrder: 1)
+
+        let hit = OverlayPreviewHitTester.hitTest(
+            viewPoint: viewPoint(centerX: 0.5, centerY: 0.5),
+            items: [sticker, text],
+            canvasSize: Self.tapCanvasSize,
+            viewSize: Self.tapViewSize,
+            minTouchTargetPoints: 44,
+            contentCanvasSize: { item in
+                switch item.kind {
+                case .sticker:
+                    return CGSize(width: 200, height: 200)
+                case .text:
+                    return CGSize(width: 200, height: 80)
+                }
+            }
+        )
+
+        XCTAssertEqual(hit, .text(itemId: textId), "Top rendered item (text) wins on overlap")
+    }
 }
 
 // MARK: - Test Sticker Provider

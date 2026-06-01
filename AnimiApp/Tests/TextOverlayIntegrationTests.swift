@@ -250,4 +250,92 @@ final class TextOverlayIntegrationTests: XCTestCase {
         XCTAssertTrue(expectedViewPoint.x > 0, "View point should be within view bounds")
         XCTAssertTrue(expectedViewPoint.y > 0, "View point should be within view bounds")
     }
+
+    // MARK: - Preview Overlay Tap Selection
+
+    /// Canvas/view used by the preview tap tests. Square-fit (view = canvas * 0.5)
+    /// so canvas↔view mapping has no letterbox offset, keeping expected points simple.
+    private static let tapCanvasSize = SizeD(width: 1080, height: 1920)
+    private static let tapViewSize = CGSize(width: 540, height: 960)
+
+    /// Maps a normalized canvas center to a preview view point (matches production
+    /// canvas→view aspect-fit transform).
+    private func viewPoint(centerX: CGFloat, centerY: CGFloat) -> CGPoint {
+        var mapper = EditorCanvasMapper()
+        mapper.canvasSize = Self.tapCanvasSize
+        mapper.viewSize = Self.tapViewSize
+        return mapper.canvasToView(CGPoint(
+            x: centerX * CGFloat(Self.tapCanvasSize.width),
+            y: centerY * CGFloat(Self.tapCanvasSize.height)
+        ))
+    }
+
+    private func resolvedText(itemId: UUID, centerX: CGFloat, centerY: CGFloat) -> ResolvedOverlayRenderItem {
+        ResolvedOverlayRenderItem(
+            stableId: itemId,
+            kind: .text,
+            content: .text(text: "Hi", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF"),
+            presentation: .default(centerX: centerX, centerY: centerY),
+            zOrder: 0
+        )
+    }
+
+    /// Tapping a visible text overlay in the preview selects `.text(itemId:)`.
+    func testPreviewTap_onVisibleText_selectsTextItem() {
+        let itemId = UUID()
+        let item = resolvedText(itemId: itemId, centerX: 0.5, centerY: 0.5)
+
+        let hit = OverlayPreviewHitTester.hitTest(
+            viewPoint: viewPoint(centerX: 0.5, centerY: 0.5),
+            items: [item],
+            canvasSize: Self.tapCanvasSize,
+            viewSize: Self.tapViewSize,
+            minTouchTargetPoints: 44,
+            contentCanvasSize: { _ in CGSize(width: 200, height: 80) }
+        )
+
+        XCTAssertEqual(hit, .text(itemId: itemId))
+    }
+
+    /// Tapping empty preview space outside all overlay hit areas is a no-op.
+    func testPreviewTap_onEmptySpace_returnsNil() {
+        let item = resolvedText(itemId: UUID(), centerX: 0.5, centerY: 0.5)
+
+        // Tap far from the centered item, beyond its bounds + min touch target.
+        let hit = OverlayPreviewHitTester.hitTest(
+            viewPoint: viewPoint(centerX: 0.95, centerY: 0.05),
+            items: [item],
+            canvasSize: Self.tapCanvasSize,
+            viewSize: Self.tapViewSize,
+            minTouchTargetPoints: 44,
+            contentCanvasSize: { _ in CGSize(width: 120, height: 60) }
+        )
+
+        XCTAssertNil(hit)
+    }
+
+    /// A tiny rendered overlay still gets a practical minimum touch target.
+    func testPreviewTap_smallText_expandsToMinimumTouchTarget() {
+        let itemId = UUID()
+        let item = resolvedText(itemId: itemId, centerX: 0.5, centerY: 0.5)
+
+        // Content is essentially zero-sized; tap slightly off-center must still hit
+        // thanks to the minimum touch target expansion.
+        let canvasCenter = CGPoint(x: 0.5 * Self.tapCanvasSize.width, y: 0.5 * Self.tapCanvasSize.height)
+        var mapper = EditorCanvasMapper()
+        mapper.canvasSize = Self.tapCanvasSize
+        mapper.viewSize = Self.tapViewSize
+        let nearCenterView = mapper.canvasToView(CGPoint(x: canvasCenter.x + 8, y: canvasCenter.y + 8))
+
+        let hit = OverlayPreviewHitTester.hitTest(
+            viewPoint: nearCenterView,
+            items: [item],
+            canvasSize: Self.tapCanvasSize,
+            viewSize: Self.tapViewSize,
+            minTouchTargetPoints: 44,
+            contentCanvasSize: { _ in CGSize(width: 1, height: 1) }
+        )
+
+        XCTAssertEqual(hit, .text(itemId: itemId))
+    }
 }

@@ -505,10 +505,74 @@ final class EditorViewController: UIViewController {
     // MARK: - Gesture Handlers
 
     @objc private func overlayViewTapped(_ recognizer: UITapGestureRecognizer) {
-        guard case .sceneEdit = session.state?.uiMode else { return }
         let point = recognizer.location(in: overlayView)
-        sceneEditModule?.handleTap(viewPoint: point)
+        switch session.state?.uiMode {
+        case .sceneEdit:
+            sceneEditModule?.handleTap(viewPoint: point)
+        case .timeline:
+            handleTimelineOverlayTap(viewPoint: point)
+        default:
+            break
+        }
     }
+
+    /// Timeline-mode preview tap: selects a visible text/sticker overlay item via
+    /// the existing selection dispatch path. No-op on empty space; does not move
+    /// the playhead or change playback. (Preview Overlay Tap Selection)
+    private func handleTimelineOverlayTap(viewPoint: CGPoint) {
+        guard let runtime = runtime,
+              case .timeline(let payload) = runtime.currentRenderSource,
+              !payload.overlayItems.isEmpty else { return }
+
+        let canvasSize = runtime.queryCanvasSize
+        let viewSize = metalView.bounds.size
+        guard canvasSize.width > 0, viewSize.width > 0 else { return }
+
+        let device = metalView.device
+        let canvasPixelWidth = Int(metalView.drawableSize.width.rounded())
+        let cache = runtime.overlayRenderCache
+
+        let hit = OverlayPreviewHitTester.hitTest(
+            viewPoint: viewPoint,
+            items: payload.overlayItems,
+            canvasSize: canvasSize,
+            viewSize: viewSize,
+            minTouchTargetPoints: Self.previewOverlayMinTouchTargetPoints,
+            contentCanvasSize: { item in
+                guard let device,
+                      let cached = cache.texture(
+                          for: item,
+                          device: device,
+                          canvasSize: canvasSize,
+                          canvasPixelWidth: canvasPixelWidth
+                      )
+                else { return nil }
+                return OverlayPreviewHitTester.contentCanvasSize(
+                    kind: item.kind,
+                    contentWidth: cached.contentWidth,
+                    contentHeight: cached.contentHeight,
+                    canvasSize: canvasSize,
+                    canvasPixelWidth: canvasPixelWidth
+                )
+            }
+        )
+
+        let selection: TimelineSelection
+        switch hit {
+        case .text(let itemId):
+            selection = .text(itemId: itemId)
+        case .sticker(let itemId):
+            selection = .sticker(itemId: itemId)
+        case .none:
+            return
+        }
+
+        timelineController.handleTimelineSelectionChanged(selection)
+    }
+
+    /// Minimum preview overlay touch target edge length in view points, used to
+    /// expand small rendered overlay bounds without changing the drawn overlay.
+    private static let previewOverlayMinTouchTargetPoints: CGFloat = 44
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
         guard case .sceneEdit = session.state?.uiMode else { return }
