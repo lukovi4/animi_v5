@@ -56,7 +56,9 @@
 - [ ] Obsolete files/code introduced by the task are removed or justified.
 - [ ] Required docs or knowledge-map updates are completed or explicitly unnecessary.
 - [ ] Marker cleanup is handled.
-- [ ] Commit readiness is stated after review.
+- [ ] Commit-ready files for this task are listed.
+- [ ] Unrelated dirty files are listed separately and excluded from commit.
+- [ ] User is asked to write `commit` if they want Codex to create the scoped commit.
 
 ## Output
 

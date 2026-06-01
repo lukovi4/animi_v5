@@ -60,6 +60,14 @@ Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA
 - Unrelated churn found: yes/no
 - Docs or knowledge maps updated: yes/no/n/a
 
+## Commit Readiness
+
+- Commit-ready files:
+  - `<path>`
+- Unrelated dirty files excluded:
+  - `<path>`
+- Commit gate: user must write `commit` before Codex stages or commits files.
+
 ## Same-Task Repair
 
 - Fixes needed in same task: yes/no

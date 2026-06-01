@@ -133,8 +133,9 @@ Claude proposes implementation plans in `claude-plan.md`. Codex approval lives o
 23. Codex reviews implementation and writes `codex-review.md`.
 24. If review finds issues that are within the same approved task, Codex keeps the same task open and sends Claude back through the same implementation skill after updating the review/marker as needed. Do not create a new task for same-scope repairs.
 25. Codex decides whether manual QA is required. If required, Codex gives the user exact device steps and expected results.
-26. Codex performs closure review: code cleanliness, obsolete/legacy cleanup, docs/map updates, marker cleanup, and commit readiness.
+26. Codex performs closure review: code cleanliness, obsolete/legacy cleanup, docs/map updates, marker cleanup, commit-ready files, and unrelated dirty files.
 27. The task closes only after evidence-based verification and required manual QA pass, unless the user explicitly accepts the remaining risk.
+28. If the task is approved and commit-ready, Codex asks the user to write `commit`; Codex stages and commits only listed commit-ready files after that explicit command.
 
 ## Approval Gates
 
@@ -266,4 +267,5 @@ A task can close only when:
 - required docs or knowledge-map updates are completed or explicitly unnecessary;
 - the active implementation marker is removed or expired;
 - follow-ups are documented separately;
-- git commit is created only after the user approves committing the reviewed final state.
+- commit-ready files and unrelated dirty files are listed;
+- git commit is created only after the user writes `commit`, and only listed commit-ready files are staged.

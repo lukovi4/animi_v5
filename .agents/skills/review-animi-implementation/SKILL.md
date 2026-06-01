@@ -50,7 +50,11 @@ Read only the sections needed:
 11. Decide whether manual QA is required. If yes, provide exact steps and expected results.
 12. Check code cleanliness: no obsolete files, no unused legacy paths introduced by the task, no unrelated churn.
 13. Decide whether docs or knowledge maps need updates.
-14. Write `codex-review.md`.
+14. Determine commit readiness:
+    - list commit-ready files for this task;
+    - list unrelated dirty files that must not be committed;
+    - if approved and manual QA is complete/not required, tell the user to write `commit` to create a scoped commit.
+15. Write `codex-review.md`.
 
 ## Verdicts
 
@@ -65,3 +69,5 @@ Use one:
 Do not close while P0/P1 findings remain open.
 
 If fixes are required and they stay inside the same approved product scope, keep the same task open. Do not create a new task for same-scope repairs. Update the review and marker as needed, then send Claude back through `/animi-implement-approved-plan <task-folder>`.
+
+Do not auto-commit after approval. Commit only after the user explicitly writes `commit`, and stage only the commit-ready files listed in the review.
