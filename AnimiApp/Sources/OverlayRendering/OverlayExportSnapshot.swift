@@ -17,6 +17,8 @@ internal struct OverlayExportSnapshot: Sendable {
         let colorHex: String
         let centerX: CGFloat
         let centerY: CGFloat
+        let boxWidth: CGFloat
+        let rotation: CGFloat
     }
     struct StickerItem: Sendable {
         let itemId: UUID
@@ -57,12 +59,14 @@ extension OverlayExportSnapshot {
                     itemId: item.id,
                     startUs: itemStart,
                     endUs: itemEnd,
-                    text: textPayload.text,
-                    fontFamily: textPayload.fontFamily,
-                    fontSize: textPayload.fontSize ?? 32,
-                    colorHex: textPayload.colorHex ?? "#FFFFFF",
-                    centerX: textPayload.centerX,
-                    centerY: textPayload.centerY
+                    text: textPayload.geometry.text,
+                    fontFamily: textPayload.style.fontFamily,
+                    fontSize: textPayload.style.fontSize,
+                    colorHex: textPayload.style.colorHex,
+                    centerX: textPayload.geometry.centerX,
+                    centerY: textPayload.geometry.centerY,
+                    boxWidth: textPayload.geometry.boxWidth,
+                    rotation: textPayload.geometry.rotation
                 ))
             case .sticker:
                 guard let payload = timeline.payloads[item.payloadId],
@@ -99,12 +103,14 @@ extension OverlayExportSnapshot {
                 itemId: item.id,
                 startUs: itemStart,
                 endUs: itemStart + item.durationUs,
-                text: payload.text,
-                fontFamily: payload.fontFamily,
-                fontSize: payload.fontSize ?? 32,
-                colorHex: payload.colorHex ?? "#FFFFFF",
-                centerX: payload.centerX,
-                centerY: payload.centerY
+                text: payload.geometry.text,
+                fontFamily: payload.style.fontFamily,
+                fontSize: payload.style.fontSize,
+                colorHex: payload.style.colorHex,
+                centerX: payload.geometry.centerX,
+                centerY: payload.geometry.centerY,
+                boxWidth: payload.geometry.boxWidth,
+                rotation: payload.geometry.rotation
             )
         }
         let stickerItems = stickerOverlayItems.map { (item, payload, imageURL) in

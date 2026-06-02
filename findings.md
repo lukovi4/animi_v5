@@ -85,11 +85,11 @@ No open P1 issues after PR-7.
 
 ## P2 / Should Fix
 
-8. `NOT REPRODUCED / HARDENING` Preview video `CVMetalTexture` is not retained together with returned `MTLTexture`.
-   - Device evidence: stress logs did not show `texture=nil`, Metal validation errors, black frames, or crash.
+8. `ROLLED BACK / HARDENING NOT ACTIVE` Preview video `CVMetalTexture` is not retained together with returned `MTLTexture`.
+   - Retained-texture hardening was reverted after device memory spikes; current code is back to the previous working video/trim memory behavior.
+   - Device evidence before rollback: stress logs did not show `texture=nil`, Metal validation errors, black frames, or crash.
    - Remaining risk: code still depends on lifetime behavior that is safer in export path than preview path.
-   - Fix scope: safety hardening, not an urgent confirmed bug.
-   - Device validation: optional smoke after change.
+   - Fix scope: future safety hardening only after a dedicated memory-safe design and device validation.
 
 9. `NOT REPRODUCED / HARDENING` `releasePreviewResourcesForClose()` does not cancel `playbackStartTask` directly.
    - Evidence: current stop/close tests pass; close path calls `stopPlayback()`.
@@ -149,6 +149,6 @@ Still needs targeted device runs:
 - No open critical/P1 finding currently requires device-only confirmation.
 
 Not required for product safety unless new evidence appears:
+- CVMetalTexture ownership hardening.
 - Photo ingest `Thread.sleep` / `waitUntilCompleted()` performance cleanup.
 - Close lifecycle rewrite.
-- CVMetalTexture ownership hardening.

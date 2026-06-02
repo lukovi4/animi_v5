@@ -590,7 +590,7 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
 
         let textItemsInside = requestInside.overlayItems.filter { $0.kind == .text }
         XCTAssertEqual(textItemsInside.count, 1, "Render request must contain visible text overlay")
-        if case .text(let text, _, let fontSize, let colorHex) = textItemsInside.first?.content {
+        if case .text(let text, _, let fontSize, let colorHex, _) = textItemsInside.first?.content {
             XCTAssertEqual(text, "Export Visible")
             XCTAssertEqual(fontSize, 36)
             XCTAssertEqual(colorHex, "#FF0000")

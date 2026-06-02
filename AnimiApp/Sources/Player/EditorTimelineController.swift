@@ -166,19 +166,36 @@ internal final class EditorTimelineController {
             return
         }
 
+        let canvasSize = vc.runtime?.queryCanvasSize ?? SizeD(width: 0, height: 0)
+
         switch selection {
         case .text(let itemId):
-            if let payload = vc.session.state?.canonicalTimeline.textPayload(for: itemId) {
+            if let payload = vc.session.state?.canonicalTimeline.textPayload(for: itemId),
+               canvasSize.width > 0 {
                 vc.overlayPositionDrag.isHidden = false
-                vc.overlayPositionDrag.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
+                vc.overlayPositionDrag.setSelectedBox(
+                    EditorTimelineController.makeSelectedBox(
+                        itemId: itemId, payload: payload, canvasSize: canvasSize
+                    )
+                )
             } else {
                 vc.overlayPositionDrag.clearSelection()
                 vc.overlayPositionDrag.isHidden = true
             }
         case .sticker(let itemId):
-            if let payload = vc.session.state?.canonicalTimeline.stickerPayload(for: itemId) {
+            if let payload = vc.session.state?.canonicalTimeline.stickerPayload(for: itemId),
+               canvasSize.width > 0 {
                 vc.overlayPositionDrag.isHidden = false
-                vc.overlayPositionDrag.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
+                // Sticker border approximates the 15%-canvas-width contract.
+                let side = canvasSize.width * 0.15
+                vc.overlayPositionDrag.setSelectedSticker(
+                    OverlayPositionDragView.SelectedSticker(
+                        itemId: itemId,
+                        centerX: payload.centerX,
+                        centerY: payload.centerY,
+                        contentCanvasSize: CGSize(width: side, height: side)
+                    )
+                )
             } else {
                 vc.overlayPositionDrag.clearSelection()
                 vc.overlayPositionDrag.isHidden = true
@@ -187,6 +204,45 @@ internal final class EditorTimelineController {
             vc.overlayPositionDrag.clearSelection()
             vc.overlayPositionDrag.isHidden = true
         }
+    }
+
+    /// Builds a `SelectedBox` from the persisted text payload, computing the
+    /// unrotated content size via the shared layout in canvas units (1px = 1
+    /// canvas unit so the layout result is already canvas-unit sized).
+    static func makeSelectedBox(
+        itemId: UUID,
+        payload: TextPayload,
+        canvasSize: SizeD
+    ) -> OverlayPositionDragView.SelectedBox {
+        let pixelWidth = max(1, Int(canvasSize.width.rounded()))
+        let input = TextOverlayLayout.Input(
+            text: payload.geometry.text,
+            fontFamily: payload.style.fontFamily,
+            fontSize: payload.style.fontSize,
+            colorHex: payload.style.colorHex,
+            boxWidth: payload.geometry.boxWidth
+        )
+        let layout = TextOverlayLayout.layout(
+            input: input, canvasSize: canvasSize, canvasPixelWidth: pixelWidth
+        )
+        let contentSize = TextOverlayLayout.contentCanvasSize(
+            pixelWidth: layout.pixelWidth,
+            pixelHeight: layout.pixelHeight,
+            canvasSize: canvasSize,
+            canvasPixelWidth: pixelWidth
+        ) ?? CGSize(width: canvasSize.width * payload.geometry.boxWidth, height: 40)
+        return OverlayPositionDragView.SelectedBox(
+            itemId: itemId,
+            centerX: payload.geometry.centerX,
+            centerY: payload.geometry.centerY,
+            boxWidth: payload.geometry.boxWidth,
+            fontSize: payload.style.fontSize,
+            rotation: payload.geometry.rotation,
+            contentCanvasSize: contentSize,
+            text: payload.geometry.text,
+            fontFamily: payload.style.fontFamily,
+            colorHex: payload.style.colorHex
+        )
     }
 
     // MARK: - Overlay Track

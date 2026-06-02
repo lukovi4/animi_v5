@@ -255,29 +255,106 @@ public struct StickerPayload: Codable, Equatable, Sendable {
     }
 }
 
-// MARK: - Text Payload
+// MARK: - Text Box Geometry
 
-/// Payload for text overlay items.
-/// PR9: Shipped with canvas-normalized positioning (centerX/centerY).
-public struct TextPayload: Codable, Equatable, Sendable {
+/// Geometry + content for a text overlay box.
+///
+/// One persisted source of truth for the text-box placement and the text
+/// content itself. Derived height is NOT stored — it is computed by the shared
+/// text-box layout from `boxWidth` + style. `boxWidth` is canvas-normalized so
+/// the box reflows consistently across canvas sizes, preview, and export.
+public struct TextBoxGeometry: Codable, Equatable, Sendable {
     /// Text content.
     public var text: String
 
-    /// Font family name.
-    public var fontFamily: String?
-
-    /// Font size in points.
-    public var fontSize: CGFloat?
-
-    /// Text color as hex string (e.g., "#FF0000").
-    public var colorHex: String?
-
-    /// Canvas-normalized X position (0..1, default 0.5 = center).
+    /// Canvas-normalized X position of the box center (0..1, default 0.5).
     public var centerX: CGFloat
 
-    /// Canvas-normalized Y position (0..1, default 0.5 = center).
+    /// Canvas-normalized Y position of the box center (0..1, default 0.5).
     public var centerY: CGFloat
 
+    /// Canvas-normalized box width (0..1 of canvas width) used for wrapping.
+    /// Default `Self.defaultBoxWidth`.
+    public var boxWidth: CGFloat
+
+    /// Rotation about the box center, in radians (0 = upright).
+    public var rotation: CGFloat
+
+    /// Default canvas-normalized box width for newly created text boxes.
+    public static let defaultBoxWidth: CGFloat = 0.6
+
+    public init(
+        text: String = "",
+        centerX: CGFloat = 0.5,
+        centerY: CGFloat = 0.5,
+        boxWidth: CGFloat = TextBoxGeometry.defaultBoxWidth,
+        rotation: CGFloat = 0
+    ) {
+        self.text = text
+        self.centerX = centerX
+        self.centerY = centerY
+        self.boxWidth = boxWidth
+        self.rotation = rotation
+    }
+}
+
+// MARK: - Text Style
+
+/// Visual style for a text overlay. Extensible: new typography/layout fields
+/// (line height, letter spacing, alignment, padding) can be added here and they
+/// flow through the shared layout to preview, hit testing, bounds, and export
+/// without introducing a parallel styling path.
+public struct TextStyle: Codable, Equatable, Sendable {
+    /// Font family name (nil = system bold default).
+    public var fontFamily: String?
+
+    /// Font size in points (canvas-relative; scaled per canvas at raster time).
+    public var fontSize: CGFloat
+
+    /// Text color as hex string (e.g., "#FF0000").
+    public var colorHex: String
+
+    /// Default font size for newly created text.
+    public static let defaultFontSize: CGFloat = 32
+
+    /// Default text color for newly created text.
+    public static let defaultColorHex: String = "#FFFFFF"
+
+    public init(
+        fontFamily: String? = nil,
+        fontSize: CGFloat = TextStyle.defaultFontSize,
+        colorHex: String = TextStyle.defaultColorHex
+    ) {
+        self.fontFamily = fontFamily
+        self.fontSize = fontSize
+        self.colorHex = colorHex
+    }
+}
+
+// MARK: - Text Payload
+
+/// Payload for text overlay items.
+///
+/// Holds separated `geometry` (placement + content) and `style` so all
+/// renderers/editors share one persisted model. The flat convenience accessors
+/// and initializer below forward into the nested model — they are NOT a second
+/// source of truth, just ergonomics for existing call sites.
+public struct TextPayload: Codable, Equatable, Sendable {
+    /// Box geometry + text content.
+    public var geometry: TextBoxGeometry
+
+    /// Text style.
+    public var style: TextStyle
+
+    public init(geometry: TextBoxGeometry = TextBoxGeometry(), style: TextStyle = TextStyle()) {
+        self.geometry = geometry
+        self.style = style
+    }
+
+    /// Convenience flat initializer. Forwards flat fields into the nested
+    /// geometry/style model — it is NOT a second source of truth and adds no
+    /// old-payload migration. `fontSize`/`colorHex` fall back to style defaults
+    /// when nil so call sites that pass only a subset behave predictably.
     public init(
         text: String = "",
         fontFamily: String? = nil,
@@ -286,12 +363,54 @@ public struct TextPayload: Codable, Equatable, Sendable {
         centerX: CGFloat = 0.5,
         centerY: CGFloat = 0.5
     ) {
-        self.text = text
-        self.fontFamily = fontFamily
-        self.fontSize = fontSize
-        self.colorHex = colorHex
-        self.centerX = centerX
-        self.centerY = centerY
+        self.geometry = TextBoxGeometry(text: text, centerX: centerX, centerY: centerY)
+        self.style = TextStyle(
+            fontFamily: fontFamily,
+            fontSize: fontSize ?? TextStyle.defaultFontSize,
+            colorHex: colorHex ?? TextStyle.defaultColorHex
+        )
+    }
+
+    // MARK: Flat convenience accessors (forward to nested model)
+
+    public var text: String {
+        get { geometry.text }
+        set { geometry.text = newValue }
+    }
+
+    public var fontFamily: String? {
+        get { style.fontFamily }
+        set { style.fontFamily = newValue }
+    }
+
+    public var fontSize: CGFloat? {
+        get { style.fontSize }
+        set { style.fontSize = newValue ?? TextStyle.defaultFontSize }
+    }
+
+    public var colorHex: String? {
+        get { style.colorHex }
+        set { style.colorHex = newValue ?? TextStyle.defaultColorHex }
+    }
+
+    public var centerX: CGFloat {
+        get { geometry.centerX }
+        set { geometry.centerX = newValue }
+    }
+
+    public var centerY: CGFloat {
+        get { geometry.centerY }
+        set { geometry.centerY = newValue }
+    }
+
+    public var boxWidth: CGFloat {
+        get { geometry.boxWidth }
+        set { geometry.boxWidth = newValue }
+    }
+
+    public var rotation: CGFloat {
+        get { geometry.rotation }
+        set { geometry.rotation = newValue }
     }
 }
 

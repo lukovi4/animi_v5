@@ -26,7 +26,7 @@ final class OverlayRenderResourceCacheTests: XCTestCase {
         ResolvedOverlayRenderItem(
             stableId: stableId,
             kind: .text,
-            content: .text(text: text, fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF"),
+            content: .text(text: text, fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", boxWidth: 0.6),
             presentation: .default(centerX: 0.5, centerY: 0.5),
             zOrder: zOrder
         )
@@ -87,14 +87,14 @@ final class OverlayRenderResourceCacheTests: XCTestCase {
         let itemAtCenter = ResolvedOverlayRenderItem(
             stableId: id,
             kind: .text,
-            content: .text(text: "Pos", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF"),
+            content: .text(text: "Pos", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", boxWidth: 0.6),
             presentation: .default(centerX: 0.5, centerY: 0.5),
             zOrder: 0
         )
         let itemMoved = ResolvedOverlayRenderItem(
             stableId: id,
             kind: .text,
-            content: .text(text: "Pos", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF"),
+            content: .text(text: "Pos", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", boxWidth: 0.6),
             presentation: .default(centerX: 0.2, centerY: 0.8),
             zOrder: 0
         )

@@ -333,4 +333,102 @@ final class TextOverlayReducerTests: XCTestCase {
         store.dispatch(.redo)
         XCTAssertEqual(store.state.canonicalTimeline.textItems.count, 1)
     }
+
+    // MARK: - Transform Text Box (move + boxWidth + fontSize + rotation)
+
+    private func addTextStore() -> (EditorStore, UUID) {
+        let draft = makeDraft(sceneDurations: [3_000_000])
+        let store = EditorStore.create(draft: draft, templateFPS: 30, defaultSceneSequence: [])
+        store.dispatch(.addTextOverlay(text: "Box", fontSize: 32, colorHex: "#FFFFFF", fontFamily: nil, startUs: 0, durationUs: 2_000_000))
+        return (store, store.state.canonicalTimeline.textItems.first!.id)
+    }
+
+    func testTransformTextBox_endedUpdatesGeometryAndStyle() {
+        let (store, itemId) = addTextStore()
+
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.3, centerY: 0.7, boxWidth: 0.4, fontSize: 48, rotation: 0.6, phase: .began))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.3, centerY: 0.7, boxWidth: 0.4, fontSize: 48, rotation: 0.6, phase: .changed))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.3, centerY: 0.7, boxWidth: 0.4, fontSize: 48, rotation: 0.6, phase: .ended))
+
+        let p = store.state.canonicalTimeline.textPayload(for: itemId)!
+        XCTAssertEqual(p.geometry.centerX, 0.3, accuracy: 1e-6)
+        XCTAssertEqual(p.geometry.centerY, 0.7, accuracy: 1e-6)
+        XCTAssertEqual(p.geometry.boxWidth, 0.4, accuracy: 1e-6)
+        XCTAssertEqual(p.geometry.rotation, 0.6, accuracy: 1e-6)
+        XCTAssertEqual(p.style.fontSize, 48, accuracy: 1e-6)
+    }
+
+    func testTransformTextBox_oneUndoSnapshotPerGesture() {
+        let (store, itemId) = addTextStore()
+        let canUndoBefore = store.canUndo
+
+        // One full gesture (began → changed → ended) = one undo step.
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.5, centerY: 0.5, boxWidth: 0.6, fontSize: 32, rotation: 0, phase: .began))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.4, centerY: 0.6, boxWidth: 0.5, fontSize: 40, rotation: 0.2, phase: .changed))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.4, centerY: 0.6, boxWidth: 0.5, fontSize: 40, rotation: 0.2, phase: .ended))
+
+        XCTAssertTrue(canUndoBefore, "Add created an undo step")
+        // Undo once reverts the whole gesture back to the post-add baseline.
+        store.dispatch(.undo)
+        let reverted = store.state.canonicalTimeline.textPayload(for: itemId)!
+        XCTAssertEqual(reverted.geometry.centerX, 0.5, accuracy: 1e-6)
+        XCTAssertEqual(reverted.geometry.boxWidth, 0.6, accuracy: 1e-6)
+        XCTAssertEqual(reverted.geometry.rotation, 0, accuracy: 1e-6)
+        XCTAssertEqual(reverted.style.fontSize, 32, accuracy: 1e-6)
+    }
+
+    func testTransformTextBox_cancelledRestoresBaseline() {
+        let (store, itemId) = addTextStore()
+
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.5, centerY: 0.5, boxWidth: 0.6, fontSize: 32, rotation: 0, phase: .began))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.1, centerY: 0.1, boxWidth: 0.2, fontSize: 80, rotation: 1.0, phase: .changed))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.1, centerY: 0.1, boxWidth: 0.2, fontSize: 80, rotation: 1.0, phase: .cancelled))
+
+        let p = store.state.canonicalTimeline.textPayload(for: itemId)!
+        XCTAssertEqual(p.geometry.centerX, 0.5, accuracy: 1e-6, "Cancel restores gesture baseline")
+        XCTAssertEqual(p.geometry.boxWidth, 0.6, accuracy: 1e-6)
+        XCTAssertEqual(p.geometry.rotation, 0, accuracy: 1e-6)
+        XCTAssertEqual(p.style.fontSize, 32, accuracy: 1e-6)
+    }
+
+    /// Live `.began`/`.changed` no longer route through the store at all (the
+    /// Core Animation live layer owns them): they must not mutate the model nor
+    /// fire any timeline sync. Only `.ended` commits, once.
+    func testTransformTextBox_livePhasesDoNotSync_endedCommitsOnce() {
+        let (store, itemId) = addTextStore()
+
+        var fullSyncCount = 0
+        var trimPreviewCount = 0
+        store.onTimelineChanged = { _ in fullSyncCount += 1 }
+        store.onTimelinePreviewChanged = { _ in trimPreviewCount += 1 }
+
+        let baseline = store.state.canonicalTimeline.textPayload(for: itemId)!
+
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.5, centerY: 0.5, boxWidth: 0.6, fontSize: 32, rotation: 0, phase: .began))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.45, centerY: 0.55, boxWidth: 0.55, fontSize: 36, rotation: 0.1, phase: .changed))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.4, centerY: 0.6, boxWidth: 0.5, fontSize: 40, rotation: 0.2, phase: .changed))
+
+        XCTAssertEqual(fullSyncCount, 0, "Live phases must not fire the full-timeline sync")
+        XCTAssertEqual(trimPreviewCount, 0, "Live phases must not reuse the trim-preview path")
+        let duringLive = store.state.canonicalTimeline.textPayload(for: itemId)!
+        XCTAssertEqual(duringLive.geometry.centerX, baseline.geometry.centerX, accuracy: 1e-9, "model unchanged during live phases")
+
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.4, centerY: 0.6, boxWidth: 0.5, fontSize: 40, rotation: 0.2, phase: .ended))
+        XCTAssertEqual(fullSyncCount, 1, "Commit performs the full timeline sync once")
+        let committed = store.state.canonicalTimeline.textPayload(for: itemId)!
+        XCTAssertEqual(committed.geometry.centerX, 0.4, accuracy: 1e-6, "commit persists the final center")
+        XCTAssertEqual(committed.geometry.centerY, 0.6, accuracy: 1e-6)
+    }
+
+    func testTransformTextBox_allowsOffCanvasCenter_notClampedTo01() {
+        let (store, itemId) = addTextStore()
+        // Drag the center well past the canvas edge; reducer must allow off-canvas
+        // placement (clipping is visual), bounded only by the off-canvas bound.
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 1.3, centerY: -0.2, boxWidth: 0.6, fontSize: 32, rotation: 0, phase: .began))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 1.3, centerY: -0.2, boxWidth: 0.6, fontSize: 32, rotation: 0, phase: .ended))
+
+        let p = store.state.canonicalTimeline.textPayload(for: itemId)!
+        XCTAssertEqual(p.geometry.centerX, 1.3, accuracy: 1e-6, "center > 1 allowed off-canvas")
+        XCTAssertEqual(p.geometry.centerY, -0.2, accuracy: 1e-6, "center < 0 allowed off-canvas")
+    }
 }

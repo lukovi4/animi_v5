@@ -94,6 +94,13 @@ final class EditorRuntime {
     let overlayRenderCache = OverlayRenderResourceCache()
     private var memoryWarningObserver: NSObjectProtocol?
 
+    /// Overlay item ids hidden from the preview render while they are being
+    /// transformed live by the Core Animation interaction layer. The committed
+    /// Metal copy is omitted from `OverlayResolver.resolve` so there is no
+    /// ghost/duplicate behind the live layer. Empty except during a live gesture;
+    /// the export path never consults this.
+    private(set) var liveHiddenOverlayIds: Set<UUID> = []
+
     var scenePlayer: ScenePlayer?
     var compiledScene: CompiledScene?
     var textureProvider: (any MutableTextureProvider)?
@@ -745,6 +752,28 @@ final class EditorRuntime {
         resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: false)
     }
 
+    /// Hides the committed Metal copy of an overlay while it is being transformed
+    /// live by the Core Animation interaction layer. Triggers exactly ONE
+    /// render-source refresh so the next presented frame omits the item — there
+    /// is no per-`.changed` render loop; the live layer alone moves during the
+    /// gesture. Idempotent: re-hiding an already-hidden id does nothing.
+    func beginHidingOverlay(_ id: UUID) {
+        guard case .timelinePreview = state else { return }
+        guard !liveHiddenOverlayIds.contains(id) else { return }
+        liveHiddenOverlayIds.insert(id)
+        refreshCurrentTimelineFrame()
+    }
+
+    /// Restores the committed Metal copy of an overlay after a live transform
+    /// ends or cancels. Triggers exactly ONE render-source refresh so the
+    /// committed render takes over before the live layer is removed. Idempotent.
+    func endHidingOverlay(_ id: UUID) {
+        guard liveHiddenOverlayIds.contains(id) else { return }
+        liveHiddenOverlayIds.remove(id)
+        guard case .timelinePreview = state else { return }
+        refreshCurrentTimelineFrame()
+    }
+
     private func resolveAndPresentTimelineFrame(compressedFrame: Int, invalidateScrub: Bool) {
         guard let engine = timelineCompositionEngine else { return }
 
@@ -825,7 +854,8 @@ final class EditorRuntime {
            let math = engine.transitionMath,
            let timeUs = OverlayTimeMapping.globalTimeUs(for: compressedFrame, math: math, fps: engine.fps) {
             overlayItems = OverlayResolver.resolve(
-                from: timeline, at: timeUs, stickerProvider: engine.stickerProvider
+                from: timeline, at: timeUs, stickerProvider: engine.stickerProvider,
+                excludedOverlayIds: liveHiddenOverlayIds
             )
         } else {
             overlayItems = []

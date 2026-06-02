@@ -17,4 +17,11 @@ internal struct OverlayPresentationState: Sendable {
     static func `default`(centerX: CGFloat, centerY: CGFloat) -> Self {
         Self(centerX: centerX, centerY: centerY, scale: 1.0, rotation: 0, opacity: 1.0)
     }
+
+    /// Presentation for a text box: center + persisted rotation. `scale` stays
+    /// 1.0 because text size flows through layout/rasterization (font + boxWidth),
+    /// not the presentation scale.
+    static func text(centerX: CGFloat, centerY: CGFloat, rotation: CGFloat) -> Self {
+        Self(centerX: centerX, centerY: centerY, scale: 1.0, rotation: rotation, opacity: 1.0)
+    }
 }

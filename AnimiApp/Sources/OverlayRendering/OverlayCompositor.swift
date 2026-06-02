@@ -91,9 +91,19 @@ internal enum OverlayCompositor {
                 .concatenating(Matrix2D.scale(Double(presentation.scale)))
                 .concatenating(Matrix2D.translation(x: -hw, y: -hh))
 
+            // Text boxes may sit off-canvas; clip their draw to the canvas rect
+            // so out-of-bounds text disappears under the template edge (matches
+            // the selection-border clip in OverlayPositionDragView and export).
+            let clipsToCanvas = (item.kind == .text)
+            if clipsToCanvas {
+                commands.append(.pushClipRect(RectD(x: 0, y: 0, width: canvasSize.width, height: canvasSize.height)))
+            }
             commands.append(.pushTransform(itemTransform))
             commands.append(.drawImage(assetId: assetId, opacity: Double(presentation.opacity)))
             commands.append(.popTransform)
+            if clipsToCanvas {
+                commands.append(.popClipRect)
+            }
         }
 
         // Single draw pass with .load to preserve existing target content
@@ -186,24 +196,34 @@ internal enum OverlayPreviewHitTester {
         for item in items.reversed() {
             let cx = item.presentation.centerX * CGFloat(canvasSize.width)
             let cy = item.presentation.centerY * CGFloat(canvasSize.height)
+            let center = CGPoint(x: cx, y: cy)
 
             let content = contentCanvasSize(item) ?? .zero
-            let halfW = max(content.width, minTargetCanvas) / 2
-            let halfH = max(content.height, minTargetCanvas) / 2
-
-            let rect = CGRect(
-                x: cx - halfW,
-                y: cy - halfH,
-                width: halfW * 2,
-                height: halfH * 2
+            let targetSize = CGSize(
+                width: max(content.width, minTargetCanvas),
+                height: max(content.height, minTargetCanvas)
             )
-
-            guard rect.contains(canvasPoint) else { continue }
 
             switch item.kind {
             case .text:
+                // Rotated box test: text honors its persisted rotation so the
+                // selectable region matches the drawn (rotated) text box.
+                guard TextOverlayLayout.contains(
+                    point: canvasPoint,
+                    center: center,
+                    size: targetSize,
+                    rotation: item.presentation.rotation
+                ) else { continue }
                 return .text(itemId: item.stableId)
             case .sticker:
+                // Sticker hit testing stays axis-aligned (unchanged contract).
+                let rect = CGRect(
+                    x: cx - targetSize.width / 2,
+                    y: cy - targetSize.height / 2,
+                    width: targetSize.width,
+                    height: targetSize.height
+                )
+                guard rect.contains(canvasPoint) else { continue }
                 return .sticker(itemId: item.stableId)
             }
         }

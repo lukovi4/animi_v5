@@ -241,7 +241,14 @@ final class EditorViewController: UIViewController {
     }
 
     private func setupOverlayGestureRecognizers() {
+        // Double tap opens the existing text editor (confirmed product decision);
+        // single tap must wait for it to fail so selection doesn't fight editing.
+        let doubleTapGesture = UITapGestureRecognizer(target: self, action: #selector(overlayViewDoubleTapped(_:)))
+        doubleTapGesture.numberOfTapsRequired = 2
+        overlayView.addGestureRecognizer(doubleTapGesture)
+
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(overlayViewTapped(_:)))
+        tapGesture.require(toFail: doubleTapGesture)
         overlayView.addGestureRecognizer(tapGesture)
 
         let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
@@ -294,6 +301,51 @@ final class EditorViewController: UIViewController {
 
         overlayPositionDrag.onDragPosition = { [weak self] itemId, centerX, centerY, phase in
             self?.session.dispatch(.dragOverlayPosition(itemId: itemId, centerX: centerX, centerY: centerY, phase: phase))
+        }
+
+        overlayPositionDrag.onTransform = { [weak self] itemId, centerX, centerY, boxWidth, fontSize, rotation, phase in
+            guard let self else { return }
+            switch phase {
+            case .began:
+                // Hide the committed Metal copy with one scoped refresh; the live
+                // layer (owned by the drag view) renders the text during the
+                // gesture. No store mutation on begin.
+                self.runtime?.beginHidingOverlay(itemId)
+            case .changed:
+                // Transient only: the live layer already updated inside the drag
+                // view. Nothing routes through the store/engine/render here.
+                break
+            case .ended:
+                // Stop hiding the committed copy FIRST so the commit's own
+                // render sync already includes the text — one combined refresh,
+                // not two. Then commit exactly once; the commit sync re-seeds the
+                // selection box, tearing down the live layer with the Metal copy
+                // already back (no ghost, no flicker).
+                self.runtime?.endHidingOverlay(itemId)
+                self.session.dispatch(.transformTextBox(
+                    itemId: itemId,
+                    centerX: centerX,
+                    centerY: centerY,
+                    boxWidth: boxWidth,
+                    fontSize: fontSize,
+                    rotation: rotation,
+                    phase: .ended
+                ))
+            case .cancelled:
+                // No model mutation. Restore the committed render; the live layer
+                // is torn down when the baseline selection is re-applied.
+                self.runtime?.endHidingOverlay(itemId)
+                self.timelineController.updateOverlayPositionDrag(selection: self.session.state?.selection ?? .none)
+            }
+        }
+
+        // While a text box is selected the drag overlay owns the surface, so its
+        // taps drive selection/edit routing (single tap re-selects, double tap edits).
+        overlayPositionDrag.onSingleTap = { [weak self] point in
+            self?.handleTimelineOverlayTap(viewPoint: point)
+        }
+        overlayPositionDrag.onDoubleTap = { [weak self] point in
+            self?.handleTimelineDoubleTap(viewPoint: point)
         }
 
         editorLayoutContainer.onEditScene = { [weak self] sceneId in self?.session.dispatch(.enterSceneEdit(sceneId: sceneId)) }
@@ -520,13 +572,20 @@ final class EditorViewController: UIViewController {
     /// the existing selection dispatch path. No-op on empty space; does not move
     /// the playhead or change playback. (Preview Overlay Tap Selection)
     private func handleTimelineOverlayTap(viewPoint: CGPoint) {
+        guard let selection = hitTestTimelineOverlay(viewPoint: viewPoint) else { return }
+        timelineController.handleTimelineSelectionChanged(selection)
+    }
+
+    /// Shared hit test: returns the topmost overlay selection at a preview point,
+    /// or nil for empty space. Used by tap selection and double-tap-to-edit.
+    private func hitTestTimelineOverlay(viewPoint: CGPoint) -> TimelineSelection? {
         guard let runtime = runtime,
               case .timeline(let payload) = runtime.currentRenderSource,
-              !payload.overlayItems.isEmpty else { return }
+              !payload.overlayItems.isEmpty else { return nil }
 
         let canvasSize = runtime.queryCanvasSize
         let viewSize = metalView.bounds.size
-        guard canvasSize.width > 0, viewSize.width > 0 else { return }
+        guard canvasSize.width > 0, viewSize.width > 0 else { return nil }
 
         let device = metalView.device
         let canvasPixelWidth = Int(metalView.drawableSize.width.rounded())
@@ -557,17 +616,39 @@ final class EditorViewController: UIViewController {
             }
         )
 
-        let selection: TimelineSelection
         switch hit {
-        case .text(let itemId):
-            selection = .text(itemId: itemId)
-        case .sticker(let itemId):
-            selection = .sticker(itemId: itemId)
-        case .none:
+        case .text(let itemId): return .text(itemId: itemId)
+        case .sticker(let itemId): return .sticker(itemId: itemId)
+        case .none: return nil
+        }
+    }
+
+    /// Double tap on the preview (overlayView path, used when no text box is
+    /// selected yet): if it lands on a visible text, open the existing editor.
+    @objc private func overlayViewDoubleTapped(_ recognizer: UITapGestureRecognizer) {
+        guard case .timeline = session.state?.uiMode else { return }
+        let point = recognizer.location(in: overlayView)
+        handleTimelineDoubleTap(viewPoint: point)
+    }
+
+    /// Double-tap-to-edit routing shared by the overlayView path and the
+    /// selected-box overlay path:
+    /// - if the tap hits a text, open that text;
+    /// - else if a text is already selected, open the selected text.
+    func handleTimelineDoubleTap(viewPoint: CGPoint) {
+        if case .text(let itemId)? = hitTestTimelineOverlay(viewPoint: viewPoint) {
+            openTextEditor(for: itemId)
             return
         }
+        if case .text(let itemId)? = session.state?.selection {
+            openTextEditor(for: itemId)
+        }
+    }
 
-        timelineController.handleTimelineSelectionChanged(selection)
+    /// Opens the existing modal text editor for the given text item.
+    private func openTextEditor(for itemId: UUID) {
+        guard let payload = session.state?.canonicalTimeline.textPayload(for: itemId) else { return }
+        presentationController_.presentTextEditor(existingPayload: payload, itemId: itemId)
     }
 
     /// Minimum preview overlay touch target edge length in view points, used to

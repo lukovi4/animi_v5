@@ -698,7 +698,7 @@ final class TimelineRenderExecutorTests: XCTestCase {
         let item = ResolvedOverlayRenderItem(
             stableId: UUID(),
             kind: .text,
-            content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF"),
+            content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF", boxWidth: 0.6),
             presentation: .default(centerX: 0.5, centerY: 0.5),
             zOrder: 0
         )
@@ -736,7 +736,7 @@ final class TimelineRenderExecutorTests: XCTestCase {
                 ResolvedOverlayRenderItem(
                     stableId: UUID(),
                     kind: .text,
-                    content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF"),
+                    content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF", boxWidth: 0.6),
                     presentation: .default(centerX: 0.5, centerY: 0.5),
                     zOrder: 1
                 )
@@ -855,7 +855,7 @@ final class TimelineRenderExecutorTests: XCTestCase {
                 ResolvedOverlayRenderItem(
                     stableId: UUID(),
                     kind: .text,
-                    content: .text(text: "X", fontFamily: nil, fontSize: 14, colorHex: "#FFFFFF"),
+                    content: .text(text: "X", fontFamily: nil, fontSize: 14, colorHex: "#FFFFFF", boxWidth: 0.6),
                     presentation: .default(centerX: 0.5, centerY: 0.5),
                     zOrder: 1
                 )
@@ -951,7 +951,7 @@ final class TimelineRenderExecutorTests: XCTestCase {
                 ResolvedOverlayRenderItem(
                     stableId: UUID(),
                     kind: .text,
-                    content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF"),
+                    content: .text(text: "HELLO", fontFamily: nil, fontSize: 24, colorHex: "#FFFFFF", boxWidth: 0.6),
                     presentation: .default(centerX: 0.5, centerY: 0.5),
                     zOrder: 1
                 )
@@ -987,7 +987,7 @@ final class TimelineRenderExecutorTests: XCTestCase {
             let item = ResolvedOverlayRenderItem(
                 stableId: UUID(),
                 kind: .text,
-                content: .text(text: "EXPORT", fontFamily: nil, fontSize: 20, colorHex: "#FF0000"),
+                content: .text(text: "EXPORT", fontFamily: nil, fontSize: 20, colorHex: "#FF0000", boxWidth: 0.6),
                 presentation: .default(centerX: 0.5, centerY: 0.5),
                 zOrder: 0
             )

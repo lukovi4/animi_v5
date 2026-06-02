@@ -146,7 +146,8 @@ final class OverlayResolverSnapshotTests: XCTestCase {
         let snapshot = OverlayExportSnapshot(
             textItems: [
                 .init(itemId: UUID(), startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
-                      fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5)
+                      fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5,
+                      boxWidth: 0.6, rotation: 0)
             ],
             stickerItems: []
         )
@@ -154,7 +155,7 @@ final class OverlayResolverSnapshotTests: XCTestCase {
         let result = OverlayResolver.resolve(from: snapshot, at: 2_000_000)
         let textItems = result.filter { $0.kind == .text }
         XCTAssertEqual(textItems.count, 1)
-        if case .text(let text, _, _, _) = textItems[0].content {
+        if case .text(let text, _, _, _, _) = textItems[0].content {
             XCTAssertEqual(text, "Hi")
         } else {
             XCTFail("Expected text content")
@@ -165,7 +166,8 @@ final class OverlayResolverSnapshotTests: XCTestCase {
         let snapshot = OverlayExportSnapshot(
             textItems: [
                 .init(itemId: UUID(), startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
-                      fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5)
+                      fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5,
+                      boxWidth: 0.6, rotation: 0)
             ],
             stickerItems: []
         )
@@ -178,7 +180,8 @@ final class OverlayResolverSnapshotTests: XCTestCase {
         let snapshot = OverlayExportSnapshot(
             textItems: [
                 .init(itemId: UUID(), startUs: 1_000_000, endUs: 3_000_000, text: "Hi",
-                      fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5)
+                      fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", centerX: 0.5, centerY: 0.5,
+                      boxWidth: 0.6, rotation: 0)
             ],
             stickerItems: []
         )

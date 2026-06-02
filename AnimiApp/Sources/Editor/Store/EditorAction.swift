@@ -237,6 +237,14 @@ public enum EditorAction: Sendable {
     /// Only `.ended` pushes undo snapshot.
     case dragOverlayPosition(itemId: UUID, centerX: CGFloat, centerY: CGFloat, phase: InteractionPhase)
 
+    /// Commits a text box transform — move (center), pinch (boxWidth + fontSize),
+    /// and rotation — once. `boxWidth` is canvas-normalized, `rotation` is radians.
+    /// The live Core Animation interaction layer owns the transient gesture; it
+    /// dispatches only `.ended` to persist the final state (one undo snapshot).
+    /// `.began`/`.changed`/`.cancelled` are no-ops at the store (kept in the
+    /// signature so the same gesture phase plumbing is reused).
+    case transformTextBox(itemId: UUID, centerX: CGFloat, centerY: CGFloat, boxWidth: CGFloat, fontSize: CGFloat, rotation: CGFloat, phase: InteractionPhase)
+
     // MARK: - Sticker Overlay Actions (PR10)
 
     /// Atomically adds a sticker overlay: creates overlay track if needed,

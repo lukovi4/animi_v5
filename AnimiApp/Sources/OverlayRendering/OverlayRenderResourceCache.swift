@@ -66,9 +66,9 @@ internal final class OverlayRenderResourceCache: @unchecked Sendable {
         // Cache miss — rasterize/load outside lock
         let entry: CachedEntry?
         switch item.content {
-        case .text(let text, let fontFamily, let fontSize, let colorHex):
+        case .text(let text, let fontFamily, let fontSize, let colorHex, let boxWidth):
             entry = rasterizeText(
-                text: text, fontFamily: fontFamily, fontSize: fontSize, colorHex: colorHex,
+                text: text, fontFamily: fontFamily, fontSize: fontSize, colorHex: colorHex, boxWidth: boxWidth,
                 device: device, canvasSize: canvasSize, canvasPixelWidth: canvasPixelWidth
             )
         case .sticker(_, let imageURL):
@@ -130,32 +130,34 @@ internal final class OverlayRenderResourceCache: @unchecked Sendable {
         fontFamily: String?,
         fontSize: CGFloat,
         colorHex: String,
+        boxWidth: CGFloat,
         device: MTLDevice,
         canvasSize: SizeD,
         canvasPixelWidth: Int
     ) -> CachedEntry? {
-        let scale = CGFloat(canvasPixelWidth) / CGFloat(canvasSize.width)
+        // Shared layout: wrap to box width and size the texture to the wrapped
+        // content. Identical algorithm to hit testing / selection bounds / export.
+        let layoutInput = TextOverlayLayout.Input(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            colorHex: colorHex,
+            boxWidth: boxWidth
+        )
+        let layout = TextOverlayLayout.layout(
+            input: layoutInput,
+            canvasSize: canvasSize,
+            canvasPixelWidth: canvasPixelWidth
+        )
+
+        let scale = TextOverlayLayout.pixelScale(canvasSize: canvasSize, canvasPixelWidth: canvasPixelWidth)
         let scaledFontSize = fontSize * scale
-
-        let font: UIFont
-        if let family = fontFamily {
-            font = UIFont(name: family, size: scaledFontSize) ?? .boldSystemFont(ofSize: scaledFontSize)
-        } else {
-            font = .boldSystemFont(ofSize: scaledFontSize)
-        }
+        let font = TextOverlayLayout.font(fontFamily: fontFamily, scaledFontSize: scaledFontSize)
         let color = UIColor(overlayHexString: colorHex) ?? .white
+        let attributes = TextOverlayLayout.attributes(font: font, color: color)
 
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: color,
-        ]
-
-        let nsString = text as NSString
-        let textSize = nsString.size(withAttributes: attributes)
-
-        // Tight bounding box + 2px padding
-        let texWidth = max(1, Int(ceil(textSize.width)) + 4)
-        let texHeight = max(1, Int(ceil(textSize.height)) + 4)
+        let texWidth = layout.pixelWidth
+        let texHeight = layout.pixelHeight
         let bytesPerRow = texWidth * 4
 
         var pixelBuffer = [UInt8](repeating: 0, count: bytesPerRow * texHeight)
@@ -176,7 +178,16 @@ internal final class OverlayRenderResourceCache: @unchecked Sendable {
         cgContext.scaleBy(x: 1, y: -1)
 
         UIGraphicsPushContext(cgContext)
-        nsString.draw(at: CGPoint(x: 2, y: 2), withAttributes: attributes)
+        // Draw wrapped text into the padded box rect (word wrapping + centering
+        // come from the shared paragraph style in `attributes`).
+        let pad = TextOverlayLayout.edgePaddingPoints
+        let drawRect = CGRect(
+            x: pad,
+            y: pad,
+            width: CGFloat(texWidth) - pad * 2,
+            height: CGFloat(texHeight) - pad * 2
+        )
+        (text as NSString).draw(with: drawRect, options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
         UIGraphicsPopContext()
 
         // RGBA → BGRA swap

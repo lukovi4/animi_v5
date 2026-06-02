@@ -143,6 +143,8 @@ public final class EditorStore {
             gesturePhase = phase
         case .dragOverlayPosition(_, _, _, let phase):
             gesturePhase = phase
+        case .transformTextBox(_, _, _, _, _, _, let phase):
+            gesturePhase = phase
         default:
             gesturePhase = nil
         }
@@ -190,6 +192,8 @@ public final class EditorStore {
             isGestureEnded = true
         case .dragOverlayPosition(_, _, _, .ended):
             isGestureEnded = true
+        case .transformTextBox(_, _, _, _, _, _, .ended):
+            isGestureEnded = true
         default:
             isGestureEnded = false
         }
@@ -225,7 +229,7 @@ public final class EditorStore {
         let selectionChanged = state.selection != oldSelection
         let structureChanged = state.canonicalTimeline != oldTimeline
 
-        // Determine if this is a trim preview action (.began/.changed)
+        // Determine if this is a trim live-preview action (.began/.changed).
         let isTrimPreview: Bool = {
             if case .trimScene(_, let phase, _, _) = action {
                 return phase == .began || phase == .changed

@@ -185,27 +185,43 @@ final class TextOverlayIntegrationTests: XCTestCase {
         // Simulate a simple identity-scale canvas→view transform for test (1:1)
         overlay.canvasToView = CGAffineTransform(scaleX: 0.5, y: 0.5)
 
-        // Wire callback exactly as EditorViewController does
-        overlay.onDragPosition = { [weak store] dragItemId, centerX, centerY, phase in
-            store?.dispatch(.dragOverlayPosition(itemId: dragItemId, centerX: centerX, centerY: centerY, phase: phase))
+        // Wire callback exactly as EditorViewController does (text uses transform)
+        overlay.onTransform = { [weak store] tItemId, centerX, centerY, boxWidth, fontSize, rotation, phase in
+            store?.dispatch(.transformTextBox(
+                itemId: tItemId, centerX: centerX, centerY: centerY,
+                boxWidth: boxWidth, fontSize: fontSize, rotation: rotation, phase: phase
+            ))
         }
 
-        // 3. Set selected text item (as EditorViewController.updateOverlayPositionDrag does)
+        // 3. Set selected text box (as EditorViewController.updateOverlayPositionDrag does)
         let payload = store.state.canonicalTimeline.textPayload(for: itemId)!
-        overlay.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
-        XCTAssertNotNil(overlay.selectedItem)
-        XCTAssertEqual(overlay.selectedItem?.centerX, 0.5)
-        XCTAssertEqual(overlay.selectedItem?.centerY, 0.5)
+        overlay.setSelectedBox(OverlayPositionDragView.SelectedBox(
+            itemId: itemId,
+            centerX: payload.geometry.centerX,
+            centerY: payload.geometry.centerY,
+            boxWidth: payload.geometry.boxWidth,
+            fontSize: payload.style.fontSize,
+            rotation: payload.geometry.rotation,
+            contentCanvasSize: CGSize(width: 200, height: 80),
+            text: payload.geometry.text,
+            fontFamily: payload.style.fontFamily,
+            colorHex: payload.style.colorHex
+        ))
+        XCTAssertNotNil(overlay.selectedBox)
+        XCTAssertEqual(overlay.selectedBox?.centerX, 0.5)
+        XCTAssertEqual(overlay.selectedBox?.centerY, 0.5)
 
-        // 4. Simulate drag via production callback (as gesture would fire)
-        overlay.onDragPosition?(itemId, 0.5, 0.5, .began)
-        overlay.onDragPosition?(itemId, 0.3, 0.8, .changed)
-        overlay.onDragPosition?(itemId, 0.3, 0.8, .ended)
+        // 4. Simulate transform via production callback (as gesture would fire)
+        let bw = payload.geometry.boxWidth
+        let fs = payload.style.fontSize
+        overlay.onTransform?(itemId, 0.5, 0.5, bw, fs, 0, .began)
+        overlay.onTransform?(itemId, 0.3, 0.8, bw, fs, 0, .changed)
+        overlay.onTransform?(itemId, 0.3, 0.8, bw, fs, 0, .ended)
 
         // 5. Verify session state changed through production dispatch path
         let updatedPayload = store.state.canonicalTimeline.textPayload(for: itemId)
-        XCTAssertEqual(updatedPayload?.centerX, 0.3, "centerX should be updated via production drag path")
-        XCTAssertEqual(updatedPayload?.centerY, 0.8, "centerY should be updated via production drag path")
+        XCTAssertEqual(updatedPayload?.centerX, 0.3, "centerX should be updated via production transform path")
+        XCTAssertEqual(updatedPayload?.centerY, 0.8, "centerY should be updated via production transform path")
     }
 
     /// Verifies coordinate mapping round-trip: normalized → canvas → view → drag → normalized.
@@ -225,21 +241,32 @@ final class TextOverlayIntegrationTests: XCTestCase {
 
         // Set item at center
         let testId = UUID()
-        overlay.setSelectedItem(itemId: testId, centerX: 0.5, centerY: 0.5)
+        overlay.setSelectedBox(OverlayPositionDragView.SelectedBox(
+            itemId: testId,
+            centerX: 0.5,
+            centerY: 0.5,
+            boxWidth: 0.6,
+            fontSize: 32,
+            rotation: 0,
+            contentCanvasSize: CGSize(width: 200, height: 80),
+            text: "Drag Me",
+            fontFamily: nil,
+            colorHex: "#FFFFFF"
+        ))
 
         // Force layout with a realistic frame
         overlay.frame = CGRect(x: 0, y: 0, width: 375, height: 400)
         overlay.layoutIfNeeded()
 
-        // Verify the handle is positioned correctly:
+        // Verify the box center is positioned correctly:
         // Center of canvas (540, 960) mapped through contain-fit transform to view
         let expectedViewPoint = mapper.canvasToView(CGPoint(
             x: 0.5 * canvasWidth,
             y: 0.5 * canvasHeight
         ))
         let handleCenter = CGPoint(
-            x: overlay.selectedItem!.centerX,
-            y: overlay.selectedItem!.centerY
+            x: overlay.selectedBox!.centerX,
+            y: overlay.selectedBox!.centerY
         )
         XCTAssertEqual(handleCenter.x, 0.5, accuracy: 0.001)
         XCTAssertEqual(handleCenter.y, 0.5, accuracy: 0.001)
@@ -249,6 +276,40 @@ final class TextOverlayIntegrationTests: XCTestCase {
         // Instead they represent a fraction of the canvas dimensions
         XCTAssertTrue(expectedViewPoint.x > 0, "View point should be within view bounds")
         XCTAssertTrue(expectedViewPoint.y > 0, "View point should be within view bounds")
+    }
+
+    // MARK: - Modal Edit Preserves Transform
+
+    /// Editing text through the modal path (which mutates only text/fontSize/
+    /// colorHex on `existingPayload`, exactly like TextEditorViewController.done)
+    /// must preserve boxWidth, rotation, and center.
+    func testModalEdit_preservesGeometryTransform() {
+        let store = makeStore()
+        store.dispatch(.addTextOverlay(text: "Orig", fontSize: 32, colorHex: "#FFFFFF", fontFamily: nil, startUs: 0, durationUs: 2_000_000))
+        let itemId = store.state.canonicalTimeline.textItems.first!.id
+
+        // User transforms the box (move + pinch + rotate).
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.2, centerY: 0.9, boxWidth: 0.35, fontSize: 50, rotation: 0.8, phase: .began))
+        store.dispatch(.transformTextBox(itemId: itemId, centerX: 0.2, centerY: 0.9, boxWidth: 0.35, fontSize: 50, rotation: 0.8, phase: .ended))
+
+        // Simulate the modal exactly: start from the existing payload, mutate
+        // only the modal-exposed fields via the flat accessors, then dispatch.
+        var edited = store.state.canonicalTimeline.textPayload(for: itemId)!
+        edited.text = "Edited"
+        edited.fontSize = 60
+        edited.colorHex = "#00FF00"
+        store.dispatch(.updateTextPayload(itemId: itemId, payload: edited))
+
+        let p = store.state.canonicalTimeline.textPayload(for: itemId)!
+        // Modal-exposed fields updated.
+        XCTAssertEqual(p.geometry.text, "Edited")
+        XCTAssertEqual(p.style.fontSize, 60, accuracy: 1e-6)
+        XCTAssertEqual(p.style.colorHex, "#00FF00")
+        // Transform/geometry NOT exposed by the modal must be preserved.
+        XCTAssertEqual(p.geometry.centerX, 0.2, accuracy: 1e-6)
+        XCTAssertEqual(p.geometry.centerY, 0.9, accuracy: 1e-6)
+        XCTAssertEqual(p.geometry.boxWidth, 0.35, accuracy: 1e-6)
+        XCTAssertEqual(p.geometry.rotation, 0.8, accuracy: 1e-6)
     }
 
     // MARK: - Preview Overlay Tap Selection
@@ -274,8 +335,8 @@ final class TextOverlayIntegrationTests: XCTestCase {
         ResolvedOverlayRenderItem(
             stableId: itemId,
             kind: .text,
-            content: .text(text: "Hi", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF"),
-            presentation: .default(centerX: centerX, centerY: centerY),
+            content: .text(text: "Hi", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", boxWidth: 0.6),
+            presentation: .text(centerX: centerX, centerY: centerY, rotation: 0),
             zOrder: 0
         )
     }

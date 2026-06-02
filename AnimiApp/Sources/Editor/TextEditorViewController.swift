@@ -56,9 +56,12 @@ final class TextEditorViewController: UIViewController {
     private lazy var fontSizeSlider: UISlider = {
         let slider = UISlider()
         slider.translatesAutoresizingMaskIntoConstraints = false
-        slider.minimumValue = 12
-        slider.maximumValue = 72
-        slider.value = 32
+        // Use the shared text-style bounds so the modal can never silently shrink
+        // a pinch-grown text below its current size. `populateFromPayload` further
+        // widens the max to include the current font size when needed.
+        slider.minimumValue = Float(TextOverlayTransformSession.minFontSize)
+        slider.maximumValue = Float(TextOverlayTransformSession.maxFontSize)
+        slider.value = Float(TextStyle.defaultFontSize)
         slider.addTarget(self, action: #selector(fontSizeChanged), for: .valueChanged)
         return slider
     }()
@@ -172,6 +175,11 @@ final class TextEditorViewController: UIViewController {
 
         textView.text = payload.text
         if let fontSize = payload.fontSize {
+            // Never clamp a pinch-grown size: widen the slider max to include the
+            // current value so opening + saving the editor preserves it.
+            if Float(fontSize) > fontSizeSlider.maximumValue {
+                fontSizeSlider.maximumValue = Float(fontSize)
+            }
             fontSizeSlider.value = Float(fontSize)
         }
         if let colorHex = payload.colorHex,

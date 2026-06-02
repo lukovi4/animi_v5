@@ -12,6 +12,7 @@
 		003C1E5DD09CBF1E2AA0BD4A /* OverlayPresentationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5945A4C61EF117A13059ADB9 /* OverlayPresentationState.swift */; };
 		00ABBBDB7E78827E4D870F10 /* FileProjectMediaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 529DE8D8DEB4F9B6781AFD1D /* FileProjectMediaStore.swift */; };
 		00FA626CAFD072BD001C76A0 /* TextOverlayReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F77E43C84D7FA1D3ADE8E0D2 /* TextOverlayReducerTests.swift */; };
+		AAB1100C7E8712340A1B2C42 /* TextOverlayRealtimePreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C41 /* TextOverlayRealtimePreviewTests.swift */; };
 		013731CC3FC39787721CDE70 /* EditorReducerPlayheadSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CE2CD88AC9A98A104AADE80 /* EditorReducerPlayheadSelectionTests.swift */; };
 		FCB1A2C3D4E5F60718DDEEFF /* EditorTimelineControllerFocusPlaybackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCB1A2C3D4E5F60718AABBCC /* EditorTimelineControllerFocusPlaybackTests.swift */; };
 		014A5E06EF53A6544A6B3387 /* OverlayRenderResourceCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEEB04388DC4A4359B064F85 /* OverlayRenderResourceCache.swift */; };
@@ -360,6 +361,17 @@
 		20808CC7C46CAD1F2FF6AA04 /* EditorBackgroundFlowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CAF65F44E3C0E6C71EA48C /* EditorBackgroundFlowController.swift */; };
 		EC25BDCDA761C9D1A48AC935 /* EditorMediaFlowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EF8428669CB875489517C7B /* EditorMediaFlowController.swift */; };
 		79D69E10A0E883E7F30A98CD /* EditorPresentationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 270B5C22045E3051A7E6EE28 /* EditorPresentationController.swift */; };
+		AAB1100C7E8712340A1B2C32 /* TextOverlayLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C31 /* TextOverlayLayout.swift */; };
+		AAB1100C7E8712340A1B2C34 /* TextOverlayTransformSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C33 /* TextOverlayTransformSession.swift */; };
+		AAB1100C7E8712340A1B2C36 /* TextOverlayLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C35 /* TextOverlayLayoutTests.swift */; };
+		AAB1100C7E8712340A1B2C38 /* TextOverlayTransformSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C37 /* TextOverlayTransformSessionTests.swift */; };
+		AAB1100C7E8712340A1B2C3A /* TextOverlayPreviewHitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C39 /* TextOverlayPreviewHitTests.swift */; };
+		AAB1100C7E8712340A1B2C3C /* TextOverlayExportParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C3B /* TextOverlayExportParityTests.swift */; };
+		AAB1100C7E8712340A1B2C44 /* TextOverlayLiveTextLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C43 /* TextOverlayLiveTextLayer.swift */; };
+		AAB1100C7E8712340A1B2C46 /* OverlayResolverExclusionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C45 /* OverlayResolverExclusionTests.swift */; };
+		AAB1100C7E8712340A1B2C48 /* TextOverlayRuntimeHidingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C47 /* TextOverlayRuntimeHidingTests.swift */; };
+		AAB1100C7E8712340A1B2C4A /* TextOverlayLiveTextLayerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C49 /* TextOverlayLiveTextLayerTests.swift */; };
+		AAB1100C7E8712340A1B2C4C /* TextOverlayLiveInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB1100C7E8712340A1B2C4B /* TextOverlayLiveInteractionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -373,6 +385,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		AAB1100C7E8712340A1B2C31 /* TextOverlayLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayLayout.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C33 /* TextOverlayTransformSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayTransformSession.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C35 /* TextOverlayLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayLayoutTests.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C37 /* TextOverlayTransformSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayTransformSessionTests.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C39 /* TextOverlayPreviewHitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayPreviewHitTests.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C3B /* TextOverlayExportParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayExportParityTests.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C43 /* TextOverlayLiveTextLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayLiveTextLayer.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C45 /* OverlayResolverExclusionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayResolverExclusionTests.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C47 /* TextOverlayRuntimeHidingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayRuntimeHidingTests.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C49 /* TextOverlayLiveTextLayerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayLiveTextLayerTests.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C4B /* TextOverlayLiveInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayLiveInteractionTests.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718MEMDIAG2 /* MemoryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDiagnostics.swift; sourceTree = "<group>"; };
 		008B456A6D18BC55E52A997F /* EditorReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorReducerTests.swift; sourceTree = "<group>"; };
 		0093D3976ECB877F83A18053 /* VideoTrimSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTrimSession.swift; sourceTree = "<group>"; };
@@ -713,6 +736,7 @@
 		F4613B149DEB66964BDE84F9 /* SceneTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneTrackView.swift; sourceTree = "<group>"; };
 		F65D289FDE2F35791BF6D9E7 /* ProjectStorePersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStorePersistenceTests.swift; sourceTree = "<group>"; };
 		F77E43C84D7FA1D3ADE8E0D2 /* TextOverlayReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayReducerTests.swift; sourceTree = "<group>"; };
+		AAB1100C7E8712340A1B2C41 /* TextOverlayRealtimePreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayRealtimePreviewTests.swift; sourceTree = "<group>"; };
 		FC49A46FA18BE025E45C3184 /* UserMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaService.swift; sourceTree = "<group>"; };
 		FCDA7316EADC1E24B0E7DD65 /* StickerLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerLibrary.swift; sourceTree = "<group>"; };
 		FD0F18CC726463843023EE62 /* MediaPlacementResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlacementResolverTests.swift; sourceTree = "<group>"; };
@@ -895,6 +919,15 @@
 				6D23E457B80C43286B637FA4 /* TemplateCatalogValidationTests.swift */,
 				17BA45C945FFB1765B7EFE15 /* TextOverlayIntegrationTests.swift */,
 				F77E43C84D7FA1D3ADE8E0D2 /* TextOverlayReducerTests.swift */,
+				AAB1100C7E8712340A1B2C41 /* TextOverlayRealtimePreviewTests.swift */,
+				AAB1100C7E8712340A1B2C45 /* OverlayResolverExclusionTests.swift */,
+				AAB1100C7E8712340A1B2C47 /* TextOverlayRuntimeHidingTests.swift */,
+				AAB1100C7E8712340A1B2C49 /* TextOverlayLiveTextLayerTests.swift */,
+				AAB1100C7E8712340A1B2C4B /* TextOverlayLiveInteractionTests.swift */,
+				AAB1100C7E8712340A1B2C35 /* TextOverlayLayoutTests.swift */,
+				AAB1100C7E8712340A1B2C37 /* TextOverlayTransformSessionTests.swift */,
+				AAB1100C7E8712340A1B2C39 /* TextOverlayPreviewHitTests.swift */,
+				AAB1100C7E8712340A1B2C3B /* TextOverlayExportParityTests.swift */,
 				4422AFA3764A632FEEC94640 /* TimelineBoundaryInteractionTests.swift */,
 				803D305A48B42FDA14BAC01C /* TimelineCompositionEngineBudgetTests.swift */,
 				F217C91EDFFDAE0C8DD6F90D /* TimelineCompositionEngineExportSessionTests.swift */,
@@ -1212,6 +1245,8 @@
 				D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */,
 				09294B94FC6996907B241426 /* TransitionBoundaryView.swift */,
 				7C41D98D66DEA22977CA2D4E /* TransitionPickerViewController.swift */,
+				AAB1100C7E8712340A1B2C33 /* TextOverlayTransformSession.swift */,
+				AAB1100C7E8712340A1B2C43 /* TextOverlayLiveTextLayer.swift */,
 				E93D3D8D2C98E3AD4E3ADE5B /* SceneEdit */,
 				88FC97825728EC3F6E3EBA29 /* Store */,
 			);
@@ -1228,6 +1263,7 @@
 				E19369384E88F0DC50D82D38 /* OverlayResolver.swift */,
 				65C0AAC6001672853EF41C0F /* OverlayTimeMapping.swift */,
 				453AC79FA57B0A38F0C43980 /* ResolvedOverlayRenderItem.swift */,
+				AAB1100C7E8712340A1B2C31 /* TextOverlayLayout.swift */,
 			);
 			path = OverlayRendering;
 			sourceTree = "<group>";
@@ -1522,6 +1558,15 @@
 				FA7796AAC54F48EF5366FF82 /* TemplateCatalogValidationTests.swift in Sources */,
 				C85222FD3494E4CD47F04D81 /* TextOverlayIntegrationTests.swift in Sources */,
 				00FA626CAFD072BD001C76A0 /* TextOverlayReducerTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C42 /* TextOverlayRealtimePreviewTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C46 /* OverlayResolverExclusionTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C48 /* TextOverlayRuntimeHidingTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C4A /* TextOverlayLiveTextLayerTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C4C /* TextOverlayLiveInteractionTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C36 /* TextOverlayLayoutTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C38 /* TextOverlayTransformSessionTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C3A /* TextOverlayPreviewHitTests.swift in Sources */,
+				AAB1100C7E8712340A1B2C3C /* TextOverlayExportParityTests.swift in Sources */,
 				94ED980CC3D00FD0142D1669 /* TimelineBoundaryInteractionTests.swift in Sources */,
 				56075A5869FCACF8AF0F732A /* TimelineCompositionEngineBudgetTests.swift in Sources */,
 				456BC686C29BC069FF22A3A7 /* TimelineCompositionEngineExportSessionTests.swift in Sources */,
@@ -1657,6 +1702,9 @@
 				003C1E5DD09CBF1E2AA0BD4A /* OverlayPresentationState.swift in Sources */,
 				014A5E06EF53A6544A6B3387 /* OverlayRenderResourceCache.swift in Sources */,
 				DD596A8FF216ABE6EC210E36 /* OverlayResolver.swift in Sources */,
+				AAB1100C7E8712340A1B2C32 /* TextOverlayLayout.swift in Sources */,
+				AAB1100C7E8712340A1B2C34 /* TextOverlayTransformSession.swift in Sources */,
+				AAB1100C7E8712340A1B2C44 /* TextOverlayLiveTextLayer.swift in Sources */,
 				CE65CC9F2CE9D39A40A638D2 /* OverlayTimeMapping.swift in Sources */,
 				77F2DBD7DB4DFA6DCE1E67B9 /* PerfLogger.swift in Sources */,
 				8E10312933F00CF946AC6294 /* PhotoLibraryVideoSaveService.swift in Sources */,

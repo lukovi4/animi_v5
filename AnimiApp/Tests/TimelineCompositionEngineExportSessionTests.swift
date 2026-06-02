@@ -519,7 +519,7 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
         let duringItems = resolveOverlayItems(engine: engine, at: 30)
         let duringText = duringItems.filter { $0.kind == .text }
         XCTAssertEqual(duringText.count, 1, "Text should be visible during its time range")
-        if case .text(let text, _, _, let colorHex) = duringText.first?.content {
+        if case .text(let text, _, _, let colorHex, _) = duringText.first?.content {
             XCTAssertEqual(text, "Timed")
             XCTAssertEqual(colorHex, "#FF0000")
         } else {

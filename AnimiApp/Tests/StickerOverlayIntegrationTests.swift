@@ -148,10 +148,15 @@ final class StickerOverlayIntegrationTests: XCTestCase {
 
         // 3. Set selected sticker item (as EditorViewController.updateOverlayPositionDrag does for .sticker)
         let payload = store.state.canonicalTimeline.stickerPayload(for: itemId)!
-        overlay.setSelectedItem(itemId: itemId, centerX: payload.centerX, centerY: payload.centerY)
-        XCTAssertNotNil(overlay.selectedItem)
-        XCTAssertEqual(overlay.selectedItem?.centerX, 0.5)
-        XCTAssertEqual(overlay.selectedItem?.centerY, 0.5)
+        overlay.setSelectedSticker(OverlayPositionDragView.SelectedSticker(
+            itemId: itemId,
+            centerX: payload.centerX,
+            centerY: payload.centerY,
+            contentCanvasSize: CGSize(width: 162, height: 162)
+        ))
+        XCTAssertNotNil(overlay.selectedSticker)
+        XCTAssertEqual(overlay.selectedSticker?.centerX, 0.5)
+        XCTAssertEqual(overlay.selectedSticker?.centerY, 0.5)
 
         // 4. Simulate drag via production callback (as gesture would fire)
         overlay.onDragPosition?(itemId, 0.5, 0.5, .began)
@@ -232,8 +237,8 @@ final class StickerOverlayIntegrationTests: XCTestCase {
         ResolvedOverlayRenderItem(
             stableId: itemId,
             kind: .text,
-            content: .text(text: "Hi", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF"),
-            presentation: .default(centerX: centerX, centerY: centerY),
+            content: .text(text: "Hi", fontFamily: nil, fontSize: 32, colorHex: "#FFFFFF", boxWidth: 0.6),
+            presentation: .text(centerX: centerX, centerY: centerY, rotation: 0),
             zOrder: zOrder
         )
     }

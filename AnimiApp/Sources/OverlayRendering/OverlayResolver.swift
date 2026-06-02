@@ -11,10 +11,16 @@ internal enum OverlayResolver {
 
     /// Resolves overlay items visible at the given time from a live timeline.
     /// Z-order: stickers 0..N-1, text N..N+M-1 (stickers below text).
+    ///
+    /// `excludedOverlayIds` omits exactly those items from the result. This is
+    /// used only by the preview path to hide the committed Metal copy of a text
+    /// overlay while it is being transformed live by the Core Animation layer, so
+    /// there is no ghost/duplicate. The export path never excludes anything.
     static func resolve(
         from timeline: CanonicalTimeline,
         at timeUs: TimeUs,
-        stickerProvider: StickerProviding?
+        stickerProvider: StickerProviding?,
+        excludedOverlayIds: Set<UUID> = []
     ) -> [ResolvedOverlayRenderItem] {
         guard let overlayTrack = timeline.overlayTrack else { return [] }
 
@@ -24,6 +30,7 @@ internal enum OverlayResolver {
         // Two passes in track order to produce stable z-ordering.
         // Pass 1: stickers
         for item in overlayTrack.items where item.kind == .sticker {
+            guard !excludedOverlayIds.contains(item.id) else { continue }
             let itemStart = item.startUs ?? 0
             let itemEnd = itemStart + item.durationUs
             guard timeUs >= itemStart && timeUs < itemEnd else { continue }
@@ -44,6 +51,7 @@ internal enum OverlayResolver {
         // Pass 2: text
         let stickerCount = stickerItems.count
         for item in overlayTrack.items where item.kind == .text {
+            guard !excludedOverlayIds.contains(item.id) else { continue }
             let itemStart = item.startUs ?? 0
             let itemEnd = itemStart + item.durationUs
             guard timeUs >= itemStart && timeUs < itemEnd else { continue }
@@ -55,12 +63,17 @@ internal enum OverlayResolver {
                 stableId: item.id,
                 kind: .text,
                 content: .text(
-                    text: textPayload.text,
-                    fontFamily: textPayload.fontFamily,
-                    fontSize: textPayload.fontSize ?? 32,
-                    colorHex: textPayload.colorHex ?? "#FFFFFF"
+                    text: textPayload.geometry.text,
+                    fontFamily: textPayload.style.fontFamily,
+                    fontSize: textPayload.style.fontSize,
+                    colorHex: textPayload.style.colorHex,
+                    boxWidth: textPayload.geometry.boxWidth
                 ),
-                presentation: .default(centerX: textPayload.centerX, centerY: textPayload.centerY),
+                presentation: .text(
+                    centerX: textPayload.geometry.centerX,
+                    centerY: textPayload.geometry.centerY,
+                    rotation: textPayload.geometry.rotation
+                ),
                 zOrder: stickerCount + textItems.count
             ))
         }
@@ -104,9 +117,10 @@ internal enum OverlayResolver {
                     text: item.text,
                     fontFamily: item.fontFamily,
                     fontSize: item.fontSize,
-                    colorHex: item.colorHex
+                    colorHex: item.colorHex,
+                    boxWidth: item.boxWidth
                 ),
-                presentation: .default(centerX: item.centerX, centerY: item.centerY),
+                presentation: .text(centerX: item.centerX, centerY: item.centerY, rotation: item.rotation),
                 zOrder: stickerCount + textItems.count
             ))
         }

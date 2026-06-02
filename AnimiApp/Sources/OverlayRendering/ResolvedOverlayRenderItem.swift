@@ -6,9 +6,11 @@ import Foundation
 internal struct ResolvedOverlayRenderItem: Sendable {
     internal enum Kind: Sendable { case text, sticker }
 
-    /// Content descriptor used as the cache key (position excluded).
+    /// Content descriptor used as the cache key (position/rotation excluded —
+    /// rotation is a presentation transform, not a rasterized property).
+    /// `boxWidth` IS part of the key because it changes text wrapping/raster.
     internal enum ContentDescriptor: Hashable, Sendable {
-        case text(text: String, fontFamily: String?, fontSize: CGFloat, colorHex: String)
+        case text(text: String, fontFamily: String?, fontSize: CGFloat, colorHex: String, boxWidth: CGFloat)
         case sticker(stickerId: String, imageURL: URL)
     }
 

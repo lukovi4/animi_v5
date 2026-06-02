@@ -267,6 +267,9 @@ public enum EditorReducer {
         case .dragOverlayPosition(let itemId, let centerX, let centerY, let phase):
             return dragOverlayPosition(state: newState, itemId: itemId, centerX: centerX, centerY: centerY, phase: phase)
 
+        case .transformTextBox(let itemId, let centerX, let centerY, let boxWidth, let fontSize, let rotation, let phase):
+            return transformTextBox(state: newState, itemId: itemId, centerX: centerX, centerY: centerY, boxWidth: boxWidth, fontSize: fontSize, rotation: rotation, phase: phase)
+
         case .addStickerOverlay(let stickerId, let startUs, let durationUs):
             return addStickerOverlay(state: newState, stickerId: stickerId, startUs: startUs, durationUs: durationUs)
 
@@ -1085,6 +1088,58 @@ private extension EditorReducer {
         case .cancelled:
             return ReducerResult(state: state, shouldPushSnapshot: false)
         }
+    }
+
+    /// Commits a selected text box transform (move + boxWidth + fontSize +
+    /// rotation) once, on `.ended`. Live `.began`/`.changed` no longer route
+    /// through the store: the Core Animation interaction layer owns the transient
+    /// gesture state and dispatches exactly one `.ended` to persist the final
+    /// geometry/style. `.began`/`.changed` are therefore no-ops here (no model
+    /// mutation, no snapshot), and `.cancelled` is a no-op too (the live layer
+    /// discards its transient state without ever touching the model).
+    static func transformTextBox(
+        state: EditorState,
+        itemId: UUID,
+        centerX: CGFloat,
+        centerY: CGFloat,
+        boxWidth: CGFloat,
+        fontSize: CGFloat,
+        rotation: CGFloat,
+        phase: InteractionPhase
+    ) -> ReducerResult {
+        // Only the terminal commit mutates the persisted model. This keeps the
+        // hard architectural boundary: no per-`.changed` store/model updates.
+        guard phase == .ended else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        var newState = state
+
+        guard let overlayTrack = newState.canonicalTimeline.overlayTrack,
+              let item = overlayTrack.items.first(where: { $0.id == itemId }),
+              let payload = newState.canonicalTimeline.payloads[item.payloadId],
+              case .text(var textPayload) = payload else {
+            return ReducerResult(state: state, shouldPushSnapshot: false)
+        }
+
+        // Center may sit off-canvas (visual output is clipped to the canvas);
+        // bound it generously so the box stays recoverable, do not clamp to 0...1.
+        let lo = -TextOverlayTransformSession.centerOffCanvasBound
+        let hi = 1 + TextOverlayTransformSession.centerOffCanvasBound
+        textPayload.geometry.centerX = max(lo, min(hi, centerX))
+        textPayload.geometry.centerY = max(lo, min(hi, centerY))
+        textPayload.geometry.boxWidth = max(
+            TextOverlayTransformSession.minBoxWidth,
+            min(TextOverlayTransformSession.maxBoxWidth, boxWidth)
+        )
+        textPayload.geometry.rotation = rotation
+        textPayload.style.fontSize = max(
+            TextOverlayTransformSession.minFontSize,
+            min(TextOverlayTransformSession.maxFontSize, fontSize)
+        )
+        newState.canonicalTimeline.payloads[item.payloadId] = .text(textPayload)
+
+        return ReducerResult(state: newState, shouldPushSnapshot: true)
     }
 }
 
