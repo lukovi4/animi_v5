@@ -10,6 +10,8 @@ Use this skill before fix planning when the failure mode is not proven.
 ## Ground Rules
 
 - No guess-and-fix.
+- Do not edit production code.
+- Requests like `fix`, `implement`, `исправь`, `почини`, `найди и исправь`, or `сделай` are not permission for Codex production-code edits.
 - Build or identify a feedback loop first.
 - Reproduce before proposing a fix.
 - State hypotheses before testing them.
@@ -36,7 +38,8 @@ Read only the sections needed:
 6. List 3-5 ranked hypotheses when the cause is unclear.
 7. Add targeted instrumentation only when needed and keep it temporary.
 8. Convert the reproduction into a failing test when a valid seam exists.
-9. Produce a diagnosis plan or `claude-findings.md` handoff.
+9. If the user explicitly asked for analysis only, produce a diagnosis summary or `claude-findings.md` handoff.
+10. If the diagnosis points to production-code changes, continue into the `create-animi-plan` workflow and persist the result as `task-contract.md` with `Status: Pending User Approval`; do not leave the implementation scope only in chat.
 
 ## Special Animi Surfaces
 
@@ -56,4 +59,4 @@ Stop and ask when:
 - reproducing requires user-only environment access;
 - product behavior is unclear;
 - three fix attempts have already failed;
-- diagnosis requires changing production code before approval.
+- diagnosis requires changing production code before a `task-contract.md` is approved for Claude, or before the user gives a literal Codex production-code override.

@@ -21,7 +21,10 @@ Without explicit approval, agents must not:
 
 ## Codex
 
-- Codex must not edit production code unless the user explicitly authorizes an exception.
+- Codex must not edit production code by default.
+- Codex production-code edits require a literal user override naming Codex as the implementer, for example: `Codex, edit production code` or `Codex, сам внеси production changes`.
+- Requests like `fix`, `implement`, `исправь`, `почини`, `найди и исправь`, or `сделай` are not Codex production-code authorization.
+- When a user request needs production-code changes and no literal Codex override exists, Codex must diagnose/plan/review and route implementation through Claude using `task-contract.md`.
 - Codex may draft documentation, workflow files, plans, reviews, task artifacts, and commits only after explicit user approval for that action.
 - Codex must verify relevant current code before planning or reviewing.
 

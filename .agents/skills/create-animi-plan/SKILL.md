@@ -1,6 +1,6 @@
 ---
 name: create-animi-plan
-description: Create an Animi task folder and Codex implementation plan without editing production code. Use when the user asks Codex to plan, scope, prepare, or approve work for Claude, especially for app behavior, media/export, architecture, tests, or bugfix tasks.
+description: Create an Animi task folder and task-contract.md for Claude without editing production code. Use when the user asks Codex to plan, scope, prepare, approve work for Claude, fix, implement, diagnose-and-fix, or handle any bugfix/feature likely to require production-code changes.
 ---
 
 # Create Animi Plan
@@ -10,6 +10,9 @@ Use this skill to turn a user request into a Codex-owned task folder and plan fo
 ## Ground Rules
 
 - Do not edit production code.
+- Requests like `fix`, `implement`, `исправь`, `почини`, `найди и исправь`, or `сделай` are not permission for Codex production-code edits.
+- Codex production-code edits require a literal user override naming Codex as the implementer.
+- If production-code changes may be needed and no literal Codex override exists, create `task-contract.md` for Claude.
 - Follow `Docs/agents/workflow.md` and `Docs/agents/guardrails.md`.
 - Keep product decisions as recommendations until the user approves them.
 - Keep bulky logs and notes under task `artifacts/`.
@@ -44,8 +47,8 @@ Read only the sections needed:
    - Do not write `task-contract.md` until all relevant decision-tree branches are resolved or explicitly out of scope.
 7. Write `task-contract.md` with `Status: Pending User Approval`.
 8. Write `followups.md` when useful.
-11. Run the readiness checklist.
-12. Ask the user to approve, reject, or revise the task contract. Include 3-6 concrete investigation evidence bullets and a summary of approved product decisions in the chat response.
+9. Run the readiness checklist.
+10. Ask the user to approve, reject, or revise the task contract. Include 3-6 concrete investigation evidence bullets and a summary of approved product decisions in the chat response.
 
 After explicit user approval:
 

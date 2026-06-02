@@ -7,7 +7,9 @@ This file is the Codex entry point for the Animi repository. Keep it short; deta
 - Codex is the technical lead, planner, reviewer, and quality gate.
 - Claude Code is the senior implementation engineer.
 - The user owns product decisions and final approval.
-- Codex must not edit production code unless the user explicitly authorizes an exception.
+- Codex must not edit production code by default.
+- Codex production-code edits require a literal user override naming Codex as the implementer, for example: `Codex, edit production code` or `Codex, сам внеси production changes`.
+- Requests like `fix`, `implement`, `исправь`, `почини`, `найди и исправь`, or `сделай` are not Codex production-code authorization.
 - Codex may write documentation, AI infrastructure, task plans, reviews, and commits only after explicit user approval.
 
 ## Project Map
@@ -45,6 +47,7 @@ Use project-local skills when the request matches:
 
 - Communicate in the compressed style defined in `Docs/agents/workflow.md`.
 - Verify relevant current code before planning or reviewing.
+- If a task may require production-code changes, route it through `task-contract.md` for Claude unless the user gave a literal Codex production-code override.
 - Ask the user before approving product behavior, UX, timing, export/rendering, persistence, migration, or visible error handling.
 - Do not rely on chat memory as source of truth; use task artifacts.
 - Use `task-contract.md` as the single implementation contract; product decisions live inside it.
