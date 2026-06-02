@@ -3,7 +3,7 @@
 
 This hook blocks only critical actions:
 - protected infrastructure writes;
-- destructive git/file/system/package/network commands;
+- destructive git/file/system/package/network-write commands;
 - implementation without a valid marker.
 
 Normal code/test edits and normal development Bash are allowed during an
@@ -60,11 +60,9 @@ CURRENT_EVENT_NAME = ""
 
 SHELL_CONTROL_TOKENS = {"|", "||", "&", "&&", ";"}
 SHELL_REDIRECT_TOKENS = {">", ">>", "<", "<<", "2>", "2>>", "&>", ">&"}
-BLOCKED_RAW_SHELL_PATTERNS = ("$(", "`", "<<")
+BLOCKED_RAW_SHELL_PATTERNS = ("<<",)
 BLOCKED_SHELL_COMMANDS = {
-    "chmod",
     "chown",
-    "curl",
     "dd",
     "diskutil",
     "eval",
@@ -82,11 +80,8 @@ BLOCKED_SHELL_COMMANDS = {
     "su",
     "sudo",
     "unlink",
-    "wget",
 }
 PATH_WRITE_COMMANDS = {"cp", "mkdir", "mv", "touch"}
-FIND_MUTATING_EXPRESSIONS = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls", "-fprint", "-fprintf"}
-SCRIPT_INLINE_FLAGS = {"python": "-c", "python3": "-c", "node": "-e", "ruby": "-e", "perl": "-e"}
 PACKAGE_COMMANDS = {"brew", "bundle", "cargo", "gem", "npm", "pip", "pip3", "pnpm", "yarn", "bun"}
 PACKAGE_MUTATING_ARGS = {
     "add",
@@ -99,18 +94,35 @@ PACKAGE_MUTATING_ARGS = {
     "update",
     "upgrade",
 }
-GIT_READ_ONLY_SUBCOMMANDS = {
-    "branch",
-    "describe",
-    "diff",
-    "grep",
-    "log",
-    "ls-files",
-    "rev-parse",
-    "show",
-    "status",
+GIT_MUTATING_SUBCOMMANDS = {
+    "add",
+    "am",
+    "apply",
+    "bisect",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "clone",
+    "commit",
+    "config",
+    "fetch",
+    "merge",
+    "mv",
+    "pull",
+    "push",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "submodule",
+    "switch",
+    "tag",
+    "worktree",
 }
 GIT_BRANCH_READ_ONLY_FLAGS = {"--show-current", "--list", "-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose"}
+GIT_TAG_READ_ONLY_FLAGS = {"--list", "-l", "-n", "--points-at", "--contains", "--merged", "--no-merged"}
 CLAUDE_TOOL_RESULTS_PART = "/.claude/projects/"
 CLAUDE_TOOL_RESULTS_DIR = "/tool-results/"
 
@@ -470,28 +482,62 @@ def is_mutating_git_command(command: str) -> bool:
         rest = tokens[2:]
         if not rest:
             return False
+        if any(token in {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--set-upstream-to"} for token in rest):
+            return True
+        if any(token.startswith("--set-upstream-to=") for token in rest):
+            return True
         return not (
             rest
             and all(token in GIT_BRANCH_READ_ONLY_FLAGS or not token.startswith("-") for token in rest)
             and any(token in GIT_BRANCH_READ_ONLY_FLAGS for token in rest)
         )
-    return subcommand not in GIT_READ_ONLY_SUBCOMMANDS
+    if subcommand == "tag":
+        rest = tokens[2:]
+        if not rest:
+            return False
+        return not any(token in GIT_TAG_READ_ONLY_FLAGS for token in rest)
+    if subcommand == "config":
+        rest = tokens[2:]
+        return not any(token in {"--get", "--get-all", "--list", "-l", "--show-origin", "--show-scope"} for token in rest)
+    return subcommand in GIT_MUTATING_SUBCOMMANDS
+
+
+def validate_git_output_paths(root: Path, tokens: Sequence[str]) -> None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"--output", "-o"}:
+            if index + 1 >= len(tokens):
+                raise GateError("git output flag is missing a target")
+            validate_shell_path(root, tokens[index + 1], write=True)
+            index += 2
+            continue
+        if token.startswith("--output="):
+            validate_shell_path(root, token.split("=", 1)[1], write=True)
+        index += 1
 
 
 def is_safe_external_path(path: Path) -> bool:
     text = path.resolve(strict=False).as_posix()
-    return text.startswith("/tmp/") or text.startswith("/private/tmp/") or is_allowed_external_read_path(path)
+    return (
+        text == "/dev/null"
+        or text.startswith("/tmp/")
+        or text.startswith("/private/tmp/")
+        or is_allowed_external_read_path(path)
+    )
 
 
 def validate_shell_path(root: Path, token: str, *, write: bool) -> None:
     if not token or token.startswith("-"):
         return
-    if token in {"/", "~"}:
+    if write and token in {"/", "~"}:
         raise GateError(f"Bash path targets a global location: {token}")
     path = Path(token).expanduser() if token.startswith("~") else Path(token)
     if not path.is_absolute():
         path = root / path
     resolved = path.resolve(strict=False)
+    if not write:
+        return
     if is_under(resolved, root):
         if write and is_eternal_denied(root, resolved):
             raise GateError(f"Bash targets protected infrastructure: {token}")
@@ -502,10 +548,96 @@ def validate_shell_path(root: Path, token: str, *, write: bool) -> None:
 
 
 def validate_path_write_command(root: Path, tokens: Sequence[str]) -> None:
+    command = tokens[0]
+    args = [token for token in tokens[1:] if not token.startswith("-")]
+    if command == "cp" and args:
+        for token in args[:-1]:
+            validate_shell_path(root, token, write=False)
+        validate_shell_path(root, args[-1], write=True)
+        return
+    for token in args:
+        validate_shell_path(root, token, write=True)
+
+
+def validate_chmod_command(root: Path, tokens: Sequence[str]) -> None:
+    mode_seen = False
+    mode_re = re.compile(r"^([ugoa]*[+-=][rwxXstugo,]+|[0-7]{3,4})$")
+    for token in tokens[1:]:
+        if token.startswith("-"):
+            continue
+        if not mode_seen and mode_re.match(token):
+            mode_seen = True
+            continue
+        validate_shell_path(root, token, write=True)
+
+
+def validate_sed_command(root: Path, tokens: Sequence[str]) -> None:
+    if not any(token == "-i" or token.startswith("-i") for token in tokens[1:]):
+        return
     for token in tokens[1:]:
         if token.startswith("-"):
             continue
         validate_shell_path(root, token, write=True)
+
+
+def validate_plutil_command(root: Path, tokens: Sequence[str]) -> None:
+    if not any(token in {"-replace", "-remove", "-insert", "-convert"} for token in tokens[1:]):
+        return
+    args = [token for token in tokens[1:] if token and not token.startswith("-")]
+    if args:
+        validate_shell_path(root, args[-1], write=True)
+
+
+def validate_network_output_paths(root: Path, tokens: Sequence[str]) -> None:
+    first = tokens[0]
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-o", "--output"} or (first == "wget" and token == "-O"):
+            if index + 1 >= len(tokens):
+                raise GateError(f"{first} output flag is missing a target")
+            validate_shell_path(root, tokens[index + 1], write=True)
+            index += 2
+            continue
+        if token.startswith("--output="):
+            validate_shell_path(root, token.split("=", 1)[1], write=True)
+        index += 1
+
+
+def validate_find_command(root: Path, tokens: Sequence[str]) -> Optional[str]:
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-delete":
+            return "mutating find delete expression is blocked"
+        if token in {"-fls", "-fprint", "-fprintf"}:
+            if index + 1 >= len(tokens):
+                return f"{token} is missing a target"
+            validate_shell_path(root, tokens[index + 1], write=True)
+            index += 2
+            continue
+        if token in {"-exec", "-execdir", "-ok", "-okdir"}:
+            payload: List[str] = []
+            index += 1
+            while index < len(tokens) and tokens[index] != ";":
+                if tokens[index] != "{}":
+                    payload.append(tokens[index])
+                index += 1
+            if payload:
+                reason = segment_is_dangerous(root, payload)
+                if reason:
+                    return f"find {token} payload is blocked: {reason}"
+        index += 1
+    return None
+
+
+def shell_c_payload(tokens: Sequence[str]) -> Optional[str]:
+    for index, token in enumerate(tokens[1:], start=1):
+        if token == "-c" or (token.startswith("-") and "c" in token[1:]):
+            if index + 1 >= len(tokens):
+                return ""
+            return tokens[index + 1]
+    return None
 
 
 def package_command_is_mutating(tokens: Sequence[str]) -> bool:
@@ -529,28 +661,91 @@ def segment_is_dangerous(root: Path, segment: Sequence[str]) -> Optional[str]:
         return f"{first} is blocked"
     if first in PATH_WRITE_COMMANDS:
         validate_path_write_command(root, tokens)
-    if first == "git" and is_mutating_git_command(" ".join(shlex.quote(token) for token in tokens)):
-        return "git mutation is blocked"
-    if first == "git" and any(token == "--output" or token.startswith("--output=") or token == "-o" for token in tokens[1:]):
-        return "git output writes are blocked"
+    if first == "chmod":
+        validate_chmod_command(root, tokens)
+    if first == "git":
+        if is_mutating_git_command(" ".join(shlex.quote(token) for token in tokens)):
+            return "git mutation is blocked"
+        validate_git_output_paths(root, tokens)
     if first == "date" and len(tokens) > 1 and not all(token == "-u" or token.startswith("+") for token in tokens[1:]):
         return "date mutation form is blocked"
-    if first == "find" and any(token in FIND_MUTATING_EXPRESSIONS for token in tokens):
-        return "mutating find expression is blocked"
-    if first == "sed" and any(token == "-i" or token.startswith("-i") for token in tokens[1:]):
-        return "sed in-place edits are blocked"
-    if first == "plutil" and any(token in {"-replace", "-remove", "-insert", "-convert"} for token in tokens[1:]):
-        return "mutating plutil command is blocked"
+    if first == "find":
+        reason = validate_find_command(root, tokens)
+        if reason:
+            return reason
+    if first == "sed":
+        validate_sed_command(root, tokens)
+    if first == "plutil":
+        validate_plutil_command(root, tokens)
     if first == "swift" and len(tokens) >= 3 and tokens[1] == "package" and tokens[2] in {"update", "resolve"}:
         return "dependency mutation is blocked"
-    if first in {"bash", "sh", "zsh"} and "-c" in tokens[1:]:
-        return "shell -c execution is blocked; use direct commands or repo-local scripts"
-    inline_flag = SCRIPT_INLINE_FLAGS.get(first)
-    if inline_flag and inline_flag in tokens[1:]:
-        return f"{first} inline execution is blocked; use repo-local scripts instead"
+    if first in {"curl", "wget"}:
+        validate_network_output_paths(root, tokens)
+    if first in {"bash", "sh", "zsh"}:
+        payload = shell_c_payload(tokens)
+        if payload is not None:
+            if not payload:
+                return "shell -c is missing a command"
+            reason = is_dangerous_bash_command(root, payload)
+            if reason:
+                return f"shell -c payload is blocked: {reason}"
     if first in PACKAGE_COMMANDS and package_command_is_mutating(tokens):
         return "package/dependency mutation is blocked"
     return None
+
+
+def command_substitution_payloads(command: str) -> List[str]:
+    payloads: List[str] = []
+    index = 0
+    while index < len(command):
+        if command.startswith("$(", index):
+            depth = 1
+            start = index + 2
+            cursor = start
+            quote: Optional[str] = None
+            escaped = False
+            while cursor < len(command):
+                char = command[cursor]
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif quote:
+                    if char == quote:
+                        quote = None
+                elif char in {"'", '"'}:
+                    quote = char
+                elif command.startswith("$(", cursor):
+                    depth += 1
+                    cursor += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        payloads.append(command[start:cursor])
+                        index = cursor
+                        break
+                cursor += 1
+            else:
+                raise GateError("unterminated command substitution")
+        elif command[index] == "`":
+            start = index + 1
+            cursor = start
+            escaped = False
+            while cursor < len(command):
+                char = command[cursor]
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == "`":
+                    payloads.append(command[start:cursor])
+                    index = cursor
+                    break
+                cursor += 1
+            else:
+                raise GateError("unterminated backtick command substitution")
+        index += 1
+    return payloads
 
 
 def is_allowed_external_read_path(path: Path) -> bool:
@@ -568,9 +763,15 @@ def validate_redirection(root: Path, segment: Sequence[str]) -> Optional[str]:
     return None
 
 
-def is_dangerous_bash_command(root: Path, command: str) -> Optional[str]:
+def is_dangerous_bash_command(root: Path, command: str, depth: int = 0) -> Optional[str]:
+    if depth > 5:
+        return "nested shell evaluation is too deep"
+    for payload in command_substitution_payloads(command):
+        reason = is_dangerous_bash_command(root, payload, depth + 1)
+        if reason:
+            return f"command substitution payload is blocked: {reason}"
     if any(pattern in command for pattern in BLOCKED_RAW_SHELL_PATTERNS):
-        return "command substitution/heredoc is blocked"
+        return "heredoc is blocked"
     for unit in re.split(r"[\r\n]+", command):
         unit = unit.strip()
         if not unit:
@@ -839,6 +1040,26 @@ def run_self_test() -> int:
             ),
         )
         checks += self_test_expect_pass(
+            "read-only git tag listing is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git tag --list"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "git tag creation is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git tag v1.0.0"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
             "rg regex alternation is allowed",
             lambda: handle_pre_tool_use(
                 root,
@@ -878,13 +1099,23 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "git output writes are blocked",
+        checks += self_test_expect_pass(
+            "git output to temp is allowed",
             lambda: handle_pre_tool_use(
                 root,
                 {
                     "tool_name": "Bash",
                     "tool_input": {"command": "git show --output=/tmp/out HEAD"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "git output to protected path is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git show --output=AGENTS.md HEAD"},
                 },
             ),
         )
@@ -915,6 +1146,180 @@ def run_self_test() -> int:
                 {
                     "tool_name": "Bash",
                     "tool_input": {"command": 'grep -rn "TextPayload" AnimiApp/Sources TVECore/Sources'},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "stderr redirect to dev null is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": 'grep -rn "No exact matches" /tmp/preview_decoder_budget_fix/Logs/Test/*.xcresult 2>/dev/null'
+                    },
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "read-only external absolute paths are allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "grep -rn Error /Library/Logs 2>/dev/null"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "safe shell command substitution is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "echo $(git status --short)"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "dangerous shell command substitution is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "echo $(rm -rf AnimiApp/Sources)"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "safe shell c payload is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "bash -c 'git status --short && rg TextPayload AnimiApp/Sources'"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "dangerous shell c payload is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "bash -c 'rm -rf AnimiApp/Sources'"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "inline diagnostic scripts are allowed",
+            lambda: [
+                handle_pre_tool_use(root, {"tool_name": "Bash", "tool_input": {"command": command}})
+                for command in (
+                    "python3 -c 'print(1)'",
+                    "node -e 'console.log(1)'",
+                )
+            ],
+        )
+        checks += self_test_expect_pass(
+            "read-only find exec is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "find AnimiApp -name '*.swift' -exec grep -n TextPayload {} \\;"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "dangerous find exec payload is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "find AnimiApp -name '*.swift' -exec rm -rf {} \\;"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "network read commands are allowed",
+            lambda: [
+                handle_pre_tool_use(root, {"tool_name": "Bash", "tool_input": {"command": command}})
+                for command in (
+                    "curl -I https://example.com",
+                    "wget --spider https://example.com",
+                    "curl -L https://example.com -o /tmp/example.html",
+                    "wget https://example.com -O /tmp/example.html",
+                )
+            ],
+        )
+        checks += self_test_expect_block(
+            "network output to protected path is blocked",
+            lambda: [
+                handle_pre_tool_use(root, {"tool_name": "Bash", "tool_input": {"command": command}})
+                for command in (
+                    "curl -L https://example.com -o AGENTS.md",
+                    "wget https://example.com -O Docs/agents/hook-write-gate.md",
+                )
+            ],
+        )
+        checks += self_test_expect_pass(
+            "sed in-place repo file edit is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "sed -i '' 's/a/b/' AnimiApp/Sources/File.swift"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "sed in-place protected path is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "sed -i '' 's/a/b/' AGENTS.md"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "plutil mutation of repo file is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "plutil -replace Key -string Value AnimiApp/Info.plist"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "plutil mutation of protected path is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "plutil -replace Key -string Value AGENTS.md"},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "repo-local chmod is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "chmod +x AnimiApp/local-tool.sh"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "chmod protected path is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "chmod +x Scripts/run_animiapp_tests.sh"},
                 },
             ),
         )
@@ -982,17 +1387,6 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "shell command substitution is blocked",
-            lambda: handle_pre_tool_use(
-                root,
-                {
-                    "tool_name": "Bash",
-                    "tool_input": {"command": "echo $(git status)"},
-                },
-            ),
-        )
-
         self_test_make_marker(root, task)
         checks += self_test_expect_pass(
             "implementation slash matches active marker",

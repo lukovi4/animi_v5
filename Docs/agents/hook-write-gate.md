@@ -95,19 +95,27 @@ Allowed by default:
 - build/test/verification commands such as `swift test`, `xcodebuild test`, `make build`, and project-local scripts;
 - shell composition and pipes such as `cd TVECore && swift test` or `rg TextPayload AnimiApp/Sources | wc -l`;
 - multi-line Bash when each line is a normal non-dangerous development command;
-- redirects to repository or approved temp paths;
+- safe command substitution and shell payloads such as `echo $(git status --short)` or `bash -c 'git status && rg TextPayload AnimiApp/Sources'`;
+- inline diagnostic scripts such as `python3 -c 'print(1)'` or `node -e 'console.log(1)'`;
+- read-only `find -exec` payloads such as `find AnimiApp -name '*.swift' -exec grep -n TextPayload {} \;`;
+- repo-local `sed -i` and `plutil` mutations when they do not target protected infrastructure;
+- network read commands and output to approved temp paths, such as `curl -I https://example.com`, `wget --spider https://example.com`, or `curl -o /tmp/file https://example.com`;
+- repo-local `chmod` when it does not target protected infrastructure;
+- redirects to repository paths, approved temp paths, or `/dev/null`;
+- read-only absolute paths outside the repository;
 - repo-local scripting such as `python3 Scripts/report.py` or `node Scripts/tool.js`;
 - `mkdir -p`, `touch`, `cp`, and `mv` when they do not target protected infrastructure or global paths.
 
 Blocked:
 
 - destructive git and git state changes: `git reset`, `git clean`, `git checkout`, `git restore`, `git switch`, `git add`, `git commit`, `git push`, `git pull`, `git merge`, `git rebase`, `git stash`, branch creation/deletion, tags, remotes, config, apply/cherry-pick/revert;
-- deletion/destructive file commands: `rm`, `rmdir`, `unlink`, `shred`, `find -delete`, `find -exec`, `find -ok`;
-- permission/system/process commands: `sudo`, `su`, `chmod`, `chown`, `kill`, `pkill`, `killall`, `launchctl`, `dd`, `mkfs`, `diskutil`;
+- deletion/destructive file commands: `rm`, `rmdir`, `unlink`, `shred`, `find -delete`, and `find -exec` / `find -ok` when the payload is dangerous;
+- permission/system/process commands: `sudo`, `su`, `chown`, `kill`, `pkill`, `killall`, `launchctl`, `dd`, `mkfs`, `diskutil`;
+- protected-path permission changes, such as `chmod +x Scripts/run_animiapp_tests.sh`;
 - package/dependency mutation: `npm install`, `pnpm add`, `yarn add`, `brew install`, `pip install`, `gem install`, `cargo add`, `swift package update`, and similar update/install/remove forms;
 - secrets/signing/keychain commands such as `security`;
-- network transfer commands such as `curl`, `wget`, `scp`, `rsync`;
-- shell parser bypass forms: command substitution, heredoc, `eval`, `bash -c`, `sh -c`, `zsh -c`, inline `python3 -c` / `node -e`.
+- network write/sync commands such as `scp` and `rsync`, plus `curl` / `wget` output to protected infrastructure;
+- shell parser bypass forms with dangerous payloads, heredoc, and `eval`.
 
 ## ConfigChange
 
