@@ -11,11 +11,10 @@ Date: YYYY-MM-DD
 
 ## Scope Compliance
 
-- Approved plan followed: yes/no
-- Claude task followed: yes/no
+- Task contract followed: yes/no
 - Product behavior changed: no/yes
-- Files expected to change are within approved scope: yes/no
-- Approved edge cases and regression surfaces covered: yes/no
+- Files expected to change are within contracted scope: yes/no
+- Contracted edge cases and regression surfaces covered: yes/no
 - Manual QA expectation preserved: yes/no
 
 ## Findings
@@ -28,5 +27,5 @@ Date: YYYY-MM-DD
 
 ## Implementation Authorization
 
-Claude may implement only if Status is APPROVED, the user explicitly approves implementation after this review, and Codex creates a valid `.codex-local/active-implementation.json` marker.
+Claude may implement only if Status is APPROVED and Codex creates a valid `.codex-local/active-implementation.json` marker. No second user approval is required unless this review identifies a new product, scope, architecture, protected-action, or dangerous-action decision that is not already approved in `task-contract.md`.
 ```

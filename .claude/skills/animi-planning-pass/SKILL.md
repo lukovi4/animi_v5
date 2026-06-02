@@ -1,6 +1,6 @@
 ---
 name: Animi Planning Pass
-description: Create claude-plan.md for an approved Animi task without implementing. Manual gate skill for reading plan.approved.md and claude-task.md, analyzing real code read-only, writing only claude-plan.md, and stopping for Codex review.
+description: Create claude-plan.md for an approved Animi task contract without implementing. Manual gate skill for reading task-contract.md, analyzing real code read-only, writing only claude-plan.md, and stopping for Codex review.
 disable-model-invocation: true
 argument-hint: <task-folder>
 arguments: task_folder
@@ -18,10 +18,9 @@ Analyze the approved task against the real codebase, write `claude-plan.md`, and
 
 `$task_folder` must point to a task folder containing:
 
-- `plan.approved.md` with `Status: APPROVED`;
-- `claude-task.md`.
+- `task-contract.md` with `Status: Approved`.
 
-If the task folder or either file is missing, stop and ask for the correct task folder. Do not create task folders or Codex-owned files.
+If the task folder or contract is missing or not approved, stop and ask for the correct task folder. Do not create task folders or Codex-owned files.
 
 ## Allowed Output
 
@@ -33,14 +32,14 @@ Do not write anything else in this pass.
 
 ## Read-Only Research
 
-- Read `plan.approved.md` and `claude-task.md` first.
+- Read `task-contract.md` first.
 - Use targeted code reads and search.
-- If normal search/read tools are unavailable or insufficient, safe read-only inspection Bash is allowed by the project hook. Use it only for inspection commands such as `pwd`, `ls`, `rg`, `grep`, `sed -n`, `head`, `tail`, `wc`, `find`, read-only `git status/diff` forms, or `plutil -lint`.
+- If normal search/read tools are unavailable or insufficient, Bash is allowed by the project hook. Use normal development commands for investigation, including search, read, shell composition, and focused verification when it materially improves the plan.
 - Use Explore/subagents when useful for focused read-only code investigation.
-- Do not run mutating Bash, build commands, tests, package managers, dependency tools, or long-running verification in this pass.
+- Do not run destructive git, deletion, dependency mutation, protected infrastructure changes, commit/push, or workflow-bypass commands.
 - Do not suggest that the user runs shell commands with `! <command>` as a substitute for blocked Bash.
-- Do not infer product behavior beyond the approved plan.
-- If code contradicts the approved plan, write a blocked `claude-plan.md` and stop.
+- Do not infer product behavior beyond `task-contract.md`.
+- If code contradicts `task-contract.md`, write a blocked `claude-plan.md` and stop.
 
 ## Plan Contents
 
@@ -49,16 +48,16 @@ Write `claude-plan.md` using the shape from `Docs/agents/claude-plan-template.md
 It must include:
 
 - `Status: Proposed` for a viable plan, or `Status: Blocked` when implementation should not proceed;
-- confirmation that `plan.approved.md` and `claude-task.md` were read;
+- confirmation that `task-contract.md` was read and has `Status: Approved`;
 - `Implementation started: no`;
 - exact files expected to change;
-- implementation steps inside approved scope;
+- implementation steps inside contracted scope;
 - verification planned;
-- edge cases, regression checks, and manual QA expectations from the approved plan;
+- edge cases, regression checks, and manual QA expectations from `task-contract.md`;
 - risks, blockers, or questions for Codex.
 
 Do not write `Status: APPROVED` in `claude-plan.md`. Claude proposes; Codex approves only through `codex-plan-review.md`.
 
 ## Stop Rule
 
-After writing `claude-plan.md`, stop. Do not implement. Tell the user that Codex must review the plan and create `codex-plan-review.md` before implementation can begin.
+After writing `claude-plan.md`, stop. Do not implement. Tell the user that Codex must review the plan, write `codex-plan-review.md`, and create the marker before implementation can begin.

@@ -16,7 +16,7 @@ Without explicit approval, agents must not:
 - run destructive git commands;
 - stage, commit, push, create PRs, tag, or change remotes;
 - install, upgrade, or remove dependencies/tools;
-- change signing, secrets, credentials, Keychain, `.env`, CI, hooks, Xcode project files, build scripts, release resources, or dependency files;
+- change signing, secrets, credentials, Keychain, `.env`, CI, hooks, build scripts, release resources, or dependencies;
 - weaken tests, add skips, silence failures, or lower lint/build standards.
 
 ## Codex
@@ -28,8 +28,9 @@ Without explicit approval, agents must not:
 ## Claude
 
 - Claude implements only through the Animi gate skills and a valid marker.
+- During approved implementation, Claude may use normal development commands and edit normal repository code/test/project files needed for the approved task.
 - Claude must not create or edit Codex-owned gate artifacts.
-- Claude must not expand scope, infer product behavior, rewrite approved plans, hide verification failures, or modify unrelated dirty worktree state.
+- Claude must not expand scope, infer product behavior, rewrite `task-contract.md`, hide verification failures, modify protected infrastructure, run destructive actions, or intentionally modify unrelated dirty worktree state.
 
 ## Infrastructure Paths
 
@@ -38,8 +39,12 @@ Normal implementation tasks must not modify:
 - `.codex-local/active-implementation.json`
 - `.claude/**`
 - `.agents/**`
+- `.github/**`
 - `AGENTS.md`
 - `CLAUDE.md`
 - `Docs/agents/**`
+- `Scripts/**`
+- `Makefile`
+- `.env`, `.env.local`, `.env.production`
 
 Changes to these paths require a separate approved infrastructure task.

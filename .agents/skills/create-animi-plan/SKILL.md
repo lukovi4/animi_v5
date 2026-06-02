@@ -19,9 +19,8 @@ Use this skill to turn a user request into a Codex-owned task folder and plan fo
 Read only the sections needed:
 
 - `../../../Docs/agents/workflow.md`
-- `../../../Docs/agents/planning-template.md`
 - `../../../Docs/agents/task-folder-template.md`
-- `../../../Docs/agents/claude-task-template.md`
+- `../../../Docs/agents/task-contract-template.md`
 - `plan-template.md`
 - `readiness-checklist.md`
 
@@ -42,18 +41,16 @@ Read only the sections needed:
    - If code or existing docs can answer the question, investigate instead of asking.
    - Ask only questions whose answer can change approved behavior, scope, architecture boundary, regression risk, verification, or manual QA.
    - Do not ask questions already answered by the user request, proven by code, or internal to Claude's implementation inside approved scope.
-   - Do not write `plan.draft.md` until all relevant decision-tree branches are resolved or explicitly out of scope.
-7. Write `task.md`.
-8. Write `product-decisions.md`.
-9. Write `plan.draft.md`.
-10. Write `followups.md`.
+   - Do not write `task-contract.md` until all relevant decision-tree branches are resolved or explicitly out of scope.
+7. Write `task-contract.md` with `Status: Pending User Approval`.
+8. Write `followups.md` when useful.
 11. Run the readiness checklist.
-12. Ask the user to approve, reject, or revise the draft. Include 3-6 concrete investigation evidence bullets and a summary of approved product decisions in the chat response.
+12. Ask the user to approve, reject, or revise the task contract. Include 3-6 concrete investigation evidence bullets and a summary of approved product decisions in the chat response.
 
 After explicit user approval:
 
-1. Create `plan.approved.md` with `Status: APPROVED`.
-2. Create `claude-task.md`.
+1. Update the same `task-contract.md` to `Status: Approved`.
+2. Record the user approval statement in `task-contract.md`.
 3. Give the user only the exact Claude slash command to run the Planning Pass:
    ```text
    /animi-planning-pass .codex-local/tasks/<task-id>

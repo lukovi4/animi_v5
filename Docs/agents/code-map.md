@@ -44,10 +44,10 @@ Regression checks to consider: runtime independence from compiler/source parsing
 
 ## Project / Build Files
 
-Start here only when the approved plan explicitly allows project/build changes:
+Start here only when the approved task contract explicitly allows project/build changes:
 
 - `AnimiApp/AnimiApp.xcodeproj/project.pbxproj`: Xcode target membership and build settings.
 - `Scripts/`: local and CI verification gates.
 - `Makefile`: local build entry points.
 
-Project/build-file changes are sensitive. They require explicit plan approval and exact marker-approved paths.
+Project/build-file changes are sensitive. They require explicit plan approval and must stay inside the approved task.

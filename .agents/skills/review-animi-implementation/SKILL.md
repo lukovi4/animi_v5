@@ -10,14 +10,14 @@ Use this skill to perform Codex technical-lead review after Claude work.
 ## Ground Rules
 
 - Findings first.
-- Review against `plan.approved.md`, not chat memory.
+- Review against `task-contract.md`, not chat memory.
 - Tests and verification evidence are reviewed before code style.
 - Do not approve plausibility; require evidence or accepted risk.
 - Do not rerun heavy checks unless risk, missing evidence, or findings justify it.
 
 ## Required Inputs
 
-- `.codex-local/tasks/<task-id>/plan.approved.md`
+- `.codex-local/tasks/<task-id>/task-contract.md`
 - `.codex-local/tasks/<task-id>/claude-plan.md`
 - `.codex-local/tasks/<task-id>/codex-plan-review.md`
 - `.codex-local/tasks/<task-id>/claude-summary.md`
@@ -38,10 +38,10 @@ Read only the sections needed:
 ## Workflow
 
 1. Identify changed files with stats/names first.
-2. Read `plan.approved.md`.
+2. Read `task-contract.md`.
 3. Read `claude-plan.md`, `codex-plan-review.md`, and `claude-summary.md`.
 4. Confirm `codex-plan-review.md` approved the plan before implementation.
-5. Compare implementation to approved scope and marker-approved paths using the live marker or summary marker snapshot.
+5. Compare implementation to contracted scope using the live marker or summary marker snapshot for task authorization context.
 6. Review tests first.
 7. Review correctness and edge cases.
 8. Review architecture invariants.
@@ -68,6 +68,6 @@ Use one:
 
 Do not close while P0/P1 findings remain open.
 
-If fixes are required and they stay inside the same approved product scope, keep the same task open. Do not create a new task for same-scope repairs. Update the review and marker as needed, then send Claude back through `/animi-implement-approved-plan <task-folder>`.
+If fixes are required and they stay inside the same approved product scope, keep the same task open. Do not create a new task for same-scope repairs. Update the review with `Repair Instructions For Claude`, refresh the marker when needed, then send Claude back through `/animi-implement-task <task-folder>`.
 
 Do not auto-commit after approval. Commit only after the user explicitly writes `commit`, and stage only the commit-ready files listed in the review.

@@ -1,6 +1,6 @@
 # Active Implementation Marker
 
-The active implementation marker is a scoped permission token:
+The active implementation marker is a scoped task authorization token:
 
 ```text
 .codex-local/active-implementation.json
@@ -8,19 +8,20 @@ The active implementation marker is a scoped permission token:
 
 It is not source of truth. Source of truth remains the task folder artifacts.
 
+The marker authorizes Claude to work on one approved implementation task. It does not micromanage every file path or Bash command.
+
 Codex creates the marker only after:
 
-- `plan.approved.md` has `Status: APPROVED`;
-- `claude-task.md` exists;
+- `task-contract.md` has `Status: Approved`;
 - `claude-plan.md` exists;
 - `codex-plan-review.md` has `Status: APPROVED`;
-- the user explicitly approves implementation.
+- no unresolved blocking product, scope, architecture, protected-action, or dangerous-action decision remains.
 
-Codex must not create a normal implementation marker while any eternal-deny path is dirty. This includes `.claude/**`, `.agents/**`, `AGENTS.md`, `CLAUDE.md`, `Docs/agents/**`, hook files, settings, and the marker itself. Those changes must be completed through a separate infrastructure task before normal product implementation begins.
+The user's approval of `task-contract.md` authorizes implementation. A second approval is required only when Claude or Codex discovers a new decision outside that contract.
 
 Claude must never create, edit, rename, or delete the marker.
 
-The marker authorizes implementation only. It does not authorize planning, direct skill expansion, or infrastructure changes.
+The marker authorizes implementation only. It does not authorize planning, direct skill expansion, infrastructure changes, protected-path writes, destructive git, dependency mutation, deletion, commit/push, or workflow bypass.
 
 ## Schema v1
 
@@ -30,17 +31,10 @@ The marker authorizes implementation only. It does not authorize planning, direc
   "status": "IMPLEMENTATION_APPROVED",
   "task_id": "2026-05-29-active-scene-tap-noop",
   "task_folder": ".codex-local/tasks/2026-05-29-active-scene-tap-noop",
-  "approved_paths": [
-    "AnimiApp/Sources/Editor/Store/EditorReducer.swift",
-    "AnimiApp/Tests/EditorReducerPlayheadSelectionTests.swift"
-  ],
   "baseline_dirty_paths": [
     ".gitignore",
     "findings.md",
     "logs.md"
-  ],
-  "allowed_bash_exact": [
-    "ANIMIAPP_DERIVED_DATA_PATH=/tmp/active_scene_tap_noop bash Scripts/run_animiapp_tests.sh"
   ],
   "codex_plan_review_sha256": "<sha256-of-codex-plan-review.md>",
   "approved_by": "user",
@@ -53,14 +47,9 @@ The marker authorizes implementation only. It does not authorize planning, direc
 
 ## Rules
 
-- `approved_paths` is exact only in v1. Prefix mode is not supported.
-- `approved_paths` covers production/test/docs files that are part of the approved implementation scope.
-- Claude task artifacts are derived from `task_folder`: implementation may write `claude-summary.md` and files under `artifacts/` only after the marker validates.
-- `approved_paths` must never include `.claude/**`, `.agents/**`, `AGENTS.md`, `CLAUDE.md`, `Docs/agents/**`, or `.codex-local/active-implementation.json`.
-- `allowed_bash_exact` must match the full trimmed command exactly.
-- `allowed_bash_exact` is for verification/build/test commands assigned by Codex. Safe read-only inspection Bash is controlled by the hook and does not need marker entries.
-- Allowed Bash strings must not contain shell composition or redirection such as `;`, `&&`, `||`, `|`, `>`, `<`, `$(`, backticks, heredoc, `tee`, `eval`, `bash -c`, or `sh -c`.
 - `expires_at` should be short, usually one to two hours.
 - `codex-plan-review.md` is frozen during implementation. If its SHA256 changes, the marker is invalid.
-- `baseline_dirty_paths` avoids false positives in post-tool audit. It does not grant write permission.
-- `baseline_dirty_paths` must not be used to ignore dirty eternal-deny paths for normal implementation markers. If an eternal-deny path is dirty, the marker should not be issued.
+- `baseline_dirty_paths` avoids false positives in post-tool audit for normal pre-existing dirty files.
+- `baseline_dirty_paths` must never hide protected infrastructure changes.
+- Normal implementation may edit repository code/test/project files as needed inside the approved task.
+- Critical dangerous actions are blocked by `hook-write-gate.md`, not by marker command allow-lists.

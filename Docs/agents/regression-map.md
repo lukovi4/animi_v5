@@ -67,5 +67,5 @@ Risk signals:
 Checks:
 
 - Show focused project-file diff and target membership reasoning.
-- Run the narrowest relevant build/test command approved by the plan and marker.
+- Run the narrowest relevant build/test command for the approved task contract, subject to the hook's dangerous-action deny-list.
 - Treat unverified project-file edits as high risk.

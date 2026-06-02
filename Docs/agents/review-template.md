@@ -25,9 +25,9 @@ Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA
 
 - <file:line> <issue, optional cleanup>
 
-## Plan Compliance
+## Task Contract Compliance
 
-- Approved plan followed: yes/no
+- Task contract followed: yes/no
 - Scope creep found: yes/no
 - Product decisions changed: yes/no
 
@@ -72,6 +72,16 @@ Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA
 
 - Fixes needed in same task: yes/no
 - New task required: yes/no and why
+
+## Repair Instructions For Claude
+
+- Required: yes/no
+- Scope: same task / new task required / n/a
+- Instructions:
+  1. <exact same-scope fix, or "None">
+- Verification required:
+  - `<command>`: <why>
+- Stop conditions: <when Claude must stop instead of repairing>
 
 ## Remaining Risks
 

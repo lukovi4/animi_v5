@@ -2,11 +2,11 @@
 
 ## Plan Compliance
 
-- [ ] `plan.approved.md` exists and has `Status: APPROVED`.
+- [ ] `task-contract.md` exists and has `Status: Approved`.
 - [ ] `codex-plan-review.md` exists and has `Status: APPROVED`.
-- [ ] Live marker or `claude-summary.md` marker snapshot identifies the implementation scope.
+- [ ] Live marker or `claude-summary.md` marker snapshot identifies the task authorization context.
 - [ ] Claude stayed inside scope.
-- [ ] Claude changed only paths allowed by the implementation marker.
+- [ ] Claude changed only files needed for the task contract and avoided protected infrastructure.
 - [ ] Claude did not change product behavior beyond approved decisions.
 - [ ] Claude did not edit Codex-owned task artifacts.
 
@@ -19,8 +19,8 @@
 
 ## Correctness
 
-- [ ] The changed behavior matches the approved goal.
-- [ ] Edge cases from the plan are covered.
+- [ ] The changed behavior matches the contracted goal.
+- [ ] Edge cases from the task contract are covered.
 - [ ] Failure paths and validation behavior are preserved.
 - [ ] Existing dirty worktree changes were not reverted.
 

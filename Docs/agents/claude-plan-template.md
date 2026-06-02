@@ -9,12 +9,12 @@ Status: Proposed | Blocked
 
 ## Understanding
 
-<briefly restate the approved task>
+<briefly restate the approved task contract>
 
-## Approved Scope Check
+## Task Contract Check
 
-- Approved plan read: yes/no
-- Claude task read: yes/no
+- Task contract read: yes/no
+- Task contract status: Approved/not approved
 - Implementation started: no
 - Scope changes proposed: no/yes
 
@@ -29,7 +29,7 @@ Status: Proposed | Blocked
 
 ## Edge Cases / Regression Checks
 
-- <edge case or adjacent behavior from the approved plan>
+- <edge case or adjacent behavior from the task contract>
 
 ## Tests / Verification Planned
 
@@ -37,7 +37,7 @@ Status: Proposed | Blocked
 
 ## Manual QA
 
-- Required by approved plan: yes/no
+- Required by task contract: yes/no
 - Claude notes for Codex: <anything Codex should verify manually, or "None">
 
 ## Risks
@@ -51,7 +51,7 @@ Status: Proposed | Blocked
 
 Rules:
 
-- Keep this plan inside `plan.approved.md` and `claude-task.md`.
+- Keep this plan inside `task-contract.md`.
 - Do not introduce new product behavior or scope.
 - Stop after writing `claude-plan.md`.
 - Do not edit production code, tests, project files, build scripts, or dependencies during the Planning Pass.

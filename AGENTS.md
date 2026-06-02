@@ -26,6 +26,7 @@ This file is the Codex entry point for the Animi repository. Keep it short; deta
 - Guardrails: `Docs/agents/guardrails.md`
 - Hook behavior: `Docs/agents/hook-write-gate.md`
 - Marker schema: `Docs/agents/marker-schema.md`
+- Task contract template: `Docs/agents/task-contract-template.md`
 - Project routing hints: `Docs/agents/domain.md`, `Docs/agents/code-map.md`, `Docs/agents/regression-map.md`
 - Review shape: `Docs/agents/review-template.md`
 
@@ -35,7 +36,7 @@ Do not restate these contracts in task files or skills unless the current artifa
 
 Use project-local skills when the request matches:
 
-- `create-animi-plan`: create a task folder and Codex plan for Claude.
+- `create-animi-plan`: create a task folder and `task-contract.md` for Claude.
 - `diagnose-animi-issue`: investigate a bug/regression before planning a fix.
 - `review-animi-claude-plan`: review Claude's `claude-plan.md` before implementation.
 - `review-animi-implementation`: review Claude's code and `claude-summary.md`.
@@ -46,6 +47,7 @@ Use project-local skills when the request matches:
 - Verify relevant current code before planning or reviewing.
 - Ask the user before approving product behavior, UX, timing, export/rendering, persistence, migration, or visible error handling.
 - Do not rely on chat memory as source of truth; use task artifacts.
+- Use `task-contract.md` as the single implementation contract; product decisions live inside it.
 - Keep same-scope Claude fixes in the same task folder.
 - Do not stage, commit, push, create PRs, or change remotes without explicit user approval.
 

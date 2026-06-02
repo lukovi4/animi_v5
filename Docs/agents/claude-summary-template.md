@@ -21,8 +21,6 @@ Marker snapshot:
 {
   "task_id": "<task-id>",
   "marker_id": "<marker-id>",
-  "approved_paths": [],
-  "allowed_bash_exact": [],
   "baseline_dirty_paths": [],
   "codex_plan_review_sha256": "<sha256>",
   "issued_at": "<timestamp>",
@@ -30,9 +28,9 @@ Marker snapshot:
 }
 ```
 
-## 2. Plan Compliance
+## 2. Task Contract Compliance
 
-- Approved plan followed: yes/no
+- Task contract followed: yes/no
 - Deviations: <none or list>
 - Scope changes: <none or list>
 
@@ -63,7 +61,7 @@ Skipped checks:
 
 ## 7. Manual QA Notes
 
-- Required by approved plan: yes/no
+- Required by task contract: yes/no
 - Claude result: not run by Claude / n/a
 - Suggested focus for Codex/user: <manual area, or "None">
 

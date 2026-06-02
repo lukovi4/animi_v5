@@ -2,14 +2,12 @@
 
 Use the canonical templates in `../../../Docs/agents/`.
 
-## Draft Pass
+## Contract Pass
 
 Create:
 
 ```text
-task.md
-product-decisions.md
-plan.draft.md
+task-contract.md
 followups.md
 artifacts/
 ```
@@ -17,21 +15,17 @@ artifacts/
 Use:
 
 - `../../../Docs/agents/task-folder-template.md`
-- `../../../Docs/agents/planning-template.md`
+- `../../../Docs/agents/task-contract-template.md`
 
-## Approved Handoff
+## Approval
 
-Only after explicit user approval, create:
+Only after explicit user approval, update:
 
 ```text
-plan.approved.md
-claude-task.md
+task-contract.md
 ```
 
-Use:
-
-- `../../../Docs/agents/planning-template.md`
-- `../../../Docs/agents/claude-task-template.md`
+Set `Status: Approved` and record the user approval statement.
 
 ## Pre-Implementation Review
 
