@@ -121,7 +121,6 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -313,7 +312,6 @@ final class TimelineCompositionEngineExportSessionTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { id, res, dev, queue in

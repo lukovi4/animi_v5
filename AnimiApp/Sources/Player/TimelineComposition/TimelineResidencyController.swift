@@ -2,7 +2,7 @@ import Foundation
 import TVECore
 
 /// Manages residency window: eviction of non-resident runtimes,
-/// warm scene targets, decoder allocation frames, and budget grants.
+/// warm scene targets, active playback frames, and playback grants.
 ///
 /// Internal implementation detail of `TimelineCompositionEngine`.
 @MainActor
@@ -14,18 +14,18 @@ internal final class TimelineResidencyController {
         self.engine = engine
     }
 
-    // MARK: - Budget Window
+    // MARK: - Residency Window
 
-    /// Refreshes budget window: updates coordinator and evicts non-resident runtimes.
-    func refreshBudgetWindow(compressedFrame: Int, math: TimelineTransitionMath) {
-        engine.budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
+    /// Refreshes residency window: updates coordinator and evicts non-resident runtimes.
+    func refreshResidencyWindow(compressedFrame: Int, math: TimelineTransitionMath) {
+        engine.residencyCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
         evictNonResidentRuntimes(math: math)
     }
 
-    /// Evicts non-resident runtimes based on budget coordinator state.
+    /// Evicts non-resident runtimes based on residency coordinator state.
     func evictNonResidentRuntimes(math: TimelineTransitionMath) {
         let loadedIds = Set(engine.instanceRuntimes.keys)
-        let toEvict = engine.budgetCoordinator.instancesToEvictOrdered(
+        let toEvict = engine.residencyCoordinator.instancesToEvictOrdered(
             from: loadedIds,
             sceneItems: math.sceneItems
         )
@@ -80,7 +80,7 @@ internal final class TimelineResidencyController {
         return targets
     }
 
-    // MARK: - Decoder Allocation
+    // MARK: - Active Playback Frames
 
     /// Returns local frames for only the active render participants (no warm scenes).
     func activePlaybackLocalFrames(
@@ -102,39 +102,21 @@ internal final class TimelineResidencyController {
         }
     }
 
-    /// Returns local frames for residency/diagnostic purposes (active + warm boundary frames).
-    /// Not used for realtime playback — see `activePlaybackLocalFrames` instead.
-    func decoderAllocationLocalFrames(
-        math: TimelineTransitionMath,
-        mode: TimelineTransitionMath.RenderMode
-    ) -> [UUID: Int] {
-        var localFrames = warmPresentationTargets(math: math, mode: mode)
+    // MARK: - Playback Grants
 
-        switch mode {
-        case .single(let sceneIndex, let localFrame):
-            guard sceneIndex < math.sceneItems.count else { return localFrames }
-            localFrames[math.sceneItems[sceneIndex].id] = localFrame
-
-        case .transition(let aIndex, let frameA, let bIndex, let frameB, _, _):
-            guard aIndex < math.sceneItems.count,
-                  bIndex < math.sceneItems.count else { return localFrames }
-            localFrames[math.sceneItems[aIndex].id] = frameA
-            localFrames[math.sceneItems[bIndex].id] = frameB
-        }
-
-        return localFrames
-    }
-
-    // MARK: - Budget Grants
-
-    /// Computes playback budget grants for all decoder-allocation participants.
-    func playbackBudgetGrants(
+    /// Computes playback grants for the active render participants.
+    ///
+    /// Every visible video candidate of an active (pinned) participant is granted.
+    /// Warm/evictable scenes are excluded before candidate collection. Quality/performance
+    /// degradation, if needed, is the responsibility of explicit knobs (e.g. update cadence),
+    /// never a hidden cap here.
+    func playbackGrants(
         math: TimelineTransitionMath,
         mode: TimelineTransitionMath.RenderMode,
         localFramesByInstanceId: [UUID: Int]
     ) -> [UUID: Set<String>] {
         let allocationInstanceIds = localFramesByInstanceId.keys.filter {
-            engine.budgetCoordinator.shouldHaveActiveDecoders(for: $0)
+            engine.residencyCoordinator.shouldRunActivePlayback(for: $0)
         }
 
         guard !allocationInstanceIds.isEmpty else {
@@ -143,7 +125,7 @@ internal final class TimelineResidencyController {
 
         // 1. Get scene rank for prioritization
         let sceneRank: [UUID: Int] = {
-            let prioritized = engine.budgetCoordinator.prioritizedInstances(
+            let prioritized = engine.residencyCoordinator.prioritizedInstances(
                 from: Set(allocationInstanceIds),
                 sceneItems: math.sceneItems
             )
@@ -180,7 +162,10 @@ internal final class TimelineResidencyController {
             }
         }
 
-        // 3. Sort globally: isVisible desc → area desc → zIndex desc → sceneRank asc → instanceId asc → blockId asc
+        // 3. Sort globally for deterministic ordering: isVisible desc → area desc →
+        //    zIndex desc → sceneRank asc → instanceId asc → blockId asc.
+        //    The sort is now only an ordering aid for diagnostics/determinism — it is
+        //    no longer used to select a capped subset.
         flatCandidates.sort { a, b in
             if a.priority.isVisible != b.priority.isVisible {
                 return a.priority.isVisible
@@ -200,8 +185,12 @@ internal final class TimelineResidencyController {
             return a.blockId < b.blockId
         }
 
-        // 4. Take prefix(maxActiveDecoders)
-        let granted = flatCandidates.prefix(engine.budgetCoordinator.maxActiveDecoders)
+        // 4. Grant every candidate of the active render participants.
+        //    No fixed decoder-count cap: each visible video block in an active scene
+        //    must remain a real playback source. Per-block visibility/timing gating
+        //    still happens downstream in UserMediaService; residency (pinned/warm/evict)
+        //    already limited candidates to pinned participants above.
+        let granted = flatCandidates
 
         // 5. Group back into [UUID: Set<String>]
         var result: [UUID: Set<String>] = [:]

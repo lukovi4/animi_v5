@@ -261,7 +261,6 @@ final class VideoSelectionFastPathTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -313,7 +312,6 @@ final class VideoSelectionFastPathTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -354,7 +352,6 @@ final class VideoSelectionFastPathTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -402,7 +399,6 @@ final class VideoSelectionFastPathTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in

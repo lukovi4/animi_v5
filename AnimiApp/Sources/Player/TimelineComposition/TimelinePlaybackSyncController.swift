@@ -1,7 +1,7 @@
 import Foundation
 import TVECore
 
-/// Applies playback budget grants to resident runtimes,
+/// Applies playback grants to resident runtimes,
 /// coordinating start/sync and deactivation of warm scenes.
 ///
 /// Internal implementation detail of `TimelineCompositionEngine`.
@@ -14,11 +14,11 @@ internal final class TimelinePlaybackSyncController {
         self.engine = engine
     }
 
-    /// Applies playback budget to all resident runtimes.
+    /// Applies playback grants to all resident runtimes.
     ///
-    /// Active runtimes receive budget-aware playback calls.
+    /// Active runtimes receive grant-aware playback calls.
     /// Non-active resident runtimes (warm) receive deactivation calls.
-    func applyPlaybackBudget(
+    func applyPlaybackGrants(
         mode: TimelineTransitionMath.RenderMode,
         math: TimelineTransitionMath,
         localFramesByInstanceId: [UUID: Int],
@@ -42,7 +42,7 @@ internal final class TimelinePlaybackSyncController {
 
         // Step 2: Compute resident loaded set = loaded runtimes ∩ (pinned ∪ warm)
         let residentIds = Set(engine.instanceRuntimes.keys).intersection(
-            engine.budgetCoordinator.pinnedInstanceIds.union(engine.budgetCoordinator.warmInstanceIds)
+            engine.residencyCoordinator.pinnedInstanceIds.union(engine.residencyCoordinator.warmInstanceIds)
         )
 
         // Step 3: Update active scenes and warm scenes that actually received spare grants.
@@ -61,7 +61,7 @@ internal final class TimelinePlaybackSyncController {
             syncedInstanceIds.insert(instanceId)
         }
 
-        // Step 4: Resident runtimes without active grants keep last texture but release decoder slots.
+        // Step 4: Warm resident runtimes keep last texture but release active playback.
         for instanceId in residentIds
         where !activeInstanceIds.contains(instanceId) && !syncedInstanceIds.contains(instanceId) {
             engine.instanceRuntimes[instanceId]?.deactivatePlaybackPreservingTextures()

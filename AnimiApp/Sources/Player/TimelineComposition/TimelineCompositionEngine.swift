@@ -7,7 +7,7 @@ import os.log
 // MARK: - Timeline Composition Engine
 
 /// Engine for composing multi-scene timeline with transitions.
-/// Manages scene resources, video budget, and frame resolution.
+/// Manages scene resources, residency, playback grants, and frame resolution.
 ///
 /// Replaces TimelinePlaybackCoordinator for timeline runtime path.
 /// Scene Edit mode continues to use single-scene path.
@@ -24,8 +24,8 @@ public final class TimelineCompositionEngine {
     /// Timeline math for compressed positions and transitions.
     public private(set) var transitionMath: TimelineTransitionMath?
 
-    /// Video budget coordinator.
-    public let budgetCoordinator: GlobalVideoBudgetCoordinator
+    /// Video residency coordinator.
+    public let residencyCoordinator: GlobalVideoResidencyCoordinator
 
     /// Scene type resources cache (shared across instances of same type).
     public let resourcesCache: SceneTypeResourcesCache
@@ -97,14 +97,13 @@ public final class TimelineCompositionEngine {
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
         fps: Int = 30,
-        maxActiveDecoders: Int = 3,
         mediaLocator: any ProjectMediaLocator
     ) {
         self.device = device
         self.commandQueue = commandQueue
         self.fps = fps
         self.mediaLocator = mediaLocator
-        self.budgetCoordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: maxActiveDecoders)
+        self.residencyCoordinator = GlobalVideoResidencyCoordinator()
         self.resourcesCache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
         self.runtimeDiagnosticsSink = nil
         self.renderDiagnosticsSink = nil
@@ -131,7 +130,6 @@ public final class TimelineCompositionEngine {
         device: MTLDevice,
         commandQueue: MTLCommandQueue,
         fps: Int = 30,
-        maxActiveDecoders: Int = 3,
         mediaLocator: any ProjectMediaLocator,
         resourcesCache: SceneTypeResourcesCache,
         runtimeFactory: @escaping (UUID, SceneTypeResourcesCache.Resources, MTLDevice, MTLCommandQueue) -> SceneInstanceRuntime,
@@ -142,7 +140,7 @@ public final class TimelineCompositionEngine {
         self.commandQueue = commandQueue
         self.fps = fps
         self.mediaLocator = mediaLocator
-        self.budgetCoordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: maxActiveDecoders)
+        self.residencyCoordinator = GlobalVideoResidencyCoordinator()
         self.resourcesCache = resourcesCache
         self.runtimeFactory = runtimeFactory
         self.runtimeDiagnosticsSink = runtimeDiagnosticsSink
@@ -368,9 +366,9 @@ public final class TimelineCompositionEngine {
             return .staleGeneration
         }
 
-        // TT-03: Budget refresh for presentation policy only
+        // Refresh residency for presentation policy only.
         if policy == .presentation {
-            residencyController.refreshBudgetWindow(compressedFrame: compressedFrame, math: math)
+            residencyController.refreshResidencyWindow(compressedFrame: compressedFrame, math: math)
         }
 
         guard let mode = math.renderMode(for: compressedFrame) else {
@@ -412,12 +410,12 @@ public final class TimelineCompositionEngine {
         guard let math = transitionMath,
               let mode = math.renderMode(for: compressedFrame) else { return }
 
-        budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
+        residencyCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
         residencyController.evictNonResidentRuntimes(math: math)
 
         let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: mode)
-        let grants = residencyController.playbackBudgetGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
-        playbackSyncController.applyPlaybackBudget(
+        let grants = residencyController.playbackGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
+        playbackSyncController.applyPlaybackGrants(
             mode: mode, math: math, localFramesByInstanceId: localFrames,
             grants: grants, isStart: false, hostTime: hostTime
         )
@@ -433,12 +431,12 @@ public final class TimelineCompositionEngine {
         guard let math = transitionMath,
               let mode = math.renderMode(for: compressedFrame) else { return }
 
-        budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
+        residencyCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
         residencyController.evictNonResidentRuntimes(math: math)
 
         let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: mode)
-        let grants = residencyController.playbackBudgetGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
-        playbackSyncController.applyPlaybackBudget(
+        let grants = residencyController.playbackGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
+        playbackSyncController.applyPlaybackGrants(
             mode: mode, math: math, localFramesByInstanceId: localFrames,
             grants: grants, isStart: true, hostTime: hostTime
         )
@@ -487,7 +485,7 @@ public final class TimelineCompositionEngine {
     public func prepareForPlayback(startingAt compressedFrame: Int = 0) async {
         guard let math = transitionMath else { return }
 
-        budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
+        residencyCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
 
         guard let renderMode = math.renderMode(for: compressedFrame) else { return }
 
@@ -521,8 +519,8 @@ public final class TimelineCompositionEngine {
 
         // PHASE 2: Warm scenes
         let warmTargets = residencyController.warmPresentationTargets(math: math, mode: renderMode)
-        let orderedWarmIds = budgetCoordinator.prioritizedInstances(
-            from: budgetCoordinator.warmInstanceIds,
+        let orderedWarmIds = residencyCoordinator.prioritizedInstances(
+            from: residencyCoordinator.warmInstanceIds,
             sceneItems: math.sceneItems
         )
         for instanceId in orderedWarmIds {
@@ -602,10 +600,10 @@ public final class TimelineCompositionEngine {
         return SizeD(width: Double(canvas.width), height: Double(canvas.height))
     }
 
-    // MARK: - Test-Only Budget Probe
+    // MARK: - Test-Only Playback Grant Probe
 
-    /// Test-only snapshot of playback budget state.
-    internal struct PlaybackBudgetSnapshot {
+    /// Test-only snapshot of playback grant state.
+    internal struct PlaybackGrantSnapshot {
         let mode: TimelineTransitionMath.RenderMode
         let pinnedInstanceIds: Set<UUID>
         let warmInstanceIds: Set<UUID>
@@ -613,32 +611,32 @@ public final class TimelineCompositionEngine {
         let activeInstanceIdsUsedForGrantComputation: [UUID]
     }
 
-    /// Test-only: returns a snapshot of the budget state at the given compressed frame
+    /// Test-only: returns a snapshot of playback grants at the given compressed frame
     /// without mutating any runtime state (no side effects on runtimes).
     /// - Parameter compressedFrame: Compressed timeline frame.
-    /// - Returns: Budget snapshot, or nil if no timeline/math.
-    internal func debugPlaybackBudgetSnapshot(at compressedFrame: Int) -> PlaybackBudgetSnapshot? {
+    /// - Returns: Playback grant snapshot, or nil if no timeline/math.
+    internal func debugPlaybackGrantSnapshot(at compressedFrame: Int) -> PlaybackGrantSnapshot? {
         guard let math = transitionMath,
               let renderMode = math.renderMode(for: compressedFrame) else { return nil }
 
-        budgetCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
+        residencyCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
 
         let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: renderMode)
-        let grants = residencyController.playbackBudgetGrants(math: math, mode: renderMode, localFramesByInstanceId: localFrames)
+        let grants = residencyController.playbackGrants(math: math, mode: renderMode, localFramesByInstanceId: localFrames)
 
-        let activeIds = budgetCoordinator.prioritizedInstances(
+        let activeIds = residencyCoordinator.prioritizedInstances(
             from: Set(
                 localFrames.keys.filter {
-                    budgetCoordinator.shouldHaveActiveDecoders(for: $0)
+                    residencyCoordinator.shouldRunActivePlayback(for: $0)
                 }
             ),
             sceneItems: math.sceneItems
         )
 
-        return PlaybackBudgetSnapshot(
+        return PlaybackGrantSnapshot(
             mode: renderMode,
-            pinnedInstanceIds: budgetCoordinator.pinnedInstanceIds,
-            warmInstanceIds: budgetCoordinator.warmInstanceIds,
+            pinnedInstanceIds: residencyCoordinator.pinnedInstanceIds,
+            warmInstanceIds: residencyCoordinator.warmInstanceIds,
             grantsByInstance: grants,
             activeInstanceIdsUsedForGrantComputation: activeIds
         )
@@ -733,7 +731,7 @@ public final class TimelineCompositionEngine {
 
     /// TT-05: Builds an immutable export session from current engine state.
     /// Must be called on MainActor. Does NOT call resolveFrame, prepareForPlayback,
-    /// or touch TT-03 budget/eviction path.
+    /// or touch residency/eviction state.
     ///
     /// Delegates to `TimelineExportSessionBuilder` for the actual assembly.
     internal func buildExportSession() async throws -> TimelineExportSession {

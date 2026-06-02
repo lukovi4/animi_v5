@@ -406,11 +406,11 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
         XCTAssertEqual(none.type, .none)
     }
 
-    // MARK: - 6. GlobalVideoBudgetCoordinator Tests
+    // MARK: - 6. GlobalVideoResidencyCoordinator Tests
 
-    /// Test: budget coordinator pins current scene.
+    /// Test: residency coordinator pins current scene.
     @MainActor
-    func testBudgetCoordinator_pinsCurrentScene() {
+    func testResidencyCoordinator_pinsCurrentScene() {
         // Given: timeline with 3 scenes
         let timeline = makeTimeline(sceneDurationFrames: [30, 30, 30])
         let math = TimelineTransitionMath(
@@ -418,7 +418,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
             boundaryTransitions: [:],
             fps: fps
         )
-        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+        let coordinator = GlobalVideoResidencyCoordinator()
 
         // When: update at frame 0 (scene 0)
         coordinator.update(transitionMath: math, compressedFrame: 0)
@@ -428,9 +428,9 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
         XCTAssertTrue(pinnedIds.contains(timeline.sceneItems[0].id))
     }
 
-    /// Test: budget coordinator warms adjacent scenes.
+    /// Test: residency coordinator warms adjacent scenes.
     @MainActor
-    func testBudgetCoordinator_warmsAdjacentScenes() {
+    func testResidencyCoordinator_warmsAdjacentScenes() {
         // Given: timeline with 3 scenes
         let timeline = makeTimeline(sceneDurationFrames: [30, 30, 30])
         let math = TimelineTransitionMath(
@@ -438,7 +438,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
             boundaryTransitions: [:],
             fps: fps
         )
-        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+        let coordinator = GlobalVideoResidencyCoordinator()
 
         // When: update at frame 35 (scene 1)
         coordinator.update(transitionMath: math, compressedFrame: 35)
@@ -452,9 +452,9 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
                       warmIds.contains(timeline.sceneItems[2].id))
     }
 
-    /// Test: budget coordinator pins both scenes during transition.
+    /// Test: residency coordinator pins both scenes during transition.
     @MainActor
-    func testBudgetCoordinator_pinsBothDuringTransition() {
+    func testResidencyCoordinator_pinsBothDuringTransition() {
         // Given: timeline with 2 scenes and transition
         var timeline = makeTimeline(sceneDurationFrames: [30, 30])
         addFadeTransition(to: &timeline, fromIndex: 0, toIndex: 1)
@@ -464,7 +464,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
             boundaryTransitions: timeline.boundaryTransitions,
             fps: fps
         )
-        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+        let coordinator = GlobalVideoResidencyCoordinator()
 
         // When: update at frame 25 (in transition window: 23-36)
         coordinator.update(transitionMath: math, compressedFrame: 25)
@@ -550,7 +550,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
 
     /// Test: prioritizedInstances returns deterministic order with sceneIndex and UUID tiebreaker.
     @MainActor
-    func testBudgetCoordinator_prioritizedInstances_deterministicTieBreak() {
+    func testResidencyCoordinator_prioritizedInstances_deterministicTieBreak() {
         // Given: 5 scenes with fixed UUIDs
         let id0 = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
         let id1 = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
@@ -572,7 +572,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
             boundaryTransitions: [:],
             fps: fps
         )
-        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+        let coordinator = GlobalVideoResidencyCoordinator()
 
         // When: update at scene 2 (middle) - frame 60 is start of scene 2
         coordinator.update(transitionMath: math, compressedFrame: 60)
@@ -596,7 +596,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
 
     /// Test: instancesToEvictOrdered returns farthest-first with deterministic tiebreaker.
     @MainActor
-    func testBudgetCoordinator_instancesToEvictOrdered_farthestFirstDeterministic() {
+    func testResidencyCoordinator_instancesToEvictOrdered_farthestFirstDeterministic() {
         // Given: 7 scenes with fixed UUIDs
         let ids = (0..<7).map { i in
             UUID(uuidString: "\(String(repeating: String(i), count: 8))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 12))")!
@@ -612,7 +612,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
             boundaryTransitions: [:],
             fps: fps
         )
-        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+        let coordinator = GlobalVideoResidencyCoordinator()
 
         // When: update at scene 3 (center) - frame 90 is start of scene 3
         coordinator.update(transitionMath: math, compressedFrame: 90)
@@ -638,7 +638,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
 
     /// Test: transition mode keeps currentSceneIndex as aIndex.
     @MainActor
-    func testBudgetCoordinator_transitionMode_currentSceneIndexIsA() {
+    func testResidencyCoordinator_transitionMode_currentSceneIndexIsA() {
         // Given: 3 scenes with transition between 0 and 1
         var timeline = makeTimeline(sceneDurationFrames: [30, 30, 30])
         addFadeTransition(to: &timeline, fromIndex: 0, toIndex: 1)
@@ -648,7 +648,7 @@ final class TimelineTransitionIntegrationTests: XCTestCase {
             boundaryTransitions: timeline.boundaryTransitions,
             fps: fps
         )
-        let coordinator = GlobalVideoBudgetCoordinator(maxActiveDecoders: 3)
+        let coordinator = GlobalVideoResidencyCoordinator()
 
         // When: update at transition frame (e.g., frame 25)
         coordinator.update(transitionMath: math, compressedFrame: 25)

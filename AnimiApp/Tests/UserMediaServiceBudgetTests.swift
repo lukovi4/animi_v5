@@ -4,11 +4,11 @@ import AVFoundation
 import TVECore
 @testable import AnimiApp
 
-/// TT-03: Tests for UserMediaService budget-aware playback APIs.
+/// TT-03: Tests for UserMediaService grant-aware playback APIs.
 /// Verifies:
 /// - `playbackCandidates(sceneFrameIndex:)` returns sorted candidates
-/// - Budget-aware `startVideoPlayback/updateVideoFramesForPlayback` respect granted blocks
-/// - Legacy wrappers continue to use local budget policy
+/// - Grant-aware `startVideoPlayback/updateVideoFramesForPlayback` respect granted blocks
+/// - Scene-edit wrappers grant all ready visible playback candidates
 @MainActor
 final class UserMediaServiceBudgetTests: XCTestCase {
 
@@ -306,10 +306,10 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         XCTAssertEqual(candidates[0].blockId, "block_ready")
     }
 
-    // MARK: - Test: Budget-aware startVideoPlayback
+    // MARK: - Test: Grant-aware startVideoPlayback
 
     /// Test: startVideoPlayback with grants starts only granted blocks.
-    func testBudgetAwareStartPlayback_startsOnlyGrantedBlocks() async throws {
+    func testGrantAwareStartPlayback_startsOnlyGrantedBlocks() async throws {
         // Given: 3 blocks
         let configs: [(id: String, priority: BlockPriorityInfo)] = [
             ("block_a", BlockPriorityInfo(isVisible: true, area: 100, zIndex: 1)),
@@ -328,7 +328,7 @@ final class UserMediaServiceBudgetTests: XCTestCase {
     }
 
     /// Test: startVideoPlayback soft-stops non-granted active providers.
-    func testBudgetAwareStartPlayback_softStopsNonGrantedActiveProviders() async throws {
+    func testGrantAwareStartPlayback_softStopsNonGrantedActiveProviders() async throws {
         // Given: 2 blocks, both ready
         fakePlayer.addBlock(blockId: "block_a", assetId: "asset_a")
         fakePlayer.addBlock(blockId: "block_b", assetId: "asset_b")
@@ -369,6 +369,49 @@ final class UserMediaServiceBudgetTests: XCTestCase {
         // Then: block_b should be soft-stopped (flush: false)
         XCTAssertTrue(providerB.stopPlaybackCalls.contains { $0 == false },
                       "block_b should be soft-stopped with flush: false")
+    }
+
+    // MARK: - Test: Scene-edit legacy wrapper has no active-provider cap
+
+    /// Test: the scene-edit legacy `startVideoPlayback(sceneFrameIndex:mediaFrameIndex:)`
+    /// wrapper starts ALL visible ready video providers — more than three — with no cap.
+    func testLegacyStartWrapper_startsMoreThanThreeVisibleVideos_noCap() async throws {
+        // Given: 5 visible ready video blocks (more than the removed provider cap of 3)
+        let configs: [(id: String, priority: BlockPriorityInfo)] = (0..<5).map { i in
+            (id: "block_\(i)", priority: BlockPriorityInfo(isVisible: true, area: Double(100 - i), zIndex: 1))
+        }
+        try await setupVideoBlocks(configs)
+
+        // When: start playback through the legacy (no-grant) wrapper
+        sut.startVideoPlayback(sceneFrameIndex: 0, mediaFrameIndex: 0)
+
+        // Then: every visible video provider is started — none held back by a cap
+        for config in configs {
+            XCTAssertTrue(providers[config.id]?.startPlaybackCalls.count ?? 0 > 0,
+                          "\(config.id) should be started (no active-provider cap)")
+        }
+    }
+
+    /// Test: the scene-edit legacy `updateVideoFramesForPlayback(sceneFrameIndex:mediaFrameIndex:)`
+    /// wrapper ticks ALL visible ready video providers — more than three — with no cap.
+    func testLegacyUpdateWrapper_ticksMoreThanThreeVisibleVideos_noCap() async throws {
+        // Given: 5 visible ready video blocks (more than the removed provider cap of 3)
+        let configs: [(id: String, priority: BlockPriorityInfo)] = (0..<5).map { i in
+            (id: "block_\(i)", priority: BlockPriorityInfo(isVisible: true, area: Double(100 - i), zIndex: 1))
+        }
+        try await setupVideoBlocks(configs)
+
+        // When: tick playback through the legacy (no-grant) wrapper
+        sut.updateVideoFramesForPlayback(sceneFrameIndex: 0, mediaFrameIndex: 0)
+
+        // Then: every visible video provider is driven (started + texture fetched) — no cap
+        for config in configs {
+            let provider = providers[config.id]
+            XCTAssertTrue(provider?.startPlaybackCalls.count ?? 0 > 0,
+                          "\(config.id) should be started on tick (no active-provider cap)")
+            XCTAssertTrue(provider?.frameTextureForPlaybackCalls.count ?? 0 > 0,
+                          "\(config.id) should have its frame texture fetched (no active-provider cap)")
+        }
     }
 
 }

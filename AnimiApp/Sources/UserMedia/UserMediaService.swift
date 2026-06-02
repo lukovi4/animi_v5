@@ -256,51 +256,32 @@ public enum UserMediaKind: Equatable {
     case none
 }
 
-// MARK: - Video Budget Policy (PR-F)
+// MARK: - Video Playback Quality Policy
 
-/// Configuration for video playback budget control.
+/// Configuration for video playback quality/cadence control.
 ///
-/// PR-F: Limits the number of active video providers and controls update frequency
-/// to ensure stable, predictable preview performance with multiple heavy videos.
-public struct VideoBudgetPolicy {
-    /// Maximum number of video providers that can be actively decoding simultaneously.
-    /// Videos beyond this limit will hold their last frame.
-    /// Default: 3
-    public var maxActiveProviders: Int
-
+/// Controls preview update cadence (a sanctioned quality knob) for stable performance
+/// with multiple heavy videos. It does NOT cap how many visible video blocks decode:
+/// every visible video block in an active render participant stays a real playback
+/// source. Performance degradation may only come from explicit quality knobs such as
+/// `updateDivider`, never from a fixed active-decoder cap.
+public struct VideoPlaybackQualityPolicy {
     /// Frame update divider — video textures are updated every N-th displayLink tick.
     /// - `1` = update every tick (default; matches displayLink cadence driven by sceneFPS)
-    /// - `2+` = explicit budget degradation, skips intermediate ticks
+    /// - `2+` = explicit quality degradation, skips intermediate ticks
     /// Default: 1
     public var updateDivider: Int
 
-    /// Behavior when a video provider becomes inactive (exceeds budget).
-    public var holdMode: HoldMode
-
-    /// Hold mode for inactive video providers.
-    public enum HoldMode {
-        /// Keep the last decoded frame visible (default, no flicker)
-        case lastFrame
-        /// Show the poster frame (requires poster extraction on deactivate)
-        case poster
-    }
-
-    /// Creates a budget policy with default values.
-    public init(
-        maxActiveProviders: Int = 3,
-        updateDivider: Int = 1,
-        holdMode: HoldMode = .lastFrame
-    ) {
-        self.maxActiveProviders = maxActiveProviders
+    /// Creates a quality policy with default values.
+    public init(updateDivider: Int = 1) {
         self.updateDivider = updateDivider
-        self.holdMode = holdMode
     }
 }
 
 // MARK: - Playback Video Candidate (TT-03)
 
-/// Represents a ready video candidate for budget allocation.
-/// Used by engine to collect candidates across scenes for global priority ordering.
+/// Represents a ready video candidate for active playback grants.
+/// Used by engine to collect candidates across scenes for deterministic ordering.
 struct PlaybackVideoCandidate: Sendable {
     let blockId: String
     let priority: BlockPriorityInfo
@@ -422,17 +403,17 @@ public final class UserMediaService {
     /// P1: Limits to max 2 concurrent poster extractions to avoid memory spikes.
     private let posterSemaphore = AsyncSemaphore(limit: 2)
 
-    // MARK: - Video Budget (PR-F)
+    // MARK: - Video Playback Quality
 
-    /// Budget policy configuration for video playback.
-    private var budgetPolicy = VideoBudgetPolicy()
+    /// Quality/cadence policy configuration for video playback.
+    private var playbackQualityPolicy = VideoPlaybackQualityPolicy()
 
     /// Tick counter for frame divider logic.
     /// Incremented on each `updateVideoFramesForPlayback()` call.
     /// Video textures are only updated when `tickCounter % updateDivider == 0`.
     private var tickCounter: UInt64 = 0
 
-    /// Set of currently active video block IDs (within budget limit).
+    /// Set of video block IDs granted for active playback.
     /// Used for logging/diagnostics.
     private var activeVideoBlockIds: Set<String> = []
 
@@ -844,10 +825,10 @@ public final class UserMediaService {
         return true
     }
 
-    // MARK: - TT-03 Budget-Aware Playback API
+    // MARK: - Playback Grant API
 
-    /// Returns sorted playback candidates for budget allocation.
-    /// Used by engine to collect candidates across scenes for global priority ordering.
+    /// Returns sorted playback candidates for active playback grants.
+    /// Used by engine to collect candidates across scenes for deterministic ordering.
     ///
     /// - Parameter sceneFrameIndex: Current scene frame for priority calculation
     /// - Returns: Sorted candidates (visible first, then area desc, zIndex desc, blockId asc)
@@ -875,19 +856,20 @@ public final class UserMediaService {
         return candidates
     }
 
-    /// Starts video playback for granted blocks only (engine-owned budget).
+    /// Starts video playback for granted blocks only.
     ///
-    /// TT-03: Budget-aware variant. Engine determines which blocks get decoder slots.
-    /// Non-granted ready providers are soft-stopped (hold-last).
+    /// Engine/timeline callers pass the active playback set. Non-granted ready providers
+    /// are soft-stopped (hold-last), which is valid for hidden, out-of-timing, or warm
+    /// residency cases, not as a fixed visible-video cap.
     ///
     /// - Parameters:
     ///   - sceneFrameIndex: Current scene frame to sync to
-    ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
+    ///   - grantedBlockIds: Set of block IDs that should actively play
     func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         guard let player = activePlayer else { return }
 
         // Reset tick counter so first updateVideoFramesForPlayback() fires immediately
-        tickCounter = UInt64(budgetPolicy.updateDivider - 1)
+        tickCounter = UInt64(playbackQualityPolicy.updateDivider - 1)
 
         for (blockId, kind) in mediaState {
             guard case .video(let selection) = kind,
@@ -925,20 +907,20 @@ public final class UserMediaService {
         activeVideoBlockIds = grantedBlockIds.intersection(Set(videoProviders.keys))
     }
 
-    /// Updates video textures for granted blocks only (engine-owned budget).
+    /// Updates video textures for granted blocks only.
     ///
-    /// TT-03: Budget-aware variant. Engine determines which blocks get decoder slots.
-    /// Non-granted ready providers are soft-stopped (hold-last), textures preserved.
+    /// Engine/timeline callers pass the active playback set. Non-granted ready providers
+    /// are soft-stopped (hold-last), textures preserved.
     ///
     /// - Parameters:
     ///   - sceneFrameIndex: Current scene frame for sync
-    ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
+    ///   - grantedBlockIds: Set of block IDs that should actively play
     func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         guard let player = activePlayer else { return }
 
         // Frame divider — skip video texture updates on non-update ticks
         tickCounter += 1
-        let shouldUpdateTextures = (tickCounter % UInt64(budgetPolicy.updateDivider)) == 0
+        let shouldUpdateTextures = (tickCounter % UInt64(playbackQualityPolicy.updateDivider)) == 0
 
         for (blockId, kind) in mediaState {
             guard case .video(let selection) = kind,
@@ -1017,27 +999,31 @@ public final class UserMediaService {
 
     /// Starts video playback for visible video providers.
     ///
-    /// Legacy wrapper: Uses local `budgetPolicy.maxActiveProviders` limit.
-    /// Used by scene edit path and non-engine callers.
+    /// Scene-edit / non-engine wrapper: grants every ready candidate. There is no
+    /// fixed active-provider cap — every visible video block must remain a real
+    /// playback source. Per-block visibility/timing gating still happens in the
+    /// granted-path method below.
     ///
     /// - Parameter sceneFrameIndex: Current scene frame to sync to
     public func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int) {
-        // Build local grant set from top candidates
+        // Grant all ready candidates (no cap); playbackCandidates already filters to ready providers.
         let candidates = playbackCandidates(sceneFrameIndex: sceneFrameIndex)
-        let grantedBlockIds = Set(candidates.prefix(budgetPolicy.maxActiveProviders).map(\.blockId))
+        let grantedBlockIds = Set(candidates.map(\.blockId))
         startVideoPlayback(sceneFrameIndex: sceneFrameIndex, mediaFrameIndex: mediaFrameIndex, grantedBlockIds: grantedBlockIds)
     }
 
     /// Updates video textures for playback mode.
     ///
-    /// Legacy wrapper: Uses local `budgetPolicy.maxActiveProviders` limit.
-    /// Used by scene edit path and non-engine callers.
+    /// Scene-edit / non-engine wrapper: grants every ready candidate. There is no
+    /// fixed active-provider cap — every visible video block must remain a real
+    /// playback source. Per-block visibility/timing gating still happens in the
+    /// granted-path method below.
     ///
     /// - Parameter sceneFrameIndex: Current scene frame (for drift detection)
     public func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int) {
-        // Build local grant set from top candidates
+        // Grant all ready candidates (no cap); playbackCandidates already filters to ready providers.
         let candidates = playbackCandidates(sceneFrameIndex: sceneFrameIndex)
-        let grantedBlockIds = Set(candidates.prefix(budgetPolicy.maxActiveProviders).map(\.blockId))
+        let grantedBlockIds = Set(candidates.map(\.blockId))
         updateVideoFramesForPlayback(sceneFrameIndex: sceneFrameIndex, mediaFrameIndex: mediaFrameIndex, grantedBlockIds: grantedBlockIds)
     }
 
@@ -1050,7 +1036,7 @@ public final class UserMediaService {
         for (_, provider) in videoProviders {
             provider.stopPlayback(flush: true)
         }
-        // PR-F: Reset budget state
+        // Reset playback cadence/diagnostic state.
         tickCounter = 0
         activeVideoBlockIds.removeAll()
     }

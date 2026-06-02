@@ -94,7 +94,6 @@ final class TimelineFrameResolverSingleFlightTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: SFStubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -362,7 +361,6 @@ final class TimelineFrameResolverSingleFlightTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: SFStubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in

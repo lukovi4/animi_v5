@@ -3,12 +3,12 @@ import Metal
 @testable import AnimiApp
 @testable import TVECore
 
-/// TT-03: Tests for TimelineCompositionEngine budget enforcement.
+/// TT-03: Tests for TimelineCompositionEngine residency and playback grants.
 /// Verifies:
-/// - Global decoder budget never exceeded across scenes
+/// - Every visible active playback candidate is granted
 /// - Warm scenes resident but receive no playback grants
 /// - Eviction follows deterministic ordering
-/// - Export policy skips budget refresh and eviction
+/// - Export policy skips residency refresh and eviction
 final class TimelineCompositionEngineBudgetTests: XCTestCase {
 
     // MARK: - Test Infrastructure
@@ -95,11 +95,15 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         return (timeline, resources)
     }
 
-    // MARK: - Budget Limit Tests
+    // MARK: - No-Cap Active Visible Playback Tests
 
-    /// Test: Single scene playback never exceeds global budget.
+    /// Test: Single active scene with five visible video candidates grants ALL of them.
+    ///
+    /// Contract: every visible video block in an active render participant must remain a
+    /// real playback source. There is no fixed decoder-count cap that drops visible blocks
+    /// into hold-last.
     @MainActor
-    func testSinglePlaybackBudget_neverExceedsGlobalLimit() async throws {
+    func testSinglePlayback_grantsAllVisibleCandidates_noCap() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -112,7 +116,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             cache.addToCache(res)
         }
 
-        // Create spy with many candidates (more than budget)
+        // Spy with five visible candidates — more than the old cap of 3.
         let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
         spy.isSceneMediaReady = true
         spy.playbackCandidatesByFrame[50] = [
@@ -123,12 +127,10 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             PlaybackVideoCandidate(blockId: "block_e", priority: BlockPriorityInfo(isVisible: true, area: 60, zIndex: 1))
         ]
 
-        let maxDecoders = 3
         let engine = TimelineCompositionEngine(
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: maxDecoders,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -148,20 +150,111 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         await engine.prepareForPlayback(startingAt: 50)
         engine.startPlayback(at: 50)
 
-        // Verify budget-aware start was called
-        XCTAssertEqual(spy.budgetedStartCalls.count, 1, "Should have one budget-aware start call")
+        // Verify grant-aware start was called once
+        XCTAssertEqual(spy.grantStartCalls.count, 1, "Should have one grant-aware start call")
 
-        let grantedCount = spy.budgetedStartCalls[0].granted.count
-        XCTAssertLessThanOrEqual(grantedCount, maxDecoders,
-                                 "Granted blocks (\(grantedCount)) should not exceed maxDecoders (\(maxDecoders))")
+        // All five visible candidates must be granted — no cap.
+        let granted = spy.grantStartCalls[0].granted
+        XCTAssertEqual(granted.count, 5, "All five visible candidates should be granted (no cap)")
+        for blockId in ["block_a", "block_b", "block_c", "block_d", "block_e"] {
+            XCTAssertTrue(granted.contains(blockId), "\(blockId) should be granted (no decoder cap)")
+        }
+    }
 
-        // Verify top 3 by priority were granted
-        let granted = spy.budgetedStartCalls[0].granted
-        XCTAssertTrue(granted.contains("block_a"), "Highest priority block should be granted")
-        XCTAssertTrue(granted.contains("block_b"), "2nd highest priority block should be granted")
-        XCTAssertTrue(granted.contains("block_c"), "3rd highest priority block should be granted")
-        XCTAssertFalse(granted.contains("block_d"), "4th priority block should NOT be granted")
-        XCTAssertFalse(granted.contains("block_e"), "5th priority block should NOT be granted")
+    /// Test: In a transition, more than three visible videos split across A and B all get
+    /// grants for their own scene — scene rank / z-order must not drop visible videos.
+    @MainActor
+    func testTransitionPlayback_grantsAllVisibleCandidatesAcrossBothScenes_noCap() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let ids = (0..<3).map { i in
+            UUID(uuidString: "\(String(repeating: String(i), count: 8))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 4))-\(String(repeating: String(i), count: 12))")!
+        }
+
+        let durationUs: TimeUs = 100 * 1_000_000 / 30
+        let sceneItems: [TimelineItem] = ids.map { id in
+            TimelineItem(id: id, payloadId: UUID(), kind: .scene, durationUs: durationUs)
+        }
+
+        // 10-frame fade transition between scene 0 and 1.
+        let boundaryKey = SceneBoundaryKey(ids[0], ids[1])
+        let transition = SceneTransition(type: .fade, durationFrames: 10)
+
+        var payloads: [UUID: TimelinePayload] = [:]
+        var resourcesList: [SceneTypeResourcesCache.Resources] = []
+        for (i, item) in sceneItems.enumerated() {
+            let sceneTypeId = "scene-type-\(i)"
+            payloads[item.payloadId] = .scene(ScenePayload(sceneTypeId: sceneTypeId))
+            resourcesList.append(makeMinimalResources(durationFrames: 100, sceneTypeId: sceneTypeId))
+        }
+
+        let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: sceneItems)
+        let timeline = CanonicalTimeline(
+            tracks: [sceneTrack],
+            payloads: payloads,
+            boundaryTransitions: [boundaryKey: transition]
+        )
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resourcesList {
+            cache.addToCache(res)
+        }
+
+        // Scene 0 (A): 2 visible videos; Scene 1 (B): 2 visible videos → 4 total > old cap of 3.
+        var spies: [UUID: SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy] = [:]
+        let candidatesByScene: [Int: [PlaybackVideoCandidate]] = [
+            0: [
+                PlaybackVideoCandidate(blockId: "a_1", priority: BlockPriorityInfo(isVisible: true, area: 100, zIndex: 1)),
+                PlaybackVideoCandidate(blockId: "a_2", priority: BlockPriorityInfo(isVisible: true, area: 90, zIndex: 1))
+            ],
+            1: [
+                PlaybackVideoCandidate(blockId: "b_1", priority: BlockPriorityInfo(isVisible: true, area: 80, zIndex: 1)),
+                PlaybackVideoCandidate(blockId: "b_2", priority: BlockPriorityInfo(isVisible: true, area: 70, zIndex: 1))
+            ]
+        ]
+        for (i, id) in ids.enumerated() {
+            let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+            spy.isSceneMediaReady = true
+            if let candidates = candidatesByScene[i] {
+                for frame in 0..<100 {
+                    spy.playbackCandidatesByFrame[frame] = candidates
+                }
+            }
+            spies[id] = spy
+        }
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            mediaLocator: StubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spies[instanceId]!
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+
+        // Playhead in transition zone between scene 0 and 1.
+        let transitionFrame = 95
+        await engine.prepareForPlayback(startingAt: transitionFrame)
+        engine.startPlayback(at: transitionFrame)
+
+        // Each scene's own visible videos are fully granted — no cap, no cross-scene dropping.
+        let grantedA = spies[ids[0]]!.grantStartCalls.last?.granted ?? []
+        let grantedB = spies[ids[1]]!.grantStartCalls.last?.granted ?? []
+        XCTAssertEqual(grantedA, Set(["a_1", "a_2"]), "Scene A should grant both of its visible videos")
+        XCTAssertEqual(grantedB, Set(["b_1", "b_2"]), "Scene B should grant both of its visible videos")
     }
 
     // MARK: - Warm Scene Tests
@@ -194,7 +287,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -220,19 +312,19 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         let warmScene1Id = timeline.sceneItems[1].id
         let warmScene2Id = timeline.sceneItems[3].id
 
-        XCTAssertEqual(spies[currentSceneId]?.budgetedStartCalls.count ?? 0, 1,
-                       "Current scene should receive budget-aware start call")
-        XCTAssertEqual(spies[warmScene1Id]?.budgetedStartCalls.count ?? 0, 0,
+        XCTAssertEqual(spies[currentSceneId]?.grantStartCalls.count ?? 0, 1,
+                       "Current scene should receive grant-aware start call")
+        XCTAssertEqual(spies[warmScene1Id]?.grantStartCalls.count ?? 0, 0,
                        "Warm scene (prev) should NOT receive playback start")
-        XCTAssertEqual(spies[warmScene2Id]?.budgetedStartCalls.count ?? 0, 0,
+        XCTAssertEqual(spies[warmScene2Id]?.grantStartCalls.count ?? 0, 0,
                        "Warm scene (next) should NOT receive playback start")
     }
 
     // MARK: - Export Policy Tests
 
-    /// Test: resolveFrame with .export policy skips budget refresh and eviction.
+    /// Test: resolveFrame with .export policy skips residency refresh and eviction.
     @MainActor
-    func testResolveFrameExport_skipsBudgetWindowAndDoesNotEvict() async throws {
+    func testResolveFrameExport_skipsResidencyRefreshAndDoesNotEvict() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -260,7 +352,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -290,7 +381,7 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
 
         // For export, runtimes may be created but should not be evicted
         // The key test is that no runtime should have been explicitly paused/removed
-        // due to budget eviction
+        // due to residency eviction
         XCTAssertGreaterThanOrEqual(createdRuntimes.count, runtimesBeforeExport,
                                     "Export should not reduce runtime count (no eviction)")
     }
@@ -328,7 +419,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 2,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -348,17 +438,17 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         engine.startPlayback(at: 50)
 
         // Get grants from start
-        XCTAssertEqual(spy.budgetedStartCalls.count, 1)
-        let startGrants = spy.budgetedStartCalls[0].granted
+        XCTAssertEqual(spy.grantStartCalls.count, 1)
+        let startGrants = spy.grantStartCalls[0].granted
 
         // Now tick
         engine.syncPlaybackTick(51)
 
         // Get grants from tick
-        XCTAssertEqual(spy.budgetedTickCalls.count, 1)
-        let tickGrants = spy.budgetedTickCalls[0].granted
+        XCTAssertEqual(spy.grantTickCalls.count, 1)
+        let tickGrants = spy.grantTickCalls[0].granted
 
-        // Grants should be the same (same candidates, same budget)
+        // Grants should be the same for the same candidates.
         XCTAssertEqual(startGrants, tickGrants, "Start and tick should compute same grants for same candidates")
     }
 
@@ -397,7 +487,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -466,7 +555,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -487,8 +575,8 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         await engine.prepareForPlayback(startingAt: scene2Frame)
         engine.startPlayback(at: scene2Frame)
 
-        // Verify: Scene 2 received budget-aware start
-        XCTAssertEqual(spies[ids[2]]!.budgetedStartCalls.count, 1, "Scene 2 should receive start")
+        // Verify: Scene 2 received grant-aware start
+        XCTAssertEqual(spies[ids[2]]!.grantStartCalls.count, 1, "Scene 2 should receive start")
         XCTAssertEqual(spies[ids[2]]!.softStopPreservingTexturesCalls, 0, "Scene 2 should NOT be deactivated yet")
 
         // STEP 2: Move playhead to scene 3 (frame 350)
@@ -502,11 +590,11 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
 
         // Verify: Scene 2 did NOT receive new active grants after transition
         // (only the initial start call from step 1)
-        XCTAssertEqual(spies[ids[2]]!.budgetedStartCalls.count, 1, "Scene 2 should NOT receive new start calls")
-        XCTAssertEqual(spies[ids[2]]!.budgetedTickCalls.count, 0, "Scene 2 should NOT receive tick calls after becoming warm")
+        XCTAssertEqual(spies[ids[2]]!.grantStartCalls.count, 1, "Scene 2 should NOT receive new start calls")
+        XCTAssertEqual(spies[ids[2]]!.grantTickCalls.count, 0, "Scene 2 should NOT receive tick calls after becoming warm")
 
         // Verify: Scene 3 received tick call (it's now active)
-        XCTAssertEqual(spies[ids[3]]!.budgetedTickCalls.count, 1, "Scene 3 should receive tick")
+        XCTAssertEqual(spies[ids[3]]!.grantTickCalls.count, 1, "Scene 3 should receive tick")
 
         // Verify: Scene 2 runtime still exists (not evicted, just deactivated)
         XCTAssertNotNil(engine.runtime(for: ids[2]), "Scene 2 runtime should still exist (warm, not evicted)")
@@ -550,7 +638,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -570,8 +657,8 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         // Scene 1 is pinned, scenes 0 and 2 are warm
         await engine.prepareForPlayback(startingAt: 150)
 
-        guard let snapshot = engine.debugPlaybackBudgetSnapshot(at: 150) else {
-            XCTFail("debugPlaybackBudgetSnapshot should return non-nil")
+        guard let snapshot = engine.debugPlaybackGrantSnapshot(at: 150) else {
+            XCTFail("debugPlaybackGrantSnapshot should return non-nil")
             return
         }
 
@@ -591,9 +678,9 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         XCTAssertFalse(pinnedGrants.isEmpty, "Pinned scene 1 must receive playback grant")
     }
 
-    /// Regression: startPlayback must not start warm scenes even with spare budget.
+    /// Regression: startPlayback must not start warm scenes.
     @MainActor
-    func testStartPlayback_doesNotStartWarmScenes_evenWithSpareBudget() async throws {
+    func testStartPlayback_doesNotStartWarmScenes() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -625,7 +712,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -645,9 +731,9 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         await engine.prepareForPlayback(startingAt: 50)
         engine.startPlayback(at: 50)
 
-        XCTAssertEqual(spies[ids[0]]?.budgetedStartCalls.count, 1, "Active scene 0 should receive start")
-        XCTAssertEqual(spies[ids[1]]?.budgetedStartCalls.count, 0, "Warm next scene 1 must not receive start")
-        XCTAssertEqual(spies[ids[2]]?.budgetedStartCalls.count, 0, "Far scene 2 must not receive start")
+        XCTAssertEqual(spies[ids[0]]?.grantStartCalls.count, 1, "Active scene 0 should receive start")
+        XCTAssertEqual(spies[ids[1]]?.grantStartCalls.count, 0, "Warm next scene 1 must not receive start")
+        XCTAssertEqual(spies[ids[2]]?.grantStartCalls.count, 0, "Far scene 2 must not receive start")
     }
 
     /// Regression: syncPlaybackTick must not tick warm scenes.
@@ -684,7 +770,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -704,8 +789,8 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         engine.startPlayback(at: 50)
         engine.syncPlaybackTick(50)
 
-        XCTAssertEqual(spies[ids[0]]?.budgetedTickCalls.count, 1, "Active scene 0 should receive tick")
-        XCTAssertEqual(spies[ids[1]]?.budgetedTickCalls.count, 0, "Warm scene 1 must not receive tick")
+        XCTAssertEqual(spies[ids[0]]?.grantTickCalls.count, 1, "Active scene 0 should receive tick")
+        XCTAssertEqual(spies[ids[1]]?.grantTickCalls.count, 0, "Warm scene 1 must not receive tick")
     }
 
     /// Regression: transition playback starts only transition participants, not warm next.
@@ -767,7 +852,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -788,9 +872,9 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         await engine.prepareForPlayback(startingAt: transitionFrame)
         engine.startPlayback(at: transitionFrame)
 
-        XCTAssertEqual(spies[ids[0]]?.budgetedStartCalls.count, 1, "Transition A (scene 0) should receive start")
-        XCTAssertEqual(spies[ids[1]]?.budgetedStartCalls.count, 1, "Transition B (scene 1) should receive start")
-        XCTAssertEqual(spies[ids[2]]?.budgetedStartCalls.count, 0, "Warm next (scene 2) must not receive start")
+        XCTAssertEqual(spies[ids[0]]?.grantStartCalls.count, 1, "Transition A (scene 0) should receive start")
+        XCTAssertEqual(spies[ids[1]]?.grantStartCalls.count, 1, "Transition B (scene 1) should receive start")
+        XCTAssertEqual(spies[ids[2]]?.grantStartCalls.count, 0, "Warm next (scene 2) must not receive start")
     }
 
     // MARK: - TT-03 Completion: Active->Warm Transition Tests
@@ -854,7 +938,6 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -877,8 +960,8 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
         engine.startPlayback(at: transitionFrame)
 
         // Verify: Both scene 0 and scene 1 should be active in transition
-        XCTAssertEqual(spies[ids[0]]!.budgetedStartCalls.count, 1, "Scene 0 should receive start (transition A)")
-        XCTAssertEqual(spies[ids[1]]!.budgetedStartCalls.count, 1, "Scene 1 should receive start (transition B)")
+        XCTAssertEqual(spies[ids[0]]!.grantStartCalls.count, 1, "Scene 0 should receive start (transition A)")
+        XCTAssertEqual(spies[ids[1]]!.grantStartCalls.count, 1, "Scene 1 should receive start (transition B)")
         XCTAssertEqual(spies[ids[0]]!.softStopPreservingTexturesCalls, 0, "Scene 0 should NOT be deactivated yet")
 
         // STEP 2: Move beyond transition into scene 1 single mode (frame 110)
@@ -891,10 +974,10 @@ final class TimelineCompositionEngineBudgetTests: XCTestCase {
                              "Scene 0 should receive deactivatePlaybackPreservingTextures() when exiting transition")
 
         // Verify: Scene 1 received tick (it's now single active)
-        XCTAssertEqual(spies[ids[1]]!.budgetedTickCalls.count, 1, "Scene 1 should receive tick")
+        XCTAssertEqual(spies[ids[1]]!.grantTickCalls.count, 1, "Scene 1 should receive tick")
 
         // Verify: Scene 0 did NOT receive tick after transition
-        XCTAssertEqual(spies[ids[0]]!.budgetedTickCalls.count, 0, "Scene 0 should NOT receive tick after becoming warm")
+        XCTAssertEqual(spies[ids[0]]!.grantTickCalls.count, 0, "Scene 0 should NOT receive tick after becoming warm")
 
         // Verify: Scene 0 runtime still exists
         XCTAssertNotNil(engine.runtime(for: ids[0]), "Scene 0 runtime should still exist (warm)")

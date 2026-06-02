@@ -118,7 +118,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -164,7 +163,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -217,7 +215,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -271,7 +268,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -324,7 +320,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -393,7 +388,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -436,7 +430,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -495,7 +488,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -546,7 +538,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -612,7 +603,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -671,7 +661,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -766,7 +755,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -848,7 +836,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -924,7 +911,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -992,7 +978,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -1053,7 +1038,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -1113,7 +1097,6 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in

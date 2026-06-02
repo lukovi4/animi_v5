@@ -1,24 +1,19 @@
 import Foundation
 
-// MARK: - Global Video Budget Coordinator
+// MARK: - Global Video Residency Coordinator
 
-/// Coordinates video decoder allocation across multiple scene instances.
-/// Ensures that the total number of active video decoders stays within budget.
+/// Coordinates scene-instance residency across a multi-scene timeline.
 ///
-/// Policy:
-/// - pin: current scene + transition partner (highest priority)
-/// - warm: previous + next scenes (medium priority)
-/// - evict: farthest scenes first (lowest priority)
+/// Residency policy (independent of how many videos decode within an active scene):
+/// - pin: current scene + transition partner (active render participants)
+/// - warm: previous + next scenes (resident/prepared, not actively decoding)
+/// - evict: farthest scenes first
+///
+/// This coordinator decides which *scenes* are active/warm/evictable. It does NOT cap
+/// how many visible video blocks decode within an active scene — every visible video
+/// block in an active render participant stays a real playback source.
 @MainActor
-public final class GlobalVideoBudgetCoordinator {
-
-    // MARK: - Configuration
-
-    /// Maximum number of active video decoders across all scenes.
-    /// Default: 3 (same as single-scene budget in UserMediaService).
-    public let maxActiveDecoders: Int
-
-    // MARK: - State
+public final class GlobalVideoResidencyCoordinator {
 
     /// Currently pinned scene instance IDs (current + transition partner).
     public private(set) var pinnedInstanceIds: Set<UUID> = []
@@ -28,12 +23,6 @@ public final class GlobalVideoBudgetCoordinator {
 
     /// Current scene index in timeline.
     public private(set) var currentSceneIndex: Int = 0
-
-    // MARK: - Init
-
-    public init(maxActiveDecoders: Int = 3) {
-        self.maxActiveDecoders = maxActiveDecoders
-    }
 
     // MARK: - Update
 
@@ -114,7 +103,7 @@ public final class GlobalVideoBudgetCoordinator {
     /// Returns whether a scene instance should run active decoders for realtime playback.
     /// Only pinned scenes (current render participants) qualify.
     /// Warm scenes are resident/prepared but do not run active decoders.
-    public func shouldHaveActiveDecoders(for instanceId: UUID) -> Bool {
+    public func shouldRunActivePlayback(for instanceId: UUID) -> Bool {
         pinnedInstanceIds.contains(instanceId)
     }
 
@@ -160,7 +149,7 @@ public final class GlobalVideoBudgetCoordinator {
         }
     }
 
-    /// Returns prioritized list of scene instances for decoder allocation.
+    /// Returns prioritized list of scene instances for deterministic ordering.
     /// Sort order: tier asc → distance asc → sceneIndex asc → UUID.uuidString asc
     public func prioritizedInstances(
         from availableInstanceIds: Set<UUID>,

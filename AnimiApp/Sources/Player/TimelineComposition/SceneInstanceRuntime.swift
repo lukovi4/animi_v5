@@ -20,7 +20,7 @@ protocol SceneMediaSyncing: AnyObject {
     var isSceneMediaReady: Bool { get }
     var hasFailedMedia: Bool { get }
 
-    // MARK: TT-03 Budget-Aware APIs
+    // MARK: TT-03 Playback Grant APIs
     func playbackCandidates(sceneFrameIndex: Int) -> [PlaybackVideoCandidate]
     func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
     func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
@@ -98,7 +98,7 @@ public final class SceneInstanceRuntime {
     public let overlayTextureProvider: MutableTextureProvider
 
     /// User media service for this instance.
-    /// Video budget is managed by GlobalVideoBudgetCoordinator.
+    /// Scene residency is managed by `GlobalVideoResidencyCoordinator`.
     public let userMediaService: UserMediaService
 
     /// Injected media syncing service for tests (nil in production).
@@ -568,7 +568,7 @@ public final class SceneInstanceRuntime {
     }
 
     /// Syncs video frames for playback tick (gated to video frame rate).
-    /// Legacy wrapper: uses local budget policy. For engine-owned budget use budget-aware variant.
+    /// Scene-edit wrapper; timeline playback uses the grant-aware variant below.
     public func syncPlaybackTick(_ localFrame: Int) {
         let visibilityFrame = clampedLocalFrame(localFrame)
         let mediaFrame = max(localFrame, 0)
@@ -576,7 +576,7 @@ public final class SceneInstanceRuntime {
     }
 
     /// Starts video playback at the given local frame.
-    /// Legacy wrapper: uses local budget policy. For engine-owned budget use budget-aware variant.
+    /// Scene-edit wrapper; timeline playback uses the grant-aware variant below.
     public func startPlayback(at localFrame: Int) {
         let visibilityFrame = clampedLocalFrame(localFrame)
         let mediaFrame = max(localFrame, 0)
@@ -584,7 +584,7 @@ public final class SceneInstanceRuntime {
     }
 
     /// Lightweight eviction: cancels in-flight preparation and pauses playback.
-    /// Called by budget eviction and orphan cleanup paths.
+    /// Called by residency eviction and orphan cleanup paths.
     func evictFromTimeline() {
         preparationTask?.cancel()
         preparationTask = nil
@@ -628,10 +628,10 @@ public final class SceneInstanceRuntime {
         mediaSyncing.stopVideoPlaybackPreservingTextures()
     }
 
-    // MARK: - TT-03 Budget-Aware Playback
+    // MARK: - TT-03 Playback Grants
 
-    /// Returns sorted playback candidates for budget allocation.
-    /// Used by engine to collect candidates across scenes for global priority ordering.
+    /// Returns sorted playback candidates for active playback grants.
+    /// Used by engine to collect candidates across scenes for deterministic ordering.
     ///
     /// - Parameter localFrame: Local frame for priority calculation (clamped to valid range)
     /// - Returns: Sorted candidates (visible first, then area desc, zIndex desc, blockId asc)
@@ -639,11 +639,11 @@ public final class SceneInstanceRuntime {
         mediaSyncing.playbackCandidates(sceneFrameIndex: clampedLocalFrame(localFrame))
     }
 
-    /// Starts video playback for granted blocks only (engine-owned budget).
+    /// Starts video playback for granted blocks only.
     ///
     /// - Parameters:
     ///   - localFrame: Local frame to sync to (clamped to valid range)
-    ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
+    ///   - grantedBlockIds: Set of block IDs that should actively play
     ///   - hostTime: Host time from transport (nil for legacy callers)
     func startPlayback(at localFrame: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         let visibilityFrame = clampedLocalFrame(localFrame)
@@ -656,11 +656,11 @@ public final class SceneInstanceRuntime {
         )
     }
 
-    /// Syncs video frames for playback tick with engine-owned budget.
+    /// Syncs video frames for playback tick with active playback grants.
     ///
     /// - Parameters:
     ///   - localFrame: Local frame for sync (clamped to valid range)
-    ///   - grantedBlockIds: Set of block IDs that have been granted decoder slots by engine
+    ///   - grantedBlockIds: Set of block IDs that should actively play
     ///   - hostTime: Host time from transport (nil for legacy callers)
     func syncPlaybackTick(_ localFrame: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         let visibilityFrame = clampedLocalFrame(localFrame)

@@ -116,7 +116,6 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
     private func makeEngineWithSpy(
         sceneCount: Int = 1,
         framesPerScene: Int = 100,
-        maxActiveDecoders: Int = 3,
         spy: DiagnosticsSpy,
         mediaSpy: SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy
     ) -> (TimelineCompositionEngine, CanonicalTimeline, [SceneTypeResourcesCache.Resources]) {
@@ -136,7 +135,6 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: maxActiveDecoders,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -210,7 +208,6 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -392,7 +389,6 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in
@@ -754,7 +750,6 @@ final class RuntimeDiagnosticsSinkTests: XCTestCase {
             device: device,
             commandQueue: commandQueue,
             fps: 30,
-            maxActiveDecoders: 3,
             mediaLocator: StubMediaLocator(),
             resourcesCache: cache,
             runtimeFactory: { instanceId, resources, dev, queue in

@@ -66,7 +66,7 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
 
     /// Spy to capture sceneFrameIndex values passed to media syncing methods.
     /// TT-02: Added stillFrames, isSceneMediaReady, hasFailedMedia for readiness testing.
-    /// TT-03: Added budget-aware tracking fields.
+    /// TT-03: Added grant-aware tracking fields.
     @MainActor
     final class MediaSyncingSpy: SceneMediaSyncing {
         var stillFrames: [Int] = []
@@ -80,12 +80,12 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         var isSceneMediaReady: Bool = false
         var hasFailedMedia: Bool = false
 
-        // TT-03: Budget-aware tracking
+        // TT-03: Grant-aware tracking
         var playbackCandidatesByFrame: [Int: [PlaybackVideoCandidate]] = [:]
-        var budgetedStartCalls: [(frame: Int, granted: Set<String>)] = []
-        var budgetedStartMediaFrames: [Int] = []
-        var budgetedTickCalls: [(frame: Int, granted: Set<String>)] = []
-        var budgetedTickMediaFrames: [Int] = []
+        var grantStartCalls: [(frame: Int, granted: Set<String>)] = []
+        var grantStartMediaFrames: [Int] = []
+        var grantTickCalls: [(frame: Int, granted: Set<String>)] = []
+        var grantTickMediaFrames: [Int] = []
 
         // TT-03 Completion: Soft-stop tracking
         var softStopPreservingTexturesCalls: Int = 0
@@ -125,19 +125,19 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             startPlaybackMediaFrames.append(mediaFrameIndex)
         }
 
-        // TT-03: Budget-aware API implementations
+        // TT-03: Grant-aware API implementations
         func playbackCandidates(sceneFrameIndex: Int) -> [PlaybackVideoCandidate] {
             playbackCandidatesByFrame[sceneFrameIndex] ?? []
         }
 
         func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
-            budgetedStartCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
-            budgetedStartMediaFrames.append(mediaFrameIndex)
+            grantStartCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
+            grantStartMediaFrames.append(mediaFrameIndex)
         }
 
         func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
-            budgetedTickCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
-            budgetedTickMediaFrames.append(mediaFrameIndex)
+            grantTickCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
+            grantTickMediaFrames.append(mediaFrameIndex)
         }
 
         // TT-03 Completion: Soft-stop implementation
@@ -508,7 +508,7 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         XCTAssertLessThan(context.localFrame, nativeDuration, "localFrame must be < nativeDuration")
     }
 
-    // MARK: - TT-03: Budget-Aware API Tests
+    // MARK: - TT-03: Playback Grant API Tests
 
     /// Behavior: playbackCandidates(at: 350) passes clamped frame 299 to media service.
     @MainActor
@@ -547,9 +547,9 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         XCTAssertEqual(candidates.first?.blockId, "test-block")
     }
 
-    /// Behavior: budget-aware startPlayback(at: 350, grantedBlockIds:) passes clamped frame + grants.
+    /// Behavior: grant-aware startPlayback(at: 350, grantedBlockIds:) passes clamped frame + grants.
     @MainActor
-    func testBudgetAwareStartPlayback_beyondDuration_passesClampedFrameAndGrants() throws {
+    func testGrantAwareStartPlayback_beyondDuration_passesClampedFrameAndGrants() throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -572,14 +572,14 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         runtime.startPlayback(at: 350, grantedBlockIds: grantedBlocks)
 
         // Then: Spy should receive clamped frame 299 with correct grants
-        XCTAssertEqual(spy.budgetedStartCalls.count, 1)
-        XCTAssertEqual(spy.budgetedStartCalls[0].frame, 299)
-        XCTAssertEqual(spy.budgetedStartCalls[0].granted, grantedBlocks)
+        XCTAssertEqual(spy.grantStartCalls.count, 1)
+        XCTAssertEqual(spy.grantStartCalls[0].frame, 299)
+        XCTAssertEqual(spy.grantStartCalls[0].granted, grantedBlocks)
     }
 
-    /// Behavior: budget-aware syncPlaybackTick(350, grantedBlockIds:) passes clamped frame + grants.
+    /// Behavior: grant-aware syncPlaybackTick(350, grantedBlockIds:) passes clamped frame + grants.
     @MainActor
-    func testBudgetAwareSyncPlaybackTick_beyondDuration_passesClampedFrameAndGrants() throws {
+    func testGrantAwareSyncPlaybackTick_beyondDuration_passesClampedFrameAndGrants() throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -602,14 +602,14 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         runtime.syncPlaybackTick(350, grantedBlockIds: grantedBlocks)
 
         // Then: Spy should receive clamped frame 299 with correct grants
-        XCTAssertEqual(spy.budgetedTickCalls.count, 1)
-        XCTAssertEqual(spy.budgetedTickCalls[0].frame, 299)
-        XCTAssertEqual(spy.budgetedTickCalls[0].granted, grantedBlocks)
+        XCTAssertEqual(spy.grantTickCalls.count, 1)
+        XCTAssertEqual(spy.grantTickCalls[0].frame, 299)
+        XCTAssertEqual(spy.grantTickCalls[0].granted, grantedBlocks)
     }
 
     /// Behavior: empty granted set still passes through to media service.
     @MainActor
-    func testBudgetAwarePlayback_emptyGrantSet_stillCallsMediaService() throws {
+    func testGrantAwarePlayback_emptyGrantSet_stillCallsMediaService() throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal device not available")
@@ -632,13 +632,13 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         runtime.syncPlaybackTick(150, grantedBlockIds: [])
 
         // Then: Spy should receive both calls with empty sets
-        XCTAssertEqual(spy.budgetedStartCalls.count, 1)
-        XCTAssertEqual(spy.budgetedStartCalls[0].frame, 100)
-        XCTAssertTrue(spy.budgetedStartCalls[0].granted.isEmpty)
+        XCTAssertEqual(spy.grantStartCalls.count, 1)
+        XCTAssertEqual(spy.grantStartCalls[0].frame, 100)
+        XCTAssertTrue(spy.grantStartCalls[0].granted.isEmpty)
 
-        XCTAssertEqual(spy.budgetedTickCalls.count, 1)
-        XCTAssertEqual(spy.budgetedTickCalls[0].frame, 150)
-        XCTAssertTrue(spy.budgetedTickCalls[0].granted.isEmpty)
+        XCTAssertEqual(spy.grantTickCalls.count, 1)
+        XCTAssertEqual(spy.grantTickCalls[0].frame, 150)
+        XCTAssertTrue(spy.grantTickCalls[0].granted.isEmpty)
     }
 
     // MARK: - TT-03 Completion: Deactivate Playback Tests
