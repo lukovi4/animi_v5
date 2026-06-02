@@ -569,18 +569,20 @@ def validate_redirection(root: Path, segment: Sequence[str]) -> Optional[str]:
 
 
 def is_dangerous_bash_command(root: Path, command: str) -> Optional[str]:
-    if "\n" in command or "\r" in command:
-        return "multi-line Bash is blocked"
     if any(pattern in command for pattern in BLOCKED_RAW_SHELL_PATTERNS):
         return "command substitution/heredoc is blocked"
-    tokens = shell_tokens(command)
-    for segment in command_segments(tokens):
-        if segment[0] in SHELL_REDIRECT_TOKENS:
-            reason = validate_redirection(root, segment)
-        else:
-            reason = segment_is_dangerous(root, segment)
-        if reason:
-            return reason
+    for unit in re.split(r"[\r\n]+", command):
+        unit = unit.strip()
+        if not unit:
+            continue
+        tokens = shell_tokens(unit)
+        for segment in command_segments(tokens):
+            if segment[0] in SHELL_REDIRECT_TOKENS:
+                reason = validate_redirection(root, segment)
+            else:
+                reason = segment_is_dangerous(root, segment)
+            if reason:
+                return reason
     return None
 
 
@@ -913,6 +915,30 @@ def run_self_test() -> int:
                 {
                     "tool_name": "Bash",
                     "tool_input": {"command": 'grep -rn "TextPayload" AnimiApp/Sources TVECore/Sources'},
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "multi-line normal inspection bash is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": 'cd AnimiApp\necho "=== callers ==="\nrg "TextPayload" Sources Tests'
+                    },
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "multi-line bash still blocks dangerous commands",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": 'echo "safe first line"\nrm -rf AnimiApp/Sources'
+                    },
                 },
             ),
         )

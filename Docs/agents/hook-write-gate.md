@@ -94,6 +94,7 @@ Allowed by default:
 - read-only git commands such as `git status`, `git diff`, `git log`, `git show`, `git ls-files`, `git grep`, `git rev-parse`;
 - build/test/verification commands such as `swift test`, `xcodebuild test`, `make build`, and project-local scripts;
 - shell composition and pipes such as `cd TVECore && swift test` or `rg TextPayload AnimiApp/Sources | wc -l`;
+- multi-line Bash when each line is a normal non-dangerous development command;
 - redirects to repository or approved temp paths;
 - repo-local scripting such as `python3 Scripts/report.py` or `node Scripts/tool.js`;
 - `mkdir -p`, `touch`, `cp`, and `mv` when they do not target protected infrastructure or global paths.
