@@ -15,13 +15,13 @@ Codex creates the marker only after:
 - `task-contract.md` has `Status: Approved`;
 - `claude-plan.md` exists;
 - `codex-plan-review.md` has `Status: APPROVED`;
-- no unresolved blocking product, scope, architecture, protected-action, or dangerous-action decision remains.
+- no unresolved blocking product, scope, architecture, deletion/cleanup/rollback, or task-boundary decision remains.
 
 The user's approval of `task-contract.md` authorizes implementation. A second approval is required only when Claude or Codex discovers a new decision outside that contract.
 
 Claude must never create, edit, rename, or delete the marker.
 
-The marker authorizes implementation only. It does not authorize planning, direct skill expansion, infrastructure changes, protected-path writes, destructive git, dependency mutation, deletion, commit/push, or workflow bypass.
+The marker authorizes implementation only. It does not authorize planning, direct skill expansion, Codex-owned gate artifact edits, deletion, destructive cleanup, git rollback cleanup, or workflow bypass.
 
 ## Schema v1
 
@@ -49,7 +49,7 @@ The marker authorizes implementation only. It does not authorize planning, direc
 
 - `expires_at` should be short, usually one to two hours.
 - `codex-plan-review.md` is frozen during implementation. If its SHA256 changes, the marker is invalid.
-- `baseline_dirty_paths` avoids false positives in post-tool audit for normal pre-existing dirty files.
-- `baseline_dirty_paths` must never hide protected infrastructure changes.
+- `baseline_dirty_paths` records pre-existing dirty state for Codex review and commit hygiene. It is not a path allow-list and is not used by the hook to approve or deny writes.
+- `baseline_dirty_paths` must never be interpreted as permission to delete tracked files.
 - Normal implementation may edit repository code/test/project files as needed inside the approved task.
-- Critical dangerous actions are blocked by `hook-write-gate.md`, not by marker command allow-lists.
+- Deletion, destructive cleanup, and git rollback cleanup are blocked by `hook-write-gate.md`, not by marker command allow-lists.

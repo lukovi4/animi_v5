@@ -6,7 +6,8 @@
 - [ ] `codex-plan-review.md` exists and has `Status: APPROVED`.
 - [ ] Live marker or `claude-summary.md` marker snapshot identifies the task authorization context.
 - [ ] Claude stayed inside scope.
-- [ ] Claude changed only files needed for the task contract and avoided protected infrastructure.
+- [ ] Claude changed only files/actions needed for the task contract.
+- [ ] Claude did not run deletion, destructive cleanup, git rollback cleanup, or unapproved tracked-file removal.
 - [ ] Claude did not change product behavior beyond approved decisions.
 - [ ] Claude did not edit Codex-owned task artifacts.
 
@@ -48,7 +49,7 @@
 ## Same-Task Repair
 
 - [ ] Fixable findings inside approved scope stay in this task.
-- [ ] New task is used only for new product/architecture/scope/dependency decisions.
+- [ ] New task is used only for new product/architecture/scope decisions, uncontracted infrastructure/dependency/tooling/git-state changes, deletion/cleanup/rollback, or materially different implementation paths.
 - [ ] Marker scope is refreshed only when needed for the same task.
 
 ## Closure

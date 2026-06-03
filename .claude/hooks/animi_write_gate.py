@@ -2,9 +2,8 @@
 """Animi Claude Code write gate.
 
 This hook blocks only critical actions:
-- protected infrastructure writes;
-- destructive git/file/system/package/network-write commands;
-- implementation without a valid marker.
+- deletion/destructive cleanup commands;
+- git reset/clean/restore/checkout/rm cleanup commands.
 
 Normal code/test edits and normal development Bash are allowed during an
 approved implementation task.
@@ -34,97 +33,25 @@ ANIMI_PLANNING_SKILL = "animi-planning-pass"
 ANIMI_IMPLEMENT_SKILL = "animi-implement-task"
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
-ETERNAL_DENY_EXACT = {
-    ".codex-local/active-implementation.json",
-    ".env",
-    ".env.local",
-    ".env.production",
-    "AGENTS.md",
-    "CLAUDE.md",
-    "Makefile",
-}
-ETERNAL_DENY_PREFIXES = (
-    ".claude/",
-    ".agents/",
-    ".github/",
-    "Docs/agents/",
-    "Scripts/",
-)
-POST_TOOL_TRANSIENT_PATHS = {
-    ".claude/scheduled_tasks.lock",
-}
-
 SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 CURRENT_EVENT_NAME = ""
 
 SHELL_CONTROL_TOKENS = {"|", "||", "&", "&&", ";"}
 SHELL_REDIRECT_TOKENS = {">", ">>", "<", "<<", "2>", "2>>", "&>", ">&"}
-BLOCKED_RAW_SHELL_PATTERNS = ("<<",)
-BLOCKED_SHELL_COMMANDS = {
-    "chown",
-    "dd",
-    "diskutil",
-    "eval",
-    "kill",
-    "killall",
-    "launchctl",
-    "mkfs",
-    "pkill",
+DELETION_SHELL_COMMANDS = {
     "rm",
     "rmdir",
-    "rsync",
-    "scp",
-    "security",
     "shred",
-    "su",
-    "sudo",
     "unlink",
 }
-PATH_WRITE_COMMANDS = {"cp", "mkdir", "mv", "touch"}
-PACKAGE_COMMANDS = {"brew", "bundle", "cargo", "gem", "npm", "pip", "pip3", "pnpm", "yarn", "bun"}
-PACKAGE_MUTATING_ARGS = {
-    "add",
-    "ci",
-    "install",
-    "link",
-    "publish",
-    "remove",
-    "uninstall",
-    "update",
-    "upgrade",
-}
-GIT_MUTATING_SUBCOMMANDS = {
-    "add",
-    "am",
-    "apply",
-    "bisect",
+GIT_DESTRUCTIVE_CLEANUP_SUBCOMMANDS = {
     "checkout",
-    "cherry-pick",
     "clean",
-    "clone",
-    "commit",
-    "config",
-    "fetch",
-    "merge",
-    "mv",
-    "pull",
-    "push",
-    "rebase",
     "reset",
     "restore",
-    "revert",
     "rm",
-    "stash",
-    "submodule",
-    "switch",
-    "tag",
-    "worktree",
 }
-GIT_BRANCH_READ_ONLY_FLAGS = {"--show-current", "--list", "-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose"}
-GIT_TAG_READ_ONLY_FLAGS = {"--list", "-l", "-n", "--points-at", "--contains", "--merged", "--no-merged"}
-CLAUDE_TOOL_RESULTS_PART = "/.claude/projects/"
-CLAUDE_TOOL_RESULTS_DIR = "/tool-results/"
 
 
 class GateError(Exception):
@@ -132,10 +59,9 @@ class GateError(Exception):
 
 
 class Marker:
-    def __init__(self, data: Dict[str, Any], task_folder: Path, baseline_dirty: Set[str]) -> None:
+    def __init__(self, data: Dict[str, Any], task_folder: Path) -> None:
         self.data = data
         self.task_folder = task_folder
-        self.baseline_dirty = baseline_dirty
 
     @property
     def task_id(self) -> str:
@@ -172,14 +98,6 @@ def load_input() -> Dict[str, Any]:
     return value
 
 
-def rel_string(root: Path, path: Path) -> str:
-    try:
-        rel = path.resolve(strict=False).relative_to(root)
-    except ValueError as exc:
-        raise GateError(f"path is outside repository: {path}") from exc
-    return rel.as_posix()
-
-
 def canonicalize(root: Path, value: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise GateError("path must be a non-empty string")
@@ -202,13 +120,6 @@ def is_under(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
-
-
-def is_eternal_denied(root: Path, path: Path) -> bool:
-    rel = rel_string(root, path)
-    if rel in ETERNAL_DENY_EXACT:
-        return True
-    return any(rel == prefix.rstrip("/") or rel.startswith(prefix) for prefix in ETERNAL_DENY_PREFIXES)
 
 
 def require_file(path: Path, name: str) -> None:
@@ -308,15 +219,8 @@ def validate_marker(root: Path) -> Marker:
     if actual_review_hash.lower() != expected_review_hash.lower():
         raise GateError("codex-plan-review.md SHA256 does not match marker")
 
-    baseline_dirty = set(validate_string_list(data, "baseline_dirty_paths", allow_empty=True))
-    return Marker(data, task_folder, baseline_dirty)
-
-
-def marker_if_present(root: Path) -> Optional[Marker]:
-    marker_path = root / MARKER_REL
-    if not marker_path.exists():
-        return None
-    return validate_marker(root)
+    validate_string_list(data, "baseline_dirty_paths", allow_empty=True)
+    return Marker(data, task_folder)
 
 
 def parse_one_task_arg(raw_args: Any) -> str:
@@ -362,51 +266,6 @@ def handle_user_prompt_expansion(root: Path, data: Dict[str, Any]) -> None:
         raise GateError("implementation skill task folder does not match active marker")
 
 
-def extract_target_paths(root: Path, tool_name: str, tool_input: Dict[str, Any]) -> List[Path]:
-    if tool_name in {"Write", "Edit"}:
-        file_path = tool_input.get("file_path")
-        if not isinstance(file_path, str):
-            raise GateError(f"{tool_name} requires tool_input.file_path")
-        return [canonicalize(root, file_path)]
-
-    if tool_name == "MultiEdit":
-        file_path = tool_input.get("file_path")
-        edits = tool_input.get("edits")
-        if not isinstance(file_path, str) or not isinstance(edits, list):
-            raise GateError("MultiEdit requires file_path and edits[]")
-        return [canonicalize(root, file_path)]
-
-    if tool_name == "NotebookEdit":
-        file_path = tool_input.get("notebook_path") or tool_input.get("file_path")
-        if not isinstance(file_path, str):
-            raise GateError("NotebookEdit requires notebook_path or file_path")
-        return [canonicalize(root, file_path)]
-
-    raise GateError(f"unsupported write tool: {tool_name}")
-
-
-def planning_target_allowed(root: Path, target: Path) -> bool:
-    rel = rel_string(root, target)
-    parts = rel.split("/")
-    if len(parts) != 4:
-        return False
-    if parts[0] != ".codex-local" or parts[1] != "tasks" or parts[3] != "claude-plan.md":
-        return False
-    task_folder = root / ".codex-local" / "tasks" / parts[2]
-    validate_planning_task_folder(root, task_folder.as_posix())
-    return target == (task_folder / "claude-plan.md").resolve(strict=False)
-
-
-def implementation_target_allowed(root: Path, marker: Marker, target: Path) -> bool:
-    try:
-        target.resolve(strict=False).relative_to(root)
-    except ValueError:
-        return False
-    if is_eternal_denied(root, target):
-        return False
-    return True
-
-
 def strip_env_assignments(tokens: Sequence[str]) -> List[str]:
     result = list(tokens)
     while result and ENV_ASSIGN_RE.match(result[0]):
@@ -421,6 +280,43 @@ def shell_tokens(command: str) -> List[str]:
         return list(lexer)
     except ValueError as exc:
         raise GateError(f"cannot parse Bash command: {exc}") from exc
+
+
+def normalize_shell_newlines(command: str) -> str:
+    result: List[str] = []
+    quote: Optional[str] = None
+    escaped = False
+    previous_was_separator = False
+    for char in command:
+        if escaped:
+            result.append(char)
+            escaped = False
+            previous_was_separator = False
+            continue
+        if char == "\\" and quote != "'":
+            result.append(char)
+            escaped = True
+            previous_was_separator = False
+            continue
+        if quote:
+            result.append(char)
+            if char == quote:
+                quote = None
+            previous_was_separator = False
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            result.append(char)
+            previous_was_separator = False
+            continue
+        if char in {"\n", "\r"}:
+            if not previous_was_separator:
+                result.append(" ; ")
+                previous_was_separator = True
+            continue
+        result.append(char)
+        previous_was_separator = char in SHELL_CONTROL_TOKENS
+    return "".join(result)
 
 
 def command_segments(tokens: Sequence[str]) -> List[List[str]]:
@@ -472,7 +368,10 @@ def git_tokens_without_global_flags(tokens: Sequence[str]) -> List[str]:
 
 
 def is_mutating_git_command(command: str) -> bool:
-    tokens = git_tokens_without_global_flags(shell_tokens(command))
+    try:
+        tokens = git_tokens_without_global_flags(shell_tokens(command))
+    except GateError:
+        return False
     if len(tokens) < 2:
         return False
     if tokens[0] != "git":
@@ -480,128 +379,11 @@ def is_mutating_git_command(command: str) -> bool:
     subcommand = tokens[1]
     if subcommand == "branch":
         rest = tokens[2:]
-        if not rest:
-            return False
-        if any(token in {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--set-upstream-to"} for token in rest):
-            return True
-        if any(token.startswith("--set-upstream-to=") for token in rest):
-            return True
-        return not (
-            rest
-            and all(token in GIT_BRANCH_READ_ONLY_FLAGS or not token.startswith("-") for token in rest)
-            and any(token in GIT_BRANCH_READ_ONLY_FLAGS for token in rest)
-        )
+        return any(token in {"-d", "-D", "--delete"} for token in rest)
     if subcommand == "tag":
         rest = tokens[2:]
-        if not rest:
-            return False
-        return not any(token in GIT_TAG_READ_ONLY_FLAGS for token in rest)
-    if subcommand == "config":
-        rest = tokens[2:]
-        return not any(token in {"--get", "--get-all", "--list", "-l", "--show-origin", "--show-scope"} for token in rest)
-    return subcommand in GIT_MUTATING_SUBCOMMANDS
-
-
-def validate_git_output_paths(root: Path, tokens: Sequence[str]) -> None:
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token in {"--output", "-o"}:
-            if index + 1 >= len(tokens):
-                raise GateError("git output flag is missing a target")
-            validate_shell_path(root, tokens[index + 1], write=True)
-            index += 2
-            continue
-        if token.startswith("--output="):
-            validate_shell_path(root, token.split("=", 1)[1], write=True)
-        index += 1
-
-
-def is_safe_external_path(path: Path) -> bool:
-    text = path.resolve(strict=False).as_posix()
-    return (
-        text == "/dev/null"
-        or text.startswith("/tmp/")
-        or text.startswith("/private/tmp/")
-        or is_allowed_external_read_path(path)
-    )
-
-
-def validate_shell_path(root: Path, token: str, *, write: bool) -> None:
-    if not token or token.startswith("-"):
-        return
-    if write and token in {"/", "~"}:
-        raise GateError(f"Bash path targets a global location: {token}")
-    path = Path(token).expanduser() if token.startswith("~") else Path(token)
-    if not path.is_absolute():
-        path = root / path
-    resolved = path.resolve(strict=False)
-    if not write:
-        return
-    if is_under(resolved, root):
-        if write and is_eternal_denied(root, resolved):
-            raise GateError(f"Bash targets protected infrastructure: {token}")
-        return
-    if is_safe_external_path(resolved):
-        return
-    raise GateError(f"Bash path is outside repository or approved temp space: {token}")
-
-
-def validate_path_write_command(root: Path, tokens: Sequence[str]) -> None:
-    command = tokens[0]
-    args = [token for token in tokens[1:] if not token.startswith("-")]
-    if command == "cp" and args:
-        for token in args[:-1]:
-            validate_shell_path(root, token, write=False)
-        validate_shell_path(root, args[-1], write=True)
-        return
-    for token in args:
-        validate_shell_path(root, token, write=True)
-
-
-def validate_chmod_command(root: Path, tokens: Sequence[str]) -> None:
-    mode_seen = False
-    mode_re = re.compile(r"^([ugoa]*[+-=][rwxXstugo,]+|[0-7]{3,4})$")
-    for token in tokens[1:]:
-        if token.startswith("-"):
-            continue
-        if not mode_seen and mode_re.match(token):
-            mode_seen = True
-            continue
-        validate_shell_path(root, token, write=True)
-
-
-def validate_sed_command(root: Path, tokens: Sequence[str]) -> None:
-    if not any(token == "-i" or token.startswith("-i") for token in tokens[1:]):
-        return
-    for token in tokens[1:]:
-        if token.startswith("-"):
-            continue
-        validate_shell_path(root, token, write=True)
-
-
-def validate_plutil_command(root: Path, tokens: Sequence[str]) -> None:
-    if not any(token in {"-replace", "-remove", "-insert", "-convert"} for token in tokens[1:]):
-        return
-    args = [token for token in tokens[1:] if token and not token.startswith("-")]
-    if args:
-        validate_shell_path(root, args[-1], write=True)
-
-
-def validate_network_output_paths(root: Path, tokens: Sequence[str]) -> None:
-    first = tokens[0]
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token in {"-o", "--output"} or (first == "wget" and token == "-O"):
-            if index + 1 >= len(tokens):
-                raise GateError(f"{first} output flag is missing a target")
-            validate_shell_path(root, tokens[index + 1], write=True)
-            index += 2
-            continue
-        if token.startswith("--output="):
-            validate_shell_path(root, token.split("=", 1)[1], write=True)
-        index += 1
+        return any(token in {"-d", "--delete"} for token in rest)
+    return subcommand in GIT_DESTRUCTIVE_CLEANUP_SUBCOMMANDS
 
 
 def validate_find_command(root: Path, tokens: Sequence[str]) -> Optional[str]:
@@ -610,12 +392,6 @@ def validate_find_command(root: Path, tokens: Sequence[str]) -> Optional[str]:
         token = tokens[index]
         if token == "-delete":
             return "mutating find delete expression is blocked"
-        if token in {"-fls", "-fprint", "-fprintf"}:
-            if index + 1 >= len(tokens):
-                return f"{token} is missing a target"
-            validate_shell_path(root, tokens[index + 1], write=True)
-            index += 2
-            continue
         if token in {"-exec", "-execdir", "-ok", "-okdir"}:
             payload: List[str] = []
             index += 1
@@ -640,47 +416,20 @@ def shell_c_payload(tokens: Sequence[str]) -> Optional[str]:
     return None
 
 
-def package_command_is_mutating(tokens: Sequence[str]) -> bool:
-    command = tokens[0]
-    args = [token for token in tokens[1:] if not token.startswith("-")]
-    if command in {"brew", "bundle", "gem", "pip", "pip3", "pnpm", "yarn", "bun"}:
-        return any(arg in PACKAGE_MUTATING_ARGS for arg in args)
-    if command == "npm":
-        return any(arg in PACKAGE_MUTATING_ARGS or arg == "i" for arg in args)
-    if command == "cargo":
-        return bool(args and args[0] in {"add", "install", "publish", "remove", "update"})
-    return False
-
-
 def segment_is_dangerous(root: Path, segment: Sequence[str]) -> Optional[str]:
     tokens = strip_env_assignments(segment)
     if not tokens:
         return "empty command segment"
     first = tokens[0]
-    if first in BLOCKED_SHELL_COMMANDS:
+    if first in DELETION_SHELL_COMMANDS:
         return f"{first} is blocked"
-    if first in PATH_WRITE_COMMANDS:
-        validate_path_write_command(root, tokens)
-    if first == "chmod":
-        validate_chmod_command(root, tokens)
     if first == "git":
         if is_mutating_git_command(" ".join(shlex.quote(token) for token in tokens)):
-            return "git mutation is blocked"
-        validate_git_output_paths(root, tokens)
-    if first == "date" and len(tokens) > 1 and not all(token == "-u" or token.startswith("+") for token in tokens[1:]):
-        return "date mutation form is blocked"
+            return "git destructive cleanup is blocked"
     if first == "find":
         reason = validate_find_command(root, tokens)
         if reason:
             return reason
-    if first == "sed":
-        validate_sed_command(root, tokens)
-    if first == "plutil":
-        validate_plutil_command(root, tokens)
-    if first == "swift" and len(tokens) >= 3 and tokens[1] == "package" and tokens[2] in {"update", "resolve"}:
-        return "dependency mutation is blocked"
-    if first in {"curl", "wget"}:
-        validate_network_output_paths(root, tokens)
     if first in {"bash", "sh", "zsh"}:
         payload = shell_c_payload(tokens)
         if payload is not None:
@@ -689,8 +438,6 @@ def segment_is_dangerous(root: Path, segment: Sequence[str]) -> Optional[str]:
             reason = is_dangerous_bash_command(root, payload)
             if reason:
                 return f"shell -c payload is blocked: {reason}"
-    if first in PACKAGE_COMMANDS and package_command_is_mutating(tokens):
-        return "package/dependency mutation is blocked"
     return None
 
 
@@ -748,21 +495,6 @@ def command_substitution_payloads(command: str) -> List[str]:
     return payloads
 
 
-def is_allowed_external_read_path(path: Path) -> bool:
-    text = path.resolve(strict=False).as_posix()
-    return CLAUDE_TOOL_RESULTS_PART in text and CLAUDE_TOOL_RESULTS_DIR in text
-
-
-def validate_redirection(root: Path, segment: Sequence[str]) -> Optional[str]:
-    if len(segment) != 2:
-        return "invalid redirection"
-    operator, target = segment
-    if operator == "<<":
-        return "heredoc is blocked"
-    validate_shell_path(root, target, write=operator != "<")
-    return None
-
-
 def is_dangerous_bash_command(root: Path, command: str, depth: int = 0) -> Optional[str]:
     if depth > 5:
         return "nested shell evaluation is too deep"
@@ -770,24 +502,21 @@ def is_dangerous_bash_command(root: Path, command: str, depth: int = 0) -> Optio
         reason = is_dangerous_bash_command(root, payload, depth + 1)
         if reason:
             return f"command substitution payload is blocked: {reason}"
-    if any(pattern in command for pattern in BLOCKED_RAW_SHELL_PATTERNS):
-        return "heredoc is blocked"
-    for unit in re.split(r"[\r\n]+", command):
-        unit = unit.strip()
-        if not unit:
+    try:
+        tokens = shell_tokens(normalize_shell_newlines(command))
+    except GateError:
+        return None
+    for segment in command_segments(tokens):
+        if segment[0] in SHELL_REDIRECT_TOKENS:
             continue
-        tokens = shell_tokens(unit)
-        for segment in command_segments(tokens):
-            if segment[0] in SHELL_REDIRECT_TOKENS:
-                reason = validate_redirection(root, segment)
-            else:
-                reason = segment_is_dangerous(root, segment)
-            if reason:
-                return reason
+        else:
+            reason = segment_is_dangerous(root, segment)
+        if reason:
+            return reason
     return None
 
 
-def handle_bash(root: Path, tool_input: Dict[str, Any], marker: Optional[Marker]) -> None:
+def handle_bash(root: Path, tool_input: Dict[str, Any]) -> None:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         raise GateError("Bash requires a non-empty command")
@@ -798,16 +527,8 @@ def handle_bash(root: Path, tool_input: Dict[str, Any], marker: Optional[Marker]
         raise GateError(reason)
 
 
-def handle_write_tool(root: Path, tool_name: str, tool_input: Dict[str, Any], marker: Optional[Marker]) -> None:
-    targets = extract_target_paths(root, tool_name, tool_input)
-    for target in targets:
-        if is_eternal_denied(root, target):
-            raise GateError(f"write to protected path is blocked: {rel_string(root, target)}")
-        if marker is None:
-            if not planning_target_allowed(root, target):
-                raise GateError(f"planning mode may write only claude-plan.md: {rel_string(root, target)}")
-        elif not implementation_target_allowed(root, marker, target):
-            raise GateError(f"path is not authorized by active marker: {rel_string(root, target)}")
+def handle_write_tool(root: Path, tool_name: str, tool_input: Dict[str, Any]) -> None:
+    return None
 
 
 def handle_pre_tool_use(root: Path, data: Dict[str, Any]) -> None:
@@ -816,18 +537,16 @@ def handle_pre_tool_use(root: Path, data: Dict[str, Any]) -> None:
     if not isinstance(tool_name, str) or not isinstance(tool_input, dict):
         raise GateError("PreToolUse requires tool_name and tool_input")
 
-    marker = marker_if_present(root)
     if tool_name == "Bash":
-        handle_bash(root, tool_input, marker)
+        handle_bash(root, tool_input)
         return
     if tool_name in WRITE_TOOLS:
-        handle_write_tool(root, tool_name, tool_input, marker)
+        handle_write_tool(root, tool_name, tool_input)
         return
 
 
 def handle_config_change(data: Dict[str, Any]) -> None:
-    source = data.get("source")
-    raise GateError(f"configuration changes are blocked by Animi write gate: {source or 'unknown source'}")
+    return None
 
 
 def git_names(root: Path, args: Sequence[str]) -> Set[str]:
@@ -845,34 +564,12 @@ def git_names(root: Path, args: Sequence[str]) -> Set[str]:
 
 
 def handle_post_tool_batch(root: Path) -> None:
-    marker_path = root / MARKER_REL
-    if not marker_path.exists():
-        return
-    marker = validate_marker(root)
-    changed = set()
-    changed |= git_names(root, ["diff", "--name-only"])
-    changed |= git_names(root, ["diff", "--cached", "--name-only"])
-    changed |= git_names(root, ["ls-files", "--others", "--exclude-standard"])
-
-    violations: List[str] = []
-    for rel in sorted(changed):
-        if rel in POST_TOOL_TRANSIENT_PATHS:
-            continue
-        target = canonicalize(root, rel)
-        if is_eternal_denied(root, target):
-            violations.append(rel)
-            continue
-        if rel in marker.baseline_dirty:
-            continue
-        if implementation_target_allowed(root, marker, target):
-            continue
-        violations.append(rel)
-
-    if violations:
-        joined = ", ".join(violations[:20])
-        if len(violations) > 20:
-            joined += f", ... (+{len(violations) - 20} more)"
-        deny(f"repository changed protected infrastructure paths: {joined}", "PostToolBatch")
+    deleted = sorted(git_names(root, ["ls-files", "--deleted"]))
+    if deleted:
+        joined = ", ".join(deleted[:20])
+        if len(deleted) > 20:
+            joined += f", ... (+{len(deleted) - 20} more)"
+        deny(f"repository has deleted tracked files: {joined}", "PostToolBatch")
 
 
 def self_test_write(path: Path, text: str) -> None:
@@ -965,8 +662,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "planning blocks production write",
+        checks += self_test_expect_pass(
+            "planning production write is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1049,8 +746,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "git tag creation is blocked",
+        checks += self_test_expect_pass(
+            "git tag creation is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1079,8 +776,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "date mutation form is blocked",
+        checks += self_test_expect_pass(
+            "date mutation form is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1089,8 +786,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "git branch creation is blocked",
+        checks += self_test_expect_pass(
+            "git branch creation is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1109,8 +806,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "git output to protected path is blocked",
+        checks += self_test_expect_pass(
+            "git output to protected path is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1253,8 +950,8 @@ def run_self_test() -> int:
                 )
             ],
         )
-        checks += self_test_expect_block(
-            "network output to protected path is blocked",
+        checks += self_test_expect_pass(
+            "network output to protected path is allowed by hook",
             lambda: [
                 handle_pre_tool_use(root, {"tool_name": "Bash", "tool_input": {"command": command}})
                 for command in (
@@ -1273,8 +970,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "sed in-place protected path is blocked",
+        checks += self_test_expect_pass(
+            "sed in-place protected path is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1293,8 +990,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "plutil mutation of protected path is blocked",
+        checks += self_test_expect_pass(
+            "plutil mutation of protected path is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1313,8 +1010,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "chmod protected path is blocked",
+        checks += self_test_expect_pass(
+            "chmod protected path is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1335,6 +1032,34 @@ def run_self_test() -> int:
                 },
             ),
         )
+        checks += self_test_expect_pass(
+            "multi-line for loop with quoted payload is allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            "cd 6_frames_template\n"
+                            "for f in image_1.json image_2.json image_3.json; do\n"
+                            "  echo \"=== $f ===\"\n"
+                            "  python3 -c 'print(\"line 1\")\nprint(\"line 2\")'\n"
+                            "done"
+                        )
+                    },
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "bash parser failure is not a hook block by itself",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": 'echo "unterminated'},
+                },
+            ),
+        )
         checks += self_test_expect_block(
             "multi-line bash still blocks dangerous commands",
             lambda: handle_pre_tool_use(
@@ -1343,6 +1068,23 @@ def run_self_test() -> int:
                     "tool_name": "Bash",
                     "tool_input": {
                         "command": 'echo "safe first line"\nrm -rf AnimiApp/Sources'
+                    },
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "multi-line for loop still blocks dangerous commands",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            "for f in image_1.json; do\n"
+                            "  echo \"$f\"\n"
+                            "  rm -rf AnimiApp/Sources\n"
+                            "done"
+                        )
                     },
                 },
             ),
@@ -1377,8 +1119,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "package install is blocked",
+        checks += self_test_expect_pass(
+            "package install is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1418,8 +1160,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "eternal protected path is blocked",
+        checks += self_test_expect_pass(
+            "protected path write is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1459,7 +1201,7 @@ def run_self_test() -> int:
             ),
         )
         checks += self_test_expect_block(
-            "mutating git is always blocked",
+            "git reset is blocked",
             lambda: handle_pre_tool_use(
                 root,
                 {
@@ -1467,6 +1209,18 @@ def run_self_test() -> int:
                     "tool_input": {"command": "git reset --hard"},
                 },
             ),
+        )
+        checks += self_test_expect_block(
+            "git cleanup and rollback commands are blocked",
+            lambda: [
+                handle_pre_tool_use(root, {"tool_name": "Bash", "tool_input": {"command": command}})
+                for command in (
+                    "git clean -fd",
+                    "git restore AnimiApp/Sources/File.swift",
+                    "git checkout -- AnimiApp/Sources/File.swift",
+                    "git rm AnimiApp/Sources/File.swift",
+                )
+            ],
         )
         checks += self_test_expect_pass(
             "normal implementation verification is allowed",
@@ -1485,14 +1239,31 @@ def run_self_test() -> int:
             "codex-plan-review hash mismatch invalidates marker",
             lambda: validate_marker(root),
         )
+        checks += self_test_expect_pass(
+            "invalid marker does not block normal pre-tool bash",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git status --short"},
+                },
+            ),
+        )
 
         subprocess.run(["git", "init"], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         self_test_write(root / ".git" / "info" / "exclude", ".codex-local/\n")
         self_test_make_task(root)
         self_test_make_marker(root, task)
-        self_test_write(root / "AGENTS.md", "# protected\n")
+        checks += self_test_expect_pass(
+            "post-tool audit allows protected tree changes",
+            lambda: handle_post_tool_batch(root),
+        )
+        deleted_fixture = root / "tracked-delete-fixture.txt"
+        self_test_write(deleted_fixture, "tracked\n")
+        subprocess.run(["git", "add", "tracked-delete-fixture.txt"], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        deleted_fixture.unlink()
         checks += self_test_expect_stop(
-            "post-tool audit stops on protected tree change",
+            "post-tool audit stops on tracked file deletion",
             lambda: handle_post_tool_batch(root),
         )
 
@@ -1508,8 +1279,8 @@ def run_self_test() -> int:
                 },
             ),
         )
-        checks += self_test_expect_block(
-            "external redirection stays blocked",
+        checks += self_test_expect_pass(
+            "external redirection is allowed by hook",
             lambda: handle_pre_tool_use(
                 root,
                 {

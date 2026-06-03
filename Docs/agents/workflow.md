@@ -171,7 +171,7 @@ Claude can implement only from `task-contract.md` with `Status: Approved`.
 - verification requirements;
 - manual QA requirement;
 - stop conditions;
-- dangerous/protected action boundaries.
+- deletion/cleanup/rollback boundaries and scope-sensitive action notes.
 
 ### Claude Planning Pass Gate
 
@@ -193,7 +193,7 @@ Codex must review `claude-plan.md` before implementation and write `codex-plan-r
 
 Claude may implement only when the status is `APPROVED` and a valid marker exists.
 
-Codex asks the user only when Claude's plan requires a new product decision, scope expansion, dangerous/protected action, or architecture decision not already approved in `task-contract.md`.
+Codex asks the user only when Claude's plan requires a new product decision, scope expansion, deletion/cleanup/rollback, uncontracted infrastructure/dependency/tooling/git-state change, or architecture decision not already approved in `task-contract.md`.
 
 ### Implementation Marker Gate
 
@@ -205,9 +205,9 @@ Claude must not create, edit, rename, or delete the marker.
 
 ### Hook Gate
 
-The hook gate is the technical enforcement layer for writes, Bash, marker validation, settings changes, and post-tool repository audit.
+The hook gate is the technical enforcement layer for slash-command validation, critical Bash blocking, marker validation, and tracked-file deletion audit.
 
-`UserPromptExpansion` validates direct slash-command arguments. `PreToolUse` allows normal development work and blocks critical dangerous actions plus protected infrastructure writes. If deterministic slash provenance becomes required, implement it in the hook before documenting it as fully enforced.
+`UserPromptExpansion` validates direct slash-command arguments. `PreToolUse` allows normal development work and blocks only deletion, destructive cleanup, and git rollback cleanup forms. The hook does not block normal code edits, protected-path writes, dependency commands, network commands, commits, pushes, or config changes by category; workflow scope and review govern those.
 
 See [marker-schema.md](marker-schema.md) and [hook-write-gate.md](hook-write-gate.md).
 
@@ -258,7 +258,7 @@ Codex writes `codex-review.md` with `Status: Changes Requested` and an explicit 
 
 Do not rerun Planning Pass for same-scope repairs.
 
-Create a new task only when the fix needs a new product decision, new architecture decision, unrelated scope, dependency/tooling change, protected infrastructure change, dangerous action, or a materially different implementation path.
+Create a new task only when the fix needs a new product decision, new architecture decision, unrelated scope, uncontracted dependency/tooling/infrastructure/git-state change, deletion/cleanup/rollback, or a materially different implementation path.
 
 ## Closure Criteria
 

@@ -66,6 +66,7 @@ Stop and ask the user when:
 
 - product behavior is unclear;
 - active semantics, edge cases, or expected manual behavior cannot be inferred safely;
-- the task needs dependency, CI, hook, Xcode project, signing, or build-script changes;
+- dependency, CI, hook, Xcode project, signing, build-script, infrastructure, or git-state changes are needed but are not yet explicitly approved in the task scope;
+- deletion, destructive cleanup, git rollback cleanup, or tracked-file removal appears necessary;
 - existing dirty files conflict with the plan;
 - the plan would require production code edits by Codex.

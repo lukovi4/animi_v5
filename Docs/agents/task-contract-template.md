@@ -91,12 +91,12 @@ Out of scope:
 - <when Claude must stop and ask>
 - Any product/UX/behavior decision-tree branch that was not approved, proven by code/docs, or explicitly out of scope.
 
-## Dangerous / Protected Actions
+## Deletion / Cleanup / Scope-Sensitive Actions
 
-- Git commit/stage/push/tag/remote: not approved for Claude.
-- Destructive git/delete/dependency/network/secrets/signing actions: not approved for Claude.
-- Protected infrastructure paths: not approved for Claude in normal implementation.
-- If the task truly needs any item above, stop for Codex/user handling outside the normal Claude implementation pass.
+- Deletion/destructive cleanup/git rollback cleanup: not approved for Claude.
+- If the task truly needs deletion, cleanup, `git reset`, `git clean`, `git restore`, `git checkout`, `git rm`, branch/tag deletion, or tracked-file removal, stop for Codex/user handling.
+- Dependency/tooling/network/infrastructure/project-file/git-state changes: approved only when explicitly listed in this task contract.
+- Codex-owned gate artifacts are not approved for Claude edits.
 
 ## Repair Loop Rules
 

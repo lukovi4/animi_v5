@@ -23,11 +23,13 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 ## Implementation Rules
 
 - Edit normal repository code/test/project files needed for the task contract.
-- If a needed change expands product scope, architecture, dependencies, protected infrastructure, or dangerous actions, stop and ask for Codex review.
+- If a needed change expands product scope or architecture beyond the approved task contract, stop and ask for Codex review.
+- Dependency, tooling, infrastructure, hook, signing, and git-state changes are allowed only when explicitly inside the approved task contract. If they are needed and not contracted, stop and ask for Codex review.
 - Do not change product behavior beyond `task-contract.md`.
-- Do not edit Codex-owned artifacts or protected infrastructure paths.
-- Use normal development Bash when needed: search/read, shell composition, pipes, redirects to repo/temp paths, focused tests, builds, verification, and repo-local scripts.
-- Do not stage, commit, push, create PRs, change dependencies, change protected infrastructure, delete files, or weaken tests in the Claude implementation pass; stop for Codex/user handling.
+- Do not edit Codex-owned gate artifacts.
+- Use normal development Bash when needed: search/read, shell composition, pipes, redirects, focused tests, builds, verification, repo-local scripts, dependency commands, network commands, and normal git commands.
+- Do not run deletion, destructive cleanup, or git rollback cleanup commands. The hook hard-blocks forms such as `rm`, `find -delete`, dangerous `find -exec`, `git reset`, `git clean`, `git restore`, `git checkout`, `git rm`, and branch/tag deletion.
+- Do not weaken tests.
 - Preserve unrelated dirty worktree changes.
 - If `codex-review.md` has `Status: Changes Requested`, treat it as a same-task repair pass and fix only the `Repair Instructions For Claude` section.
 
@@ -58,6 +60,6 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 
 ## Stop Rule
 
-Stop immediately if scope changes, a new product decision is needed, protected infrastructure changes are needed, a dangerous command is needed, dependency/tooling changes are needed, or the marker is invalid.
+Stop immediately if scope changes, a new product decision is needed, deletion/cleanup/rollback is needed, an uncontracted infrastructure/dependency/tooling/git-state change is needed, or the marker is invalid.
 
 If a Codex-owned gate artifact is missing, stop and direct the user back to the Codex workflow.

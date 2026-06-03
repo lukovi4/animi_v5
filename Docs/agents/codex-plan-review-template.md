@@ -27,5 +27,5 @@ Date: YYYY-MM-DD
 
 ## Implementation Authorization
 
-Claude may implement only if Status is APPROVED and Codex creates a valid `.codex-local/active-implementation.json` marker. No second user approval is required unless this review identifies a new product, scope, architecture, protected-action, or dangerous-action decision that is not already approved in `task-contract.md`.
+Claude may implement only if Status is APPROVED and Codex creates a valid `.codex-local/active-implementation.json` marker. No second user approval is required unless this review identifies a new product, scope, architecture, deletion/cleanup/rollback, or uncontracted infrastructure/dependency/tooling/git-state decision that is not already approved in `task-contract.md`.
 ```

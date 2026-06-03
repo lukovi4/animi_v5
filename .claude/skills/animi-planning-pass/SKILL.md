@@ -36,7 +36,7 @@ Do not write anything else in this pass.
 - Use targeted code reads and search.
 - If normal search/read tools are unavailable or insufficient, Bash is allowed by the project hook. Use normal development commands for investigation, including search, read, shell composition, and focused verification when it materially improves the plan.
 - Use Explore/subagents when useful for focused read-only code investigation.
-- Do not run destructive git, deletion, dependency mutation, protected infrastructure changes, commit/push, or workflow-bypass commands.
+- Do not run deletion, destructive cleanup, or git rollback cleanup commands. The hook hard-blocks forms such as `rm`, `find -delete`, dangerous `find -exec`, `git reset`, `git clean`, `git restore`, `git checkout`, `git rm`, and branch/tag deletion.
 - Do not suggest that the user runs shell commands with `! <command>` as a substitute for blocked Bash.
 - Do not infer product behavior beyond `task-contract.md`.
 - If code contradicts `task-contract.md`, write a blocked `claude-plan.md` and stop.

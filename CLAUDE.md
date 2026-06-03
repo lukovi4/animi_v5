@@ -54,14 +54,15 @@ Do not create, rename, edit, or suggest manual edits to Codex-owned gate artifac
 - Stop if `task-contract.md` is missing, not approved, ambiguous, contradicted by code, or requires a product decision.
 - Stay inside `task-contract.md`, `claude-plan.md`, `codex-plan-review.md`, and same-task repair instructions in `codex-review.md` when present.
 - Do not change product behavior or architecture decisions beyond `task-contract.md`.
-- Do not change dependencies, CI, hooks, signing, protected infrastructure, or git state in the Claude implementation pass; stop for Codex/user handling.
+- Dependency, CI, hook, signing, infrastructure, and git-state changes are not blanket-blocked by the hook, but they must be inside the approved task contract. If they are needed and not contracted, stop for Codex/user handling.
+- Do not run deletion, destructive cleanup, or git rollback cleanup commands. If the task truly needs deletion/cleanup/rollback, stop for Codex/user handling.
 - Preserve unrelated dirty worktree changes.
 
 ## Context And Bash
 
 - Use Claude search/read tools first.
-- Normal development Bash is allowed, subject to the project hook: search/read commands, shell composition, pipes, redirects to repo/temp paths, focused tests, builds, verification, project-local scripts, and repo-local tooling.
-- Do not run destructive git, deletion, dependency install/update/remove, secrets/signing/keychain, network transfer, protected infrastructure mutation, commit/push, or workflow-bypass commands.
+- Normal development Bash is allowed by default, subject to the project hook: search/read commands, shell composition, pipes, redirects, focused tests, builds, verification, project-local scripts, repo-local tooling, dependency commands, network commands, and normal git commands.
+- The hook hard-blocks only deletion/destructive cleanup and git rollback cleanup forms such as `rm`, `rmdir`, `unlink`, `shred`, `find -delete`, dangerous `find -exec`, `git reset`, `git clean`, `git restore`, `git checkout`, `git rm`, and branch/tag deletion.
 - Do not suggest `! <command>` as a workaround for blocked Bash.
 - Avoid large end-to-end reads; put bulky logs under task `artifacts/`.
 
