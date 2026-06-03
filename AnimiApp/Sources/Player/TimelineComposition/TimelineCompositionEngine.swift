@@ -79,6 +79,12 @@ public final class TimelineCompositionEngine {
     /// EditorViewController wires this to `refreshCurrentTimelineFrame()`.
     public var onNeedsRedraw: (() -> Void)?
 
+    /// Render-only redraw request: a resident scene runtime finished delivering a
+    /// still texture into its video block(s). Distinct from `onNeedsRedraw` — the
+    /// wired handler must repaint the current frame WITHOUT re-resolving it or
+    /// re-entering still-frame sync (which would create a still-extraction loop).
+    public var onMediaTextureFrameDelivered: (() -> Void)?
+
     /// Media locator for resolving MediaRef → URL in export path.
     private let mediaLocator: any ProjectMediaLocator
 
@@ -450,10 +456,20 @@ public final class TimelineCompositionEngine {
     }
     #endif
 
-    /// PR-G: Stops playback for all loaded runtimes.
+    /// PR-G: Stops playback for all loaded runtimes (teardown: flushes textures).
+    /// Reserved for idle reclaim / teardown — NOT the warm Pause/scrub handoff.
     public func stopPlayback() {
         for runtime in instanceRuntimes.values {
             runtime.pause()
+        }
+    }
+
+    /// Warm interactive stop for the Pause / `scrub .began` handoff: stops video
+    /// decoders but PRESERVES last textures and provider warmth (hold-last), so the
+    /// first scrub frame reuses warm resources. No texture flush.
+    public func stopPlaybackPreservingTextures() {
+        for runtime in instanceRuntimes.values {
+            runtime.deactivatePlaybackPreservingTextures()
         }
     }
 

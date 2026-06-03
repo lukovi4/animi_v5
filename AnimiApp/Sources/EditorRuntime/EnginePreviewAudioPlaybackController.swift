@@ -306,6 +306,24 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
 
     // MARK: - Pause
 
+    /// Warm interactive pause for the `Pause` / `scrub .began` handoff. Silences
+    /// output quickly WITHOUT tearing down the audio HAL: pauses the player node
+    /// and the engine (Apple `AVAudioEngine.pause()` keeps prepared resources, so
+    /// resume is fast). Readiness stays `.primed`; the next `startPlayback` reuses
+    /// the engine. This is a pause, NOT a teardown — no `stop()` here.
+    func pausePlaybackImmediately() {
+        playerNode?.pause()
+        engine?.pause()
+        #if DEBUG
+        probeToken &+= 1
+        MemoryDiagnostics.event("preview.audio.engine.pauseImmediate", "warm=1")
+        #endif
+    }
+
+    /// Teardown-style pause: stops the player node and the engine, releasing
+    /// prepared engine resources. Reserved for idle reclaim / teardown paths
+    /// (NOT the immediate Pause/scrub handoff). Graph/file/cache stay alive and
+    /// readiness stays `.primed`; the next `startPlayback` re-`start()`s the engine.
     func pause() {
         let wasRunning = engine?.isRunning == true
         playerNode?.stop()

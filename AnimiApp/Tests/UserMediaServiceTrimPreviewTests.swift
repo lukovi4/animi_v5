@@ -548,4 +548,64 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
         XCTAssertEqual(provider.playbackWindowEnd, 4.0,
             "Late setVideo completion must preserve the committed playback window")
     }
+
+    // MARK: - Interactive Timeline Scrub Stills
+
+    /// updateVideoStillFramesInteractive routes through the tolerant interactive
+    /// generator (not the exact still path), injects the texture, and fires the
+    /// render-only callback.
+    func test_updateVideoStillFramesInteractive_usesInteractiveGeneratorAndDelivers() async {
+        await setupVideoBlock(trimStart: 0, trimEnd: 10.0)
+
+        provider.stillRequestCount = 0
+        provider.interactiveStillRequestCount = 0
+        fakeTextureProvider.removeTexture(for: "binding_asset_01")
+
+        var stillDeliveredCount = 0
+        sut.onStillFrameDelivered = { stillDeliveredCount += 1 }
+
+        sut.updateVideoStillFramesInteractive(sceneFrameIndex: 30, mediaFrameIndex: 30)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertGreaterThanOrEqual(provider.interactiveStillRequestCount, 1,
+            "Interactive scrub must use the tolerant interactive still generator")
+        XCTAssertEqual(provider.stillRequestCount, 0,
+            "Interactive scrub must NOT use the exact still path")
+        XCTAssertNotNil(fakeTextureProvider.texture(for: "binding_asset_01"),
+            "Interactive scrub must inject the delivered texture")
+        XCTAssertGreaterThanOrEqual(stillDeliveredCount, 1,
+            "Interactive scrub must fire the render-only onStillFrameDelivered callback")
+    }
+
+    /// Rapid interactive scrub calls coalesce: while one request is in flight, the
+    /// intermediate ticks collapse into a single pending "latest" time instead of
+    /// issuing one request per call. The serviced time is the most recent (latest-wins).
+    func test_updateVideoStillFramesInteractive_coalescesRapidCalls() async {
+        await setupVideoBlock(trimStart: 0, trimEnd: 10.0)
+
+        provider.interactiveStillRequestCount = 0
+        provider.shouldBlockInteractiveStill = true
+
+        // Fire several rapid scrub ticks synchronously. The first schedules the
+        // drain loop; the rest only overwrite the pending "latest" time.
+        sut.updateVideoStillFramesInteractive(sceneFrameIndex: 10, mediaFrameIndex: 10)
+        sut.updateVideoStillFramesInteractive(sceneFrameIndex: 20, mediaFrameIndex: 20)
+        sut.updateVideoStillFramesInteractive(sceneFrameIndex: 30, mediaFrameIndex: 30)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        // Coalesced: exactly one in-flight request, servicing the LATEST time, not
+        // one request per tick.
+        XCTAssertEqual(provider.interactiveStillRequestCount, 1,
+            "Rapid scrub ticks must coalesce: one in-flight request, not one per tick")
+        // sceneFPS=30, blockStartFrame=0, trimStart=0 → frame 30 maps to 30/30 = 1.0s.
+        XCTAssertEqual(provider.interactiveStillRequestTimes.last ?? -1, 1.0, accuracy: 1e-6,
+            "The single coalesced request must service the latest scrub time (frame 30 → 1.0s)")
+
+        // Release; with no newer pending time the loop drains and issues no extra request.
+        provider.releaseInteractiveStill()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertEqual(provider.interactiveStillRequestCount, 1,
+            "No newer pending time arrived, so no additional request is issued after completion")
+    }
 }

@@ -11,6 +11,9 @@ import TVECore
 protocol SceneMediaSyncing: AnyObject {
     // MARK: Frame Update APIs
     func updateVideoStillFrames(sceneFrameIndex: Int, mediaFrameIndex: Int)
+    /// Tolerant, latest-wins still update for interactive timeline scrub. Coalesces
+    /// rapid calls; intermediate frames may be dropped under load.
+    func updateVideoStillFramesInteractive(sceneFrameIndex: Int, mediaFrameIndex: Int)
     func awaitPendingStillFrames() async
     func cancelPendingStillFrames()
     func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int)
@@ -124,6 +127,13 @@ public final class SceneInstanceRuntime {
     /// PR4: Called when runtime state changes after async media load (placement re-resolved).
     /// Engine wires this to trigger timeline frame refresh.
     public var onNeedsRedraw: (() -> Void)?
+
+    /// Render-only redraw request: this instance's `UserMediaService` finished
+    /// delivering a still texture into a video block. Engine wires this to a
+    /// render-only repaint of the current frame. Distinct from `onNeedsRedraw`,
+    /// which re-resolves the frame and re-enters `syncVideoFrame` — using that
+    /// here would create a still-extraction loop.
+    public var onMediaTextureFrameDelivered: (() -> Void)?
 
     // MARK: - State
 
@@ -279,10 +289,17 @@ public final class SceneInstanceRuntime {
 
     // MARK: - PR4: Media Ready Hook
 
-    /// Wires `onMediaReady` to re-resolve placement with actual media dimensions.
+    /// Wires `onMediaReady` to re-resolve placement with actual media dimensions,
+    /// and `onStillFrameDelivered` to a render-only redraw so a scrub/paused still
+    /// texture is painted as soon as it lands (not only at the next frame
+    /// re-resolve). The still callback is deliberately render-only: it must not
+    /// re-enter `syncVideoFrame`/`updateVideoStillFrames`.
     private func setupMediaReadyHook() {
         userMediaService.onMediaReady = { [weak self] blockId in
             self?.handleMediaReady(blockId: blockId)
+        }
+        userMediaService.onStillFrameDelivered = { [weak self] in
+            self?.onMediaTextureFrameDelivered?()
         }
     }
 
@@ -561,10 +578,19 @@ public final class SceneInstanceRuntime {
     // MARK: - Playback (Legacy Compatibility)
 
     /// Syncs video frames to specific local frame (for scrubbing).
-    public func syncVideoFrame(_ localFrame: Int) {
+    ///
+    /// - Parameter interactive: When `true` (active scrub gesture), routes through
+    ///   the tolerant, latest-wins interactive still path for responsiveness.
+    ///   When `false` (settled playhead / non-scrub sync), uses the exact still
+    ///   path so the final frame matches the video-window mapping.
+    public func syncVideoFrame(_ localFrame: Int, interactive: Bool = false) {
         let visibilityFrame = clampedLocalFrame(localFrame)
         let mediaFrame = max(localFrame, 0)
-        mediaSyncing.updateVideoStillFrames(sceneFrameIndex: visibilityFrame, mediaFrameIndex: mediaFrame)
+        if interactive {
+            mediaSyncing.updateVideoStillFramesInteractive(sceneFrameIndex: visibilityFrame, mediaFrameIndex: mediaFrame)
+        } else {
+            mediaSyncing.updateVideoStillFrames(sceneFrameIndex: visibilityFrame, mediaFrameIndex: mediaFrame)
+        }
     }
 
     /// Syncs video frames for playback tick (gated to video frame rate).
@@ -685,8 +711,12 @@ public final class SceneInstanceRuntime {
     }
 
     /// Creates scene render context for this instance.
-    /// - Parameter localFrame: Frame index within this scene.
-    /// - Returns: Scene render context with clamped localFrame for hold-last-frame semantics.
+    /// - Parameter localFrame: Timeline-local frame index within this scene (may
+    ///   exceed native duration in a stretched scene).
+    /// - Returns: Scene render context whose `localFrame` is CLAMPED for
+    ///   hold-last-frame render/visibility semantics, while `mediaLocalFrame`
+    ///   preserves the UNCLAMPED frame so video still sampling tracks the playhead
+    ///   across the full stretched block.
     public func makeRenderContext(localFrame: Int) -> SceneRenderContext {
         let clamped = clampedLocalFrame(localFrame)
         return SceneRenderContext(
@@ -695,6 +725,7 @@ public final class SceneInstanceRuntime {
             pathRegistry: resources.pathRegistry,
             assetSizes: resources.assetSizes,
             localFrame: clamped,
+            mediaLocalFrame: max(localFrame, 0),
             canvasSize: resources.canvasSize,
             sceneInstanceId: sceneInstanceId
         )

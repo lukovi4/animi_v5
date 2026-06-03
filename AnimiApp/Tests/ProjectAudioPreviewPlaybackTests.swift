@@ -40,6 +40,8 @@ final class MockPreviewAudioController: PreviewAudioControlling {
         lastStartHostTime = hostTime
     }
     func pause() { pauseCallCount += 1 }
+    var pauseImmediateCallCount = 0
+    func pausePlaybackImmediately() { pauseImmediateCallCount += 1 }
     func teardown() {
         teardownCallCount += 1
         hasActivePipeline = false
@@ -415,10 +417,41 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let (_, runtime) = await makeBootedRuntime()
         let mock = MockPreviewAudioController()
         runtime.setPreviewAudioController(mock)
+        runtime.idleResourceReclaimDelayNanos = 50_000_000  // 50ms for test speed
 
         runtime.stopPlayback()
 
-        XCTAssertEqual(mock.pauseCallCount, 1)
+        // Warm pause: audio silenced synchronously via the warm pause; the heavy
+        // engine teardown (`pause`) is NOT run on the immediate Pause/scrub path.
+        XCTAssertEqual(mock.pauseImmediateCallCount, 1,
+            "stopPlayback must silence preview audio immediately via pausePlaybackImmediately")
+        XCTAssertEqual(mock.pauseCallCount, 0,
+            "Heavy audio engine pause must NOT run synchronously on warm pause")
+
+        // After the idle reclaim window (no interaction), the full engine pause runs.
+        await waitUntil(timeout: 1.0) { mock.pauseCallCount == 1 }
+        XCTAssertEqual(mock.pauseCallCount, 1,
+            "Idle reclaim must perform the full audio engine pause exactly once")
+    }
+
+    /// A scrub/playhead interaction during the idle window cancels the heavy reclaim,
+    /// so the engine is NOT torn down (warm resources preserved for the interaction).
+    func test_stopPlayback_thenScrubInteraction_cancelsHeavyAudioReclaim() async {
+        let (_, runtime) = await makeBootedRuntime()
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        runtime.idleResourceReclaimDelayNanos = 80_000_000  // 80ms
+
+        runtime.stopPlayback()
+        XCTAssertEqual(mock.pauseImmediateCallCount, 1)
+
+        // User immediately begins scrubbing within the idle window.
+        runtime.setScrubInteractionActive(true)
+
+        // Wait past the idle delay — reclaim must have been cancelled.
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(mock.pauseCallCount, 0,
+            "Scrub interaction during the idle window must cancel the heavy audio reclaim")
     }
 
     // MARK: - Test 2: stopPlayback preserves preview audio generation
@@ -2250,6 +2283,7 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         }
         let mock = MockPreviewAudioController()
         runtime.setPreviewAudioController(mock)
+        runtime.idleResourceReclaimDelayNanos = 50_000_000  // 50ms for test speed
         runtime.startPlayback()
         await waitForPlaybackStart(runtime)
 
@@ -2280,6 +2314,7 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         }
         let mock = MockPreviewAudioController()
         runtime.setPreviewAudioController(mock)
+        runtime.idleResourceReclaimDelayNanos = 50_000_000  // 50ms for test speed
         runtime.startPlayback()
         await waitForPlaybackStart(runtime)
 
@@ -2300,6 +2335,7 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         }
         let mock = MockPreviewAudioController()
         runtime.setPreviewAudioController(mock)
+        runtime.idleResourceReclaimDelayNanos = 50_000_000  // 50ms for test speed
         runtime.startPlayback()
         await waitForPlaybackStart(runtime)
 

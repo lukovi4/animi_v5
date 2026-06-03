@@ -201,6 +201,9 @@ internal final class EditorRuntimeExportController {
         #endif
         runtime.stopPlayback()
         runtime.cancelPendingPlayheadResolve()
+        // Export does its own immediate heavy release below; cancel the warm-pause
+        // idle reclaim so it cannot fire mid-export.
+        runtime.cancelIdleResourceReclaim()
         runtime.previewAudio.teardownForExport()
         // Clear background textures early (before await window opens)
         runtime.background.backgroundTextureService?.clearAllTrackedTextures()

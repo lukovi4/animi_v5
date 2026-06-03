@@ -73,8 +73,41 @@ final class EditorRuntime {
 
     /// Tracks which codepath last triggered a timeline frame refresh.
     /// Read-only test seam — proves engine.onNeedsRedraw fired vs manual playhead change.
-    enum RefreshTrigger: Equatable { case none, playheadChanged, engineRedraw, sceneEditMutation }
+    /// `mediaTextureRedraw` is the render-only path: it re-emits the current render
+    /// source after an async still-texture delivery WITHOUT resolving a new frame
+    /// or re-entering `syncVideoFrame`.
+    enum RefreshTrigger: Equatable { case none, playheadChanged, engineRedraw, sceneEditMutation, mediaTextureRedraw }
     internal(set) var lastRefreshTrigger: RefreshTrigger = .none
+
+    /// Whether a timeline scrub gesture is currently active. Set by
+    /// `EditorTimelineController` on `.began`/`.ended`/`.cancelled` before the
+    /// playhead dispatch so the synchronous paused frame sync can choose a
+    /// tolerant, latest-wins still policy while dragging. Read-only test seam.
+    private(set) var isScrubInteractionActive: Bool = false
+
+    /// Count of render-only redraws emitted via `requestMediaTextureRedraw()`.
+    /// Read-only test seam — proves still delivery triggered a render request
+    /// without a frame re-resolve.
+    private(set) var mediaTextureRedrawCount: UInt = 0
+
+    /// Ordering seam for the `playing -> scrub began` responsiveness contract.
+    /// Records the sequence of playback-stop milestones so a test can prove the
+    /// first scrub presentation (`playheadHandled`) runs BEFORE the heavy deferred
+    /// playback teardown (`heavyCleanup`), and that only the cheap urgent pause
+    /// (`urgentStop`) precedes it. Append-only; reset via `resetPlaybackStopOrdering()`.
+    enum PlaybackStopMilestone: Equatable { case urgentStop, playheadHandled, heavyCleanup }
+    private(set) var playbackStopOrdering: [PlaybackStopMilestone] = []
+
+    private func recordPlaybackStopMilestone(_ m: PlaybackStopMilestone) {
+        playbackStopOrdering.append(m)
+        // Bound growth: only the recent ordering window is meaningful for the seam.
+        if playbackStopOrdering.count > 16 {
+            playbackStopOrdering.removeFirst(playbackStopOrdering.count - 16)
+        }
+    }
+
+    /// Test seam: clears the recorded playback-stop ordering.
+    func resetPlaybackStopOrdering() { playbackStopOrdering.removeAll() }
 
     var onOutput: ((EditorRuntimeOutput) -> Void)?
 
@@ -143,6 +176,21 @@ final class EditorRuntime {
     var lastStillSyncFrame: Int = -1
     private let playbackTransport = PlaybackTransport()
     private var playbackStopGeneration: UInt = 0
+
+    /// Cancellable idle resource-reclaim scheduled after a warm interactive pause.
+    /// Runs the heavy reclaim (audio engine stop, video texture flush, renderer
+    /// trim, audio-session deactivation) ONLY after a real idle window with no new
+    /// interaction. Cancelled by `setScrubInteractionActive(true)`, `startPlayback`,
+    /// timeline playhead dispatch, and scene-edit/trim interactions so reclaim never
+    /// runs inside the first scrub presentation window.
+    private var idleResourceReclaimTask: Task<Void, Never>?
+
+    /// Idle delay before heavy reclaim runs after a warm pause. Deliberately long
+    /// so a natural "press Pause, move hand to timeline, start scrubbing" gesture
+    /// never races reclaim; reclaim is pure memory hygiene for genuine idleness.
+    /// Renewed interaction cancels it well before this elapses. Overridable for tests.
+    var idleResourceReclaimDelayNanos: UInt64 = 5_000_000_000  // 5 s
+
     private var playbackCurrentCompressedFrame: Int = 0
     var playbackCurrentProjectTimeUs: TimeUs = 0
 
@@ -528,6 +576,12 @@ final class EditorRuntime {
                 self?.refreshCurrentTimelineFrame()
             }
 
+            // Render-only path: a scene runtime delivered a still texture into the
+            // current frame. Repaint without re-resolving (no `syncVideoFrame`).
+            engine.onMediaTextureFrameDelivered = { [weak self] in
+                self?.requestMediaTextureRedraw()
+            }
+
             timelineCompositionEngine = engine
         }
 
@@ -688,6 +742,11 @@ final class EditorRuntime {
         // Store playhead changes are UI-mirror only — must not re-enter presentation path.
         guard !isPlaying else { return }
 
+        // Any playhead interaction (scrub, scene-edit, trim) keeps resources warm:
+        // cancel pending idle reclaim before presenting so the first interactive
+        // frame is not racing GPU/audio teardown.
+        cancelIdleResourceReclaim()
+
         if exportController.isRestoringPreviewAfterExport {
             timelineCompositionEngine?.invalidateScrub()
             playheadAsyncTask?.cancel()
@@ -720,6 +779,7 @@ final class EditorRuntime {
     /// Async: drains in-flight setup tasks to guarantee no retained providers after return.
     func releasePreviewResourcesForClose() async {
         cancelPendingPlayheadResolve()
+        cancelIdleResourceReclaim()
         previewAudio.controller.teardown()
         previewAudio.cancelBuild()
         await userMediaService?.releasePreviewResources()
@@ -728,6 +788,8 @@ final class EditorRuntime {
 
     private func handleTimelineModePlayheadChanged(_ compressedFrame: Int) {
         guard let engine = timelineCompositionEngine else { return }
+
+        recordPlaybackStopMilestone(.playheadHandled)
 
         currentCompressedFrame = compressedFrame
         sceneEdit.activeSceneInstanceId = engine.sceneInstanceId(at: compressedFrame)
@@ -750,6 +812,44 @@ final class EditorRuntime {
         lastRefreshTrigger = .engineRedraw
         let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         resolveAndPresentTimelineFrame(compressedFrame: compressedFrame, invalidateScrub: false)
+    }
+
+    /// Render-only redraw after an async still texture is delivered into the
+    /// current frame's video block(s). Unlike `refreshCurrentTimelineFrame()`,
+    /// this does NOT resolve a new timeline frame and does NOT call
+    /// `syncVideoFrame` — that would re-enter the still-extraction loop. It only
+    /// re-emits the already-resolved `currentRenderSource` so Metal repaints the
+    /// freshly injected texture. No-op outside timeline preview, during playback
+    /// (transport drives presentation), or before any frame has been resolved.
+    func requestMediaTextureRedraw() {
+        guard case .timelinePreview = state else { return }
+        guard !isPlaying else { return }
+        guard case .timeline = currentRenderSource else { return }
+
+        lastRefreshTrigger = .mediaTextureRedraw
+        mediaTextureRedrawCount &+= 1
+        onOutput?(.renderSourceUpdated)
+    }
+
+    /// Sets whether a timeline scrub gesture is in progress. Called by
+    /// `EditorTimelineController` before dispatching the playhead change so the
+    /// paused frame sync can pick a tolerant interactive still policy while
+    /// dragging and an exact still on release.
+    func setScrubInteractionActive(_ active: Bool) {
+        let wasActive = isScrubInteractionActive
+        isScrubInteractionActive = active
+        if active {
+            // Renewed interaction: keep playback resources warm — cancel any pending
+            // idle reclaim so the scrub session reuses warm textures/providers/engine.
+            cancelIdleResourceReclaim()
+        } else if wasActive {
+            // Scrub just ended. If playback is stopped, (re)arm the idle reclaim so
+            // resources are eventually reclaimed once the user is genuinely idle.
+            // Scheduling is a no-op while playing or if scrub re-activates.
+            if !isPlaying {
+                scheduleIdleResourceReclaim()
+            }
+        }
     }
 
     /// Hides the committed Metal copy of an overlay while it is being transformed
@@ -832,17 +932,24 @@ final class EditorRuntime {
         }
 
         if !isPlaying {
+            // During an active scrub gesture use the tolerant, latest-wins
+            // interactive still path for responsiveness; the exact still is
+            // requested when the gesture settles (scrub flag cleared).
+            let interactive = isScrubInteractionActive
+            // Sync video stills from the UNCLAMPED media frame so video time tracks
+            // the playhead across a stretched scene's full block; render commands
+            // already used the clamped `localFrame` for hold-last-frame visuals.
             switch resolved {
             case .single(let ctx):
                 if let runtime = engine.runtime(for: ctx.sceneInstanceId) {
-                    runtime.syncVideoFrame(ctx.localFrame)
+                    runtime.syncVideoFrame(ctx.mediaLocalFrame, interactive: interactive)
                 }
             case .transition(let ctx):
                 if let runtimeA = engine.runtime(for: ctx.sceneA.sceneInstanceId) {
-                    runtimeA.syncVideoFrame(ctx.sceneA.localFrame)
+                    runtimeA.syncVideoFrame(ctx.sceneA.mediaLocalFrame, interactive: interactive)
                 }
                 if let runtimeB = engine.runtime(for: ctx.sceneB.sceneInstanceId) {
-                    runtimeB.syncVideoFrame(ctx.sceneB.localFrame)
+                    runtimeB.syncVideoFrame(ctx.sceneB.mediaLocalFrame, interactive: interactive)
                 }
             }
         }
@@ -982,6 +1089,11 @@ final class EditorRuntime {
     // MARK: - Playback Control
 
     func startPlayback() {
+        // Resuming playback intent: cancel any pending idle reclaim first so warm
+        // resources are reused instead of being torn down mid-resume, regardless of
+        // whether the start guards below short-circuit.
+        cancelIdleResourceReclaim()
+
         guard !exportController.isRestoringPreviewAfterExport else { return }
         guard let uiMode = session.state?.uiMode,
               EditorRenderContract.isPlaybackAllowed(in: uiMode)
@@ -1079,7 +1191,14 @@ final class EditorRuntime {
         #if DEBUG
         MemoryDiagnostics.event("playback.audio.stop.begin", "")
         #endif
-        previewAudio.controller.pause()
+        // WARM INTERACTIVE PAUSE (the contracted Pause / `scrub .began` policy):
+        // silence audio while keeping the engine prepared, stop transport/displayLink,
+        // and stop video decoders WITHOUT flushing textures. Nothing here tears down
+        // GPU/HAL resources, so the first scrub frame that follows reuses warm
+        // textures/providers. Heavy reclaim is scheduled separately, cancellably,
+        // behind a real idle window (see `scheduleIdleResourceReclaim`).
+        previewAudio.controller.pausePlaybackImmediately()
+        recordPlaybackStopMilestone(.urgentStop)
 
         playbackTransport.stop()
         isPlaying = false
@@ -1092,22 +1211,63 @@ final class EditorRuntime {
             displayLink = nil
         }
 
-        let cleanupGeneration = playbackStopGeneration &+ 1
-        playbackStopGeneration = cleanupGeneration
+        // Warm video stop: preserve last textures / provider warmth (no flush).
+        if let engine = timelineCompositionEngine {
+            engine.stopPlaybackPreservingTextures()
+        } else {
+            userMediaService?.stopVideoPlaybackPreservingTextures()
+        }
+
+        playbackStopGeneration &+= 1
 
         onOutput?(.playbackStateChanged(isPlaying: false))
 
-        // -- Phase 2: Deferred cleanup (next runloop turn, guarded) --
+        // Heavy reclaim runs only after a genuine idle window with no new interaction.
+        scheduleIdleResourceReclaim()
+    }
 
-        Task { @MainActor [weak self] in
-            await Task.yield()
+    /// Schedules cancellable heavy resource reclaim after a real idle window.
+    /// Any renewed interaction (scrub-began, playback start, playhead dispatch,
+    /// scene-edit/trim) cancels it via `cancelIdleResourceReclaim()` so reclaim
+    /// never runs inside the first scrub presentation window.
+    ///
+    /// HARD GUARD: if a scrub interaction is already active when this is called
+    /// (production `.scrub(.began)` sets the flag BEFORE `stopPlayback()`, and the
+    /// store may emit no playhead change when scrub starts on the current frame),
+    /// do not arm reclaim at all — the user is mid-interaction.
+    private func scheduleIdleResourceReclaim() {
+        idleResourceReclaimTask?.cancel()
+        idleResourceReclaimTask = nil
+
+        guard !isScrubInteractionActive else {
+            #if DEBUG
+            MemoryDiagnostics.event("playback.idleReclaim.skip", "reason=scrubActive")
+            #endif
+            return
+        }
+
+        let cleanupGeneration = playbackStopGeneration
+        let delay = idleResourceReclaimDelayNanos
+        idleResourceReclaimTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
             guard let self else { return }
             guard !self.isPlaying else { return }
             guard self.playbackStartTask == nil else { return }
+            // Re-check interaction state after the idle window: any scrub/edit that
+            // began without a playhead-change callback must still suppress reclaim.
+            guard !self.isScrubInteractionActive else { return }
             guard self.playbackStopGeneration == cleanupGeneration else { return }
-
+            self.idleResourceReclaimTask = nil
             self.performPlaybackCleanup()
         }
+    }
+
+    /// Cancels any pending idle resource reclaim. Called on renewed interaction so
+    /// warm textures/providers/engine are preserved for the interactive session.
+    func cancelIdleResourceReclaim() {
+        idleResourceReclaimTask?.cancel()
+        idleResourceReclaimTask = nil
     }
 
     private func performPlaybackCleanup() {
@@ -1117,6 +1277,13 @@ final class EditorRuntime {
         }
         #endif
 
+        recordPlaybackStopMilestone(.heavyCleanup)
+
+        // Idle/teardown reclaim — runs only after the idle window survived without
+        // new interaction. Full audio engine stop (releases prepared resources).
+        previewAudio.controller.pause()
+
+        // Idle reclaim flushes video textures and provider caches (flush: true).
         if timelineCompositionEngine != nil {
             timelineCompositionEngine?.stopPlayback()
         } else {

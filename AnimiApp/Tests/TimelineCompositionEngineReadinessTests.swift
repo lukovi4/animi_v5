@@ -192,6 +192,124 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
         }
     }
 
+    // MARK: - Stretched-Scene Scrub Media Frame (Repair)
+
+    /// Full presentation path: a scene stretched past its native animation
+    /// duration must resolve a `SceneRenderContext` whose render `localFrame` is
+    /// CLAMPED to the last native frame (hold-last visuals) while `mediaLocalFrame`
+    /// stays UNCLAMPED so video still sampling keeps tracking the playhead across
+    /// the full stretched block. Exercises `setTimeline -> prepareForPlayback ->
+    /// resolveFrame -> makeRenderContext`, the real scrub path.
+    @MainActor
+    func testStretchedScene_resolveBeyondNativeDuration_keepsUnclampedMediaFrame() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let nativeFrames = 100
+        let stretchedFrames = 200   // timeline holds the scene for 200 frames
+        let beyondNativeFrame = 150 // scrub past native duration, inside stretched span
+
+        // Single scene whose timeline duration (200f) exceeds native duration (100f).
+        let instanceId = UUID()
+        let payloadId = UUID()
+        let sceneTypeId = "scene-type-stretched"
+        let item = TimelineItem(
+            id: instanceId,
+            payloadId: payloadId,
+            kind: .scene,
+            startUs: nil,
+            durationUs: framesToUs(stretchedFrames)
+        )
+        let timeline = CanonicalTimeline(
+            tracks: [Track(id: UUID(), kind: .sceneSequence, items: [item])],
+            payloads: [payloadId: .scene(ScenePayload(sceneTypeId: sceneTypeId))],
+            boundaryTransitions: [:]
+        )
+        let res = makeMinimalResources(durationFrames: nativeFrames, sceneTypeId: sceneTypeId)
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        cache.addToCache(res)
+
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            mediaLocator: StubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+        await engine.prepareForPlayback(startingAt: beyondNativeFrame)
+
+        let result = await engine.resolveFrame(beyondNativeFrame, policy: .presentation)
+        guard case .resolved(.single(let ctx)) = result else {
+            XCTFail("Expected .resolved(.single) for stretched scene, got \(result)")
+            return
+        }
+
+        XCTAssertEqual(ctx.localFrame, nativeFrames - 1,
+            "Render/visibility frame must be clamped to the last native frame (hold-last)")
+        XCTAssertEqual(ctx.mediaLocalFrame, beyondNativeFrame,
+            "Media frame must stay UNCLAMPED so stretched-scene scrub video tracks the playhead")
+    }
+
+    /// Warm interactive stop: `stopPlaybackPreservingTextures()` must route to each
+    /// runtime's preserving deactivation (hold-last, `flush: false`) rather than the
+    /// flushing `pause()`. This keeps video textures/providers warm for the first
+    /// scrub frame after Pause.
+    @MainActor
+    func testStopPlaybackPreservingTextures_routesToPreservingPath() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 100)
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources { cache.addToCache(res) }
+
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            mediaLocator: StubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+        engine.setTimeline(timeline, sceneStates: [:])
+        await engine.prepareForPlayback(startingAt: 0)
+
+        engine.stopPlaybackPreservingTextures()
+
+        XCTAssertGreaterThanOrEqual(spy.softStopPreservingTexturesCalls, 1,
+            "Warm stop must use the texture-preserving deactivation (flush: false), not the flushing pause")
+    }
+
     /// TT-02: Terminal failure returns .failed, not .hold
     @MainActor
     func testTerminalFailureReturnsFailedNotHold() async throws {

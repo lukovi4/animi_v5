@@ -313,5 +313,75 @@ final class VideoFrameProviderPlaybackWindowTests: XCTestCase {
         provider.release()
     }
 
+    // MARK: - Scrub-to-Play Stale Texture Handoff
+
+    /// A discontinuous `startPlayback` arms stale-cache suppression so the first
+    /// ticks cannot return the previous position's cached playback texture.
+    func testStartPlayback_armsStaleBufferSuppression() async throws {
+        let provider = try await makeReadyProvider(duration: 2.0)
+        provider.setPlaybackWindow(start: 0, end: 2.0)
+
+        provider.startPlayback(atVideoTime: 1.0)
+
+        XCTAssertTrue(provider.debugAwaitingFirstPlaybackBuffer,
+            "Discontinuous startPlayback must suppress stale playback-cache reuse until first real buffer")
+
+        provider.release()
+    }
+
+    /// Regression for the scrub-to-play flash: after a discontinuous start, a tick
+    /// that produces no new pixel buffer must NOT return the stale cached texture —
+    /// it returns nil so the caller keeps the current scrub still. Once a real
+    /// buffer is produced, suppression lifts and normal fallback resumes.
+    func testScrubToPlay_doesNotReturnStalePlaybackTexture() async throws {
+        let provider = try await makeReadyProvider(duration: 3.0)
+        provider.setPlaybackWindow(start: 0, end: 3.0)
+
+        // First playback session warms lastPlaybackTexture near t=0.
+        provider.startPlayback(atVideoTime: 0.0)
+        var warmTexture: MTLTexture?
+        for _ in 0..<30 {
+            warmTexture = provider.frameTextureForPlayback(expectedVideoTime: 0.0)
+            if warmTexture != nil && !provider.debugAwaitingFirstPlaybackBuffer { break }
+            try await Task.sleep(nanoseconds: 33_000_000)
+        }
+        XCTAssertNotNil(warmTexture, "Expected a real playback texture in the first session")
+        XCTAssertFalse(provider.debugAwaitingFirstPlaybackBuffer,
+            "Suppression should lift once a real buffer is produced")
+
+        // Simulate scrub-to-play: discontinuous restart at a far position.
+        provider.startPlayback(atVideoTime: 2.5)
+        XCTAssertTrue(provider.debugAwaitingFirstPlaybackBuffer,
+            "Restart must re-arm suppression")
+
+        // A tick immediately after restart, before AVPlayer produces a buffer for
+        // the new position, must not hand back the stale cached texture.
+        let immediate = provider.frameTextureForPlayback(expectedVideoTime: 2.5)
+        if immediate != nil {
+            // Acceptable only if a real buffer was already produced (suppression lifted).
+            XCTAssertFalse(provider.debugAwaitingFirstPlaybackBuffer,
+                "A non-nil texture right after restart is only valid once a real buffer arrived (suppression lifted)")
+        } else {
+            XCTAssertTrue(provider.debugAwaitingFirstPlaybackBuffer,
+                "While awaiting the first real buffer, the provider returns nil (caller holds the scrub still)")
+        }
+
+        provider.release()
+    }
+
+    /// Pausing playback clears stale-buffer suppression state.
+    func testStopPlayback_clearsStaleBufferSuppression() async throws {
+        let provider = try await makeReadyProvider(duration: 2.0)
+        provider.setPlaybackWindow(start: 0, end: 2.0)
+        provider.startPlayback(atVideoTime: 1.0)
+        XCTAssertTrue(provider.debugAwaitingFirstPlaybackBuffer)
+
+        provider.stopPlayback(flush: true)
+        XCTAssertFalse(provider.debugAwaitingFirstPlaybackBuffer,
+            "stopPlayback must clear stale-buffer suppression")
+
+        provider.release()
+    }
+
     #endif
 }

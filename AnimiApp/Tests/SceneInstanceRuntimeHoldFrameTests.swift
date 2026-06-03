@@ -95,6 +95,15 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             stillMediaFrames.append(mediaFrameIndex)
         }
 
+        // Interactive (tolerant, latest-wins) scrub still path.
+        var interactiveStillFrames: [Int] = []
+        var interactiveStillMediaFrames: [Int] = []
+
+        func updateVideoStillFramesInteractive(sceneFrameIndex: Int, mediaFrameIndex: Int) {
+            interactiveStillFrames.append(sceneFrameIndex)
+            interactiveStillMediaFrames.append(mediaFrameIndex)
+        }
+
         // PR2: Controllable still-await for testing readiness-holds-until-still-delivered
         var stillAwaitContinuation: CheckedContinuation<Void, Never>?
         var shouldBlockStillAwait: Bool = false
@@ -299,6 +308,74 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         // Then: Spy should receive clamped frame 299
         XCTAssertEqual(spy.stillFrames, [299], "syncVideoFrame should pass clamped frame to media service")
         XCTAssertEqual(spy.stillMediaFrames, [350], "syncVideoFrame should pass unclamped media frame")
+        XCTAssertTrue(spy.interactiveStillFrames.isEmpty,
+            "Non-interactive sync must use the exact still path, not the interactive path")
+    }
+
+    /// Behavior: syncVideoFrame(_:interactive: true) routes to the tolerant
+    /// interactive still path (used during active scrub), not the exact path.
+    @MainActor
+    func testSyncVideoFrame_interactive_routesToInteractiveStillPath() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let durationFrames = 300
+        let resources = makeMinimalResources(durationFrames: durationFrames)
+        let spy = MediaSyncingSpy()
+
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaSyncing: spy
+        )
+
+        // When: Sync during an active scrub (interactive), then settle (exact)
+        runtime.syncVideoFrame(120, interactive: true)
+        runtime.syncVideoFrame(120, interactive: false)
+
+        // Then: interactive call hit the tolerant path; exact call hit the exact path
+        XCTAssertEqual(spy.interactiveStillFrames, [120],
+            "Interactive sync must route to the tolerant interactive still path")
+        XCTAssertEqual(spy.stillFrames, [120],
+            "Settle (interactive=false) must route to the exact still path")
+    }
+
+    // MARK: - Render-Only Redraw Wiring
+
+    /// Behavior: a still-frame delivery from the production UserMediaService fires
+    /// the runtime's render-only `onMediaTextureFrameDelivered` callback and must
+    /// NOT re-enter `syncVideoFrame`/`updateVideoStillFrames` (no still-extraction
+    /// loop). This is the missing link that left scrub stills undrawn until end.
+    @MainActor
+    func testStillFrameDelivery_firesRenderOnlyCallback_withoutReentrantStillSync() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let resources = makeMinimalResources(durationFrames: 300)
+        // Production init wires userMediaService.onStillFrameDelivered internally.
+        let runtime = SceneInstanceRuntime(
+            sceneInstanceId: UUID(),
+            resources: resources,
+            device: device,
+            commandQueue: commandQueue,
+            mediaLocator: StubProjectMediaLocator()
+        )
+
+        var renderOnlyRedrawCount = 0
+        runtime.onMediaTextureFrameDelivered = { renderOnlyRedrawCount += 1 }
+
+        // When: the media service reports a delivered still texture
+        runtime.userMediaService.onStillFrameDelivered?()
+
+        // Then: render-only callback fired exactly once, with no re-entrant sync.
+        XCTAssertEqual(renderOnlyRedrawCount, 1,
+            "Still delivery must fire the render-only redraw callback")
     }
 
     /// Behavior: syncPlaybackTick(350) passes clamped frame 299 to media service.

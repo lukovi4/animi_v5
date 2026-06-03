@@ -377,6 +377,17 @@ public final class UserMediaService {
     /// Per-block generation counter for interactive trim preview invalidation.
     private var trimPreviewGenerationByBlock: [String: UInt64] = [:]
 
+    // MARK: - Interactive Timeline Scrub State
+
+    /// Per-block loop tasks for interactive (latest-wins) timeline scrub stills.
+    private var scrubStillTasksByBlock: [String: Task<Void, Never>] = [:]
+
+    /// Per-block pending scrub video times (latest wins within the loop).
+    private var scrubStillPendingTimeByBlock: [String: Double] = [:]
+
+    /// Per-block generation counter for interactive scrub-still invalidation.
+    private var scrubStillGenerationByBlock: [String: UInt64] = [:]
+
     // MARK: - Block Readiness State (P0 Readiness Contract)
 
     /// Per-block readiness state for media setup (photo and video).
@@ -1132,6 +1143,69 @@ public final class UserMediaService {
         }
     }
 
+    /// Interactive (latest-wins) still update for timeline scrub.
+    ///
+    /// Mirrors `updateVideoStillFrames` but routes through the tolerant, reusable
+    /// interactive generator and coalesces rapid calls per block: only the latest
+    /// pending video time is serviced, so intermediate scrub frames may be dropped
+    /// under load. The exact frame is requested via `updateVideoStillFrames` when
+    /// the gesture settles. Final-frame accuracy is unaffected.
+    public func updateVideoStillFramesInteractive(sceneFrameIndex: Int, mediaFrameIndex: Int) {
+        guard let player = activePlayer else { return }
+
+        for (blockId, kind) in mediaState {
+            guard case .video(let selection) = kind,
+                  let provider = videoProviders[blockId],
+                  provider.isReady else { continue }
+
+            let videoTime = computeTargetVideoTime(
+                sceneFrameIndex: mediaFrameIndex,
+                blockId: blockId,
+                selection: selection
+            )
+
+            // Store latest pending time; running loop picks it up.
+            scrubStillPendingTimeByBlock[blockId] = videoTime
+            if scrubStillTasksByBlock[blockId] != nil { continue }
+
+            let gen = (scrubStillGenerationByBlock[blockId] ?? 0) + 1
+            scrubStillGenerationByBlock[blockId] = gen
+            scrubStillTasksByBlock[blockId] = Task { @MainActor [weak self] in
+                await self?.runInteractiveScrubStillLoop(
+                    blockId: blockId, provider: provider, player: player, generation: gen)
+            }
+        }
+    }
+
+    /// Drains pending interactive scrub times for a block until none remain.
+    private func runInteractiveScrubStillLoop(blockId: String, provider: VideoSetupProviding, player: ScenePlayerForMedia, generation: UInt64) async {
+        while let pendingTime = scrubStillPendingTimeByBlock[blockId],
+              scrubStillGenerationByBlock[blockId] == generation,
+              !Task.isCancelled {
+            scrubStillPendingTimeByBlock.removeValue(forKey: blockId)
+
+            do {
+                let texture = try await provider.requestInteractiveStillTexture(atVideoTime: pendingTime)
+                guard scrubStillGenerationByBlock[blockId] == generation, !Task.isCancelled else { break }
+                let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+                for (_, assetId) in assetIds {
+                    textureProvider.setTexture(texture, for: assetId)
+                }
+                // Render-only callback — must NOT re-enter still sync.
+                onStillFrameDelivered?()
+            } catch is CancellationError {
+                break
+            } catch {
+                #if DEBUG
+                logger.debug("[UMS] interactive scrub still failed blockId=\(blockId): \(error)")
+                #endif
+            }
+        }
+        if scrubStillGenerationByBlock[blockId] == generation {
+            scrubStillTasksByBlock.removeValue(forKey: blockId)
+        }
+    }
+
     /// Cancels all in-flight still frame tasks and bumps generations to invalidate
     /// any task that completes between cancel and removal.
     /// Synchronous — safe to call from eviction paths.
@@ -1143,6 +1217,16 @@ public final class UserMediaService {
             task.cancel()
         }
         stillTasksByBlock.removeAll()
+
+        // Interactive scrub stills share the same lifecycle: invalidate + cancel.
+        for key in Array(scrubStillGenerationByBlock.keys) {
+            scrubStillGenerationByBlock[key, default: 0] += 1
+        }
+        for task in scrubStillTasksByBlock.values {
+            task.cancel()
+        }
+        scrubStillTasksByBlock.removeAll()
+        scrubStillPendingTimeByBlock.removeAll()
     }
 
     /// PR2: Awaits all in-flight still tasks to complete.
@@ -1223,6 +1307,7 @@ public final class UserMediaService {
             .union(mediaSetupTasksByBlock.keys)
             .union(blockReadinessState.keys)
             .union(trimPreviewTasksByBlock.keys)
+            .union(scrubStillTasksByBlock.keys)
         for blockId in allBlockIds {
             clear(blockId: blockId)
         }
@@ -1303,6 +1388,12 @@ public final class UserMediaService {
         trimPreviewTasksByBlock[blockId]?.cancel()
         trimPreviewTasksByBlock.removeValue(forKey: blockId)
         trimPreviewPendingTimeByBlock.removeValue(forKey: blockId)
+
+        // Cancel interactive scrub still
+        scrubStillGenerationByBlock[blockId, default: 0] += 1
+        scrubStillTasksByBlock[blockId]?.cancel()
+        scrubStillTasksByBlock.removeValue(forKey: blockId)
+        scrubStillPendingTimeByBlock.removeValue(forKey: blockId)
 
         // Release video provider
         if let provider = videoProviders.removeValue(forKey: blockId) {

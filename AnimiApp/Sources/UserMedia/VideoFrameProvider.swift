@@ -67,6 +67,13 @@ public final class VideoFrameProvider {
     private var lastPlaybackTexture: MTLTexture?
     private var lastPlaybackExtractedVideoTime: CMTime = .invalid
 
+    /// True from a discontinuous `startPlayback(atVideoTime:)` until the first real
+    /// pixel buffer for the new position is produced. While set, `extractTexture`
+    /// must NOT fall back to the (now stale) `lastPlaybackTexture` — returning nil
+    /// lets the caller keep the freshly delivered scrub still on screen until
+    /// AVPlayer catches up. Prevents the scrub-to-play stale-frame flash.
+    private var awaitingFirstPlaybackBuffer: Bool = false
+
     /// Still cache (AVAssetImageGenerator path) — separate from playback
     private var lastStillTexture: MTLTexture?
     private var lastStillVideoTime: CMTime = .invalid
@@ -135,6 +142,9 @@ public final class VideoFrameProvider {
     internal private(set) var debugHoldStillRequestCount: Int = 0
     /// Debug seam: whether hold texture has been loaded
     internal var debugHasHoldPlaybackTexture: Bool { holdPlaybackTexture != nil }
+    /// Debug seam: whether the provider is suppressing stale playback-cache reuse
+    /// after a discontinuous start (until first real buffer for the new position).
+    internal var debugAwaitingFirstPlaybackBuffer: Bool { awaitingFirstPlaybackBuffer }
     internal private(set) var debugLastExpectedVideoTimeSeconds: Double?
     internal private(set) var debugLastClampedExpectedTimeSeconds: Double?
     internal private(set) var debugLastItemTimeSeconds: Double?
@@ -300,6 +310,13 @@ public final class VideoFrameProvider {
         holdPlaybackTexture = nil
         playbackHoldState = .none
 
+        // Discontinuous start (e.g. play right after a scrub): the cached playback
+        // texture belongs to a previous position. Suppress its reuse until a real
+        // pixel buffer for the new target arrives so the current scrub still holds
+        // instead of flashing a stale frame.
+        awaitingFirstPlaybackBuffer = true
+        lastPlaybackExtractedVideoTime = .invalid
+
         // If target is already at trim-end hold boundary, enter hold immediately
         if Self.shouldHoldPlayback(
             expectedSeconds: videoTimeSeconds,
@@ -337,6 +354,7 @@ public final class VideoFrameProvider {
     public func stopPlayback(flush: Bool = true) {
         player.rate = 0
         isPlaybackActive = false
+        awaitingFirstPlaybackBuffer = false
         playbackHoldTask?.cancel()
         playbackHoldTask = nil
         holdPlaybackTexture = nil
@@ -674,6 +692,9 @@ public final class VideoFrameProvider {
             let texture = textureFactory.makeTexture(from: pixelBuffer)
             lastPlaybackTexture = texture
             lastPlaybackExtractedVideoTime = time
+            // First real buffer for the new position arrived: stale-fallback
+            // suppression can be lifted.
+            awaitingFirstPlaybackBuffer = false
             #if DEBUG
             debugLastCopySucceeded = true
             debugLastTextureIdentifier = Self.debugTextureIdentifier(texture)
@@ -690,11 +711,18 @@ public final class VideoFrameProvider {
         if let texture = copyPlaybackTexture(at: time) {
             return texture
         }
-        // Return cached texture as fallback
         #if DEBUG
         nilExtractCount += 1
         logDiagnosticsIfNeeded()
         #endif
+        // After a discontinuous start, the cached texture is from the previous
+        // position. Return nil so the caller keeps the current scrub still rather
+        // than flashing a stale playback frame; normal fallback resumes once the
+        // first real buffer for the new position is delivered.
+        if awaitingFirstPlaybackBuffer {
+            return nil
+        }
+        // Return cached texture as fallback
         return lastPlaybackTexture
     }
 

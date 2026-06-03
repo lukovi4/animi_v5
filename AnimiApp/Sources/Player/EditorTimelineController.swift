@@ -133,6 +133,16 @@ internal final class EditorTimelineController {
             break
         }
 
+        // Mirror the drag state into the runtime BEFORE dispatching the playhead so
+        // the synchronous paused frame sync uses the tolerant interactive still path
+        // while dragging and the exact still on release/cancel.
+        switch phase {
+        case .began, .changed:
+            vc.runtime?.setScrubInteractionActive(true)
+        case .ended, .cancelled:
+            vc.runtime?.setScrubInteractionActive(false)
+        }
+
         if vc.runtime?.isPlaying ?? false {
             vc.runtime?.stopPlayback()
         }

@@ -135,6 +135,11 @@ internal final class TimelineFrameResolver {
                 engine?.onNeedsRedraw?()
             }
 
+            // Forward render-only still-texture deliveries (no frame re-resolve)
+            runtime.onMediaTextureFrameDelivered = { [weak engine] in
+                engine?.onMediaTextureFrameDelivered?()
+            }
+
             // Apply state if available
             if let state = engine.sceneStates[instanceId] {
                 await runtime.applyState(state, assetRegistry: engine.currentAssetRegistry)

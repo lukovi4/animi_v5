@@ -29,8 +29,18 @@ public struct SceneRenderContext: Sendable {
     /// Asset sizes for this scene.
     public let assetSizes: [String: AssetSize]
 
-    /// Local frame index within the scene.
+    /// Render/visibility local frame index within the scene, CLAMPED to
+    /// `[0, durationFrames-1]` for hold-last-frame semantics. Use this for scene
+    /// render commands and visibility — never for media sampling in stretched scenes.
     public let localFrame: Int
+
+    /// Media/timeline-local frame index within the scene, UNCLAMPED. In a scene
+    /// stretched past its native animation duration this keeps advancing while
+    /// `localFrame` holds at the last native frame. Use this for video still
+    /// sampling so scrub video time tracks the playhead across the full stretched
+    /// block. Defaults to `localFrame` for callers that do not distinguish them
+    /// (e.g. export, which clamps upstream).
+    public let mediaLocalFrame: Int
 
     /// Canvas size for this scene.
     public let canvasSize: SizeD
@@ -44,6 +54,7 @@ public struct SceneRenderContext: Sendable {
         pathRegistry: PathRegistry,
         assetSizes: [String: AssetSize],
         localFrame: Int,
+        mediaLocalFrame: Int? = nil,
         canvasSize: SizeD,
         sceneInstanceId: UUID
     ) {
@@ -52,6 +63,7 @@ public struct SceneRenderContext: Sendable {
         self.pathRegistry = pathRegistry
         self.assetSizes = assetSizes
         self.localFrame = localFrame
+        self.mediaLocalFrame = mediaLocalFrame ?? localFrame
         self.canvasSize = canvasSize
         self.sceneInstanceId = sceneInstanceId
     }

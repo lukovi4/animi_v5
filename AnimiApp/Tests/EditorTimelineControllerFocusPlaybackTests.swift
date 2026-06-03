@@ -97,6 +97,14 @@ final class EditorTimelineControllerFocusPlaybackTests: XCTestCase {
         return (scenes[0].id, scenes[1].id)
     }
 
+    /// Polls a condition with real time delays to allow detached tasks to complete.
+    private func waitUntil(timeout: TimeInterval, condition: @MainActor () -> Bool) async {
+        let deadline = CFAbsoluteTimeGetCurrent() + timeout
+        while !condition() && CFAbsoluteTimeGetCurrent() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        }
+    }
+
     // MARK: - Tests
 
     /// Tapping a *different* scene during playback stops playback and still focuses.
@@ -158,6 +166,146 @@ final class EditorTimelineControllerFocusPlaybackTests: XCTestCase {
         XCTAssertEqual(session.state?.playheadCompressedFrame, playheadBefore,
                        "Tapping the under-playhead scene must not move the playhead")
         XCTAssertEqual(session.state?.selection, .scene(id: scene1))
+        #endif
+    }
+
+    // MARK: - playing -> scrub began responsiveness (Repair)
+
+    /// Warm interactive pause: `stopPlayback()` silences audio synchronously
+    /// (warm `pausePlaybackImmediately`) and does NOT run heavy cleanup on the
+    /// immediate path. Heavy reclaim is scheduled behind a real idle window; if no
+    /// interaction follows it eventually runs, ordered after the urgent stop.
+    func test_stopPlayback_warmPause_defersHeavyCleanupBehindIdleWindow() async {
+        #if DEBUG
+        let session = await makeSession()
+        _ = loadTwoSceneProject(into: session)
+
+        let runtime = EditorRuntime(session: session)
+        runtime.bootForTesting(state: .timelinePreview)
+
+        let mockAudio = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mockAudio)
+        runtime.idleResourceReclaimDelayNanos = 50_000_000  // 50ms
+        runtime.setPlayingForTesting(true)
+        runtime.resetPlaybackStopOrdering()
+
+        runtime.stopPlayback()
+
+        // Immediately after the synchronous warm pause: silenced, NO heavy cleanup.
+        XCTAssertEqual(mockAudio.pauseImmediateCallCount, 1,
+            "Warm pause must silence output via pausePlaybackImmediately")
+        XCTAssertEqual(mockAudio.pauseCallCount, 0,
+            "Heavy audio engine teardown must NOT run synchronously on warm pause")
+        XCTAssertEqual(runtime.playbackStopOrdering.first, .urgentStop)
+        XCTAssertFalse(runtime.playbackStopOrdering.contains(.heavyCleanup),
+            "Heavy cleanup must not run synchronously")
+
+        // With no interaction, idle reclaim eventually runs, ordered after urgent stop.
+        await waitUntil(timeout: 1.0) { runtime.playbackStopOrdering.contains(.heavyCleanup) }
+        XCTAssertEqual(mockAudio.pauseCallCount, 1,
+            "Idle reclaim must perform the heavy audio engine pause exactly once")
+        XCTAssertLessThan(
+            runtime.playbackStopOrdering.firstIndex(of: .urgentStop) ?? .max,
+            runtime.playbackStopOrdering.firstIndex(of: .heavyCleanup) ?? .min,
+            "Urgent stop must be ordered before heavy cleanup")
+        #endif
+    }
+
+    /// The core freeze fix: when a scrub interaction begins within the idle window
+    /// after a warm pause, the heavy reclaim is CANCELLED — it must not run inside
+    /// the first scrub presentation window.
+    func test_stopPlayback_thenScrubBegan_cancelsHeavyCleanup() async {
+        #if DEBUG
+        let session = await makeSession()
+        _ = loadTwoSceneProject(into: session)
+
+        let runtime = EditorRuntime(session: session)
+        runtime.bootForTesting(state: .timelinePreview)
+
+        let mockAudio = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mockAudio)
+        runtime.idleResourceReclaimDelayNanos = 80_000_000  // 80ms
+        runtime.setPlayingForTesting(true)
+        runtime.resetPlaybackStopOrdering()
+
+        // Pause, then immediately begin a scrub (the failing user scenario).
+        runtime.stopPlayback()
+        runtime.setScrubInteractionActive(true)
+
+        // Wait well past the idle delay — heavy cleanup must have been cancelled.
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        XCTAssertEqual(mockAudio.pauseCallCount, 0,
+            "Scrub began within the idle window must cancel heavy audio reclaim")
+        XCTAssertFalse(runtime.playbackStopOrdering.contains(.heavyCleanup),
+            "Heavy cleanup must not run when interaction follows the warm pause")
+        #endif
+    }
+
+    /// PRODUCTION ORDER (the actual failing case): `.scrub(.began)` while playing
+    /// runs `setScrubInteractionActive(true)` BEFORE `stopPlayback()`, then dispatches
+    /// the playhead. When the scrub begins on the CURRENT frame, the store emits no
+    /// `onPlayheadChanged`, so nothing cancels reclaim via the playhead path. The
+    /// runtime hard-guard must ensure no heavy reclaim is armed while scrub is active.
+    func test_scrubBeganOnCurrentFrame_duringPlayback_doesNotArmHeavyCleanup() async {
+        #if DEBUG
+        let session = await makeSession()
+        _ = loadTwoSceneProject(into: session)
+
+        let vc = EditorViewController(session: session)
+        let runtime = EditorRuntime(session: session)
+        runtime.bootForTesting(state: .timelinePreview)
+        let mockAudio = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mockAudio)
+        runtime.idleResourceReclaimDelayNanos = 60_000_000  // 60ms
+        vc.runtime = runtime
+        runtime.setPlayingForTesting(true)
+
+        // Scrub begins on the CURRENT playhead frame → store emits no playhead change.
+        let currentFrame = session.state?.playheadCompressedFrame ?? 0
+        vc.timelineController.handleTimelineEvent(
+            .scrub(compressedFrame: currentFrame, phase: .began))
+
+        XCTAssertTrue(runtime.isScrubInteractionActive,
+            "Pre-condition: scrub interaction must be active after .began")
+        XCTAssertFalse(runtime.isPlaying, "Scrub began during playback must stop playback")
+
+        // Wait well past the idle delay. No heavy reclaim may run during active scrub.
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        XCTAssertEqual(mockAudio.pauseCallCount, 0,
+            "Heavy audio engine teardown must NOT run while scrub is active (production order)")
+        XCTAssertEqual(mockAudio.pauseImmediateCallCount, 1,
+            "Warm pause must still have silenced audio once on scrub began")
+        XCTAssertFalse(runtime.playbackStopOrdering.contains(.heavyCleanup),
+            "No heavy cleanup may be recorded while scrub is active")
+        #endif
+    }
+
+    /// Resuming playback within the idle window also cancels heavy reclaim.
+    func test_stopPlayback_thenStartPlayback_cancelsHeavyCleanup() async {
+        #if DEBUG
+        let session = await makeSession()
+        _ = loadTwoSceneProject(into: session)
+
+        let runtime = EditorRuntime(session: session)
+        runtime.bootForTesting(state: .timelinePreview)
+
+        let mockAudio = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mockAudio)
+        runtime.idleResourceReclaimDelayNanos = 80_000_000  // 80ms
+        runtime.setPlayingForTesting(true)
+        runtime.resetPlaybackStopOrdering()
+
+        runtime.stopPlayback()
+        // Resume quickly (no engine bound in this harness; cancellation still fires).
+        runtime.setPlayingForTesting(false)
+        runtime.startPlayback()
+
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        XCTAssertEqual(mockAudio.pauseCallCount, 0,
+            "Resuming playback within the idle window must cancel heavy audio reclaim")
         #endif
     }
 

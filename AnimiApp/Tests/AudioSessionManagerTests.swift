@@ -433,6 +433,11 @@ final class AudioSessionManagerTests: XCTestCase {
             throw XCTSkip("Metal unavailable")
         }
 
+        // Session deactivation is now part of the deferred idle resource reclaim
+        // (warm pause keeps the session active on the immediate path). Shorten the
+        // idle window for test speed; the deactivation behavior itself is unchanged.
+        runtime.idleResourceReclaimDelayNanos = 50_000_000  // 50ms
+
         runtime.startPlayback()
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertTrue(runtime.isPlaying)
@@ -440,7 +445,8 @@ final class AudioSessionManagerTests: XCTestCase {
         runtime.stopPlayback()
         await waitUntil(timeout: 1.0) { mockAudio.deactivateCallCount == 1 }
 
-        XCTAssertEqual(mockAudio.deactivateCallCount, 1)
+        XCTAssertEqual(mockAudio.deactivateCallCount, 1,
+            "Idle reclaim after a warm pause must eventually deactivate the audio session")
     }
 }
 

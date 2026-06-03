@@ -31,8 +31,15 @@ protocol PreviewAudioControlling: AnyObject {
     func replacePipeline(_ pipeline: BuiltAudioPipeline)
     /// Start (or resume) playback from the given time, synchronized to transport host time.
     func startPlayback(fromSeconds: Double, hostTime: CFTimeInterval)
-    /// Pause playback without discarding the pipeline.
+    /// Teardown-style pause: silences output AND releases prepared engine
+    /// resources (engine stop). Reserved for idle reclaim / teardown — NOT the
+    /// immediate Pause/scrub handoff. The pipeline/file/cache stay alive.
     func pause()
+    /// Warm interactive pause for the `Pause` / `scrub .began` handoff: silences
+    /// output quickly while KEEPING the audio engine prepared (no HAL teardown),
+    /// so the first scrub frame is not blocked and resume is fast. Semantics
+    /// preserved: the next `startPlayback` resumes/re-starts the engine if needed.
+    func pausePlaybackImmediately()
     /// Tear down player entirely (discard pipeline).
     func teardown()
     /// Whether the controller currently holds a pipeline.
