@@ -16,7 +16,7 @@ Markdown instructions still define workflow ownership and task scope. The hook e
 - The implementation slash command must match a valid `.codex-local/active-implementation.json` marker.
 - The marker is a task authorization token, not a microscopic allow-list of every file or command.
 - `PreToolUse:Bash` is allowed by default for normal development work.
-- `PreToolUse` write tools are allowed by default. Scope is governed by `task-contract.md`, `claude-plan.md`, `codex-plan-review.md`, and review, not by hook path allow-lists.
+- `PreToolUse` write tools are allowed by default. Scope is governed by `task-contract.md`, `codex-analysis.md`, `claude-plan.md`, `codex-plan-review.md`, `codex-review-packet.md`, and review, not by hook path allow-lists.
 - `ConfigChange` is allowed by the hook. Config edits still require the normal workflow approval for infrastructure changes.
 - `PostToolBatch` stops only when tracked repository files are deleted.
 - Internal hook errors fail closed only at the hook entrypoint. Bash parser ambiguity does not block by default unless the hook finds a dangerous payload.

@@ -24,6 +24,7 @@ Read only the sections needed:
 - `../../../Docs/agents/workflow.md`
 - `../../../Docs/agents/task-folder-template.md`
 - `../../../Docs/agents/task-contract-template.md`
+- `../../../Docs/agents/codex-analysis-template.md`
 - `plan-template.md`
 - `readiness-checklist.md`
 
@@ -32,9 +33,10 @@ Read only the sections needed:
 1. Create or reuse a task folder under `.codex-local/tasks/YYYY-MM-DD-short-slug/`.
 2. Classify the task: quick fix, feature/behavior, or architecture/media pipeline.
 3. Read only relevant knowledge-map sections from `Docs/agents/domain.md`, `Docs/agents/code-map.md`, and `Docs/agents/regression-map.md` when they help route investigation.
-4. Investigate the real code like a planning pass before drafting: entry points, state/data flow, direct dependencies, adjacent behavior, and existing test seams.
-5. Identify edge cases, product semantics, consequences of likely fixes, and the task decision tree.
-6. Run the grill loop before drafting:
+4. Investigate the real code like a planning pass before drafting: entry points, state/data flow, direct dependencies, adjacent behavior, and existing test seams. Treat knowledge maps as starting points, not allow-lists.
+5. For tasks that required real code investigation, write or update `codex-analysis.md` before drafting the contract. Capture architecture trace, root-cause trace when applicable, hypotheses, invariants, risk areas, future review targets, verification seams, and stable map-update candidates.
+6. Identify edge cases, product semantics, consequences of likely fixes, and the task decision tree.
+7. Run the grill loop before drafting:
    - Interview the user until shared understanding.
    - Walk each relevant branch of the task decision tree.
    - Resolve dependencies between decisions one by one.
@@ -45,10 +47,10 @@ Read only the sections needed:
    - Ask only questions whose answer can change approved behavior, scope, architecture boundary, regression risk, verification, or manual QA.
    - Do not ask questions already answered by the user request, proven by code, or internal to Claude's implementation inside approved scope.
    - Do not write `task-contract.md` until all relevant decision-tree branches are resolved or explicitly out of scope.
-7. Write `task-contract.md` with `Status: Pending User Approval`.
-8. Write `followups.md` when useful.
-9. Run the readiness checklist.
-10. Ask the user to approve, reject, or revise the task contract. Include 3-6 concrete investigation evidence bullets and a summary of approved product decisions in the chat response.
+8. Write `task-contract.md` with `Status: Pending User Approval`.
+9. Write `followups.md` when useful.
+10. Run the readiness checklist.
+11. Ask the user to approve, reject, or revise the task contract. Include 3-6 concrete investigation evidence bullets, whether `codex-analysis.md` was written, and a summary of approved product decisions in the chat response.
 
 After explicit user approval:
 

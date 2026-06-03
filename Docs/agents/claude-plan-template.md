@@ -15,6 +15,7 @@ Status: Proposed | Blocked
 
 - Task contract read: yes/no
 - Task contract status: Approved/not approved
+- Codex analysis read: yes/no/not present
 - Implementation started: no
 - Scope changes proposed: no/yes
 

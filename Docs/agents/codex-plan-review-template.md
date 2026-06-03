@@ -15,6 +15,7 @@ Date: YYYY-MM-DD
 - Product behavior changed: no/yes
 - Files expected to change are within contracted scope: yes/no
 - Contracted edge cases and regression surfaces covered: yes/no
+- `codex-analysis.md` risk areas and invariants preserved: yes/no/n/a
 - Manual QA expectation preserved: yes/no
 
 ## Findings

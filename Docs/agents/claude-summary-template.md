@@ -40,36 +40,41 @@ Marker snapshot:
 |---|---|---|
 | `<path>` | <short description> | <plan step or reason> |
 
-## 4. Verification
+## 4. Review Packet
+
+- `codex-review-packet.md` written: yes/no
+- Packet covers changed files, contract coverage, risk hotspots, verification evidence, and suggested Codex spot checks: yes/no
+
+## 5. Verification
 
 | Command | Result | Key Output | Full Log |
 |---|---|---|---|
-| `<command>` | passed/failed/not run | <key lines> | `artifacts/<file>` or n/a |
+| `<command>` | passed/failed/not run | <short key result only> | `artifacts/<file>` or n/a |
 
 Skipped checks:
 
 - `<command>`: <why skipped and risk>
 
-## 5. Tests Added / Changed
+## 6. Tests Added / Changed
 
 - `<test file>`: <behavior covered>
 - Red/green observed: yes/no/not applicable
 
-## 6. Risk Areas For Codex
+## 7. Risk Areas For Codex
 
-- <area that deserves targeted review>
+- See `codex-review-packet.md`.
 
-## 7. Manual QA Notes
+## 8. Manual QA Notes
 
 - Required by task contract: yes/no
 - Claude result: not run by Claude / n/a
 - Suggested focus for Codex/user: <manual area, or "None">
 
-## 8. Known Issues / Follow-ups
+## 9. Known Issues / Follow-ups
 
 - <issue or "None">
 
-## 9. Questions For Codex
+## 10. Questions For Codex
 
 - <question or "None">
 ```
@@ -79,5 +84,6 @@ Requirements:
 - Use exact commands.
 - Do not write "should pass" as evidence.
 - Keep summaries short; put bulky logs in `artifacts/`.
+- Put detailed changed-file coverage, risk hotspots, and Codex spot-check targets in `codex-review-packet.md`, not here.
 - Mark skipped verification as risk, not success.
 - Include the marker snapshot when implementation used an active marker.

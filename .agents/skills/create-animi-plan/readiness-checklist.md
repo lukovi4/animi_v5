@@ -7,6 +7,9 @@ Run before asking for approval.
 - [ ] Task track is selected.
 - [ ] Relevant knowledge-map sections were checked or intentionally skipped.
 - [ ] Real code investigation traced entry point, state/data flow, dependencies, and test seams.
+- [ ] `codex-analysis.md` was written or explicitly marked not needed.
+- [ ] Root-cause trace is recorded for diagnosis/debug tasks.
+- [ ] Knowledge maps were treated as routing aids, not source of truth or allow-lists.
 - [ ] Adjacent behavior and regression surfaces are named.
 - [ ] Edge cases are listed with expected behavior or stop conditions.
 - [ ] Grill loop completed before drafting: relevant decision-tree branches were resolved or explicitly out of scope.

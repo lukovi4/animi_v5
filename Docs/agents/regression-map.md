@@ -4,6 +4,10 @@ This file maps recurring risk areas to focused checks. It is a routing aid, not 
 
 Codex chooses checks based on changed files, approved behavior, and review risk. Claude reports exact commands and results in `claude-summary.md`.
 
+## Map Usage Rule
+
+This file is a routing aid, not source of truth and not an allow-list. Start from matching risk sections, then verify current code, tests, and behavior directly. Update this map only with stable reusable regression knowledge.
+
 ## Timeline / Scene Focus / Playhead
 
 Risk signals:
@@ -22,6 +26,8 @@ Broader gate:
 
 Manual QA is usually required when gesture timing, playback start/stop, or visible playhead behavior is part of the expected outcome.
 
+For async gesture/playback tests, prefer condition-based waiting for state, events, or rendered frame readiness over arbitrary sleeps. If a fixed delay is required because timing itself is under test, document the timing source and why the delay proves the behavior.
+
 ## User Media / Trim / VideoFrameProvider
 
 Risk signals:
@@ -39,6 +45,8 @@ Broader gate:
 - `ANIMIAPP_DERIVED_DATA_PATH=/tmp/<task> bash Scripts/run_animiapp_tests.sh`
 
 Manual QA is often required when the issue is visual, interactive, or export-output related.
+
+For async media tests, prefer condition-based waiting for frame/provider/service state over arbitrary sleeps. If a fixed delay is required because timing itself is under test, document the timing source and expected interval.
 
 ## TVECore Runtime / Compiler Boundary
 

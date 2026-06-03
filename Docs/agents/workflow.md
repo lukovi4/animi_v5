@@ -22,11 +22,12 @@ Use the lightest track that covers the risk.
 
 | Track | Use When | Required Artifacts |
 |---|---|---|
-| Quick fix | Narrow bug, test, docs, or config task | `task-contract.md`, `claude-summary.md`, `codex-review.md` |
+| Quick fix | Narrow bug, test, docs, or config task | `task-contract.md`, `codex-analysis.md` when investigated, `claude-summary.md`, `codex-review-packet.md`, `codex-review.md` |
 | Feature / behavior | User-visible app behavior may change | Quick fix files plus approved product decisions in `task-contract.md` |
 | Architecture / media pipeline | Cross-cutting rendering, media, persistence, export, timeline, or architecture work | Feature files plus expanded readiness, verification, manual QA, and possible follow-up |
 
 Any Claude production-code change still requires `claude-plan.md`, `codex-plan-review.md`, and a valid implementation marker.
+For tasks that require real code investigation, Codex also writes `codex-analysis.md`. For every Claude implementation or same-task repair pass, Claude writes `codex-review-packet.md` for Codex review.
 
 ## Task Folder
 
@@ -40,9 +41,11 @@ Standard files:
 
 ```text
 task-contract.md
+codex-analysis.md
 claude-plan.md
 codex-plan-review.md
 claude-summary.md
+codex-review-packet.md
 codex-review.md
 followups.md
 artifacts/
@@ -73,6 +76,7 @@ Codex owns:
 
 - task folder creation;
 - `task-contract.md`;
+- `codex-analysis.md`;
 - `codex-plan-review.md`;
 - `codex-review.md`;
 - `followups.md`;
@@ -83,10 +87,11 @@ Claude owns only:
 - `claude-plan.md` during Planning Pass;
 - normal implementation code/test/project files after marker validation;
 - `claude-summary.md` after implementation;
+- `codex-review-packet.md` after implementation or same-task repair;
 - files under `artifacts/` when logs or generated evidence are bulky;
 - `claude-findings.md` only for explicitly requested read-only investigation.
 
-Claude must not create task folders, edit `task-contract.md`, edit Codex reviews, or edit the marker.
+Claude must not create task folders, edit `task-contract.md`, edit `codex-analysis.md`, edit Codex reviews, or edit the marker.
 
 ## Status Vocabulary
 
@@ -99,6 +104,7 @@ Status values are file-specific:
 - `codex-review.md`: `Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA Pending`
 
 Claude proposes implementation plans in `claude-plan.md`. Codex approval lives only in `codex-plan-review.md`.
+`codex-analysis.md` and `codex-review-packet.md` do not carry approval status; they are evidence and routing artifacts.
 
 ## Lifecycle
 
@@ -107,26 +113,27 @@ Claude proposes implementation plans in `claude-plan.md`. Codex approval lives o
 3. If production-code changes may be needed and no literal Codex implementation override exists, Codex follows this workflow and does not edit production code.
 4. Codex reads relevant knowledge-map sections, then verifies current code directly.
 5. Codex performs pre-contract investigation: entry points, state/data flow, dependencies, test seams, and likely regression surfaces.
-6. Codex lists edge cases, product semantics, consequences of likely fixes, and the task decision tree.
-7. Codex runs the grill loop before writing the contract: resolve relevant decision-tree branches one by one, ask only product/UX/scope/risk questions that can change the contract, include Codex's recommended answer and impact, wait for the user's answer, and investigate code instead of asking when code can answer.
-8. Codex writes `task-contract.md` with `Status: Pending User Approval` and writes `followups.md` when useful.
-9. User approves or rejects the task contract.
-10. After approval, Codex updates the same `task-contract.md` to `Status: Approved` and records the user approval statement.
-11. Codex gives the user the exact Claude slash command: `/animi-planning-pass <task-folder>`.
-12. The user invokes that slash command in Claude.
-13. Claude reads `task-contract.md`, analyzes real code, writes only `claude-plan.md`, and stops.
-14. Codex reviews `claude-plan.md` against `task-contract.md` and writes `codex-plan-review.md`.
-15. If `codex-plan-review.md` is `APPROVED`, Codex creates `.codex-local/active-implementation.json`. No second user approval is required.
-16. Codex gives the exact Claude slash command: `/animi-implement-task <task-folder>`.
-17. The user invokes that slash command in Claude.
-18. Claude implements inside the approved task scope and hook guardrails.
-19. Claude writes `claude-summary.md`.
-20. Codex reviews implementation and writes `codex-review.md`.
-21. If review finds same-scope defects, Codex keeps the same task open, writes explicit repair instructions in `codex-review.md`, refreshes the marker when needed, and sends Claude back through `/animi-implement-task <task-folder>`. Do not create a new task for same-scope repairs.
-22. Codex decides whether manual QA is required. If required, Codex gives the user exact device steps and expected results.
-23. Codex performs closure review: verification evidence, manual QA result, code cleanliness, obsolete/legacy cleanup, docs/map updates, marker cleanup, commit-ready files, and unrelated dirty files.
-24. The task closes only after evidence-based verification and required manual QA pass, unless the user explicitly accepts remaining risk.
-25. If the task is approved and commit-ready, Codex asks the user to write `commit`; Codex stages and commits only listed commit-ready files after that explicit command.
+6. Codex writes or updates `codex-analysis.md` for tasks that required real code investigation. The analysis records architecture trace, root-cause trace, hypotheses, invariants, risk areas, focused future-review targets, and reusable map-update candidates. It is a reusable audit artifact, not source of truth.
+7. Codex lists edge cases, product semantics, consequences of likely fixes, and the task decision tree.
+8. Codex runs the grill loop before writing the contract: resolve relevant decision-tree branches one by one, ask only product/UX/scope/risk questions that can change the contract, include Codex's recommended answer and impact, wait for the user's answer, and investigate code instead of asking when code can answer.
+9. Codex writes `task-contract.md` with `Status: Pending User Approval` and writes `followups.md` when useful.
+10. User approves or rejects the task contract.
+11. After approval, Codex updates the same `task-contract.md` to `Status: Approved` and records the user approval statement.
+12. Codex gives the user the exact Claude slash command: `/animi-planning-pass <task-folder>`.
+13. The user invokes that slash command in Claude.
+14. Claude reads `task-contract.md` and `codex-analysis.md` when present, analyzes real code, writes only `claude-plan.md`, and stops.
+15. Codex reviews `claude-plan.md` against `task-contract.md` and `codex-analysis.md` when present, then writes `codex-plan-review.md`.
+16. If `codex-plan-review.md` is `APPROVED`, Codex creates `.codex-local/active-implementation.json`. No second user approval is required.
+17. Codex gives the exact Claude slash command: `/animi-implement-task <task-folder>`.
+18. The user invokes that slash command in Claude.
+19. Claude implements inside the approved task scope and hook guardrails.
+20. Claude writes `claude-summary.md` and `codex-review-packet.md`.
+21. Codex reviews implementation packet-first, then performs risk-based targeted checks and writes `codex-review.md`.
+22. If review finds same-scope defects, Codex keeps the same task open, writes explicit repair instructions in `codex-review.md`, refreshes the marker when needed, and sends Claude back through `/animi-implement-task <task-folder>`. Claude updates `claude-summary.md` and `codex-review-packet.md` for the repair pass. Do not create a new task for same-scope repairs.
+23. Codex decides whether manual QA is required. If required, Codex gives the user exact device steps and expected results.
+24. Codex performs closure review: verification evidence, manual QA result, code cleanliness, obsolete/legacy cleanup, docs/map updates, marker cleanup, commit-ready files, and unrelated dirty files.
+25. The task closes only after evidence-based verification and required manual QA pass, unless the user explicitly accepts remaining risk.
+26. If the task is approved and commit-ready, Codex asks the user to write `commit`; Codex stages and commits only listed commit-ready files after that explicit command.
 
 ## Approval Gates
 
@@ -165,6 +172,7 @@ Claude can implement only from `task-contract.md` with `Status: Approved`.
 - approved product decisions;
 - scope and non-goals;
 - pre-contract investigation evidence;
+- `codex-analysis.md` reference when the task required deep investigation;
 - product semantics and edge cases;
 - dependency/regression impact scan;
 - implementation guidance for Claude;
@@ -213,18 +221,19 @@ See [marker-schema.md](marker-schema.md) and [hook-write-gate.md](hook-write-gat
 
 Claude must not offer bypassing, ignoring, or overriding the contract as an option. A request to bypass the contract is a workflow-change request, not implementation authorization.
 
-Claude must not suggest that the user manually create, rename, or edit `task-contract.md`, `codex-plan-review.md`, `codex-review.md`, or `.codex-local/active-implementation.json`.
+Claude must not suggest that the user manually create, rename, or edit `task-contract.md`, `codex-analysis.md`, `codex-plan-review.md`, `codex-review.md`, or `.codex-local/active-implementation.json`.
 
 ## Verification
 
 Verification must be evidence-based.
 
-Claude reports exact commands and outcomes in `claude-summary.md`.
+Claude reports exact commands and outcomes in `claude-summary.md` and packages review evidence in `codex-review-packet.md`. Bulky logs, broad diffs, and generated evidence stay under `artifacts/`.
 
 Codex decides whether heavy checks must be re-run based on:
 
 - risk of changed files;
 - completeness of Claude summary;
+- completeness and specificity of `codex-review-packet.md`;
 - whether tests are relevant and fresh;
 - review findings;
 - architecture/media/persistence/export impact.
@@ -235,18 +244,25 @@ Codex must also decide whether manual QA is required. Manual QA is required when
 
 Codex review order:
 
-1. task contract compliance;
-2. tests first;
-3. correctness;
-4. architecture invariants;
-5. edge cases and regressions;
-6. performance/security when relevant;
-7. verification evidence;
-8. manual QA need and result;
-9. scope creep;
-10. code cleanliness and obsolete/legacy cleanup;
-11. docs/map update need;
-12. closure, same-task repair, or follow-up.
+1. packet and summary completeness;
+2. task contract compliance;
+3. tests first;
+4. correctness;
+5. architecture invariants;
+6. edge cases and regressions;
+7. performance/security when relevant;
+8. verification evidence;
+9. manual QA need and result;
+10. scope creep;
+11. code cleanliness and obsolete/legacy cleanup;
+12. docs/map update need;
+13. closure, same-task repair, or follow-up.
+
+Use risk-based depth:
+
+- Low: packet, summary, stats/names, and focused spot checks.
+- Medium: packet, summary, focused hunks, relevant tests, and affected invariants.
+- High: targeted deep review of changed behavior, dependencies, and verification evidence. High risk still does not mean repeating broad repository exploration when `codex-analysis.md` and the packet provide reliable focused targets.
 
 Use [review-template.md](review-template.md).
 
@@ -267,6 +283,7 @@ A task can close only when:
 - `task-contract.md` was followed;
 - `codex-plan-review.md` approved Claude's plan before implementation;
 - Claude summary is complete;
+- `codex-review-packet.md` for the latest implementation or repair pass is complete;
 - required verification passed or skipped checks are explicitly accepted risks;
 - required manual QA passed or is explicitly accepted as not run;
 - Codex review has no blocking findings;

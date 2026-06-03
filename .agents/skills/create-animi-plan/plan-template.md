@@ -7,6 +7,7 @@ Use the canonical templates in `../../../Docs/agents/`.
 Create:
 
 ```text
+codex-analysis.md
 task-contract.md
 followups.md
 artifacts/
@@ -15,6 +16,7 @@ artifacts/
 Use:
 
 - `../../../Docs/agents/task-folder-template.md`
+- `../../../Docs/agents/codex-analysis-template.md`
 - `../../../Docs/agents/task-contract-template.md`
 
 ## Approval

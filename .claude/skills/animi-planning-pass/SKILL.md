@@ -1,6 +1,6 @@
 ---
 name: Animi Planning Pass
-description: Create claude-plan.md for an approved Animi task contract without implementing. Manual gate skill for reading task-contract.md, analyzing real code read-only, writing only claude-plan.md, and stopping for Codex review.
+description: Create claude-plan.md for an approved Animi task contract without implementing. Manual gate skill for reading task-contract.md and codex-analysis.md when present, analyzing real code read-only, writing only claude-plan.md, and stopping for Codex review.
 disable-model-invocation: true
 argument-hint: <task-folder>
 arguments: task_folder
@@ -21,6 +21,7 @@ Analyze the approved task against the real codebase, write `claude-plan.md`, and
 - `task-contract.md` with `Status: Approved`.
 
 If the task folder or contract is missing or not approved, stop and ask for the correct task folder. Do not create task folders or Codex-owned files.
+If `codex-analysis.md` exists, read it as Codex-owned context and do not edit it.
 
 ## Allowed Output
 
@@ -33,6 +34,7 @@ Do not write anything else in this pass.
 ## Read-Only Research
 
 - Read `task-contract.md` first.
+- Read `codex-analysis.md` when present to understand Codex's architecture trace, root-cause assumptions, invariants, risk areas, and future-review targets.
 - Use targeted code reads and search.
 - If normal search/read tools are unavailable or insufficient, Bash is allowed by the project hook. Use normal development commands for investigation, including search, read, shell composition, and focused verification when it materially improves the plan.
 - Use Explore/subagents when useful for focused read-only code investigation.
@@ -49,6 +51,7 @@ It must include:
 
 - `Status: Proposed` for a viable plan, or `Status: Blocked` when implementation should not proceed;
 - confirmation that `task-contract.md` was read and has `Status: Approved`;
+- whether `codex-analysis.md` was read or absent;
 - `Implementation started: no`;
 - exact files expected to change;
 - implementation steps inside contracted scope;

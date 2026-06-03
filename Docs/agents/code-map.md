@@ -4,6 +4,18 @@ This file is a routing map for AI agents. It is not source of truth and not a su
 
 Use it to decide where to start investigation, then verify actual files before planning, implementation, or review.
 
+## Map Usage Rule
+
+This file is a routing aid, not source of truth and not an allow-list.
+
+For any task:
+
+- start from the matching section when present;
+- verify current code directly;
+- follow actual call sites, state/data flow, dependencies, and tests beyond listed files;
+- if listed files are insufficient, continue normal investigation;
+- if investigation reveals stable reusable routing knowledge, update this map after review.
+
 ## Editor Timeline / Playhead / Scene Focus
 
 Start here when behavior involves selecting scenes, focus, playhead movement, timeline taps, or playback control:

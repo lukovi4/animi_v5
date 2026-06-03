@@ -48,6 +48,7 @@ Out of scope:
 ## Pre-Contract Investigation
 
 - Relevant knowledge maps checked: <domain/code-map/regression-map sections or "none">
+- Codex analysis: `codex-analysis.md` <written/not needed and why>
 - Code entry points verified: `<path>`: <what was checked>
 - State/data flow verified: <short trace>
 - Existing tests/seams verified: `<path>`: <what they cover>
@@ -90,6 +91,7 @@ Out of scope:
 
 - <when Claude must stop and ask>
 - Any product/UX/behavior decision-tree branch that was not approved, proven by code/docs, or explicitly out of scope.
+- Any implementation path that invalidates the root-cause trace, architecture trace, or risk assumptions recorded in `codex-analysis.md`.
 
 ## Deletion / Cleanup / Scope-Sensitive Actions
 
@@ -97,6 +99,7 @@ Out of scope:
 - If the task truly needs deletion, cleanup, `git reset`, `git clean`, `git restore`, `git checkout`, `git rm`, branch/tag deletion, or tracked-file removal, stop for Codex/user handling.
 - Dependency/tooling/network/infrastructure/project-file/git-state changes: approved only when explicitly listed in this task contract.
 - Codex-owned gate artifacts are not approved for Claude edits.
+- `codex-analysis.md` is Codex-owned and is not approved for Claude edits.
 
 ## Repair Loop Rules
 
@@ -107,6 +110,7 @@ Out of scope:
 ## Closure Criteria
 
 - Verification evidence complete.
+- `codex-review-packet.md` complete for the latest implementation or repair pass.
 - Required manual QA passed or accepted as not run.
 - No blocking Codex review findings.
 - Marker removed or expired.

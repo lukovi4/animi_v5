@@ -10,9 +10,11 @@ Create local task folders under:
 
 ```text
 task-contract.md
+codex-analysis.md
 claude-plan.md
 codex-plan-review.md
 claude-summary.md
+codex-review-packet.md
 codex-review.md
 followups.md
 artifacts/
@@ -23,6 +25,18 @@ Artifact ownership and workflow gates are defined in `workflow.md`. This templat
 ## `task-contract.md`
 
 Use [task-contract-template.md](task-contract-template.md).
+
+## `codex-analysis.md`
+
+Use [codex-analysis-template.md](codex-analysis-template.md).
+
+Codex writes this when a task requires real code investigation. It captures reusable architecture trace, root-cause trace, risk areas, verification seams, and map-update candidates. It is a routing and audit artifact, not source of truth.
+
+## `codex-review-packet.md`
+
+Use [codex-review-packet-template.md](codex-review-packet-template.md).
+
+Claude writes this after implementation or same-task repair. It gives Codex curated review evidence and focused spot-check targets without pasting full logs or broad diffs.
 
 ## `followups.md`
 

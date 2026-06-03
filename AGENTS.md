@@ -29,6 +29,8 @@ This file is the Codex entry point for the Animi repository. Keep it short; deta
 - Hook behavior: `Docs/agents/hook-write-gate.md`
 - Marker schema: `Docs/agents/marker-schema.md`
 - Task contract template: `Docs/agents/task-contract-template.md`
+- Codex analysis template: `Docs/agents/codex-analysis-template.md`
+- Codex review packet template: `Docs/agents/codex-review-packet-template.md`
 - Project routing hints: `Docs/agents/domain.md`, `Docs/agents/code-map.md`, `Docs/agents/regression-map.md`
 - Review shape: `Docs/agents/review-template.md`
 
@@ -41,7 +43,7 @@ Use project-local skills when the request matches:
 - `create-animi-plan`: create a task folder and `task-contract.md` for Claude.
 - `diagnose-animi-issue`: investigate a bug/regression before planning a fix.
 - `review-animi-claude-plan`: review Claude's `claude-plan.md` before implementation.
-- `review-animi-implementation`: review Claude's code and `claude-summary.md`.
+- `review-animi-implementation`: review Claude's code, `claude-summary.md`, and `codex-review-packet.md`.
 
 ## Operating Rules
 
@@ -57,6 +59,7 @@ Use project-local skills when the request matches:
 ## Context Rules
 
 - Use knowledge maps as routing hints before broad exploration.
+- Treat knowledge maps as routing aids, not source of truth or allow-lists.
 - Use `rg` / `rg --files` before targeted reads.
 - Exclude bulky local research clones such as `.codex-local/tasks/**/repos/**` from normal searches.
 - Do not read `logs.md`, `task*.md`, `findings.md`, `review.md`, `bug.md`, or large docs end to end unless explicitly needed.

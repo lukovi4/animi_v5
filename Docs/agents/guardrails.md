@@ -44,6 +44,7 @@ Claude must not create, rename, edit, or delete these gate artifacts:
 
 - `.codex-local/active-implementation.json`
 - `task-contract.md`
+- `codex-analysis.md`
 - `codex-plan-review.md`
 - `codex-review.md`
 - `followups.md`

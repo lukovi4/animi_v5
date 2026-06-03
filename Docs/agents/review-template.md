@@ -30,6 +30,16 @@ Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA
 - Task contract followed: yes/no
 - Scope creep found: yes/no
 - Product decisions changed: yes/no
+- `codex-analysis.md` assumptions invalidated: no/yes/n/a
+
+## Review Packet
+
+- Packet read: yes/no
+- Packet complete: yes/no
+- Review depth: Low | Medium | High
+- Spot checks selected:
+  - `<path>`: <symbol/range and why>
+- Packet gaps treated as findings or accepted risk: <none or list>
 
 ## Tests First
 

@@ -5,6 +5,8 @@
 - [ ] `task-contract.md` exists and has `Status: Approved`.
 - [ ] `codex-plan-review.md` exists and has `Status: APPROVED`.
 - [ ] Live marker or `claude-summary.md` marker snapshot identifies the task authorization context.
+- [ ] `codex-review-packet.md` exists for the latest implementation or repair pass.
+- [ ] `codex-analysis.md` was read when present.
 - [ ] Claude stayed inside scope.
 - [ ] Claude changed only files/actions needed for the task contract.
 - [ ] Claude did not run deletion, destructive cleanup, git rollback cleanup, or unapproved tracked-file removal.
@@ -17,6 +19,15 @@
 - [ ] Behavior tests are preferred over implementation-coupled tests.
 - [ ] Red/green evidence is present when applicable.
 - [ ] Missing tests are called out as findings or accepted risk.
+
+## Packet-First Review
+
+- [ ] Packet lists every changed file with contract reason.
+- [ ] Packet maps contract requirements and edge cases to implementation/test evidence.
+- [ ] Packet identifies focused risk hotspots for Codex, not broad full-file review requests.
+- [ ] Packet lists exact verification commands, results, and full-log artifact paths.
+- [ ] Packet gaps are treated as findings or accepted risk.
+- [ ] Review depth is recorded as Low, Medium, or High.
 
 ## Correctness
 

@@ -27,6 +27,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 - Dependency, tooling, infrastructure, hook, signing, and git-state changes are allowed only when explicitly inside the approved task contract. If they are needed and not contracted, stop and ask for Codex review.
 - Do not change product behavior beyond `task-contract.md`.
 - Do not edit Codex-owned gate artifacts.
+- Do not edit `codex-analysis.md`; it is Codex-owned. Read it only as context when present.
 - Use normal development Bash when needed: search/read, shell composition, pipes, redirects, focused tests, builds, verification, repo-local scripts, dependency commands, network commands, and normal git commands.
 - Do not run deletion, destructive cleanup, or git rollback cleanup commands. The hook hard-blocks forms such as `rm`, `find -delete`, dangerous `find -exec`, `git reset`, `git clean`, `git restore`, `git checkout`, `git rm`, and branch/tag deletion.
 - Do not weaken tests.
@@ -35,11 +36,12 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 
 ## Workflow
 
-1. Read `task-contract.md`, `claude-plan.md`, `codex-plan-review.md`, the active marker, and `codex-review.md` if present.
+1. Read `task-contract.md`, `codex-analysis.md` if present, `claude-plan.md`, `codex-plan-review.md`, the active marker, and `codex-review.md` if present.
 2. Confirm planned changes are still inside contracted scope.
 3. Implement the smallest safe change that satisfies the task contract or same-task repair instructions.
 4. Run the narrowest meaningful verification for the approved task. Search/read commands are not verification evidence unless they directly support the summary.
-5. Write `$task_folder/claude-summary.md` using `Docs/agents/claude-summary-template.md`.
+5. Write `$task_folder/codex-review-packet.md` using `Docs/agents/codex-review-packet-template.md`.
+6. Write `$task_folder/claude-summary.md` using `Docs/agents/claude-summary-template.md`.
 
 ## Summary Requirements
 
@@ -51,12 +53,25 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 - marker snapshot fields required by `Docs/agents/claude-summary-template.md`;
 - Codex plan review status;
 - files changed;
+- whether `codex-review-packet.md` was written;
 - task contract compliance;
 - exact verification commands and results;
 - checks not run and why;
 - manual QA notes from the task contract;
 - deviations from the task contract, if any;
 - known risks or follow-ups for Codex.
+
+`codex-review-packet.md` must include:
+
+- changed files with contract reason;
+- contract coverage and edge-case coverage;
+- focused risk hotspots for Codex review;
+- exact verification commands, results, and full-log artifact paths;
+- checks not run and risk;
+- Claude self-review concerns;
+- suggested Codex spot checks.
+
+Keep the packet curated. Do not paste full logs, broad diffs, or large command output into it; put bulky evidence in `artifacts/`.
 
 ## Stop Rule
 
