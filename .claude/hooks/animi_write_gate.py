@@ -444,28 +444,54 @@ def segment_is_dangerous(root: Path, segment: Sequence[str]) -> Optional[str]:
 def command_substitution_payloads(command: str) -> List[str]:
     payloads: List[str] = []
     index = 0
+    quote: Optional[str] = None
+    escaped = False
     while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+                index += 1
+                continue
+        elif char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+
         if command.startswith("$(", index):
             depth = 1
             start = index + 2
             cursor = start
-            quote: Optional[str] = None
-            escaped = False
+            inner_quote: Optional[str] = None
+            inner_escaped = False
             while cursor < len(command):
-                char = command[cursor]
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif quote:
-                    if char == quote:
-                        quote = None
-                elif char in {"'", '"'}:
-                    quote = char
+                inner_char = command[cursor]
+                if inner_escaped:
+                    inner_escaped = False
+                elif inner_char == "\\":
+                    inner_escaped = True
+                elif inner_quote:
+                    if inner_char == inner_quote:
+                        inner_quote = None
+                elif inner_char in {"'", '"'}:
+                    inner_quote = inner_char
                 elif command.startswith("$(", cursor):
                     depth += 1
                     cursor += 1
-                elif char == ")":
+                elif inner_char == ")":
                     depth -= 1
                     if depth == 0:
                         payloads.append(command[start:cursor])
@@ -473,24 +499,24 @@ def command_substitution_payloads(command: str) -> List[str]:
                         break
                 cursor += 1
             else:
-                raise GateError("unterminated command substitution")
+                break
         elif command[index] == "`":
             start = index + 1
             cursor = start
-            escaped = False
+            backtick_escaped = False
             while cursor < len(command):
-                char = command[cursor]
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == "`":
+                inner_char = command[cursor]
+                if backtick_escaped:
+                    backtick_escaped = False
+                elif inner_char == "\\":
+                    backtick_escaped = True
+                elif inner_char == "`":
                     payloads.append(command[start:cursor])
                     index = cursor
                     break
                 cursor += 1
             else:
-                raise GateError("unterminated backtick command substitution")
+                break
         index += 1
     return payloads
 
@@ -878,6 +904,16 @@ def run_self_test() -> int:
                 },
             ),
         )
+        checks += self_test_expect_pass(
+            "single-quoted grep backticks are allowed",
+            lambda: [
+                handle_pre_tool_use(root, {"tool_name": "Bash", "tool_input": {"command": command}})
+                for command in (
+                    "rg '`input.rect' Docs/agents",
+                    "grep -rn '`rm -rf AnimiApp/Sources`' Docs/agents",
+                )
+            ],
+        )
         checks += self_test_expect_block(
             "dangerous shell command substitution is blocked",
             lambda: handle_pre_tool_use(
@@ -885,6 +921,16 @@ def run_self_test() -> int:
                 {
                     "tool_name": "Bash",
                     "tool_input": {"command": "echo $(rm -rf AnimiApp/Sources)"},
+                },
+            ),
+        )
+        checks += self_test_expect_block(
+            "dangerous backtick command substitution is blocked",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "echo `rm -rf AnimiApp/Sources`"},
                 },
             ),
         )
