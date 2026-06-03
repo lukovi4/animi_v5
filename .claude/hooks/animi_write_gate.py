@@ -419,7 +419,7 @@ def shell_c_payload(tokens: Sequence[str]) -> Optional[str]:
 def segment_is_dangerous(root: Path, segment: Sequence[str]) -> Optional[str]:
     tokens = strip_env_assignments(segment)
     if not tokens:
-        return "empty command segment"
+        return None
     first = tokens[0]
     if first in DELETION_SHELL_COMMANDS:
         return f"{first} is blocked"
@@ -1045,6 +1045,23 @@ def run_self_test() -> int:
                             "  echo \"=== $f ===\"\n"
                             "  python3 -c 'print(\"line 1\")\nprint(\"line 2\")'\n"
                             "done"
+                        )
+                    },
+                },
+            ),
+        )
+        checks += self_test_expect_pass(
+            "multi-line assignment-only segments are allowed",
+            lambda: handle_pre_tool_use(
+                root,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            "cd /Users/evgeny/Documents/+Work/Animi/animi_v5/animi\n"
+                            "SRC=6_frames_template\n"
+                            "DST=SceneSources/6_frames_template\n"
+                            "echo \"$SRC -> $DST\""
                         )
                     },
                 },
