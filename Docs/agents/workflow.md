@@ -229,6 +229,17 @@ Verification must be evidence-based.
 
 Claude reports exact commands and outcomes in `claude-summary.md` and packages review evidence in `codex-review-packet.md`. Bulky logs, broad diffs, and generated evidence stay under `artifacts/`.
 
+### Test Output Discipline
+
+Codex and Claude must keep noisy test/build output out of the main thread.
+
+- Do not run raw `xcodebuild test` or raw `Scripts/run_animiapp_tests.sh` as verification commands in Codex/Claude agent turns.
+- Run focused `xcodebuild` commands and the full AnimiApp gate through `Scripts/animi_quiet_xcodebuild.sh`.
+- The quiet wrapper must write full stdout/stderr to `.codex-local/tasks/<task-id>/artifacts/<name>.log` and print only a compact summary: status, exit code, test count/failures/skips when available, and log path.
+- Use `Scripts/animi_test_log_summary.sh` to inspect existing test logs. Do not use broad `rg`/large `tail` over logs as the first review step.
+- Read raw log excerpts only when a test failed, the summary is ambiguous, or Codex needs a targeted line range to verify a finding.
+- Task contracts, Claude summaries, and review packets must record the quiet-wrapper command and full-log artifact path, not raw test output.
+
 Codex decides whether heavy checks must be re-run based on:
 
 - risk of changed files;
@@ -257,6 +268,8 @@ Codex review order:
 11. code cleanliness and obsolete/legacy cleanup;
 12. docs/map update need;
 13. closure, same-task repair, or follow-up.
+
+Test review must check whether the test seam matches the risk. For user-visible, timing, media, playback, persistence, export, or cross-module bugs, helper/spy tests are not sufficient when the real failing behavior lives in a lower-level service, runtime, renderer, provider, persistence, or export path. If tests do not exercise the real risk seam, Codex records a finding and uses `Changes Requested` unless the gap is explicitly accepted as risk.
 
 Use risk-based depth:
 

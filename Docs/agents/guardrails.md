@@ -21,6 +21,10 @@ Without explicit approval, agents must not:
 
 Only deletion/destructive cleanup and git rollback cleanup are hard-blocked by the hook. Other high-risk actions are workflow-controlled: they are allowed when explicitly inside an approved task contract and user/Codex approvals required by `workflow.md` are present.
 
+## Test Output Guardrail
+
+Agents must not run raw `xcodebuild test` or raw `Scripts/run_animiapp_tests.sh` in the main thread for task verification. Use `Scripts/animi_quiet_xcodebuild.sh` with a task `artifacts/*.log` path, then use `Scripts/animi_test_log_summary.sh` for compact log review. Raw log excerpts are allowed only when targeted to a failure, ambiguity, or review finding.
+
 ## Codex
 
 - Codex must not edit production code by default.

@@ -17,6 +17,8 @@ Date: YYYY-MM-DD
 - Contracted edge cases and regression surfaces covered: yes/no
 - `codex-analysis.md` risk areas and invariants preserved: yes/no/n/a
 - Manual QA expectation preserved: yes/no
+- Planned noisy verification uses quiet wrappers: yes/no/n/a
+- Planned test seams match risk: yes/no
 
 ## Findings
 

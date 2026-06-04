@@ -55,3 +55,5 @@ Claude writes this after implementation or same-task repair. It gives Codex cura
 ## `artifacts/`
 
 Use for bulky logs, focused diffs, screenshots, generated reports, or test output. Prefer short summaries in task files and full output in artifacts.
+
+Noisy test/build commands must write raw output here through `Scripts/animi_quiet_xcodebuild.sh`. Task files should reference the log path and compact summary, not paste raw output.

@@ -25,18 +25,19 @@ If `codex-analysis.md` exists, read it as Codex-owned context and do not edit it
 
 ## Allowed Output
 
-Write exactly one task artifact:
+Write exactly one task artifact by default:
 
 - `$task_folder/claude-plan.md`
 
-Do not write anything else in this pass.
+Do not write anything else in this pass unless the task contract explicitly requires planning-time verification logs. That exception must use `Scripts/animi_quiet_xcodebuild.sh` and write only under `$task_folder/artifacts/`.
 
 ## Read-Only Research
 
 - Read `task-contract.md` first.
 - Read `codex-analysis.md` when present to understand Codex's architecture trace, root-cause assumptions, invariants, risk areas, and future-review targets.
 - Use targeted code reads and search.
-- If normal search/read tools are unavailable or insufficient, Bash is allowed by the project hook. Use normal development commands for investigation, including search, read, shell composition, and focused verification when it materially improves the plan.
+- If normal search/read tools are unavailable or insufficient, Bash is allowed by the project hook. Use normal development commands for investigation, including search, read, and shell composition.
+- Do not run raw `xcodebuild test`, raw `Scripts/run_animiapp_tests.sh`, or other noisy test/build commands during Planning Pass. Prefer planning the verification for implementation. If planning-time verification is explicitly contracted, use `Scripts/animi_quiet_xcodebuild.sh` and record the log path in `claude-plan.md`.
 - Use Explore/subagents when useful for focused read-only code investigation.
 - Do not run deletion, destructive cleanup, or git rollback cleanup commands. The hook hard-blocks forms such as `rm`, `find -delete`, dangerous `find -exec`, `git reset`, `git clean`, `git restore`, `git checkout`, `git rm`, and branch/tag deletion.
 - Do not suggest that the user runs shell commands with `! <command>` as a substitute for blocked Bash.

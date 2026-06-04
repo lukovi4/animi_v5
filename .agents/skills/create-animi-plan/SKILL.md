@@ -16,6 +16,7 @@ Use this skill to turn a user request into a Codex-owned task folder and plan fo
 - Follow `Docs/agents/workflow.md` and `Docs/agents/guardrails.md`.
 - Keep product decisions as recommendations until the user approves them.
 - Keep bulky logs and notes under task `artifacts/`.
+- Do not run baseline `xcodebuild`/full-gate tests by default while planning. If a verification run is necessary to make the contract correct, use `Scripts/animi_quiet_xcodebuild.sh` and keep raw output in task `artifacts/`.
 
 ## Required References
 
@@ -33,7 +34,7 @@ Read only the sections needed:
 1. Create or reuse a task folder under `.codex-local/tasks/YYYY-MM-DD-short-slug/`.
 2. Classify the task: quick fix, feature/behavior, or architecture/media pipeline.
 3. Read only relevant knowledge-map sections from `Docs/agents/domain.md`, `Docs/agents/code-map.md`, and `Docs/agents/regression-map.md` when they help route investigation.
-4. Investigate the real code like a planning pass before drafting: entry points, state/data flow, direct dependencies, adjacent behavior, and existing test seams. Treat knowledge maps as starting points, not allow-lists.
+4. Investigate the real code like a planning pass before drafting: entry points, state/data flow, direct dependencies, adjacent behavior, and existing test seams. Treat knowledge maps as starting points, not allow-lists. Prefer identifying verification seams over running heavy baseline tests during planning.
 5. For tasks that required real code investigation, write or update `codex-analysis.md` before drafting the contract. Capture architecture trace, root-cause trace when applicable, hypotheses, invariants, risk areas, future review targets, verification seams, and stable map-update candidates.
 6. Identify edge cases, product semantics, consequences of likely fixes, and the task decision tree.
 7. Run the grill loop before drafting:
@@ -48,6 +49,7 @@ Read only the sections needed:
    - Do not ask questions already answered by the user request, proven by code, or internal to Claude's implementation inside approved scope.
    - Do not write `task-contract.md` until all relevant decision-tree branches are resolved or explicitly out of scope.
 8. Write `task-contract.md` with `Status: Pending User Approval`.
+   Verification commands in the contract must use quiet wrappers for `xcodebuild`, the AnimiApp full gate, or any other noisy test/build command.
 9. Write `followups.md` when useful.
 10. Run the readiness checklist.
 11. Ask the user to approve, reject, or revise the task contract. Include 3-6 concrete investigation evidence bullets, whether `codex-analysis.md` was written, and a summary of approved product decisions in the chat response.

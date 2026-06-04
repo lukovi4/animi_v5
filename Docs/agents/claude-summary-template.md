@@ -47,9 +47,9 @@ Marker snapshot:
 
 ## 5. Verification
 
-| Command | Result | Key Output | Full Log |
-|---|---|---|---|
-| `<command>` | passed/failed/not run | <short key result only> | `artifacts/<file>` or n/a |
+| Check | Quiet Command | Result | Compact Summary | Full Log |
+|---|---|---|---|---|
+| `<check>` | `<Scripts/animi_quiet_xcodebuild.sh ...>` | passed/failed/not run | <short key result only: tests/failures/skips or key failure> | `artifacts/<file>` or n/a |
 
 Skipped checks:
 
@@ -83,6 +83,7 @@ Requirements:
 
 - Use exact commands.
 - Do not write "should pass" as evidence.
+- Use quiet-wrapper commands for noisy verification; do not run raw `xcodebuild` or raw `Scripts/run_animiapp_tests.sh` as agent evidence.
 - Keep summaries short; put bulky logs in `artifacts/`.
 - Put detailed changed-file coverage, risk hotspots, and Codex spot-check targets in `codex-review-packet.md`, not here.
 - Mark skipped verification as risk, not success.

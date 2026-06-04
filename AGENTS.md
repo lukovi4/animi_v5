@@ -64,6 +64,7 @@ Use project-local skills when the request matches:
 - Exclude bulky local research clones such as `.codex-local/tasks/**/repos/**` from normal searches.
 - Do not read `logs.md`, `task*.md`, `findings.md`, `review.md`, `bug.md`, or large docs end to end unless explicitly needed.
 - Put bulky logs and test output under task `artifacts/`.
+- Run noisy test/build commands through quiet wrappers from `Docs/agents/workflow.md`; do not put raw `xcodebuild` or full-gate output in the main thread.
 
 ## Review
 

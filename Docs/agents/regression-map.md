@@ -22,7 +22,7 @@ Focused seams:
 
 Broader gate:
 
-- `ANIMIAPP_DERIVED_DATA_PATH=/tmp/<task> bash Scripts/run_animiapp_tests.sh`
+- `Scripts/animi_quiet_xcodebuild.sh --label full-gate --log .codex-local/tasks/<task-id>/artifacts/full-gate.log -- bash Scripts/run_animiapp_tests.sh`
 
 Manual QA is usually required when gesture timing, playback start/stop, or visible playhead behavior is part of the expected outcome.
 
@@ -42,7 +42,7 @@ Focused seams:
 
 Broader gate:
 
-- `ANIMIAPP_DERIVED_DATA_PATH=/tmp/<task> bash Scripts/run_animiapp_tests.sh`
+- `Scripts/animi_quiet_xcodebuild.sh --label full-gate --log .codex-local/tasks/<task-id>/artifacts/full-gate.log -- bash Scripts/run_animiapp_tests.sh`
 
 Manual QA is often required when the issue is visual, interactive, or export-output related.
 
@@ -75,5 +75,5 @@ Risk signals:
 Checks:
 
 - Show focused project-file diff and target membership reasoning.
-- Run the narrowest relevant build/test command for the approved task contract, subject to the hook's deletion/cleanup/rollback deny-list.
+- Run the narrowest relevant build/test command for the approved task contract through a quiet wrapper when output may be noisy, subject to the hook's deletion/cleanup/rollback deny-list.
 - Treat unverified project-file edits as high risk.

@@ -76,10 +76,12 @@ Out of scope:
 
 ## Verification
 
+Use quiet-wrapper commands for any `xcodebuild`, AnimiApp gate, or other noisy test/build command. Full output goes to `artifacts/*.log`; task files include only compact summaries and log paths.
+
 | Check | Command | Required | Notes |
 |---|---|---:|---|
-| Focused tests | `<command>` | yes/no | <why> |
-| Lint/build/gate | `<command>` | yes/no | <why> |
+| Focused tests | `Scripts/animi_quiet_xcodebuild.sh --label focused-tests --log .codex-local/tasks/<task-id>/artifacts/focused-tests.log -- <xcodebuild test ...>` | yes/no | <why and which real risk seam this exercises> |
+| Lint/build/gate | `Scripts/animi_quiet_xcodebuild.sh --label full-gate --log .codex-local/tasks/<task-id>/artifacts/full-gate.log -- bash Scripts/run_animiapp_tests.sh` | yes/no | <why> |
 
 ## Manual QA
 

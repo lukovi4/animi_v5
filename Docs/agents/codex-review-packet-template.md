@@ -35,9 +35,16 @@ Prefer focused review targets over full-file references.
 
 ## Verification Evidence
 
-| Command | Result | What it proves | Full log |
-|---|---|---|---|
-| `<command>` | passed/failed/not run | <behavior or gate proven> | `artifacts/<file>` or n/a |
+Use quiet-wrapper commands for noisy verification. Do not paste raw logs.
+
+| Check | Quiet command | Result | Summary | What it proves | Full log |
+|---|---|---|---|---|---|
+| `<check>` | `<Scripts/animi_quiet_xcodebuild.sh ...>` | passed/failed/not run | <compact summary: tests/failures/skips or key failure> | <behavior or gate proven> | `artifacts/<file>` or n/a |
+
+Test seam match:
+
+- Real risk seam exercised: yes/no
+- If no, explain why this is still acceptable or mark as a concern for Codex.
 
 ## Not Verified / Accepted Risk
 

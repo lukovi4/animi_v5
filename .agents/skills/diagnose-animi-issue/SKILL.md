@@ -18,6 +18,8 @@ Use this skill before fix planning when the failure mode is not proven.
 - State hypotheses before testing them.
 - One variable at a time.
 - If no correct test seam exists, record that as an architecture finding.
+- Do not run baseline `xcodebuild` or the full AnimiApp gate by default during diagnosis. Run tests only when they materially prove or disprove a hypothesis.
+- Any noisy test/build command must use `Scripts/animi_quiet_xcodebuild.sh` with the full log under the task `artifacts/` directory.
 
 ## Required References
 
@@ -39,7 +41,7 @@ Read only the sections needed:
 5. Trace backward from symptom to immediate cause, upstream trigger, and root-cause candidate.
 6. Trace the relevant code path and adjacent dependencies before proposing a fix.
 7. List 3-5 ranked hypotheses when the cause is unclear.
-8. Test one hypothesis at a time. Do not stack speculative fixes or bundle unrelated changes.
+8. Test one hypothesis at a time. Do not stack speculative fixes or bundle unrelated changes. If a test command is noisy, run it through the quiet wrapper and record only the compact summary/log path in Codex artifacts.
 9. Add targeted instrumentation only when needed and keep it temporary.
 10. Convert the reproduction into a failing test when a valid seam exists.
 11. Write or update `codex-analysis.md` with architecture trace, root-cause trace, hypotheses, invariants, risk areas, verification seams, and map-update candidates.

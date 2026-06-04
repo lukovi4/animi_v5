@@ -15,6 +15,8 @@ Use this skill to perform Codex technical-lead review after Claude work.
 - Tests and verification evidence are reviewed before code style.
 - Do not approve plausibility; require evidence or accepted risk.
 - Do not rerun heavy checks unless risk, missing evidence, or findings justify it.
+- Do not run raw `xcodebuild` or raw `Scripts/run_animiapp_tests.sh` during review. If a rerun is justified, use `Scripts/animi_quiet_xcodebuild.sh` and keep the full log in task `artifacts/`.
+- Test evidence must exercise the real risk seam. Passing helper/spy tests are not enough when the defect is in a lower-level playback, rendering, persistence, export, or service path.
 
 ## Required Inputs
 
@@ -48,15 +50,16 @@ Read only the sections needed:
 5. Confirm `codex-plan-review.md` approved the plan before implementation.
 6. Compare implementation to contracted scope using the live marker or summary marker snapshot for task authorization context.
 7. Assess packet completeness. Missing changed files, missing verification evidence, vague risk hotspots, or broad full-file spot checks are review findings unless explicitly accepted risk.
+   Missing quiet-wrapper log paths, pasted raw logs, or verification without a compact summary are packet findings.
 8. Select review depth:
    - Low: packet, summary, stats/names, and focused spot checks.
    - Medium: packet, summary, focused hunks, relevant tests, and affected invariants.
    - High: targeted deep review of changed behavior, dependencies, and verification evidence.
-9. Review tests first.
+9. Review tests first. Record whether tests match the risk and whether they exercise the real failing seam. If not, request changes unless the gap is explicitly accepted risk.
 10. Review correctness and edge cases.
 11. Review architecture invariants.
 12. Review verification evidence.
-13. Decide whether heavy checks need rerun.
+13. Decide whether heavy checks need rerun. Rerun only through `Scripts/animi_quiet_xcodebuild.sh`; otherwise verify Claude's quiet summaries and artifact logs with targeted reads.
 14. Decide whether manual QA is required. If yes, provide exact steps and expected results.
 15. Check code cleanliness: no obsolete files, no unused legacy paths introduced by the task, no unrelated churn.
 16. Decide whether docs or knowledge maps need updates.

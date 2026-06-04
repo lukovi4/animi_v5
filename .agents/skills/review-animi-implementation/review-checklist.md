@@ -16,6 +16,7 @@
 ## Tests First
 
 - [ ] Tests match the risk of the change.
+- [ ] Tests exercise the real failing/risk seam, not only a helper, spy, or unrelated higher-level API.
 - [ ] Behavior tests are preferred over implementation-coupled tests.
 - [ ] Red/green evidence is present when applicable.
 - [ ] Missing tests are called out as findings or accepted risk.
@@ -25,7 +26,7 @@
 - [ ] Packet lists every changed file with contract reason.
 - [ ] Packet maps contract requirements and edge cases to implementation/test evidence.
 - [ ] Packet identifies focused risk hotspots for Codex, not broad full-file review requests.
-- [ ] Packet lists exact verification commands, results, and full-log artifact paths.
+- [ ] Packet lists quiet-wrapper verification commands, compact results, and full-log artifact paths.
 - [ ] Packet gaps are treated as findings or accepted risk.
 - [ ] Review depth is recorded as Low, Medium, or High.
 
@@ -49,6 +50,7 @@
 - [ ] Claude summary lists exact commands.
 - [ ] Results are passed/failed/not run, not "should pass".
 - [ ] Bulky logs are in `artifacts/`.
+- [ ] Raw `xcodebuild`, raw `Scripts/run_animiapp_tests.sh`, and broad log grep/tail output were not pasted into the main thread.
 - [ ] Heavy rerun decision is justified.
 
 ## Manual QA

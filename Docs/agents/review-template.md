@@ -45,13 +45,18 @@ Status: Approved | Changes Requested | Blocked | Needs User Decision | Manual QA
 
 - Tests added/changed: <summary>
 - Tests match risk: yes/no
+- Real risk seam exercised: yes/no
+- Helper/spy-only coverage accepted: no/yes and why
 - Missing tests: <none or list>
 
 ## Verification Evidence
 
-| Check | Claude Result | Codex Verified | Notes |
-|---|---|---|---|
-| `<command>` | passed/failed/not run | yes/no/not rerun | <reason> |
+| Check | Claude Result | Codex Verified | Full Log | Notes |
+|---|---|---|---|---|
+| `<quiet-wrapper command or packet check>` | passed/failed/not run | yes/no/not rerun | `artifacts/<file>` or n/a | <reason> |
+
+- Raw test output kept out of main thread: yes/no
+- Codex reran heavy checks: no/yes, quiet-wrapper command and reason
 
 ## Manual QA
 

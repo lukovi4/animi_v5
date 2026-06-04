@@ -12,6 +12,7 @@ Use this skill before any Claude implementation pass.
 - Review `claude-plan.md` against `task-contract.md`, not chat memory.
 - Use `codex-analysis.md` when present to check that Claude's plan respects recorded architecture trace, root-cause assumptions, invariants, and risk areas.
 - Do not approve scope expansion, new product decisions, files outside contracted scope, or weaker verification.
+- Do not approve planned raw `xcodebuild`, raw `Scripts/run_animiapp_tests.sh`, or other noisy test/build verification. Planned noisy checks must use `Scripts/animi_quiet_xcodebuild.sh` with task `artifacts/*.log`.
 - If the plan is approved, create the implementation marker. Do not ask the user for a second approval unless a new decision is required.
 - Findings come first when blocking.
 
@@ -33,7 +34,7 @@ If any required input is missing, write `codex-plan-review.md` with `Status: BLO
 4. Check planned files against contracted scope.
 5. Check that Claude's plan accounts for the contracted code trace, state/data flow, dependency scan, edge cases, and `codex-analysis.md` risk areas when present.
 6. Check that `task-contract.md` has `Status: Approved`.
-7. Check planned tests and verification against risk.
+7. Check planned tests and verification against risk, including whether noisy checks use quiet wrappers and whether the planned test seam exercises the real risk.
 8. Check manual QA expectations from `task-contract.md`.
 9. Check that Claude introduced no product behavior, architecture, dependency, CI, git, hook, or project-file decision.
 10. Write `codex-plan-review.md` using `../../../Docs/agents/codex-plan-review-template.md`.

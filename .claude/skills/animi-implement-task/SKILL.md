@@ -29,6 +29,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 - Do not edit Codex-owned gate artifacts.
 - Do not edit `codex-analysis.md`; it is Codex-owned. Read it only as context when present.
 - Use normal development Bash when needed: search/read, shell composition, pipes, redirects, focused tests, builds, verification, repo-local scripts, dependency commands, network commands, and normal git commands.
+- Do not run raw `xcodebuild test` or raw `Scripts/run_animiapp_tests.sh` as verification. Use `Scripts/animi_quiet_xcodebuild.sh` with full logs under `$task_folder/artifacts/`.
 - Do not run deletion, destructive cleanup, or git rollback cleanup commands. The hook hard-blocks forms such as `rm`, `find -delete`, dangerous `find -exec`, `git reset`, `git clean`, `git restore`, `git checkout`, `git rm`, and branch/tag deletion.
 - Do not weaken tests.
 - Preserve unrelated dirty worktree changes.
@@ -39,7 +40,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 1. Read `task-contract.md`, `codex-analysis.md` if present, `claude-plan.md`, `codex-plan-review.md`, the active marker, and `codex-review.md` if present.
 2. Confirm planned changes are still inside contracted scope.
 3. Implement the smallest safe change that satisfies the task contract or same-task repair instructions.
-4. Run the narrowest meaningful verification for the approved task. Search/read commands are not verification evidence unless they directly support the summary.
+4. Run the narrowest meaningful verification for the approved task through quiet wrappers when output may be noisy. Search/read commands are not verification evidence unless they directly support the summary.
 5. Write `$task_folder/codex-review-packet.md` using `Docs/agents/codex-review-packet-template.md`.
 6. Write `$task_folder/claude-summary.md` using `Docs/agents/claude-summary-template.md`.
 
@@ -67,6 +68,7 @@ Also verify `.codex-local/active-implementation.json` exists and names this task
 - contract coverage and edge-case coverage;
 - focused risk hotspots for Codex review;
 - exact verification commands, results, and full-log artifact paths;
+- compact quiet-wrapper summaries for noisy verification;
 - checks not run and risk;
 - Claude self-review concerns;
 - suggested Codex spot checks.

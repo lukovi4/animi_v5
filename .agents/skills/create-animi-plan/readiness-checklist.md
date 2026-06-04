@@ -24,6 +24,7 @@ Run before asking for approval.
 - [ ] Architecture constraints are named.
 - [ ] Claude implementation steps are concrete.
 - [ ] Verification commands are exact.
+- [ ] No raw `xcodebuild` or raw `Scripts/run_animiapp_tests.sh` command appears as agent verification; noisy checks use `Scripts/animi_quiet_xcodebuild.sh` with `artifacts/*.log`.
 - [ ] Manual QA is marked required/not required; required manual QA has exact steps and expected result.
 - [ ] Stop conditions are explicit.
 - [ ] Sensitive actions are disallowed unless explicitly approved.
