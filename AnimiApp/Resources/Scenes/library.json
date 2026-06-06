@@ -34,6 +34,13 @@
       "usage": "catalog"
     },
     {
+      "id": "6_frames_template",
+      "order": 4,
+      "title": "6 Frames",
+      "baseDurationUs": 5000000,
+      "usage": "catalog"
+    },
+    {
       "id": "blank_starter",
       "order": 100,
       "title": "Blank Starter",

@@ -152,6 +152,9 @@ public final class VideoFrameProvider {
     internal private(set) var debugLastHasNewPixelBuffer: Bool?
     internal private(set) var debugLastCopySucceeded: Bool?
     internal private(set) var debugLastTextureIdentifier: String?
+    /// Last first-buffer acceptance-gate decision: nil = gate not evaluated this tick
+    /// (not awaiting first buffer, or hold path), true = accepted, false = rejected.
+    internal private(set) var debugLastFirstBufferAccepted: Bool?
 
     internal var debugPlaybackSnapshot: DebugPlaybackSnapshot {
         DebugPlaybackSnapshot(
@@ -396,6 +399,7 @@ public final class VideoFrameProvider {
         debugLastHasNewPixelBuffer = nil
         debugLastCopySucceeded = nil
         debugLastTextureIdentifier = Self.debugTextureIdentifier(lastPlaybackTexture)
+        debugLastFirstBufferAccepted = nil
         #endif
 
         // Check if expected time is at or past trim-end hold boundary
@@ -427,7 +431,50 @@ public final class VideoFrameProvider {
         debugLastClampedOutputTimeSeconds = clampedTime.seconds
         #endif
 
-        // Extract frame at clamped playback position
+        // First-buffer acceptance gate for a discontinuous playback epoch.
+        //
+        // `AVPlayerItemVideoOutput` can return a non-nil buffer whose item time is not
+        // the expected timeline time right after `setRate(_:time:atHostTime:)` — file
+        // time 0 on a cold start, or a stale future/previous time on resume. Accepting
+        // it would overwrite the exact start still bound by `prepareStartFrames` before
+        // the first presented draw (the proven trim-zero / saved-frame-jump defect).
+        //
+        // The acceptance predicate compares the RAW `itemTime` seconds against the
+        // expected playback time — NOT the trim-clamped output. Trim clamping turns a
+        // raw file-zero (or stale) time into `trimStart`, which would look within
+        // tolerance of an expected trim-start time and falsely accept the wrong frame.
+        // The actual `copyPixelBuffer` request still uses the trim-clamped `clampedTime`.
+        //
+        // While awaiting the first accepted buffer, if the raw item time is farther than
+        // one scene-frame (plus epsilon) from the expected time, reject it for binding —
+        // return nil without writing `lastPlaybackTexture`/`lastPlaybackExtractedVideoTime`
+        // and without clearing `awaitingFirstPlaybackBuffer`, so the caller keeps the
+        // exact start still bound. Only a within-tolerance output is extracted/accepted,
+        // which clears suppression via `copyPlaybackTexture`.
+        if awaitingFirstPlaybackBuffer,
+           !Self.isFirstPlaybackBufferAcceptable(
+               rawOutputSeconds: itemTime.seconds,
+               expectedSeconds: videoTimeSeconds,
+               sceneFPS: sceneFPS
+           ) {
+            #if DEBUG
+            debugLastFirstBufferAccepted = false
+            Self.debugTrace("provider.firstBuffer.reject(timeWindow) expected=\(String(format: "%.6f", videoTimeSeconds)) rawItemTime=\(String(format: "%.6f", itemTime.seconds)) clampedOutput=\(String(format: "%.6f", clampedTime.seconds)) delta=\(String(format: "%.6f", abs(itemTime.seconds - videoTimeSeconds))) tolerance=\(String(format: "%.6f", Self.firstBufferAcceptanceToleranceSeconds(sceneFPS: sceneFPS)))")
+            #endif
+            return nil
+        }
+
+        #if DEBUG
+        if awaitingFirstPlaybackBuffer {
+            debugLastFirstBufferAccepted = true
+            // Time-window accept only — an actual texture bind happens only if the
+            // following copyPixelBuffer succeeds (copy=true in the tick trace).
+            Self.debugTrace("provider.firstBuffer.accept(timeWindow) expected=\(String(format: "%.6f", videoTimeSeconds)) rawItemTime=\(String(format: "%.6f", itemTime.seconds)) clampedOutput=\(String(format: "%.6f", clampedTime.seconds)) delta=\(String(format: "%.6f", abs(itemTime.seconds - videoTimeSeconds)))")
+        }
+        #endif
+
+        // Extract frame at clamped playback position (trim-clamped time is correct for
+        // the copyPixelBuffer request even though acceptance used raw item time).
         return extractTexture(at: clampedTime)
     }
 
@@ -482,6 +529,28 @@ public final class VideoFrameProvider {
         lastStillTexture = texture
         lastStillVideoTime = targetTime
         return texture
+    }
+
+    /// Synchronous best-available still for the playback-start handoff.
+    ///
+    /// Returns the cached exact still texture when it already matches the requested
+    /// start time (within epsilon) — the same cache populated by the trimStart poster
+    /// and by prior exact-still syncs. Returns nil when no matching cached still is
+    /// available; the caller then falls back to an async exact-still request.
+    ///
+    /// Non-blocking and side-effect free with respect to playback: it does not start,
+    /// stop, cancel, or arm any playback/suppression state. Used to bind a correct
+    /// start frame the instant playback begins so the stale binding texture is not
+    /// shown while `awaitingFirstPlaybackBuffer` holds the playback path at nil.
+    public func currentStartStillTexture(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
+        guard isReady else { return nil }
+        let targetTime = fileTime(seconds: videoTimeSeconds)
+        if lastStillVideoTime.isValid,
+           abs(lastStillVideoTime.seconds - targetTime.seconds) < Self.epsilon,
+           let cached = lastStillTexture {
+            return cached
+        }
+        return nil
     }
 
     // MARK: - Interactive Still Frame (Tolerant, Reusable Generator)
@@ -678,6 +747,43 @@ public final class VideoFrameProvider {
             return false
         }
         return expectedSeconds >= holdTime
+    }
+
+    /// Frame-based tolerance (seconds) for first-playback-buffer acceptance.
+    /// One scene-frame duration plus a small epsilon. Captured good first-buffer
+    /// deltas are ~9–22 ms; captured bad deltas are ~100 ms to several seconds, so a
+    /// one-frame window cleanly separates accepted from rejected outputs.
+    internal static func firstBufferAcceptanceToleranceSeconds(sceneFPS: Double) -> Double {
+        let fps = sceneFPS > 0 ? sceneFPS : 30.0
+        return (1.0 / fps) + epsilon
+    }
+
+    /// Decides whether an `AVPlayerItemVideoOutput` output time is semantically close
+    /// enough to the expected playback time to be the FIRST accepted buffer of a
+    /// discontinuous playback epoch.
+    ///
+    /// The output side MUST be the RAW `itemTime(forHostTime:)` seconds, not the
+    /// trim-clamped value: trim clamping converts a raw file-zero (cold start) or a
+    /// stale time into `trimStart`, which then looks within tolerance of the expected
+    /// trim-start time and would falsely accept the wrong frame (the repair #5 trim
+    /// false-accept). The expected side is the authoritative expected playback time the
+    /// caller asked for.
+    ///
+    /// `AVPlayerItemVideoOutput` availability/copy success alone does not prove the
+    /// buffer is for the expected timeline time after `setRate(_:time:atHostTime:)`: on a
+    /// discontinuous start the first copied output can be at file time 0 (cold start) or
+    /// a stale future/previous time (resume). Accepting it overwrites the exact start
+    /// still bound by the handoff. Returning `false` keeps that still on screen until a
+    /// within-tolerance buffer arrives.
+    ///
+    /// Pure / side-effect free for unit testing.
+    internal static func isFirstPlaybackBufferAcceptable(
+        rawOutputSeconds: Double,
+        expectedSeconds: Double,
+        sceneFPS: Double
+    ) -> Bool {
+        let tolerance = firstBufferAcceptanceToleranceSeconds(sceneFPS: sceneFPS)
+        return abs(rawOutputSeconds - expectedSeconds) <= tolerance
     }
 
     /// Attempts to copy a pixel buffer from video output and convert to texture.

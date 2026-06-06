@@ -25,6 +25,10 @@ protocol SceneMediaSyncing: AnyObject {
 
     // MARK: TT-03 Playback Grant APIs
     func playbackCandidates(sceneFrameIndex: Int) -> [PlaybackVideoCandidate]
+    /// Deterministic start-frame handoff: awaits an exact start still for each granted
+    /// visible video block and binds it before the transport / display link start.
+    @discardableResult
+    func prepareStartFrames(grantedBlockIds: Set<String>, sceneFrameIndex: Int, mediaFrameIndex: Int) async -> UserMediaStartFrameResult
     func startVideoPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
     func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval?)
 
@@ -69,6 +73,21 @@ struct PreparationTimingConfig {
     static let fastForTesting = PreparationTimingConfig(maxWaitMs: 100, pollIntervalMs: 10)
 }
 
+#if DEBUG
+/// Temporary DEBUG trace for the preview video playback-start handoff
+/// (task 2026-06-03-preview-video-start-frame). Toggle:
+/// `UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")`. Read-only.
+private enum RuntimeVideoPlaybackTrace {
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")
+    }
+    static func log(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        print("[VideoPlaybackTrace] \(message())")
+    }
+}
+#endif
+
 // MARK: - Scene Instance Runtime
 
 /// Runtime state for a single scene instance.
@@ -83,6 +102,13 @@ public final class SceneInstanceRuntime {
 
     /// Scene type ID (from ScenePayload.sceneTypeId).
     public let sceneTypeId: String
+
+    #if DEBUG
+    /// One-shot gate so the grant-aware `syncPlaybackTick` trace logs only the first
+    /// tick after a Play start (set in `startPlayback`, cleared after the first traced
+    /// tick). Read-only diagnostics for task 2026-06-03-preview-video-start-frame.
+    private var videoPlaybackTraceFirstTickPending = false
+    #endif
 
     // MARK: - Shared Resources (from SceneTypeResourcesCache)
 
@@ -674,12 +700,43 @@ public final class SceneInstanceRuntime {
     func startPlayback(at localFrame: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         let visibilityFrame = clampedLocalFrame(localFrame)
         let mediaFrame = max(localFrame, 0)
+        #if DEBUG
+        RuntimeVideoPlaybackTrace.log("runtime.startPlayback instance=\(sceneInstanceId.uuidString.prefix(8)) type=\(sceneTypeId) localFrame=\(localFrame) visibilityFrame=\(visibilityFrame) mediaFrame=\(mediaFrame) granted=[\(grantedBlockIds.sorted().joined(separator: ","))] hostTime=\(hostTime.map { String(format: "%.6f", $0) } ?? "nil")")
+        videoPlaybackTraceFirstTickPending = true
+        #endif
         mediaSyncing.startVideoPlayback(
             sceneFrameIndex: visibilityFrame,
             mediaFrameIndex: mediaFrame,
             grantedBlockIds: grantedBlockIds,
             hostTime: hostTime
         )
+    }
+
+    /// Deterministic start-frame handoff for granted blocks. Awaits exact start still
+    /// binding before the transport / display link start (clamps the frame like the
+    /// playback path).
+    func prepareStartFrames(at localFrame: Int, grantedBlockIds: Set<String>) async -> PlaybackStartMediaResult {
+        let visibilityFrame = clampedLocalFrame(localFrame)
+        let mediaFrame = max(localFrame, 0)
+        #if DEBUG
+        RuntimeVideoPlaybackTrace.log("runtime.prepareStartFrames instance=\(sceneInstanceId.uuidString.prefix(8)) type=\(sceneTypeId) localFrame=\(localFrame) visibilityFrame=\(visibilityFrame) mediaFrame=\(mediaFrame) granted=[\(grantedBlockIds.sorted().joined(separator: ","))]")
+        #endif
+        let result = await mediaSyncing.prepareStartFrames(
+            grantedBlockIds: grantedBlockIds,
+            sceneFrameIndex: visibilityFrame,
+            mediaFrameIndex: mediaFrame
+        )
+        // Attach this runtime's identity to the per-service block-scoped result.
+        switch result {
+        case .prepared:
+            return .prepared
+        case .noVisibleVideo:
+            return .noVisibleVideo
+        case .cancelled:
+            return .cancelled
+        case .failed(let blockId):
+            return .failed(instanceId: sceneInstanceId, blockId: blockId)
+        }
     }
 
     /// Syncs video frames for playback tick with active playback grants.
@@ -691,6 +748,12 @@ public final class SceneInstanceRuntime {
     func syncPlaybackTick(_ localFrame: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
         let visibilityFrame = clampedLocalFrame(localFrame)
         let mediaFrame = max(localFrame, 0)
+        #if DEBUG
+        if videoPlaybackTraceFirstTickPending {
+            videoPlaybackTraceFirstTickPending = false
+            RuntimeVideoPlaybackTrace.log("runtime.syncPlaybackTick.first instance=\(sceneInstanceId.uuidString.prefix(8)) type=\(sceneTypeId) localFrame=\(localFrame) visibilityFrame=\(visibilityFrame) mediaFrame=\(mediaFrame) granted=[\(grantedBlockIds.sorted().joined(separator: ","))] hostTime=\(hostTime.map { String(format: "%.6f", $0) } ?? "nil")")
+        }
+        #endif
         mediaSyncing.updateVideoFramesForPlayback(
             sceneFrameIndex: visibilityFrame,
             mediaFrameIndex: mediaFrame,

@@ -113,6 +113,103 @@ final class VideoFrameProviderPlaybackWindowTests: XCTestCase {
         XCTAssertEqual(result!, 15.0 - eps, accuracy: 1e-12)
     }
 
+    // MARK: - First-Buffer Acceptance Gate (RAW item time vs expected)
+    //
+    // Root cause proven by device traces: after a discontinuous Play start,
+    // `AVPlayerItemVideoOutput` can return a non-nil buffer whose RAW item time is NOT
+    // the expected timeline time (file time 0 on cold start, stale future/previous on
+    // resume). The provider must reject such outputs for binding while awaiting the first
+    // accepted buffer, instead of overwriting the exact start still.
+    //
+    // Repair #6 correction: the acceptance predicate compares RAW item time to the
+    // expected playback time. Repair #5 compared the trim-CLAMPED output, which masked a
+    // raw file-zero into `trimStart` for trimmed blocks and falsely accepted it. Tolerance
+    // is one scene-frame duration + epsilon. The trim-clamped time is still used for the
+    // actual copyPixelBuffer request, not for acceptance.
+
+    func testFirstBufferTolerance_30fps_isOneFramePlusEpsilon() {
+        let tolerance = VideoFrameProvider.firstBufferAcceptanceToleranceSeconds(sceneFPS: 30.0)
+        XCTAssertEqual(tolerance, (1.0 / 30.0) + eps, accuracy: 1e-12)
+    }
+
+    func testFirstBufferTolerance_nonPositiveFPS_fallsBackTo30() {
+        let tolerance = VideoFrameProvider.firstBufferAcceptanceToleranceSeconds(sceneFPS: 0.0)
+        XCTAssertEqual(tolerance, (1.0 / 30.0) + eps, accuracy: 1e-12)
+    }
+
+    /// REPAIR #6 KEY CASE: the exact captured repair #5 trim false-accept.
+    /// Trimmed `block_05`: raw `itemTime=0.000000`, expected `3.343333`,
+    /// trimStart `3.311538`. Repair #5 compared trim-clamped output `3.310000` to expected
+    /// and wrongly accepted; raw item time 0 vs expected 3.343333 is ~3.34 s off and MUST
+    /// reject.
+    func testFirstBufferAcceptance_rawFileZeroAtNonzeroTrimStart_rejected() {
+        XCTAssertFalse(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 0.000000,
+            expectedSeconds: 3.343333,
+            sceneFPS: 30.0),
+            "Raw file-zero must reject even when trim clamp would map it to trimStart")
+    }
+
+    /// Untrimmed start: raw `itemTime=0.000000`, expected ~`0.033333` (one frame in).
+    /// Must remain ACCEPTABLE — this is the normal cold start at the file beginning.
+    func testFirstBufferAcceptance_rawFileZeroAtUntrimmedStart_accepted() {
+        XCTAssertTrue(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 0.000000,
+            expectedSeconds: 0.033333,
+            sceneFPS: 30.0),
+            "Untrimmed cold start (raw 0 vs expected ~one frame) must remain acceptable")
+    }
+
+    /// Captured GOOD raw deltas (~9–22 ms from expected) must be ACCEPTED.
+    func testFirstBufferAcceptance_capturedGoodRawDeltas_accepted() {
+        // ~9 ms past a trimmed expected
+        XCTAssertTrue(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 3.343333 + 0.009,
+            expectedSeconds: 3.343333,
+            sceneFPS: 30.0))
+        // ~22 ms
+        XCTAssertTrue(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 7.466000 + 0.022,
+            expectedSeconds: 7.466000,
+            sceneFPS: 30.0))
+        // exactly at expected
+        XCTAssertTrue(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 3.343333,
+            expectedSeconds: 3.343333,
+            sceneFPS: 30.0))
+    }
+
+    /// Captured BAD raw deltas must be REJECTED:
+    /// - resume future: expected 3.844872, raw item time 5.925620 (~2.08 s).
+    /// - saved-frame jump: expected ~7.466, raw item ~1.5 (~6 s).
+    func testFirstBufferAcceptance_capturedBadRawDeltas_rejected() {
+        // resume future: ~2.08 s off
+        XCTAssertFalse(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 5.925620,
+            expectedSeconds: 3.844872,
+            sceneFPS: 30.0))
+        // saved-frame jump: ~6 s off
+        XCTAssertFalse(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 1.500000,
+            expectedSeconds: 7.466000,
+            sceneFPS: 30.0))
+    }
+
+    /// Boundary: just inside / just outside one-frame tolerance at 30 fps.
+    func testFirstBufferAcceptance_boundary() {
+        let frame = 1.0 / 30.0
+        // just inside (frame - 1ms)
+        XCTAssertTrue(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 5.0 + (frame - 0.001),
+            expectedSeconds: 5.0,
+            sceneFPS: 30.0))
+        // just outside (frame + 2ms, beyond frame+epsilon)
+        XCTAssertFalse(VideoFrameProvider.isFirstPlaybackBufferAcceptable(
+            rawOutputSeconds: 5.0 + (frame + 0.002),
+            expectedSeconds: 5.0,
+            sceneFPS: 30.0))
+    }
+
     // MARK: - Real provider state regression (AVPlayer)
 
     private var tempDir: URL!
@@ -379,6 +476,77 @@ final class VideoFrameProviderPlaybackWindowTests: XCTestCase {
         provider.stopPlayback(flush: true)
         XCTAssertFalse(provider.debugAwaitingFirstPlaybackBuffer,
             "stopPlayback must clear stale-buffer suppression")
+
+        provider.release()
+    }
+
+    // MARK: - First-Buffer Acceptance Gate (integration)
+
+    /// Integration regression for the proven defect: right after a discontinuous Play
+    /// start at a far position, the first AVPlayer output is for a wrong (near-zero,
+    /// cold-start) item time. The acceptance gate must REJECT it for binding — the tick
+    /// returns nil, `awaitingFirstPlaybackBuffer` stays armed, and no playback texture
+    /// is written — so `UserMediaService` keeps the exact start still bound. The
+    /// suppression only lifts once a within-tolerance buffer for the expected position
+    /// is produced.
+    func testFirstBufferGate_wrongTimeColdStart_rejectedAndStillSuppressing() async throws {
+        let provider = try await makeReadyProvider(duration: 3.0)
+        provider.setPlaybackWindow(start: 0, end: 3.0)
+
+        // Discontinuous start far from file zero; expected playback time is ~2.5s while
+        // the first AVPlayer output after setRate is near file time 0.
+        provider.startPlayback(atVideoTime: 2.5)
+        XCTAssertTrue(provider.debugAwaitingFirstPlaybackBuffer,
+            "Discontinuous start must arm first-buffer suppression")
+
+        // Immediate tick at the expected far position, before AVPlayer can produce a
+        // buffer for ~2.5s. The output is wrong-time and must be rejected.
+        let immediate = provider.frameTextureForPlayback(expectedVideoTime: 2.5)
+
+        if provider.debugAwaitingFirstPlaybackBuffer {
+            // Still awaiting: the gate rejected (or there was no buffer). Either way the
+            // contract holds — no stale/wrong texture was handed back for binding.
+            XCTAssertNil(immediate,
+                "While awaiting the first accepted buffer, a wrong-time output must not be returned for binding")
+            // If the gate evaluated this tick, it must have been a rejection.
+            if let decision = provider.debugLastFirstBufferAccepted {
+                XCTAssertFalse(decision,
+                    "A wrong-time first output must be a rejection, not an acceptance")
+            }
+        } else {
+            // Suppression lifted only if a within-tolerance buffer for ~2.5s actually
+            // arrived this fast (acceptance) — then a real texture is valid.
+            XCTAssertEqual(provider.debugLastFirstBufferAccepted, true,
+                "Suppression may only lift via an accepted within-tolerance buffer")
+        }
+
+        provider.release()
+    }
+
+    /// The gate must not interfere with continuous playback: once the first buffer is
+    /// accepted (suppression lifted), later ticks bypass the gate entirely.
+    func testFirstBufferGate_afterAcceptance_continuousPlaybackUngated() async throws {
+        let provider = try await makeReadyProvider(duration: 3.0)
+        provider.setPlaybackWindow(start: 0, end: 3.0)
+
+        // Warm from t=0 where the first output is genuinely near the expected time, so
+        // the gate accepts and lifts suppression.
+        provider.startPlayback(atVideoTime: 0.0)
+        var warm: MTLTexture?
+        for _ in 0..<30 {
+            warm = provider.frameTextureForPlayback(expectedVideoTime: 0.0)
+            if warm != nil && !provider.debugAwaitingFirstPlaybackBuffer { break }
+            try await Task.sleep(nanoseconds: 33_000_000)
+        }
+        XCTAssertNotNil(warm, "First session should accept a real near-zero buffer")
+        XCTAssertFalse(provider.debugAwaitingFirstPlaybackBuffer,
+            "Suppression should lift after the first accepted buffer")
+
+        // A subsequent tick is not gated (awaitingFirstPlaybackBuffer == false), so the
+        // gate decision is not evaluated this tick.
+        _ = provider.frameTextureForPlayback(expectedVideoTime: 0.1)
+        XCTAssertNil(provider.debugLastFirstBufferAccepted,
+            "Continuous playback ticks must not evaluate the first-buffer gate")
 
         provider.release()
     }

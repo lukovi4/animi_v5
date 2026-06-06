@@ -84,6 +84,7 @@ final class MediaRestoreCoordinatorVideoSelectionTests: XCTestCase {
         func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {}
         func stopPlayback(flush: Bool) {}
         func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? { nil }
+        func currentStartStillTexture(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
         func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
             guard let device = MTLCreateSystemDefaultDevice() else { throw NSError(domain: "Test", code: 1) }
             let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 64, height: 64, mipmapped: false)

@@ -56,18 +56,18 @@ Binding-слой и mediaInput могут быть как в root-компози
 **1. Binding-слой (обязательный)**
 
 - Тип: `ty: 2` (image)
-- Имя (`nm`): должно точно совпадать с `bindingKey` из `scene.json` (обычно `"media"`)
+- Имя (`nm`): должно точно совпадать с `bindingKey` из `scene.json` (обычно `"media"`). **Сравнение регистрозависимое** (`layer.name == bindingKey` в `AnimIRCompiler.swift`)
 - Должен иметь `refId`, указывающий на image-ассет
 - Ровно один binding-слой на один `bindingKey` (компилятор выдаст ошибку при 0 или >1)
-- Файл-placeholder для этого ассета **не нужен** — текстура подставляется пользователем в рантайме
+- **Файл-placeholder для binding-ассета не нужен и его наличие не проверяется.** Валидатор (`AnimValidator.findBindingAssetIds`) находит `refId` всех binding-слоёв и пропускает их при проверке файлов на диске — текстуру подставляет пользователь в рантайме. Поле `p` в ассете (`"p":"что_угодно.png"`) может ссылаться на несуществующий файл — это не ошибка. Это касается **только** binding-ассетов; см. «Декоративные слои» ниже про обычные ассеты.
 
 **2. mediaInput (обязательный в `no-anim.json`)**
 
 - Тип: `ty: 4` (shape)
-- Имя (`nm`): строго `"mediaInput"`
+- Имя (`nm`): **строго `"mediaInput"`, регистрозависимо** (`layer.name == "mediaInput"`, `AnimIRCompiler.swift:584`). Частая ошибка: Lottie-экспортёры и ручное именование дают `mediainput` (всё в нижнем регистре) — компилятор такой слой **не найдёт** и выдаст `MEDIA_INPUT_MISSING`. Проверяйте регистр первым делом.
 - Скрытый: `"hd": true`
 - Содержит ровно один shape path (определяющий зону тапа и clip-маску)
-- Должен находиться в той же композиции, что и binding-слой
+- Должен находиться в той же композиции, что и binding-слой (общая composition: оба в root, либо оба в одном precomp). Несоблюдение → ошибка `mediaInputNotInSameComp`
 - Запрещены модификаторы: Trim Paths (`tm`), Merge Paths (`mm`), Repeater (`rp`)
 - В анимированных вариантах (`anim-*.json`) mediaInput опционален
 - Если anim-вариант содержит свой mediaInput, его path должен совпадать с edit variant
@@ -80,6 +80,8 @@ Binding-слой и mediaInput могут быть как в root-компози
 **3. Декоративные слои (опционально)**
 
 Любые дополнительные image/shape слои (рамки, оверлеи). Файлы изображений для них размещаются в `images/` или `SharedAssets/`.
+
+В отличие от binding-ассета, **файлы для декоративных image-ассетов обязаны существовать**: валидатор резолвит их по basename из поля `p` (`Local → Shared`) и при отсутствии выдаёт ошибку `ASSET_MISSING` (`AnimValidator.swift`). Проще говоря: ассет, на который ссылается binding-слой `media`, файла не требует; любой другой image-ассет — требует.
 
 **4. Toggle-слои (опционально)**
 
@@ -196,8 +198,8 @@ SceneSources/my_scene/
 |------|-----|-------|----------|
 | `blockId` | String | да | Уникальный ID блока внутри сцены |
 | `zIndex` | Int | да | Порядок отрисовки (0 = задний план) |
-| `rect` | Object | да | Позиция на канве `{x, y, width, height}` в пикселях (Double). Width/height > 0. |
-| `containerClip` | String | да | Режим обрезки: `"none"`, `"slotRect"`, `"slotRectAfterSettle"` |
+| `rect` | Object | да | Логические границы блока на канве `{x, y, width, height}` в пикселях (Double). Width/height > 0. Используется как clip-прямоугольник (при `containerClip != "none"`) и bounds для UI/тапа. **Сама анимация рисуется по координатам Lottie root-слоя, а не по этому `rect`** — см. раздел «Связь rect блока и Lottie-координат». |
+| `containerClip` | String | да | Режим обрезки: `"none"`, `"slotRect"`, `"slotRectAfterSettle"`. При `"none"` clip по `rect` не применяется. |
 | `timing` | Object | нет | Окно видимости `{startFrame, endFrame}`. Если не задано — виден всё время. Правило: `0 <= startFrame < endFrame <= durationFrames` |
 | `input` | Object | да | Настройки слота для пользовательского медиа |
 | `variants` | Array | да | Варианты анимаций. Не может быть пустым. |
@@ -205,9 +207,10 @@ SceneSources/my_scene/
 
 #### MediaInput (input)
 
+Соответствует Codable-модели `TVECore/Sources/TVECore/Models/MediaInput.swift`. Поля, которых нет в модели, при декодировании молча игнорируются (в частности, `input.rect` в модели **отсутствует** — не добавляйте его).
+
 | Поле | Тип | Обяз. | Описание |
 |------|-----|-------|----------|
-| `rect` | Object | да | Область ввода `{x, y, width, height}` в координатах блока |
 | `bindingKey` | String | да | Имя binding-слоя в Lottie. Не может быть пустым. |
 | `hitTest` | String | нет | Режим определения тапа: `"mask"` (точная маска) или `"rect"` (прямоугольник) |
 | `allowedMedia` | Array | да | Допустимые типы медиа: `"photo"`, `"video"`, `"color"`. Не может быть пустым. Без дубликатов. |
@@ -239,9 +242,28 @@ SceneSources/my_scene/
 | `group` | String | нет | Группировка в UI |
 | `defaultOn` | Bool | да | Включён по умолчанию |
 
+### Связь `rect` блока и Lottie-координат
+
+Это самый неочевидный момент при многоблочных сценах. Два независимых источника координат:
+
+1. **Lottie root-слой** (`layers[0]`) — определяет, **где фактически рисуется анимация** на канве. Эффективный верхний-левый угол блока = `p − a` (позиция минус anchor) root-слоя.
+2. **`rect` блока в `scene.json`** — логические границы: clip-прямоугольник (`pushClipRect(block.rectCanvas)` в `SceneRenderPlan.swift`) и bounds для UI/тапа.
+
+**Правило согласования:** `rect.{x,y}` должен совпадать с `p − a` root-слоя, а `rect.{width,height}` — с размером блока в Lottie. Иначе:
+- при `containerClip: "none"` — рассогласование не даёт ошибки компиляции, но clip/тап и рисунок разъедутся (логически блок в одном месте, картинка в другом);
+- при `containerClip: "slotRect"` / `"slotRectAfterSettle"` — анимация будет обрезана по `rect`, и при несовпадении часть контента исчезнет.
+
+**Как посчитать `rect` из готового Lottie:** взять `p` и `a` root-слоя (`.layers[0].ks.p.k`, `.layers[0].ks.a.k`), тогда `rect.x = p.x − a.x`, `rect.y = p.y − a.y`. Размер блока — из `w`/`h` root-слоя или габаритов precomp.
+
+Пример (блок 540×640 в позиции `p=[810,320]`, `a=[270,320]`): `rect.x = 810−270 = 540`, `rect.y = 320−320 = 0` → `rect = {x:540, y:0, width:540, height:640}`.
+
+mediaInput внутри precomp задаётся в **локальных** координатах своей композиции (например центр `[270,320]` для ячейки 540×640) — он не привязан к canvas-позиции блока, его смещает root-слой.
+
 ### Несколько блоков
 
 Для многоблочной сцены — добавить объекты в массив `mediaBlocks` с разными `blockId`, `zIndex` и `rect`. Каждый блок — свои варианты и свой `bindingKey`.
+
+В многоблочной структуре каждый файл `block_0N/no-anim.json` — самодостаточная одноблочная композиция своего блока: его root-слой уже спозиционирован в нужную ячейку канвы, а `animRef` в `scene.json` указывает на `block_0N/no-anim.json`.
 
 Пример сетки 2x2:
 
@@ -266,7 +288,7 @@ SceneSources/my_scene/
 | Форматы | `.png`, `.jpg`, `.jpeg`, `.webp` |
 | Уникальность | Basename уникален в пределах каждого индекса. Нельзя: `SharedAssets/a/bg.png` + `SharedAssets/b/bg.png` |
 | Case-sensitive | `plastik` != `Plastik` |
-| Binding-ассеты | Файл для binding-слоя **не нужен** (подставляется в рантайме) |
+| Binding-ассеты | Файл для binding-слоя **не нужен и не проверяется** (подставляется в рантайме). Поле `p` ассета может ссылаться на несуществующий файл — это не ошибка. Прочие image-ассеты — файл обязателен. |
 
 Скрипт компиляции автоматически копирует `images/` из SceneSources в Resources/Scenes через rsync.
 
@@ -297,7 +319,14 @@ swift run TVETemplateCompiler \
   --shared ../SharedAssets
 ```
 
-При ручной компиляции нужно самостоятельно скопировать `images/` в output-директорию.
+**Важно:** при ручном запуске компилятор **не копирует** `images/` в output — это делает только `compile_scenes.sh` (через rsync). После ручной компиляции скопируйте папку сами:
+
+```bash
+mkdir -p ../AnimiApp/Resources/Scenes/<scene_id>/images
+cp ../SceneSources/<scene_id>/images/*.png ../AnimiApp/Resources/Scenes/<scene_id>/images/
+```
+
+Затем сверьте синхронизацию: `./Scripts/compile_scenes.sh --verify` (строка `images/ in sync`). Если декоративных изображений у сцены нет — шаг копирования не нужен.
 
 ### Этапы компиляции (6 шагов)
 
@@ -308,7 +337,21 @@ swift run TVETemplateCompiler \
 5. Компиляция в IR (AnimIR, PathRegistry, MergedAssets)
 6. Запись `compiled.tve` (бинарный формат: magic bytes TVE\0 + JSON payload)
 
-При ошибках компилятор выводит коды ошибок. Полный список — в SceneValidator и AnimValidator.
+При ошибках компилятор выводит коды ошибок. Полный список — в `SceneValidationCode.swift` и `AnimValidationCode.swift`.
+
+### Частые ошибки компиляции
+
+| Код / симптом | Причина | Решение |
+|---------------|---------|---------|
+| `MEDIA_INPUT_MISSING` | Слой mediaInput не найден — чаще всего неверный регистр (`mediainput` вместо `mediaInput`) или его нет в `no-anim` | Переименовать слой строго в `mediaInput`; убедиться, что он есть в edit-варианте |
+| `MEDIA_INPUT_NOT_SHAPE` | mediaInput не `ty:4` | Сделать слой shape |
+| `MEDIA_INPUT_NO_PATH` | В mediaInput нет ровно одного shape path | Оставить ровно один path, без Trim/Merge/Repeater |
+| `mediaInputNotInSameComp` | mediaInput и binding в разных композициях | Поместить оба в одну comp (оба root или оба в одном precomp) |
+| `bindingLayerNotFound` | Нет слоя с именем = `bindingKey` (регистр!) | Имя binding-слоя должно точно (с учётом регистра) совпадать с `bindingKey` |
+| `bindingLayerNotImage` | binding-слой не `ty:2` | Сделать binding image-слоем |
+| `ASSET_MISSING` | Декоративный image-ассет не найден по basename | Положить файл в `images/` или `SharedAssets/`. (Binding-ассеты этой ошибки не дают — они пропускаются) |
+| `VARIANTS_EMPTY` | Пустой массив `variants` у блока | Добавить хотя бы один variant (минимум `no-anim`) |
+| Сцена не появляется в приложении | `id` в `library.json` не совпадает с именем папки в `Resources/Scenes/`, или `sceneTypeIds` в manifest ссылается на несуществующий id | Сверить id; несоответствие приводит к **молчаливому** пропуску, без ошибки |
 
 ---
 
@@ -321,16 +364,18 @@ swift run TVETemplateCompiler \
   "id": "<scene_id>",
   "order": 3,
   "title": "My Scene",
-  "baseDurationUs": 5000000
+  "baseDurationUs": 5000000,
+  "usage": "catalog"
 }
 ```
 
-| Поле | Тип | Описание |
-|------|-----|----------|
-| `id` | String | Должен совпадать с именем папки в `Scenes/`. Если папка не найдена — сцена молча пропускается при загрузке. |
-| `order` | Int | Порядок в списке сцен |
-| `title` | String | Отображаемое название |
-| `baseDurationUs` | Int64 | Длительность в микросекундах. `durationFrames / fps * 1_000_000`. Примеры: 5 сек = 5000000, 10 сек = 10000000 |
+| Поле | Тип | Обяз. | Описание |
+|------|-----|-------|----------|
+| `id` | String | да | Должен совпадать с именем папки в `Scenes/`. Если папка не найдена — сцена молча пропускается при загрузке. |
+| `order` | Int | да | Порядок в списке сцен |
+| `title` | String | да | Отображаемое название |
+| `baseDurationUs` | Int64 | да | Длительность в микросекундах. `durationFrames / fps * 1_000_000`. Примеры: 5 сек = 5000000, 10 сек = 10000000 |
+| `usage` | String | нет | `"catalog"` (видна в каталоге шаблонов) или `"starterOnly"` (только как пустой стартер). По умолчанию `"catalog"`. Модель: `SceneUsage` в `SceneLibraryModels.swift`. |
 
 Глобальные `fps` и `canvas` задаются на верхнем уровне library.json и применяются ко всем сценам.
 
@@ -392,23 +437,24 @@ swift run TVETemplateCompiler \
 
 Папка `AnimiApp/Resources/Scenes/` добавлена в Xcode как folder reference — новые подпапки подхватываются автоматически. Собрать проект и проверить что шаблон появился в каталоге.
 
-Для валидации production-бандла:
+### Два разных verify-скрипта — не путать
 
-```bash
-./Scripts/verify_release_bundle.sh
-```
+| Скрипт | Что проверяет | Когда |
+|--------|---------------|-------|
+| `./Scripts/compile_scenes.sh --verify` | Наличие `compiled.tve` для всех сцен из `SceneSources/` и синхронность `images/`. Работает с исходниками, **аргументы не нужны**. | После компиляции, до сборки Xcode |
+| `./Scripts/verify_release_bundle.sh <path/to/AnimiApp.app>` | Целостность собранного production-бандла: наличие `compiled.tve`, **отсутствие** исходников (`scene.json`, `anim-*.json`), наличие превью-ассетов. **Требует путь к уже собранному `.app`** — без него только печатает usage. | После Release-сборки |
 
-Проверяет: наличие `compiled.tve` для всех сцен, отсутствие исходных файлов (`scene.json`, `anim-*.json`) в бандле, наличие превью-ассетов.
+Для проверки на этапе добавления шаблона (до сборки приложения) используйте `compile_scenes.sh --verify`. `verify_release_bundle.sh` без собранного `.app` запускать бессмысленно.
 
 ---
 
 ## Чеклист
 
 ### Lottie-файлы
-- [ ] `no-anim.json` + минимум один `anim-*.json`
+- [ ] `no-anim.json` на каждый блок (edit-вариант). `anim-*.json` — опциональны на уровне компилятора (требуется лишь непустой `variants`), но нужны для анимации в плеере
 - [ ] Canvas: 1080x1920, fps: 30, длительность совпадает с `durationFrames` в `scene.json`
 - [ ] Binding-слой: `ty: 2`, имя = `bindingKey`, ровно один на блок
-- [ ] mediaInput: `ty: 4`, имя = `"mediaInput"`, `hd: true`, ровно один path, в той же композиции что и binding
+- [ ] mediaInput: `ty: 4`, имя = `"mediaInput"` (**проверить регистр — не `mediainput`!**), `hd: true`, ровно один path, в той же композиции что и binding
 - [ ] Нет запрещённых возможностей (3D, auto-orient, time stretch, blend modes, skew)
 - [ ] Используются только поддерживаемые типы слоёв (0, 2, 3, 4)
 - [ ] Toggle-слои (если есть): имена `toggle:<id>`, одинаковый набор id во всех вариантах
@@ -418,18 +464,22 @@ swift run TVETemplateCompiler \
 - [ ] `canvas.fps` совпадает с fps в Lottie
 - [ ] `timing.endFrame` <= `canvas.durationFrames`
 - [ ] `blockId` уникальны
-- [ ] `bindingKey` не пустой, совпадает с именем слоя в Lottie
+- [ ] `bindingKey` не пустой, совпадает с именем слоя в Lottie (регистрозависимо)
 - [ ] `allowedMedia` не пустой, без дубликатов
+- [ ] `rect` блока согласован с Lottie root-слоём: `rect.x = p.x − a.x`, `rect.y = p.y − a.y` (см. «Связь rect блока и Lottie-координат»)
+- [ ] Нет лишнего поля `input.rect` (его нет в модели `MediaInput`)
 - [ ] `layerToggles[].id` совпадают с `toggle:<id>` слоями в Lottie
 
 ### Изображения
 - [ ] Декоративные изображения в `images/` или `SharedAssets/`
 - [ ] Basename уникален в пределах индекса
 - [ ] Формат: `.png`, `.jpg`, `.jpeg`, `.webp`
-- [ ] Файл для binding-ассета не нужен
+- [ ] Файл для binding-ассета не нужен (валидатор его пропускает); для прочих image-ассетов — файл обязателен
 
 ### Компиляция и регистрация
 - [ ] `compiled.tve` сгенерирован без ошибок и предупреждений
+- [ ] При ручной компиляции: `images/` скопирован в output вручную
+- [ ] `./Scripts/compile_scenes.sh --verify` → `compiled.tve exists` + `images/ in sync`
 - [ ] Запись в `library.json` (id = имя папки, baseDurationUs корректен)
 - [ ] Запись в `manifest.json` (sceneTypeIds ссылается на id из library.json, не пустой)
 - [ ] Превью-видео в `Templates/Previews/` (опционально)

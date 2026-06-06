@@ -112,6 +112,7 @@ final class UserMediaServiceBudgetTests: XCTestCase {
             frameTextureForPlaybackCalls.append(videoTimeSeconds)
             return lastTexture
         }
+        func currentStartStillTexture(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
 
         func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
             return lastTexture ?? createFakeTexture()

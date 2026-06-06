@@ -116,29 +116,83 @@ final class AudioSessionManagerTests: XCTestCase {
         return session
     }
 
-    private func makePlayableRuntime() async -> (EditorRuntime, MockAudioSessionManager, MockPreviewAudioController)? {
-        let session = await makeBootstrappedSession()
-        let runtime = EditorRuntime(session: session)
-        runtime.bootForTesting(state: .timelinePreview)
+    /// Minimal media-less render resources so the booted engine resolves the start frame.
+    private func makeRenderableResources(sceneTypeId: String, durationFrames: Int, fps: Int = 30) -> SceneTypeResourcesCache.Resources {
+        let canvas = Canvas(width: 1080, height: 1920, fps: fps, durationFrames: durationFrames)
+        let scene = Scene(schemaVersion: "1.0", sceneId: sceneTypeId, canvas: canvas, background: nil, mediaBlocks: [])
+        let runtime = SceneRuntime(scene: scene, canvas: canvas, blocks: [], durationFrames: durationFrames, fps: fps)
+        let compiled = CompiledScene(
+            runtime: runtime, mergedAssetIndex: AssetIndexIR(),
+            pathRegistry: PathRegistry(), bindingAssetIds: []
+        )
+        return SceneTypeResourcesCache.Resources(
+            sceneTypeId: sceneTypeId, compiled: compiled,
+            resolver: CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty),
+            baseTextureProvider: InMemoryTextureProvider(), assetSizes: [:],
+            pathRegistry: PathRegistry(),
+            canvasSize: SizeD(width: Double(canvas.width), height: Double(canvas.height)),
+            fps: fps, durationFrames: durationFrames
+        )
+    }
 
+    /// Initial loaded scene result for `scene_1` (90 frames), media-less so it resolves.
+    private func makeBootLoadResult(device: MTLDevice) -> EditorRuntime.InitialSceneLoadResult {
+        let canvas = Canvas(width: 1080, height: 1920, fps: 30, durationFrames: 90)
+        let scene = Scene(schemaVersion: "1.0", sceneId: "scene_1", canvas: canvas, background: nil, mediaBlocks: [])
+        let runtime = SceneRuntime(scene: scene, canvas: canvas, blocks: [], durationFrames: 90, fps: 30)
+        let compiled = CompiledScene(
+            runtime: runtime, mergedAssetIndex: AssetIndexIR(),
+            pathRegistry: PathRegistry(), bindingAssetIds: []
+        )
+        let resolver = CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty)
+        let provider = ScenePackageTextureProvider(
+            device: device, assetIndex: compiled.mergedAssetIndex,
+            resolver: resolver, bindingAssetIds: compiled.bindingAssetIds
+        )
+        let player = ScenePlayer()
+        let loaded = player.loadCompiledScene(compiled)
+        return EditorRuntime.InitialSceneLoadResult(
+            player: player, compiled: loaded, provider: provider, resolver: resolver, preloadStats: nil
+        )
+    }
+
+    /// Boots a runtime through the production `configureAndBoot` path whose timeline
+    /// engine RESOLVES the start frame, so production `startPlayback()` satisfies the
+    /// render-payload hard gate. These are runtime-integration tests, so the production
+    /// start path is retained. Returns nil if Metal is unavailable.
+    private func makePlayableRuntime() async -> (EditorRuntime, MockAudioSessionManager, MockPreviewAudioController)? {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             return nil
         }
-        let engine = TimelineCompositionEngine(
-            device: device,
-            commandQueue: commandQueue,
-            fps: 30,
-            mediaLocator: StubMediaLocatorForAudioTests()
+        let session = await makeBootstrappedSession()
+        guard let editorState = session.state else { return nil }
+
+        let runtime = EditorRuntime(session: session)
+
+        let metalContext = EditorRuntimeMetalContext(
+            device: device, commandQueue: commandQueue, colorPixelFormat: .bgra8Unorm
         )
-        if let editorState = session.state {
-            engine.setTimeline(
-                editorState.canonicalTimeline,
-                sceneStates: editorState.draft.sceneInstanceStates,
-                assetRegistry: editorState.draft.assetRegistry.selfHealed(for: editorState.draft)
-            )
+        let library = SceneLibrarySnapshot(
+            fps: 30,
+            canvas: CanvasConfig(width: 1080, height: 1920),
+            scenes: [SceneTypeDescriptor(id: "scene_1", order: 0, title: "Test", baseDurationUs: 3_000_000)]
+        )
+        runtime.configureAndBoot(
+            metalContext: metalContext,
+            library: library,
+            loadResult: makeBootLoadResult(device: device),
+            editorState: editorState
+        )
+        runtime.testTimelineCompositionEngine?.resourcesCache.addToCache(
+            makeRenderableResources(sceneTypeId: "scene_1", durationFrames: 90)
+        )
+        // Wait — real-time deadline — until the boot resolve installs the frame-0 render
+        // source, so production startPlayback() resolves deterministically.
+        await waitUntil(timeout: 2.0) {
+            if case .timeline = runtime.currentRenderSource { return true }
+            return false
         }
-        runtime.injectTimelineCompositionEngine(engine)
 
         let mockAudio = MockAudioSessionManager()
         runtime.audioSessionManager = mockAudio
@@ -146,16 +200,42 @@ final class AudioSessionManagerTests: XCTestCase {
 
         let mockPreview = MockPreviewAudioController()
         runtime.setPreviewAudioController(mockPreview)
+        // `{ nil }` builder → no resolvable audio → `.noAudio` → boundary opens without
+        // an audio build, matching these tests' "start runs" assertions.
         runtime.previewAudioPipelineBuilder = { nil }
 
         return (runtime, mockAudio, mockPreview)
     }
 
-    private func waitUntil(timeout: TimeInterval, condition: @MainActor () -> Bool) async {
+    @discardableResult
+    private func waitUntil(timeout: TimeInterval, condition: @MainActor () -> Bool) async -> Bool {
         let deadline = CFAbsoluteTimeGetCurrent() + timeout
-        while !condition() && CFAbsoluteTimeGetCurrent() < deadline {
+        while CFAbsoluteTimeGetCurrent() < deadline {
+            if condition() { return true }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+        return condition()
+    }
+
+    /// Waits for an observable condition; FAILS with a phase message on timeout so a
+    /// missed async runtime state change surfaces here, not at a later assertion.
+    private func requireEventually(
+        timeout: TimeInterval,
+        _ message: @autoclosure () -> String,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: @MainActor () -> Bool
+    ) async {
+        if await waitUntil(timeout: timeout, condition: condition) { return }
+        XCTFail("Timed out waiting for: \(message())", file: file, line: line)
+    }
+
+    /// Lets a start that is EXPECTED to be rejected settle, then is safe to assert
+    /// `!isPlaying`. Waits until the start task is no longer pending (rejected/aborted),
+    /// bounded; if it is still pending it simply means the negative assertion runs after
+    /// a fair deadline.
+    private func waitForStartToSettle(_ runtime: EditorRuntime, timeout: TimeInterval = 1.0) async {
+        _ = await waitUntil(timeout: timeout) { runtime.isPlaying || !runtime.hasPlaybackStartTask }
     }
 
     // MARK: - Activation Success
@@ -166,7 +246,7 @@ final class AudioSessionManagerTests: XCTestCase {
         }
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "runtime.isPlaying after startPlayback") { runtime.isPlaying }
 
         XCTAssertEqual(mockAudio.activateCallCount, 1)
         XCTAssertTrue(runtime.isPlaying)
@@ -182,7 +262,9 @@ final class AudioSessionManagerTests: XCTestCase {
         mockAudio.shouldFailActivation = true
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        // Activation fails synchronously, so the start never becomes running; wait for
+        // the (rejected) start to settle, then assert it did not run.
+        await waitForStartToSettle(runtime)
 
         XCTAssertEqual(mockAudio.activateCallCount, 1)
         XCTAssertFalse(runtime.isPlaying)
@@ -218,7 +300,8 @@ final class AudioSessionManagerTests: XCTestCase {
         runtime.setPreviewAudioController(mockPreview)
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        // No audio session manager → the start is rejected; wait for it to settle.
+        await waitForStartToSettle(runtime)
 
         XCTAssertFalse(runtime.isPlaying)
         XCTAssertEqual(mockPreview.startPlaybackCallCount, 0)
@@ -232,7 +315,7 @@ final class AudioSessionManagerTests: XCTestCase {
         }
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "runtime.isPlaying before reset") { runtime.isPlaying }
         XCTAssertTrue(runtime.isPlaying)
 
         let genBefore = runtime.previewAudioGeneration
@@ -269,8 +352,9 @@ final class AudioSessionManagerTests: XCTestCase {
 
         // Trigger reset while startup is genuinely pending
         mockAudio.simulateEvent(.mediaServicesReset)
-        await Task.yield()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "pending start to be cancelled by reset") {
+            !runtime.hasPlaybackStartTask
+        }
 
         XCTAssertFalse(runtime.isPlaying, "Playback must not start after reset during pending startup")
         XCTAssertFalse(runtime.hasPlaybackStartTask, "Start task must be cancelled")
@@ -298,8 +382,9 @@ final class AudioSessionManagerTests: XCTestCase {
         XCTAssertFalse(runtime.isPlaying)
 
         mockAudio.simulateEvent(.interruptionBegan)
-        await Task.yield()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "pending start to be cancelled by interruption") {
+            !runtime.hasPlaybackStartTask
+        }
 
         XCTAssertFalse(runtime.isPlaying)
         XCTAssertFalse(runtime.hasPlaybackStartTask)
@@ -334,11 +419,11 @@ final class AudioSessionManagerTests: XCTestCase {
         }
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "runtime.isPlaying before interruption") { runtime.isPlaying }
         XCTAssertTrue(runtime.isPlaying)
 
         mockAudio.simulateEvent(.interruptionBegan)
-        await Task.yield()
+        await requireEventually(timeout: 2.0, "playback to stop on interruption") { !runtime.isPlaying }
 
         XCTAssertFalse(runtime.isPlaying)
     }
@@ -351,11 +436,11 @@ final class AudioSessionManagerTests: XCTestCase {
         }
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "runtime.isPlaying before route change") { runtime.isPlaying }
         XCTAssertTrue(runtime.isPlaying)
 
         mockAudio.simulateEvent(.routeChanged(reason: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue))
-        await Task.yield()
+        await requireEventually(timeout: 2.0, "playback to stop on oldDeviceUnavailable") { !runtime.isPlaying }
 
         XCTAssertFalse(runtime.isPlaying)
     }
@@ -378,8 +463,9 @@ final class AudioSessionManagerTests: XCTestCase {
         XCTAssertFalse(runtime.isPlaying)
 
         mockAudio.simulateEvent(.routeChanged(reason: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue))
-        await Task.yield()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "pending start to be cancelled by route change") {
+            !runtime.hasPlaybackStartTask
+        }
 
         XCTAssertFalse(runtime.isPlaying)
         XCTAssertFalse(runtime.hasPlaybackStartTask)
@@ -397,7 +483,7 @@ final class AudioSessionManagerTests: XCTestCase {
         runtime.previewAudio.dirty = false
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "runtime.isPlaying before route change") { runtime.isPlaying }
         XCTAssertTrue(runtime.isPlaying)
 
         let startCountBefore = mockPreview.startPlaybackCallCount
@@ -417,7 +503,7 @@ final class AudioSessionManagerTests: XCTestCase {
         }
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "runtime.isPlaying before route change") { runtime.isPlaying }
         XCTAssertTrue(runtime.isPlaying)
 
         mockAudio.simulateEvent(.routeChanged(reason: AVAudioSession.RouteChangeReason.categoryChange.rawValue))
@@ -439,11 +525,13 @@ final class AudioSessionManagerTests: XCTestCase {
         runtime.idleResourceReclaimDelayNanos = 50_000_000  // 50ms
 
         runtime.startPlayback()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await requireEventually(timeout: 2.0, "runtime.isPlaying before stop") { runtime.isPlaying }
         XCTAssertTrue(runtime.isPlaying)
 
         runtime.stopPlayback()
-        await waitUntil(timeout: 1.0) { mockAudio.deactivateCallCount == 1 }
+        await requireEventually(timeout: 1.0, "audio session to deactivate after idle reclaim") {
+            mockAudio.deactivateCallCount == 1
+        }
 
         XCTAssertEqual(mockAudio.deactivateCallCount, 1,
             "Idle reclaim after a warm pause must eventually deactivate the audio session")

@@ -31,6 +31,12 @@ internal final class EditorRuntimePreviewAudioCoordinator {
     var pipelineBuilder: (() async -> BuiltAudioPipeline?)?
     var buildGate: (() async -> Void)?
     var installedPipelineGenerationForTesting: UInt? { installedPipelineGeneration }
+    /// Test observable: whether any audio build/orchestration/scheduled-prepare is in
+    /// flight. Tests use this to assert the boot-time audio prepare has fully settled
+    /// before re-establishing the dirty start precondition.
+    var hasActiveAudioWorkForTesting: Bool {
+        orchestrationTask != nil || buildTask != nil || scheduledPrepareTask != nil
+    }
     #endif
 
     init(runtime: EditorRuntime) {
@@ -112,26 +118,193 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         case pipeline(BuiltAudioPipeline)
     }
 
+    // MARK: - Epoch Audio Readiness (hard-gated start)
+
+    /// Audio readiness outcome for a playback-start epoch.
+    enum PreviewAudioEpochReadiness: Equatable {
+        /// No audible preview audio is resolvable — the boundary may open without audio.
+        case noAudio
+        /// Audio is primed and can be scheduled at the epoch boundary.
+        case ready
+        /// Audio preparation failed — the boundary must NOT open best-effort.
+        case failed
+        /// The audio generation changed during preparation (an edit/markDirty raced the
+        /// epoch). The boundary must NOT open and `dirty` must NOT be cleared from this
+        /// stale result; a new Play must re-resolve audio.
+        case stale
+    }
+
+    /// Resolves preview-audio readiness as an explicit participant of the playback-start
+    /// epoch, BEFORE the shared boundary opens.
+    ///
+    /// Hard-gated contract: this prepares (building if dirty) and primes the audio
+    /// pipeline, then returns. The caller opens the boundary only on `.noAudio` or
+    /// `.ready`; on `.failed` it must hold the requested frame and not start best-effort.
+    /// No playback is scheduled here — scheduling happens later via
+    /// `startForTimelinePlayback(audioStart:)` from the captured epoch boundary, so audio
+    /// never reads mutable runtime fields for the initial epoch start.
+    func prepareAudioForEpochStart() async -> PreviewAudioEpochReadiness {
+        guard let runtime, runtime.state == .timelinePreview else { return .noAudio }
+        cancelScheduledPrepare()
+
+        // Capture the audio generation for THIS epoch. Any `markDirty()`/edit during the
+        // awaits below bumps `generation`; a stale result must not open the boundary or
+        // clear `dirty`.
+        let epochGen = generation
+
+        // Fast path: a fresh, already-prepared pipeline can be used as-is.
+        if !dirty {
+            if controller.hasActivePipeline {
+                switch controller.readiness {
+                case .primed:
+                    return .ready
+                case .ready, .preparing:
+                    return await primeForEpoch(epochGen: epochGen)
+                case .idle, .failed:
+                    break
+                }
+            } else {
+                // Not dirty and no pipeline → nothing audible to gate on.
+                return .noAudio
+            }
+        }
+
+        // Join an in-flight build (e.g. an idle prepare) for the current generation
+        // instead of starting a redundant one. Once it finishes it installs+primes the
+        // pipeline via its own callbacks; we then reuse it through the readiness path.
+        if let inFlight = orchestrationTask, activeBuildGeneration == epochGen {
+            pendingStartWhenReady = false
+            await inFlight.value
+            guard generation == epochGen else { return .stale }
+            if controller.hasActivePipeline, installedPipelineGeneration == epochGen {
+                switch controller.readiness {
+                case .primed:
+                    dirty = false
+                    return .ready
+                case .ready, .preparing:
+                    return await primeForEpoch(epochGen: epochGen)
+                case .idle, .failed:
+                    break
+                }
+            }
+            // In-flight build resolved to no-audio / failure / stale → fall through to a
+            // fresh resolve below (only if still current).
+            guard generation == epochGen else { return .stale }
+        }
+
+        // Dirty (or idle/failed with stale pipeline): build, install, prime.
+        let buildResult = await buildPipelineForEpoch()
+
+        // If an edit raced the build, do not accept the stale result and do not clear
+        // dirty — a new Play must re-resolve audio.
+        guard generation == epochGen else { return .stale }
+
+        switch buildResult {
+        case .noResolvableAudio:
+            dirty = false
+            return .noAudio
+        case .failed:
+            // Leave dirty for retry; existing failure/dirty path, no new UI.
+            dirty = true
+            installedPipelineGeneration = nil
+            return .failed
+        case .pipeline(let pipeline):
+            installedPipelineGeneration = epochGen
+            controller.replacePipeline(pipeline)
+            return await primeForEpoch(epochGen: epochGen)
+        }
+    }
+
+    /// Primes the installed pipeline for the epoch and re-checks the audio generation
+    /// after the await. On a generation change returns `.stale` (no boundary, dirty
+    /// untouched); on success clears `dirty` and returns `.ready`.
+    private func primeForEpoch(epochGen: UInt) async -> PreviewAudioEpochReadiness {
+        let primed = await primeCurrentPipeline()
+        guard generation == epochGen else { return .stale }
+        if primed == .ready { dirty = false }
+        return primed
+    }
+
+    /// Builds the preview-audio pipeline once for an epoch start, bridging the existing
+    /// detached build to a single awaited result. Cancellation/teardown maps to `.failed`
+    /// so the caller does not open a best-effort boundary.
+    private func buildPipelineForEpoch() async -> PreviewAudioBuildResult {
+        cancelActiveBuild()
+        controller.teardown()
+        installedPipelineGeneration = nil
+        return await buildPipeline()
+    }
+
+    /// Primes the currently installed pipeline and awaits the `.primed` transition.
+    /// Returns `.ready` on primed, `.failed` on controller failure.
+    private func primeCurrentPipeline() async -> PreviewAudioEpochReadiness {
+        guard controller.hasActivePipeline else { return .failed }
+        if controller.readiness == .primed { return .ready }
+
+        let gen = generation
+        return await withCheckedContinuation { (cont: CheckedContinuation<PreviewAudioEpochReadiness, Never>) in
+            var resumed = false
+            let finish: (PreviewAudioEpochReadiness) -> Void = { outcome in
+                guard !resumed else { return }
+                resumed = true
+                cont.resume(returning: outcome)
+            }
+            controller.onReady = { [weak self] in
+                guard let self, self.generation == gen else { finish(.failed); return }
+                self.controller.prepareForImmediatePlayback()
+            }
+            controller.onPrepareFinished = { [weak self] result in
+                guard let self, self.generation == gen else { finish(.failed); return }
+                switch result {
+                case .primed:
+                    finish(.ready)
+                }
+            }
+            controller.onFailure = { [weak self] reason in
+                guard let self else { finish(.failed); return }
+                self.handleControllerFailure(reason: reason, generation: gen)
+                finish(.failed)
+            }
+
+            // Kick the prepare. If already `.ready`, prepare immediately; otherwise the
+            // `.ready` callback above drives it once the PCM file is rendered/opened.
+            if controller.readiness == .ready {
+                controller.prepareForImmediatePlayback()
+            }
+        }
+    }
+
     // MARK: - Playback Integration
 
-    func startForTimelinePlayback() {
+    /// Starts preview audio for timeline playback.
+    ///
+    /// - Parameter audioStart: The epoch's shared boundary value. When provided
+    ///   (initial epoch start), audio opens from exactly the same boundary as
+    ///   transport / video / render. When `nil` (resume / audio-route change), audio
+    ///   opens from the runtime's current live playback fields, which is correct for
+    ///   joining playback already in progress.
+    func startForTimelinePlayback(audioStart: PlaybackAudioStart? = nil) {
         guard let runtime else { return }
         guard runtime.state == .timelinePreview else { return }
         cancelScheduledPrepare()
 
+        // Resolve the start position: prefer the explicit epoch boundary; otherwise
+        // fall back to the runtime's live playback fields (resume/route-change).
+        let startSeconds = audioStart?.fromSeconds ?? usToSeconds(runtime.playbackCurrentProjectTimeUs)
+        let startHostTime = audioStart?.boundaryHostTime ?? runtime.playbackCurrentHostTime
+
         #if DEBUG
-        MemoryDiagnostics.event("preview.audio.start", "dirty=\(dirty ? 1 : 0) hasPipeline=\(controller.hasActivePipeline ? 1 : 0) readiness=\(String(describing: controller.readiness))")
+        MemoryDiagnostics.event("preview.audio.start", "dirty=\(dirty ? 1 : 0) hasPipeline=\(controller.hasActivePipeline ? 1 : 0) readiness=\(String(describing: controller.readiness)) epoch=\(audioStart != nil ? 1 : 0)")
         #endif
 
         if !dirty {
             if controller.hasActivePipeline,
                (controller.readiness == .ready || controller.readiness == .primed) {
-                let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
                 #if DEBUG
-                MemoryDiagnostics.event("preview.audio.start.resume", "seconds=\(seconds) hostTime=\(runtime.playbackCurrentHostTime) generation=\(generation)")
+                MemoryDiagnostics.event("preview.audio.start.resume", "seconds=\(startSeconds) hostTime=\(startHostTime) generation=\(generation)")
                 #endif
                 controller.startPlayback(
-                    fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime
+                    fromSeconds: startSeconds, hostTime: startHostTime
                 )
             } else {
                 #if DEBUG
@@ -158,12 +331,11 @@ internal final class EditorRuntimePreviewAudioCoordinator {
             switch controller.readiness {
             case .primed:
                 dirty = false
-                let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
                 #if DEBUG
-                MemoryDiagnostics.event("preview.audio.start.usePrepared", "seconds=\(seconds) pipelineGen=\(String(describing: installedPipelineGeneration))")
+                MemoryDiagnostics.event("preview.audio.start.usePrepared", "seconds=\(startSeconds) pipelineGen=\(String(describing: installedPipelineGeneration))")
                 #endif
                 controller.startPlayback(
-                    fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime
+                    fromSeconds: startSeconds, hostTime: startHostTime
                 )
                 return
             case .ready:

@@ -4,6 +4,32 @@ import Metal
 import TVECore
 import os.log
 
+#if DEBUG
+/// Temporary DEBUG trace for the preview video playback-start handoff
+/// (task 2026-06-03-preview-video-start-frame). Toggle:
+/// `UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")`. Read-only.
+private enum EngineVideoPlaybackTrace {
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")
+    }
+    static func log(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        print("[VideoPlaybackTrace] \(message())")
+    }
+    static func short(_ id: UUID) -> String { String(id.uuidString.prefix(8)) }
+    static func ids(_ values: some Sequence<UUID>) -> String {
+        values.map { short($0) }.sorted().joined(separator: ",")
+    }
+    static func grants(_ grants: [UUID: Set<String>]) -> String {
+        grants.map { "\(short($0.key)):[\($0.value.sorted().joined(separator: ","))]" }
+            .sorted().joined(separator: " ")
+    }
+    static func localFrames(_ frames: [UUID: Int]) -> String {
+        frames.map { "\(short($0.key)):\($0.value)" }.sorted().joined(separator: " ")
+    }
+}
+#endif
+
 // MARK: - Timeline Composition Engine
 
 /// Engine for composing multi-scene timeline with transitions.
@@ -60,6 +86,13 @@ public final class TimelineCompositionEngine {
 
     /// Loaded scene runtimes by instance ID.
     internal var instanceRuntimes: [UUID: SceneInstanceRuntime] = [:]
+
+    #if DEBUG
+    /// One-shot gate so `syncPlaybackTick` trace logs only the first tick after a
+    /// Play start (set in `startPlayback`, cleared after the first traced tick).
+    /// Keeps the per-frame tick from flooding the trace log. Read-only diagnostics.
+    private var videoPlaybackTraceFirstTickPending = false
+    #endif
 
     /// Generation counter for scrub cancellation.
     /// Incremented on each playhead change to invalidate stale async results.
@@ -421,11 +454,115 @@ public final class TimelineCompositionEngine {
 
         let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: mode)
         let grants = residencyController.playbackGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
+        #if DEBUG
+        if videoPlaybackTraceFirstTickPending {
+            videoPlaybackTraceFirstTickPending = false
+            EngineVideoPlaybackTrace.log("engine.syncPlaybackTick.first compressedFrame=\(compressedFrame) mode=\(Self.videoPlaybackTraceMode(mode)) hostTime=\(hostTime.map { String(format: "%.6f", $0) } ?? "nil") localFrames=[\(EngineVideoPlaybackTrace.localFrames(localFrames))] grants=[\(EngineVideoPlaybackTrace.grants(grants))]")
+        }
+        #endif
         playbackSyncController.applyPlaybackGrants(
             mode: mode, math: math, localFramesByInstanceId: localFrames,
             grants: grants, isStart: false, hostTime: hostTime
         )
     }
+
+    /// Deterministic start-frame handoff for the active playback set.
+    ///
+    /// Computes the same grants as `startPlayback` and awaits an exact start still bind
+    /// for every granted visible video block, on every active render participant
+    /// (single or both transition runtimes). Must be awaited BEFORE the transport /
+    /// display link start so the binding texture is the exact start frame before any
+    /// playback tick can present a stale frame.
+    /// Legacy/derive-then-prepare entry point. Captures a fresh snapshot for the frame
+    /// and prepares from it. Prefer `prepareStartFrames(forSnapshot:)` so prepare and
+    /// start consume the SAME captured participant set.
+    public func prepareStartFramesForPlayback(at compressedFrame: Int) async -> PlaybackStartMediaResult {
+        guard let math = transitionMath,
+              let mode = math.renderMode(for: compressedFrame) else { return .noVisibleVideo }
+        // Legacy derive-then-prepare path. Render ownership is hard-gated: if the start
+        // frame does not resolve, there is no exact start payload, so no media prep is
+        // performed (treated as no visible video, consistent with the epoch path's
+        // boundary-stays-closed behavior). The non-optional snapshot requires a resolved
+        // frame, so this path also requires one.
+        guard case .resolved(let resolvedFrame) = await resolveFrame(compressedFrame, policy: .presentation) else {
+            return .noVisibleVideo
+        }
+        let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: mode)
+        let grants = residencyController.playbackGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
+        let snapshot = PlaybackStartFrameSnapshot(
+            compressedFrame: compressedFrame,
+            mode: mode,
+            localFramesByInstanceId: localFrames,
+            grantsByInstanceId: grants,
+            resolvedFrame: resolvedFrame
+        )
+        return await prepareStartFrames(forSnapshot: snapshot)
+    }
+
+    /// Deterministic start-frame handoff that consumes the epoch's CAPTURED snapshot.
+    ///
+    /// Uses the snapshot's `mode`, `localFramesByInstanceId`, and `grantsByInstanceId`
+    /// rather than recomputing them from live engine state, so the hard gate prepares
+    /// exactly the participant set that `startPlayback(epoch:)` later opens. This is the
+    /// "captured once" epoch contract: prepare and start cannot drift.
+    public func prepareStartFrames(forSnapshot snapshot: PlaybackStartFrameSnapshot) async -> PlaybackStartMediaResult {
+        guard let math = transitionMath else { return .noVisibleVideo }
+
+        let localFrames = snapshot.localFramesByInstanceId
+        let grants = snapshot.grantsByInstanceId
+
+        var activeInstanceIds: Set<UUID> = []
+        switch snapshot.mode {
+        case .single(let sceneIndex, _):
+            guard sceneIndex < math.sceneItems.count else { return .noVisibleVideo }
+            activeInstanceIds.insert(math.sceneItems[sceneIndex].id)
+        case .transition(let aIndex, _, let bIndex, _, _, _):
+            guard aIndex < math.sceneItems.count, bIndex < math.sceneItems.count else { return .noVisibleVideo }
+            activeInstanceIds.insert(math.sceneItems[aIndex].id)
+            activeInstanceIds.insert(math.sceneItems[bIndex].id)
+        }
+
+        #if DEBUG
+        EngineVideoPlaybackTrace.log("engine.prepareStartFrames.snapshot compressedFrame=\(snapshot.compressedFrame) mode=\(Self.videoPlaybackTraceMode(snapshot.mode)) active=[\(EngineVideoPlaybackTrace.ids(activeInstanceIds))] loaded=[\(EngineVideoPlaybackTrace.ids(instanceRuntimes.keys))] localFrames=[\(EngineVideoPlaybackTrace.localFrames(localFrames))] grants=[\(EngineVideoPlaybackTrace.grants(grants))]")
+        #endif
+
+        // Aggregate active participant results under the hard-gated contract: any
+        // participant failure fails the start (boundary must not open); cancellation
+        // propagates immediately; otherwise `.prepared` if any visible video was gated,
+        // else `.noVisibleVideo`.
+        var preparedAnyVisibleVideo = false
+        for instanceId in activeInstanceIds {
+            guard let runtime = instanceRuntimes[instanceId],
+                  let localFrame = localFrames[instanceId] else { continue }
+            let grantedBlockIds = grants[instanceId] ?? []
+            guard !grantedBlockIds.isEmpty else { continue }
+            let result = await runtime.prepareStartFrames(at: localFrame, grantedBlockIds: grantedBlockIds)
+            switch result {
+            case .prepared:
+                preparedAnyVisibleVideo = true
+            case .noVisibleVideo:
+                break
+            case .cancelled:
+                return .cancelled
+            case .failed:
+                return result
+            }
+        }
+
+        return preparedAnyVisibleVideo ? .prepared : .noVisibleVideo
+    }
+
+    #if DEBUG
+    /// Compact render-mode description for the playback trace.
+    private static func videoPlaybackTraceMode(_ mode: TimelineTransitionMath.RenderMode) -> String {
+        switch mode {
+        case .single(let sceneIndex, let localFrame):
+            return "single(sceneIndex=\(sceneIndex),local=\(localFrame))"
+        case .transition(let aIndex, let aLocal, let bIndex, let bLocal, _, let progress):
+            return "transition(a=\(aIndex)@\(aLocal),b=\(bIndex)@\(bLocal),progress=\(String(format: "%.3f", progress)))"
+        }
+    }
+    #endif
 
     /// Legacy wrapper without host time.
     public func startPlayback(at compressedFrame: Int) {
@@ -442,9 +579,86 @@ public final class TimelineCompositionEngine {
 
         let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: mode)
         let grants = residencyController.playbackGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
+        #if DEBUG
+        EngineVideoPlaybackTrace.log("engine.startPlayback compressedFrame=\(compressedFrame) mode=\(Self.videoPlaybackTraceMode(mode)) hostTime=\(hostTime.map { String(format: "%.6f", $0) } ?? "nil") localFrames=[\(EngineVideoPlaybackTrace.localFrames(localFrames))] grants=[\(EngineVideoPlaybackTrace.grants(grants))] loaded=[\(EngineVideoPlaybackTrace.ids(instanceRuntimes.keys))]")
+        videoPlaybackTraceFirstTickPending = true
+        #endif
         playbackSyncController.applyPlaybackGrants(
             mode: mode, math: math, localFramesByInstanceId: localFrames,
             grants: grants, isStart: true, hostTime: hostTime
+        )
+    }
+
+    // MARK: - Playback Start Snapshot (epoch contract)
+
+    /// Captures the start-frame participant snapshot for the playback-start epoch.
+    ///
+    /// This is the single start-specific API: it ensures the active render
+    /// participants are ready for `compressedFrame` (the same readiness
+    /// `prepareForPlayback` provides), then captures the render mode, active local
+    /// frames, and playback grants ONCE. The returned snapshot is what opens the
+    /// boundary, so participant identity and grants cannot drift between prepare,
+    /// start, and the first tick. Returns nil if there is no valid render mode
+    /// (e.g. empty timeline).
+    public func makePlaybackStartFrameSnapshot(at compressedFrame: Int) async -> PlaybackStartFrameSnapshot? {
+        // Ensure active (and warm) participants are ready for the start frame.
+        await prepareForPlayback(startingAt: compressedFrame)
+
+        guard let math = transitionMath,
+              let mode = math.renderMode(for: compressedFrame) else { return nil }
+
+        // Capture the concrete render frame for `N` so the playback-start epoch OWNS
+        // the exact payload Metal will consume. Resolution runs under the presentation
+        // policy (same as the live playhead path).
+        //
+        // Hard gate (render ownership): if the frame does NOT resolve, the epoch cannot
+        // own a frozen payload for `N`, so the start must not open the shared boundary.
+        // Returning nil here aborts the start exactly like the media/audio hard gates do
+        // — playback may not run for a valid timeline while the first visual frame is
+        // left to a later async resolve (the regression this task fixes).
+        let resolution = await resolveFrame(compressedFrame, policy: .presentation)
+        guard case .resolved(let resolvedFrame) = resolution else {
+            #if DEBUG
+            EngineVideoPlaybackTrace.log("engine.makePlaybackStartFrameSnapshot.unresolved compressedFrame=\(compressedFrame) resolution=\(String(describing: resolution))")
+            #endif
+            return nil
+        }
+
+        let localFrames = residencyController.activePlaybackLocalFrames(math: math, mode: mode)
+        let grants = residencyController.playbackGrants(math: math, mode: mode, localFramesByInstanceId: localFrames)
+
+        return PlaybackStartFrameSnapshot(
+            compressedFrame: compressedFrame,
+            mode: mode,
+            localFramesByInstanceId: localFrames,
+            grantsByInstanceId: grants,
+            resolvedFrame: resolvedFrame
+        )
+    }
+
+    /// Opens playback motion from a captured start epoch.
+    ///
+    /// Unlike `startPlayback(at:hostTime:)`, this consumes the epoch's captured
+    /// snapshot (mode/local frames/grants) instead of recomputing them, so the
+    /// boundary opens on exactly the participants the snapshot froze. Residency is
+    /// still refreshed so warm/non-resident bookkeeping stays correct.
+    public func startPlayback(epoch: PlaybackStartEpoch) {
+        guard let math = transitionMath else { return }
+        let snapshot = epoch.frameSnapshot
+        let compressedFrame = snapshot.compressedFrame
+
+        residencyCoordinator.update(transitionMath: math, compressedFrame: compressedFrame)
+        residencyController.evictNonResidentRuntimes(math: math)
+
+        #if DEBUG
+        EngineVideoPlaybackTrace.log("engine.startPlayback.epoch compressedFrame=\(compressedFrame) mode=\(Self.videoPlaybackTraceMode(snapshot.mode)) hostTime=\(String(format: "%.6f", epoch.boundary.hostTime)) localFrames=[\(EngineVideoPlaybackTrace.localFrames(snapshot.localFramesByInstanceId))] grants=[\(EngineVideoPlaybackTrace.grants(snapshot.grantsByInstanceId))] loaded=[\(EngineVideoPlaybackTrace.ids(instanceRuntimes.keys))]")
+        videoPlaybackTraceFirstTickPending = true
+        #endif
+        playbackSyncController.applyPlaybackGrants(
+            mode: snapshot.mode, math: math,
+            localFramesByInstanceId: snapshot.localFramesByInstanceId,
+            grants: snapshot.grantsByInstanceId, isStart: true,
+            hostTime: epoch.boundary.hostTime
         )
     }
 

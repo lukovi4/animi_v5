@@ -8,6 +8,39 @@ import os.log
 
 private let logger = Logger(subsystem: "com.animi.app", category: "EditorViewController")
 
+#if DEBUG
+/// Temporary DEBUG trace for the preview video playback-start handoff
+/// (task 2026-06-03-preview-video-start-frame). Toggle:
+/// `UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")`. Read-only; logs the
+/// FIRST timeline render after Play so the presented drawable's video-block asset ids
+/// and bound texture ids can be matched against the playback-start handoff bind.
+private enum RenderVideoPlaybackTrace {
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")
+    }
+    static func log(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        print("[VideoPlaybackTrace] \(message())")
+    }
+    static func textureId(_ texture: MTLTexture?) -> String {
+        guard let texture else { return "nil" }
+        return String(ObjectIdentifier(texture as AnyObject).hashValue)
+    }
+
+    /// Extracts `drawImage` asset ids from render commands, with the texture id each
+    /// resolves to via the scene's texture provider, formatted as `asset=>texture`.
+    static func drawImageBindings(commands: [RenderCommand], provider: TextureProvider) -> String {
+        var parts: [String] = []
+        for command in commands {
+            if case .drawImage(let assetId, _) = command {
+                parts.append("\(assetId)=>\(textureId(provider.texture(for: assetId)))")
+            }
+        }
+        return parts.joined(separator: " ")
+    }
+}
+#endif
+
 // MARK: - PR-D: Template Loading State
 
 /// State machine for template loading (PR-D: async load + "Preparing" UI).
@@ -110,6 +143,12 @@ final class EditorViewController: UIViewController {
     var lastScrubRenderAt: CFTimeInterval = 0
     var pendingScrubRender = false
     var renderErrorLogged = false
+
+    #if DEBUG
+    /// Tracks `runtime.isPlaying` across draws so the first render after a Play start
+    /// can be traced (task 2026-06-03-preview-video-start-frame). Read-only diagnostics.
+    private var videoPlaybackTraceWasPlaying = false
+    #endif
 
     // MARK: - Release v1: Scene Library
     var sceneLibrarySnapshot: SceneLibrarySnapshot?
@@ -746,6 +785,10 @@ extension EditorViewController: MTKViewDelegate {
         guard loadingState == .ready else { return }
         guard let runtime = runtime else { return }
 
+        #if DEBUG
+        traceFirstPlaybackRenderIfNeeded(runtime: runtime)
+        #endif
+
         switch runtime.currentRenderSource {
         case .timeline(let payload):
             renderTimeline(in: view, payload: payload)
@@ -755,6 +798,35 @@ extension EditorViewController: MTKViewDelegate {
             return
         }
     }
+
+    #if DEBUG
+    /// Logs the first timeline render after a Play start: resolved frame type, frames,
+    /// and every `drawImage` asset id with the texture id it currently resolves to via
+    /// the scene's texture provider. This is the render-side seam that proves whether
+    /// the presented drawable reads the texture bound by the playback-start handoff.
+    /// Read-only; no behavioral effect.
+    private func traceFirstPlaybackRenderIfNeeded(runtime: EditorRuntime) {
+        guard RenderVideoPlaybackTrace.isEnabled else {
+            videoPlaybackTraceWasPlaying = runtime.isPlaying
+            return
+        }
+        let isPlaying = runtime.isPlaying
+        defer { videoPlaybackTraceWasPlaying = isPlaying }
+        guard isPlaying, !videoPlaybackTraceWasPlaying else { return }
+
+        guard case .timeline(let payload) = runtime.currentRenderSource else {
+            RenderVideoPlaybackTrace.log("render.firstAfterPlay source=non-timeline")
+            return
+        }
+        switch payload.resolvedFrame {
+        case .single(let ctx):
+            RenderVideoPlaybackTrace.log("render.firstAfterPlay.single instance=\(ctx.sceneInstanceId.uuidString.prefix(8)) local=\(ctx.localFrame) media=\(ctx.mediaLocalFrame) bindings={\(RenderVideoPlaybackTrace.drawImageBindings(commands: ctx.commands, provider: ctx.textureProvider))}")
+        case .transition(let transCtx):
+            RenderVideoPlaybackTrace.log("render.firstAfterPlay.transition.a instance=\(transCtx.sceneA.sceneInstanceId.uuidString.prefix(8)) local=\(transCtx.sceneA.localFrame) media=\(transCtx.sceneA.mediaLocalFrame) bindings={\(RenderVideoPlaybackTrace.drawImageBindings(commands: transCtx.sceneA.commands, provider: transCtx.sceneA.textureProvider))}")
+            RenderVideoPlaybackTrace.log("render.firstAfterPlay.transition.b instance=\(transCtx.sceneB.sceneInstanceId.uuidString.prefix(8)) local=\(transCtx.sceneB.localFrame) media=\(transCtx.sceneB.mediaLocalFrame) bindings={\(RenderVideoPlaybackTrace.drawImageBindings(commands: transCtx.sceneB.commands, provider: transCtx.sceneB.textureProvider))}")
+        }
+    }
+    #endif
 
     private func renderTimeline(in view: MTKView, payload: TimelineRenderSourcePayload) {
         switch payload.resolvedFrame {

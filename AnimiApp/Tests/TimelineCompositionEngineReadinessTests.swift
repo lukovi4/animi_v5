@@ -192,6 +192,148 @@ final class TimelineCompositionEngineReadinessTests: XCTestCase {
         }
     }
 
+    // MARK: - Playback Start Snapshot Consumption (epoch contract)
+
+    /// Repair #2: `prepareStartFrames(forSnapshot:)` must consume the CAPTURED snapshot's
+    /// participant frames and grants, not recompute them from live engine state. The spy
+    /// must receive exactly the snapshot's localFrame and granted block ids. (A live
+    /// recompute on this video-less timeline would produce empty grants, so the spy
+    /// receiving the snapshot's non-empty grant proves the snapshot was consumed.)
+    @MainActor
+    func testPrepareStartFramesConsumesCapturedSnapshot() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 100)
+        let instanceId = timeline.tracks[0].items[0].id
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources {
+            cache.addToCache(res)
+        }
+
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+        spy.prepareStartFramesResult = .prepared
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            mediaLocator: StubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+        // Load the runtime so prepareStartFrames(forSnapshot:) has it in instanceRuntimes.
+        await engine.prepareForPlayback(startingAt: 50)
+
+        // Resolve a concrete render frame so the snapshot can own it (epoch render
+        // payload ownership). `prepareStartFrames(forSnapshot:)` consumes only
+        // mode/local frames/grants, so the resolved frame is carried but not exercised
+        // by this media-prep assertion.
+        guard case .resolved(let resolvedFrame) = await engine.resolveFrame(50, policy: .presentation) else {
+            return XCTFail("Expected frame 50 to resolve for the captured-snapshot test")
+        }
+
+        // Build a snapshot whose grants/localFrame are NOT what a live recompute would
+        // produce for this video-less timeline (which would be empty grants).
+        let capturedLocalFrame = 50
+        let capturedGrant: Set<String> = ["captured_block"]
+        let snapshot = PlaybackStartFrameSnapshot(
+            compressedFrame: 50,
+            mode: .single(sceneIndex: 0, localFrame: capturedLocalFrame),
+            localFramesByInstanceId: [instanceId: capturedLocalFrame],
+            grantsByInstanceId: [instanceId: capturedGrant],
+            resolvedFrame: resolvedFrame
+        )
+
+        let result = await engine.prepareStartFrames(forSnapshot: snapshot)
+
+        XCTAssertEqual(result, .prepared, "Snapshot with a granted prepared participant must report .prepared")
+        XCTAssertEqual(spy.prepareStartFramesCalls.count, 1,
+                       "Exactly the snapshot's participant must be prepared")
+        XCTAssertEqual(spy.prepareStartFramesCalls.first?.granted, capturedGrant,
+                       "Media prep must consume the snapshot's captured grants, not a live recompute")
+        XCTAssertEqual(spy.prepareStartFramesCalls.first?.frame, capturedLocalFrame,
+                       "Media prep must use the snapshot's captured local frame")
+    }
+
+    /// Render-freeze ownership (engine seam): `makePlaybackStartFrameSnapshot(at:)` must
+    /// capture the concrete resolved render frame for `N`, not just mode/local
+    /// frames/grants. This is the engine-side half of render payload ownership — the
+    /// epoch can only freeze the first visual frame if the snapshot carries it.
+    ///
+    /// Fails on the pre-fix code: the snapshot had no `resolvedFrame` field, so there
+    /// was nothing for the epoch to install and the first frame was left to the async
+    /// resolve path.
+    @MainActor
+    func testMakePlaybackStartFrameSnapshot_capturesResolvedFrameForN() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+
+        let (timeline, resources) = makeMinimalTimeline(sceneCount: 1, framesPerScene: 100)
+        let instanceId = timeline.tracks[0].items[0].id
+
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        for res in resources {
+            cache.addToCache(res)
+        }
+
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        let engine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            mediaLocator: StubMediaLocator(),
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+
+        engine.setTimeline(timeline, sceneStates: [:])
+
+        let startFrame = 50
+        let snapshot = await engine.makePlaybackStartFrameSnapshot(at: startFrame)
+        let unwrapped = try XCTUnwrap(snapshot, "Snapshot must be produced for a resolvable start frame")
+
+        XCTAssertEqual(unwrapped.compressedFrame, startFrame)
+
+        // The captured resolved frame must be the single-scene context for the active
+        // participant at `N` — proving the epoch owns the exact render payload.
+        let resolved = try XCTUnwrap(unwrapped.resolvedFrame,
+            "Snapshot must capture the resolved render frame for N when it resolves")
+        switch resolved {
+        case .single(let ctx):
+            XCTAssertEqual(ctx.sceneInstanceId, instanceId,
+                "Captured resolved frame must be the active participant's scene context")
+        case .transition:
+            XCTFail("Single-scene timeline must capture a .single resolved frame, not a transition")
+        }
+    }
+
     // MARK: - Stretched-Scene Scrub Media Frame (Repair)
 
     /// Full presentation path: a scene stretched past its native animation

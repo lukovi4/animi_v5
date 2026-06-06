@@ -93,6 +93,7 @@ final class UserMediaDisplaySizeTests: XCTestCase {
         func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {}
         func stopPlayback(flush: Bool) {}
         func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? { nil }
+        func currentStartStillTexture(atVideoTime videoTimeSeconds: Double) -> MTLTexture? { nil }
         func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
             try await makeFakeTexture(width: Int(posterSize.width), height: Int(posterSize.height))
         }

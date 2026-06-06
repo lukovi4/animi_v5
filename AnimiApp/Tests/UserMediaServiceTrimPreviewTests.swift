@@ -32,8 +32,19 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
             blockTimingOverrides[blockId]
         }
 
+        /// Per-block visibility override for grant/playback tests. When set, the block
+        /// is reported visible (area/zIndex non-zero) so `startVideoPlayback` /
+        /// `updateVideoFramesForPlayback` treat it as a granted active playback source.
+        var priorityOverrides: [String: BlockPriorityInfo] = [:]
+
         func blockPriorityInfo(blockId: String, at sceneFrameIndex: Int) -> BlockPriorityInfo? {
-            nil
+            priorityOverrides[blockId]
+        }
+
+        /// Marks a block visible across the whole timeline for playback grant tests.
+        func makeVisible(blockId: String) {
+            blockTimingOverrides[blockId] = BlockTiming(startFrame: 0, endFrame: 100_000)
+            priorityOverrides[blockId] = BlockPriorityInfo(isVisible: true, area: 1000, zIndex: 1)
         }
     }
 
@@ -77,6 +88,10 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
         var shouldBlockStill: Bool = false
         private var stillContinuation: CheckedContinuation<MTLTexture, Error>?
 
+        /// When set, requestStillTexture throws this non-cancellation error
+        /// synchronously. Used to exercise the hard-gated `.failed` start-frame path.
+        var stillFailureError: Error?
+
         /// Textures returned by each still request (indexed by request order).
         var returnedTextures: [MTLTexture] = []
 
@@ -107,6 +122,10 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
         func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture {
             stillRequestCount += 1
             stillRequestTimes.append(videoTimeSeconds)
+
+            if let stillFailureError {
+                throw stillFailureError
+            }
 
             if shouldBlockStill {
                 return try await withTaskCancellationHandler {
@@ -168,9 +187,50 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
         }
 
         func release() {}
-        func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {}
-        func stopPlayback(flush: Bool) {}
-        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? { nil }
+
+        // MARK: - Playback Tracking (start-frame handoff regression seam)
+
+        /// Video times passed to `startPlayback`, in call order.
+        var startPlaybackTimes: [Double] = []
+        /// Host times passed to `startPlayback`, in call order.
+        var startPlaybackHostTimes: [CFTimeInterval?] = []
+
+        func startPlayback(atVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) {
+            startPlaybackTimes.append(videoTimeSeconds)
+            startPlaybackHostTimes.append(hostTime)
+            isPlaybackActive = true
+        }
+
+        func stopPlayback(flush: Bool) {
+            isPlaybackActive = false
+        }
+
+        /// Controls the playback-buffer path. By default returns nil (no pixel buffer
+        /// available yet — the production stale-window). Tests can queue textures so
+        /// the first tick(s) return nil and a later tick returns a distinct playback
+        /// texture, mirroring AVPlayerItemVideoOutput warming up.
+        var playbackTextureQueue: [MTLTexture?] = []
+        var frameTextureForPlaybackCallCount: Int = 0
+
+        func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval? = nil) -> MTLTexture? {
+            frameTextureForPlaybackCallCount += 1
+            guard !playbackTextureQueue.isEmpty else { return nil }
+            return playbackTextureQueue.removeFirst()
+        }
+
+        /// Make a distinct, identifiable texture for assertions.
+        func makeDistinctTexture() -> MTLTexture { createFakeTexture() }
+
+        /// Synchronous start-still cache. When set, `currentStartStillTexture` returns
+        /// it (simulating a warm cache hit). When nil (default), the production code
+        /// falls back to the async `requestStillTexture` path.
+        var syncStartStillTexture: MTLTexture?
+        var currentStartStillRequestTimes: [Double] = []
+
+        func currentStartStillTexture(atVideoTime videoTimeSeconds: Double) -> MTLTexture? {
+            currentStartStillRequestTimes.append(videoTimeSeconds)
+            return syncStartStillTexture
+        }
 
         func createFakeTexture() -> MTLTexture {
             let desc = MTLTextureDescriptor.texture2DDescriptor(
@@ -607,5 +667,288 @@ final class UserMediaServiceTrimPreviewTests: XCTestCase {
 
         XCTAssertEqual(provider.interactiveStillRequestCount, 1,
             "No newer pending time arrived, so no additional request is issued after completion")
+    }
+
+    // MARK: - Playback Start-Frame Handoff (real playback seam)
+
+    /// Sets up a visible, ready video block granted for playback.
+    private func setupVisiblePlaybackBlock(
+        blockId: String = "block_01",
+        trimStart: Double,
+        trimEnd: Double
+    ) async {
+        await setupVideoBlock(blockId: blockId, trimStart: trimStart, trimEnd: trimEnd)
+        fakePlayer.makeVisible(blockId: blockId)
+    }
+
+    /// Sync cache hit: `prepareStartFrames` binds the cached start still immediately
+    /// (no async still request), replacing the stale texture before transport start.
+    func test_prepareStartFrames_synchronousCachedStill_bindsImmediately() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+
+        let staleTexture = provider.makeDistinctTexture()
+        fakeTextureProvider.setTexture(staleTexture, for: "binding_asset_01")
+
+        let warmStartStill = provider.makeDistinctTexture()
+        provider.syncStartStillTexture = warmStartStill
+        provider.stillRequestCount = 0
+
+        await sut.prepareStartFrames(
+            grantedBlockIds: ["block_01"], sceneFrameIndex: 0, mediaFrameIndex: 0
+        )
+
+        let bound = fakeTextureProvider.texture(for: "binding_asset_01")
+        XCTAssertTrue(bound === warmStartStill,
+            "A matching cached start still must bind synchronously")
+        XCTAssertEqual(provider.stillRequestCount, 0,
+            "Synchronous cache hit must not trigger an async still request")
+    }
+
+    /// Deterministic cold-cache handoff (Codex repair instr. 4): when no synchronous
+    /// cached still exists, `prepareStartFrames` AWAITS the exact still and binds it.
+    /// The await does not return until the still is delivered, so the stale texture is
+    /// never presented at the start boundary — proven by gating the still and checking
+    /// the binding both while blocked and after release, with no arbitrary sleep.
+    func test_prepareStartFrames_coldCache_awaitsExactStill_noStaleAtBoundary() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+
+        let staleTexture = provider.makeDistinctTexture()
+        fakeTextureProvider.setTexture(staleTexture, for: "binding_asset_01")
+
+        // Cold cache: no synchronous still available; still request blocks until released.
+        provider.syncStartStillTexture = nil
+        provider.shouldBlockStill = true
+
+        let handoff = Task { @MainActor in
+            await sut.prepareStartFrames(
+                grantedBlockIds: ["block_01"], sceneFrameIndex: 0, mediaFrameIndex: 0
+            )
+        }
+
+        // While the exact still is still being produced, the handoff must NOT have
+        // returned, and the still must have been requested (awaited, not skipped).
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertFalse(handoff.isCancelled)
+        XCTAssertGreaterThanOrEqual(provider.stillRequestCount, 1,
+            "Cold cache must await an exact still request")
+
+        // Release the exact still; only now does the handoff complete and bind it.
+        provider.releaseStill()
+        await handoff.value
+
+        let bound = fakeTextureProvider.texture(for: "binding_asset_01")
+        XCTAssertNotNil(bound)
+        XCTAssertFalse(bound === staleTexture,
+            "Awaited exact still must replace the stale texture before transport start")
+        XCTAssertTrue(bound === provider.returnedTextures.last,
+            "The bound texture must be the awaited exact start still")
+    }
+
+    // MARK: - Playback Start Contract: result-bearing media preparation
+
+    /// Hard-gated contract: a synchronous cached start still yields `.prepared`, the
+    /// result that permits opening the shared boundary.
+    func test_prepareStartFrames_syncCacheHit_returnsPrepared() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+        provider.syncStartStillTexture = provider.makeDistinctTexture()
+
+        let result = await sut.prepareStartFrames(
+            grantedBlockIds: ["block_01"], sceneFrameIndex: 0, mediaFrameIndex: 0
+        )
+
+        XCTAssertEqual(result, .prepared)
+        XCTAssertTrue(result == UserMediaStartFrameResult.prepared)
+    }
+
+    /// Hard-gated contract: when the awaited exact still FAILS (non-cancellation),
+    /// `prepareStartFrames` reports `.failed` instead of silently proceeding
+    /// best-effort, so the epoch coordinator can refuse to open the boundary.
+    func test_prepareStartFrames_exactStillFailure_returnsFailed_notBestEffort() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+
+        // Cold cache + the exact still extraction fails.
+        provider.syncStartStillTexture = nil
+        provider.stillFailureError = NSError(domain: "test.still", code: 1)
+
+        let result = await sut.prepareStartFrames(
+            grantedBlockIds: ["block_01"], sceneFrameIndex: 0, mediaFrameIndex: 0
+        )
+
+        XCTAssertEqual(result, .failed(blockId: "block_01"),
+            "A failed exact start still must produce .failed, not a best-effort .prepared")
+    }
+
+    /// Hard-gated contract: a granted set with no visible video block yields
+    /// `.noVisibleVideo`, which DOES permit opening the boundary (nothing to gate on).
+    func test_prepareStartFrames_noGrantedVisibleVideo_returnsNoVisibleVideo() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+
+        // Grant a block that does not exist / is not visible.
+        let result = await sut.prepareStartFrames(
+            grantedBlockIds: ["block_does_not_exist"], sceneFrameIndex: 0, mediaFrameIndex: 0
+        )
+
+        XCTAssertEqual(result, .noVisibleVideo)
+    }
+
+    /// Ordering regression (Codex repair instr. 3/5): a live playback texture must win.
+    /// After the deterministic handoff binds the start frame, `startVideoPlayback`
+    /// launches NO async still, so a real playback texture injected by a tick is never
+    /// overwritten by a late start still.
+    func test_startVideoPlayback_noAsyncStartStill_livePlaybackTextureWins() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+
+        // Deterministic handoff already bound a start frame (sync cache hit here).
+        let startStill = provider.makeDistinctTexture()
+        provider.syncStartStillTexture = startStill
+        await sut.prepareStartFrames(
+            grantedBlockIds: ["block_01"], sceneFrameIndex: 0, mediaFrameIndex: 0
+        )
+
+        provider.stillRequestCount = 0
+
+        // A real playback texture arrives on the first tick.
+        let playbackTexture = provider.makeDistinctTexture()
+        provider.playbackTextureQueue = [playbackTexture]
+
+        sut.startVideoPlayback(
+            sceneFrameIndex: 0, mediaFrameIndex: 0,
+            grantedBlockIds: ["block_01"], hostTime: nil
+        )
+        sut.updateVideoFramesForPlayback(
+            sceneFrameIndex: 0, mediaFrameIndex: 0,
+            grantedBlockIds: ["block_01"], hostTime: nil
+        )
+
+        // Give any (incorrectly launched) async still a chance to land and overwrite.
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(provider.stillRequestCount, 0,
+            "startVideoPlayback must NOT launch an async start still (no late overwrite path)")
+        let bound = fakeTextureProvider.texture(for: "binding_asset_01")
+        XCTAssertTrue(bound === playbackTexture,
+            "The live playback texture must remain bound — no late still overwrite")
+    }
+
+    /// The provider's playback start must use the committed trim-mapped video time,
+    /// so playback begins inside `[trimStart, trimEnd)`, not at file time 0.
+    func test_startVideoPlayback_usesCommittedTrimMappedTime() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+
+        provider.startPlaybackTimes = []
+
+        // mediaFrameIndex 0 with blockStartFrame 0, trimStart 2.0, sceneFPS 30 →
+        // committed mapped time = trimStart + 0/30 = 2.0s.
+        sut.startVideoPlayback(
+            sceneFrameIndex: 0, mediaFrameIndex: 0,
+            grantedBlockIds: ["block_01"], hostTime: nil
+        )
+
+        XCTAssertEqual(provider.startPlaybackTimes.count, 1,
+            "Granted visible block must start playback exactly once")
+        XCTAssertEqual(provider.startPlaybackTimes.first ?? -1, 2.0, accuracy: 1e-6,
+            "Playback must start at the committed trim-mapped time, not file time 0")
+    }
+
+    /// Trim-commit → immediate Play (Codex repair instr. 6): after applying a
+    /// `trimStart > 0` selection through the runtime fast-apply path, the deterministic
+    /// handoff binds the exact start still for the committed trim start before playback.
+    func test_prepareStartFrames_afterTrimCommit_bindsCommittedTrimStart() async {
+        await setupVisiblePlaybackBlock(trimStart: 0.0, trimEnd: 10.0)
+
+        let staleTexture = provider.makeDistinctTexture()
+        fakeTextureProvider.setTexture(staleTexture, for: "binding_asset_01")
+
+        // Commit a new trimStart through the production apply path.
+        try? sut.applyPersistedVideoSelection(
+            blockId: "block_01", PersistedVideoSelection(trimStart: 3.0, trimEnd: 9.0)
+        )
+
+        // Cold cache for the new start; await the exact still at the committed trimStart.
+        provider.syncStartStillTexture = nil
+        provider.shouldBlockStill = false
+        provider.stillRequestTimes = []
+
+        await sut.prepareStartFrames(
+            grantedBlockIds: ["block_01"], sceneFrameIndex: 0, mediaFrameIndex: 0
+        )
+
+        // Committed trimStart 3.0, blockStartFrame 0, frame 0 → mapped time 3.0s.
+        XCTAssertEqual(provider.stillRequestTimes.last ?? -1, 3.0, accuracy: 1e-6,
+            "Handoff must request the exact still at the committed trim start, not the old one")
+        let bound = fakeTextureProvider.texture(for: "binding_asset_01")
+        XCTAssertFalse(bound === staleTexture,
+            "Pre-commit/stale texture must be replaced by the committed trim-start still")
+    }
+
+    // MARK: - Binding-Writer Exclusivity (stale-writer races)
+
+    /// Writer exclusivity (Codex repair instr. 2/5): an exact still task started BEFORE
+    /// Play that completes AFTER `prepareStartFrames` must not overwrite the start frame
+    /// or a live playback texture. The handoff takes an exclusive writer epoch that
+    /// invalidates the older exact still's generation.
+    func test_prepareStartFrames_invalidatesInFlightExactStill_noLateOverwrite() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+
+        // An exact still request is in flight (blocked) from before Play.
+        provider.shouldBlockStill = true
+        sut.updateVideoStillFrames(sceneFrameIndex: 5, mediaFrameIndex: 5)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertGreaterThanOrEqual(provider.stillRequestCount, 1, "Precondition: an exact still is in flight")
+
+        // Deterministic handoff binds the start frame via a sync cache hit.
+        let startStill = provider.makeDistinctTexture()
+        provider.syncStartStillTexture = startStill
+        await sut.prepareStartFrames(
+            grantedBlockIds: ["block_01"], sceneFrameIndex: 0, mediaFrameIndex: 0
+        )
+        XCTAssertTrue(fakeTextureProvider.texture(for: "binding_asset_01") === startStill,
+            "Handoff bound the start frame")
+
+        // The old exact still now completes — it must be invalidated (no overwrite).
+        provider.releaseStill()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertTrue(fakeTextureProvider.texture(for: "binding_asset_01") === startStill,
+            "A stale exact still completing after the handoff must NOT overwrite the start frame")
+    }
+
+    /// Writer exclusivity for the pause/scrub → Play flow (Codex repair instr. 2/5):
+    /// an interactive scrub still in flight from before Play must not overwrite the
+    /// start frame or live playback after the handoff invalidates its generation.
+    func test_prepareStartFrames_invalidatesInFlightScrubStill_noLateOverwrite() async {
+        await setupVisiblePlaybackBlock(trimStart: 2.0, trimEnd: 8.0)
+
+        // An interactive scrub still is in flight (blocked) from before Play.
+        provider.shouldBlockInteractiveStill = true
+        sut.updateVideoStillFramesInteractive(sceneFrameIndex: 5, mediaFrameIndex: 5)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertGreaterThanOrEqual(provider.interactiveStillRequestCount, 1,
+            "Precondition: an interactive scrub still is in flight")
+
+        // Deterministic handoff binds the start frame, then a live playback texture wins.
+        let startStill = provider.makeDistinctTexture()
+        provider.syncStartStillTexture = startStill
+        await sut.prepareStartFrames(
+            grantedBlockIds: ["block_01"], sceneFrameIndex: 0, mediaFrameIndex: 0
+        )
+
+        let playbackTexture = provider.makeDistinctTexture()
+        provider.playbackTextureQueue = [playbackTexture]
+        sut.startVideoPlayback(
+            sceneFrameIndex: 0, mediaFrameIndex: 0, grantedBlockIds: ["block_01"], hostTime: nil
+        )
+        sut.updateVideoFramesForPlayback(
+            sceneFrameIndex: 0, mediaFrameIndex: 0, grantedBlockIds: ["block_01"], hostTime: nil
+        )
+        XCTAssertTrue(fakeTextureProvider.texture(for: "binding_asset_01") === playbackTexture,
+            "Live playback texture is bound")
+
+        // The old scrub still now completes — it must be invalidated (no overwrite).
+        provider.releaseInteractiveStill()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertTrue(fakeTextureProvider.texture(for: "binding_asset_01") === playbackTexture,
+            "A stale interactive scrub still completing after Play must NOT overwrite live playback")
     }
 }

@@ -1,0 +1,175 @@
+{
+  "schemaVersion": "0.1",
+  "sceneId": "6_frames_template",
+  "canvas": { "width": 1080, "height": 1920, "fps": 30, "durationFrames": 150 },
+  "mediaBlocks": [
+    {
+      "blockId": "block_01",
+      "zIndex": 0,
+      "rect": { "x": 0, "y": 0, "width": 540, "height": 640 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 150 },
+      "input": {
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_01/no-anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ],
+      "layerToggles": []
+    },
+    {
+      "blockId": "block_02",
+      "zIndex": 1,
+      "rect": { "x": 540, "y": 0, "width": 540, "height": 640 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 150 },
+      "input": {
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_02/no-anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ],
+      "layerToggles": []
+    },
+    {
+      "blockId": "block_03",
+      "zIndex": 2,
+      "rect": { "x": 0, "y": 640, "width": 540, "height": 640 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 150 },
+      "input": {
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_03/no-anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ],
+      "layerToggles": []
+    },
+    {
+      "blockId": "block_04",
+      "zIndex": 3,
+      "rect": { "x": 540, "y": 640, "width": 540, "height": 640 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 150 },
+      "input": {
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_04/no-anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ],
+      "layerToggles": []
+    },
+    {
+      "blockId": "block_05",
+      "zIndex": 4,
+      "rect": { "x": 0, "y": 1280, "width": 540, "height": 640 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 150 },
+      "input": {
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_05/no-anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ],
+      "layerToggles": []
+    },
+    {
+      "blockId": "block_06",
+      "zIndex": 5,
+      "rect": { "x": 540, "y": 1280, "width": 540, "height": 640 },
+      "containerClip": "none",
+      "timing": { "startFrame": 0, "endFrame": 150 },
+      "input": {
+        "bindingKey": "media",
+        "hitTest": "mask",
+        "allowedMedia": ["photo", "video", "color"],
+        "emptyPolicy": "hideWholeBlock",
+        "fitModesAllowed": ["cover", "contain", "fill"],
+        "userTransformsAllowed": { "pan": true, "zoom": true, "rotate": true },
+        "defaultFit": "cover",
+        "audio": { "enabled": false, "gain": 1.0 }
+      },
+      "variants": [
+        {
+          "variantId": "no-anim",
+          "animRef": "block_06/no-anim.json",
+          "defaultDurationFrames": 150,
+          "ifAnimationShorter": "holdLastFrame",
+          "ifAnimationLonger": "cut",
+          "loop": false
+        }
+      ],
+      "layerToggles": []
+    }
+  ]
+}

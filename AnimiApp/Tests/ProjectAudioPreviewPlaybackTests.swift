@@ -94,9 +94,11 @@ final class MockPreviewAudioController: PreviewAudioControlling {
 @MainActor
 final class MockPreviewAudioSessionManager: AudioSessionManaging {
     var onEvent: ((AudioSessionEvent) -> Void)?
+    private(set) var activateCallCount = 0
+    private(set) var deactivateCallCount = 0
     func configureForPlayback() throws {}
-    func activateForPlayback() throws {}
-    func deactivateAfterPlayback() throws {}
+    func activateForPlayback() throws { activateCallCount += 1 }
+    func deactivateAfterPlayback() throws { deactivateCallCount += 1 }
 }
 
 // MARK: - Controllable Pipeline Builder
@@ -216,38 +218,153 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         return (session, runtime)
     }
 
-    /// Creates a seeded TimelineCompositionEngine with transitionMath populated.
-    /// Returns nil if Metal is unavailable.
-    private func makeSeededEngine(session: EditorSession) -> TimelineCompositionEngine? {
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let commandQueue = device.makeCommandQueue() else {
-            return nil
-        }
-        let engine = TimelineCompositionEngine(
-            device: device,
-            commandQueue: commandQueue,
-            fps: 30,
-            mediaLocator: StubMediaLocator()
+    // MARK: - Resolvable Playback Harness (configureAndBoot)
+    //
+    // Production-start tests (anything calling `runtime.startPlayback()`) must boot a
+    // runtime whose timeline engine actually RESOLVES the start frame, because the
+    // playback-start contract hard-gates Play on the epoch owning the render payload
+    // for `N`. The previous `makeSeededEngine` injection drove Play on a scene that
+    // never resolved (`.missingDependency`), so under the hard gate it could not start.
+    //
+    // This mirrors the proven resolvable pattern from
+    // `VisualClosureDefectTests.makeFullyBootedRuntime`: real `EditorRuntimeMetalContext`,
+    // a `SceneLibrarySnapshot` with `scene_1`, an initial loaded scene result, then
+    // `configureAndBoot(...)`, then pre-populate the engine's resources cache with
+    // minimal `scene_1` resources before the first actor yield. Small helpers are
+    // duplicated locally (Codex-approved) to avoid project-file churn.
+
+    /// Minimal media-less render resources for a scene type so the booted engine can
+    /// resolve the start frame (a media-less scene becomes ready with no video to wait on).
+    private func makeRenderableResources(sceneTypeId: String, durationFrames: Int, fps: Int = 30) -> SceneTypeResourcesCache.Resources {
+        let canvas = Canvas(width: 1080, height: 1920, fps: fps, durationFrames: durationFrames)
+        let scene = Scene(schemaVersion: "1.0", sceneId: sceneTypeId, canvas: canvas, background: nil, mediaBlocks: [])
+        let runtime = SceneRuntime(scene: scene, canvas: canvas, blocks: [], durationFrames: durationFrames, fps: fps)
+        let compiled = CompiledScene(
+            runtime: runtime,
+            mergedAssetIndex: AssetIndexIR(),
+            pathRegistry: PathRegistry(),
+            bindingAssetIds: []
         )
-        if let editorState = session.state {
-            engine.setTimeline(
-                editorState.canonicalTimeline,
-                sceneStates: editorState.draft.sceneInstanceStates,
-                assetRegistry: editorState.draft.assetRegistry.selfHealed(for: editorState.draft)
-            )
-        }
-        return engine
+        return SceneTypeResourcesCache.Resources(
+            sceneTypeId: sceneTypeId,
+            compiled: compiled,
+            resolver: CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty),
+            baseTextureProvider: InMemoryTextureProvider(),
+            assetSizes: [:],
+            pathRegistry: PathRegistry(),
+            canvasSize: SizeD(width: Double(canvas.width), height: Double(canvas.height)),
+            fps: fps,
+            durationFrames: durationFrames
+        )
     }
 
-    /// Creates a runtime with a real, seeded TimelineCompositionEngine injected,
-    /// so `startPlayback()` passes the engine guard and runs the full production path
-    /// with active transitionMath.
-    /// Returns nil if Metal is unavailable (test will be skipped).
+    /// Builds an `InitialSceneLoadResult` for `scene_1` (90 frames), mirroring the
+    /// resolvable boot path. The scene is media-less so it resolves without real media.
+    private func makeBootLoadResult(device: MTLDevice) -> EditorRuntime.InitialSceneLoadResult {
+        let canvas = Canvas(width: 1080, height: 1920, fps: 30, durationFrames: 90)
+        let scene = Scene(schemaVersion: "1.0", sceneId: "scene_1", canvas: canvas, background: nil, mediaBlocks: [])
+        let runtime = SceneRuntime(scene: scene, canvas: canvas, blocks: [], durationFrames: 90, fps: 30)
+        let compiled = CompiledScene(
+            runtime: runtime,
+            mergedAssetIndex: AssetIndexIR(),
+            pathRegistry: PathRegistry(),
+            bindingAssetIds: []
+        )
+        let resolver = CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty)
+        let provider = ScenePackageTextureProvider(
+            device: device,
+            assetIndex: compiled.mergedAssetIndex,
+            resolver: resolver,
+            bindingAssetIds: compiled.bindingAssetIds
+        )
+        let player = ScenePlayer()
+        let loaded = player.loadCompiledScene(compiled)
+        return EditorRuntime.InitialSceneLoadResult(
+            player: player, compiled: loaded, provider: provider, resolver: resolver, preloadStats: nil
+        )
+    }
+
+    /// Creates a runtime booted through the production `configureAndBoot` path whose
+    /// timeline engine RESOLVES the start frame. Use for any test calling production
+    /// `runtime.startPlayback()`. Returns nil if Metal is unavailable.
+    @MainActor
     private func makePlayableRuntime(state: EditorRuntimeState = .timelinePreview) async -> (EditorSession, EditorRuntime)? {
-        let (session, runtime) = await makeBootedRuntime(state: state)
-        guard let engine = makeSeededEngine(session: session) else { return nil }
-        runtime.injectTimelineCompositionEngine(engine)
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else { return nil }
+
+        let session = await makeBootstrappedSession()
+        guard let editorState = session.state else { return nil }
+
+        let runtime = EditorRuntime(session: session)
+        runtime.audioSessionManager = MockPreviewAudioSessionManager()
+
+        let metalContext = EditorRuntimeMetalContext(
+            device: device, commandQueue: commandQueue, colorPixelFormat: .bgra8Unorm
+        )
+        let library = SceneLibrarySnapshot(
+            fps: 30,
+            canvas: CanvasConfig(width: 1080, height: 1920),
+            scenes: [SceneTypeDescriptor(id: "scene_1", order: 0, title: "Test", baseDurationUs: 3_000_000)]
+        )
+        runtime.configureAndBoot(
+            metalContext: metalContext,
+            library: library,
+            loadResult: makeBootLoadResult(device: device),
+            editorState: editorState
+        )
+        // Pre-populate engine cache BEFORE the async resolve Task body runs (cooperative
+        // scheduling: the @MainActor boot Task has not yielded yet).
+        runtime.testTimelineCompositionEngine?.resourcesCache.addToCache(
+            makeRenderableResources(sceneTypeId: "scene_1", durationFrames: 90)
+        )
+        // HARD PREREQUISITE: the boot playhead resolve must install the frame-0 render
+        // source before returning, so a subsequent production `startPlayback()` resolves
+        // deterministically. If readiness is never reached, fail here (not later) and do
+        // not hand back an unusable runtime.
+        let ready = await waitUntil(timeout: 2.0) {
+            if case .timeline = runtime.currentRenderSource { return true }
+            return false
+        }
+        guard ready else {
+            XCTFail("makePlayableRuntime: boot did not reach .timeline render readiness for frame 0")
+            return nil
+        }
+        await settleAudioStartPrecondition(runtime)
         return (session, runtime)
+    }
+
+    /// Re-establishes the preview-audio start precondition that the production-start audio
+    /// tests assume: `dirty == true` with no in-flight build, so the FIRST `startPlayback()`
+    /// runs a fresh build through the test's injected (controllable) pipeline builder.
+    ///
+    /// `configureAndBoot` calls `transitionToTimelinePreview()` →
+    /// `previewAudio.prepareForTimelinePreview()`, which (with no timeline audio) runs a
+    /// boot-time build that resolves to `.noResolvableAudio` and clears `dirty`. The
+    /// pre-migration `bootForTesting` harness never ran that boot prepare, so audio tests
+    /// were written against `dirty == true`. We wait for that boot orchestration to FULLY
+    /// settle (no active build/orchestration), then re-mark dirty and cancel any resulting
+    /// scheduled (production) build so the test's own controllable builder is the one
+    /// exercised at start. This changes no production behavior — it only restores the
+    /// harness precondition, and asserts the settled state it relies on.
+    @MainActor
+    private func settleAudioStartPrecondition(_ runtime: EditorRuntime) async {
+        // Wait for the boot-time audio prepare to FULLY settle: dirty cleared AND no
+        // build/orchestration/scheduled-prepare still in flight. Asserting both avoids
+        // re-marking dirty on top of an in-flight boot build that could later clear it.
+        await requireEventually(
+            timeout: 2.0,
+            "boot audio prepare to settle (dirty cleared, no active build)"
+        ) { !runtime.previewAudioDirty && !runtime.previewAudioHasActiveWork }
+
+        runtime.markPreviewAudioDirty()
+        runtime.previewAudio.cancelBuild()
+
+        // The precondition the audio-gate tests rely on: dirty, with no in-flight work, so
+        // the first startPlayback() builds through the test's injected builder.
+        XCTAssertTrue(runtime.previewAudioDirty,
+            "settleAudioStartPrecondition must leave preview audio dirty for the first Play")
+        XCTAssertFalse(runtime.previewAudioHasActiveWork,
+            "settleAudioStartPrecondition must leave no in-flight audio build/orchestration")
     }
 
     /// Creates a runtime with a real audio item so `buildPreviewAudioConfig` returns music.
@@ -323,15 +440,45 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let session = EditorSession(intent: .resumeDraft, dependencies: deps)
         await session.bootstrap()
 
-        let runtime = EditorRuntime(session: session)
-        runtime.audioSessionManager = MockPreviewAudioSessionManager()
-        runtime.bootForTesting(state: .timelinePreview)
-
-        guard let engine = makeSeededEngine(session: session) else {
+        // Resolvable boot (configureAndBoot) so the start frame resolves and the
+        // render-payload hard gate is satisfied before the audio phase under test.
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue(),
+              let editorState = session.state else {
             try? FileManager.default.removeItem(at: tempDir)
             return nil
         }
-        runtime.injectTimelineCompositionEngine(engine)
+
+        let runtime = EditorRuntime(session: session)
+        runtime.audioSessionManager = MockPreviewAudioSessionManager()
+
+        let metalContext = EditorRuntimeMetalContext(
+            device: device, commandQueue: commandQueue, colorPixelFormat: .bgra8Unorm
+        )
+        let library = SceneLibrarySnapshot(
+            fps: 30,
+            canvas: CanvasConfig(width: 1080, height: 1920),
+            scenes: [SceneTypeDescriptor(id: "scene_1", order: 0, title: "Test", baseDurationUs: 3_000_000)]
+        )
+        runtime.configureAndBoot(
+            metalContext: metalContext,
+            library: library,
+            loadResult: makeBootLoadResult(device: device),
+            editorState: editorState
+        )
+        runtime.testTimelineCompositionEngine?.resourcesCache.addToCache(
+            makeRenderableResources(sceneTypeId: "scene_1", durationFrames: 90)
+        )
+        let ready = await waitUntil(timeout: 2.0) {
+            if case .timeline = runtime.currentRenderSource { return true }
+            return false
+        }
+        guard ready else {
+            XCTFail("makePlayableRuntimeWithAudio: boot did not reach .timeline render readiness for frame 0")
+            try? FileManager.default.removeItem(at: tempDir)
+            return nil
+        }
+        await settleAudioStartPrecondition(runtime)
         return (runtime, tempDir)
     }
 
@@ -392,22 +539,69 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         return (BuiltAudioPipeline(composition: composition, audioMix: nil), wavURL)
     }
 
-    /// Waits for the `playbackStartTask` to complete (engine.prepareForPlayback is async).
+    /// Waits — on a real-time deadline — for the production `playbackStartTask` to reach
+    /// the running phase. The start task awaits `prepareForPlayback`/snapshot resolution
+    /// and audio readiness, which poll on real intervals; a cooperative yield loop can
+    /// return before those settle, so use `waitUntil` (real 10 ms sleeps).
+    /// Lets the production `playbackStartTask` make progress on real time. This is
+    /// intentionally BEST-EFFORT: it returns as soon as the start reaches running, but
+    /// some callers deliberately Play into a gated state (e.g. an un-completed controllable
+    /// audio build) where `isPlaying` stays false until they drive the build — those
+    /// callers assert their own observable phase (`pendingCount`, `isPlaying`) afterward.
+    /// It does NOT fail on timeout precisely because "not yet running" is a valid state
+    /// here. Critical phase waits whose result the test depends on use `requireEventually`.
     private func waitForPlaybackStart(_ runtime: EditorRuntime) async {
-        // playbackStartTask is a Task that calls prepareForPlayback then sets isPlaying.
-        // With nil transitionMath, prepareForPlayback returns immediately, but
-        // the Task still needs a yield to execute.
-        for _ in 0..<5 {
-            await Task.yield()
-            if runtime.isPlaying { break }
+        await waitUntil(timeout: 2.0) { runtime.isPlaying }
+    }
+
+    /// Drives a hard-gated playback start to the running phase when audible audio is
+    /// present: the audio gate (`prepareAudioForEpochStart`) awaits the pipeline build,
+    /// so the boundary only opens after the build completes. Waits — on real-time
+    /// deadlines — for the builder to be invoked, completes it, then waits for
+    /// `isPlaying`. Use for the audible-audio path where, under the corrected contract,
+    /// playback must NOT start before audio is ready.
+    private func waitForGatedPlaybackStart(
+        _ runtime: EditorRuntime,
+        builder controllable: ControllablePipelineBuilder,
+        pipeline: BuiltAudioPipeline? = nil
+    ) async {
+        let resolved = pipeline ?? makeDummyPipeline()
+        // Let the start task reach the audio gate and call the builder.
+        await requireEventually(timeout: 2.0, "audio builder to be invoked (pendingCount >= 1)") {
+            controllable.pendingCount >= 1
+        }
+        controllable.completeNext(with: resolved)
+        // Allow build → replacePipeline → prime → boundary open.
+        await requireEventually(timeout: 2.0, "runtime.isPlaying after gated audio build completes") {
+            runtime.isPlaying
         }
     }
 
-    /// Polls a condition with real time delays to allow detached tasks to complete.
-    private func waitUntil(timeout: TimeInterval, condition: @MainActor () -> Bool) async {
+    /// Polls a condition with real time delays. Returns `true` if the condition became
+    /// true before the deadline, `false` on timeout — callers that depend on the
+    /// condition must check the result (see `requireEventually`).
+    @discardableResult
+    private func waitUntil(timeout: TimeInterval, condition: @MainActor () -> Bool) async -> Bool {
         let deadline = CFAbsoluteTimeGetCurrent() + timeout
-        while !condition() && CFAbsoluteTimeGetCurrent() < deadline {
+        while CFAbsoluteTimeGetCurrent() < deadline {
+            if condition() { return true }
             try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        }
+        return condition()
+    }
+
+    /// Like `waitUntil` but FAILS the test with a phase-specific message on timeout, so a
+    /// missed prerequisite surfaces here rather than as a confusing later assertion.
+    private func requireEventually(
+        timeout: TimeInterval,
+        _ message: @autoclosure () -> String,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: @MainActor () -> Bool
+    ) async {
+        let ok = await waitUntil(timeout: timeout, condition: condition)
+        if !ok {
+            XCTFail("Timed out waiting for: \(message())", file: file, line: line)
         }
     }
 
@@ -551,22 +745,11 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let controllable = ControllablePipelineBuilder()
         runtime.previewAudioPipelineBuilder = controllable.builder
 
-        // 1) Start playback → triggers async pipeline build (dirty=true path)
+        // 1) Start playback → hard-gated: the audio build completes BEFORE the boundary
+        //    opens, then playback runs.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
+        await waitForGatedPlaybackStart(runtime, builder: controllable)
         XCTAssertTrue(runtime.isPlaying)
-
-        // Allow rebuild task to reach builder
-        for _ in 0..<10 {
-            await Task.yield()
-            if controllable.pendingCount >= 1 { break }
-        }
-        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Builder should have been called")
-
-        // Complete the initial build with a real pipeline → dirty becomes false
-        let pipeline = makeDummyPipeline()
-        controllable.completeNext(with: pipeline)
-        for _ in 0..<5 { await Task.yield() }
 
         XCTAssertFalse(runtime.previewAudioDirty, "Dirty should be false after successful pipeline build")
         XCTAssertEqual(mock.replacePipelineCallCount, 1, "Pipeline should have been replaced once")
@@ -591,6 +774,96 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
                        "Resume path should NOT rebuild pipeline")
         XCTAssertGreaterThan(mock.startPlaybackCallCount, startCountAfterFirstPlay,
                              "Resume path should call startPlayback(fromSeconds:)")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    // MARK: - Test 8b: shared start host time (repair #7)
+
+    /// Repair #7: the transport, video providers, and preview audio must all start against
+    /// ONE shared authoritative start host time placed a short lead in the future, not
+    /// `CACurrentMediaTime()` (now). This proves preview audio's start anchor equals the
+    /// runtime's shared `playbackCurrentHostTime` and that the anchor is in the future
+    /// relative to the moment Play was requested, so startup delay is absorbed by the lead.
+    func test_startPlayback_usesSharedFutureStartHostTime() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+
+        // First Play: drive the hard-gated start fully to running by COMPLETING the
+        // controllable build, so the pipeline is active for the measured resume below.
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        runtime.startPlayback()
+        await waitForGatedPlaybackStart(runtime, builder: controllable)
+        XCTAssertTrue(runtime.isPlaying, "First gated Play must reach running")
+        runtime.stopPlayback()
+
+        // Measured resume Play: !dirty + active pipeline → audio starts directly inside the
+        // start task via mock.startPlayback(fromSeconds:hostTime:). Record the previous
+        // audio-start call count and wait for a NEW audio-start call (not the stale first
+        // one). Then assert the new anchor against the IMMUTABLE epoch boundary host time —
+        // never the display-link-mutated `playbackCurrentHostTime`.
+        let startCallsBefore = mock.startPlaybackCallCount
+        let nowBeforePlay = CACurrentMediaTime()
+        runtime.startPlayback()
+        await requireEventually(timeout: 2.0, "a new preview-audio start call on resume") {
+            mock.startPlaybackCallCount > startCallsBefore
+        }
+
+        let epochBoundary = try XCTUnwrap(runtime.activePlaybackStartEpoch?.boundary.hostTime,
+            "An active playback-start epoch with a boundary host time must exist after Play")
+        let audioHostTime = try XCTUnwrap(mock.lastStartHostTime,
+            "Preview audio must have started via the production path")
+        XCTAssertEqual(audioHostTime, epochBoundary, accuracy: 1e-9,
+            "Preview audio anchor must equal the epoch's shared start host time (the boundary)")
+        XCTAssertGreaterThan(audioHostTime, nowBeforePlay,
+            "Shared start host time must be a future lead, not CACurrentMediaTime() at request time")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    /// Repair #7: the lead must scale with the display refresh interval. At a lower FPS the
+    /// future lead is larger (lead = leadFrames / fps), so the shared anchor sits further
+    /// ahead of the request time.
+    func test_startPlayback_leadDerivedFromFrameInterval() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        // Prime an active pipeline first: drive the gated start fully to running.
+        runtime.startPlayback()
+        await waitForGatedPlaybackStart(runtime, builder: controllable)
+        XCTAssertTrue(runtime.isPlaying, "Priming Play must reach running")
+        runtime.stopPlayback()
+
+        // Force a known lead and assert the anchor lead is within one interval of expected.
+        runtime.playbackStartLeadFrames = 6
+        let expectedLead = CFTimeInterval(6) / CFTimeInterval(runtime.sceneFPS)
+        let startCallsBefore = mock.startPlaybackCallCount
+        let nowBeforePlay = CACurrentMediaTime()
+        runtime.startPlayback()
+        await requireEventually(timeout: 2.0, "a new preview-audio start call on resume") {
+            mock.startPlaybackCallCount > startCallsBefore
+        }
+
+        let audioHostTime = try XCTUnwrap(mock.lastStartHostTime)
+        let observedLead = audioHostTime - nowBeforePlay
+        // observedLead is expectedLead minus the tiny request->anchor compute gap; assert it
+        // is in (expectedLead - one interval, expectedLead].
+        let interval = 1.0 / CFTimeInterval(runtime.sceneFPS)
+        XCTAssertLessThanOrEqual(observedLead, expectedLead + interval)
+        XCTAssertGreaterThan(observedLead, expectedLead - interval,
+            "Lead must scale with leadFrames / fps")
 
         runtime.stopPlayback()
         controllable.drainAll()
@@ -654,19 +927,15 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let controllable = ControllablePipelineBuilder()
         runtime.previewAudioPipelineBuilder = controllable.builder
 
-        // Start real playback
+        // Hard-gated start: the initial epoch waits for the audio build before opening
+        // the boundary. Complete it so playback is actually running before exercising
+        // the dirty-while-playing rebuild path.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
+        await waitForGatedPlaybackStart(runtime, builder: controllable)
         XCTAssertTrue(runtime.isPlaying)
 
-        // Allow rebuild task to reach builder
-        for _ in 0..<10 {
-            await Task.yield()
-            if controllable.pendingCount >= 1 { break }
-        }
-        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "First build should be pending")
-
-        // First markPreviewAudioDirty while first build is in-flight → cancels first, starts second
+        // First markPreviewAudioDirty while playing → cancels nothing in flight (initial
+        // build done) and starts a new build.
         let genAfterStart = runtime.previewAudioGeneration
         runtime.markPreviewAudioDirty()
         XCTAssertGreaterThan(runtime.previewAudioGeneration, genAfterStart, "Generation should bump on dirty")
@@ -714,34 +983,30 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let controllable = ControllablePipelineBuilder()
         runtime.previewAudioPipelineBuilder = controllable.builder
 
-        // Start real playback → triggers pipeline build
+        // Hard-gated start: the initial epoch's audio build is the gate, so playback is
+        // NOT yet running while the build is pending.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
-        XCTAssertTrue(runtime.isPlaying)
-
-        // Allow rebuild task to reach builder
-        for _ in 0..<10 {
+        for _ in 0..<40 {
             await Task.yield()
             if controllable.pendingCount >= 1 { break }
         }
-        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Build should be pending")
+        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Initial audio build should be pending")
+        XCTAssertFalse(runtime.isPlaying, "Boundary must not open while audio is still building")
 
-        // Reset counters after start
+        // Reset counters before stop.
         mock.replacePipelineCallCount = 0
         mock.startPlaybackCallCount = 0
 
-        // Stop must not discard the in-flight audio build. It should preserve the
-        // prepared pipeline for the next Play, but must not auto-start while stopped.
+        // Stop during the gated build aborts the pending start.
         runtime.stopPlayback()
         XCTAssertFalse(runtime.isPlaying)
 
-        // Complete the pending build — it should install/prepare for reuse, not start.
+        // Completing the now-superseded build must not start playback.
         controllable.completeNext(with: makeDummyPipeline())
         for _ in 0..<5 { await Task.yield() }
 
-        XCTAssertEqual(mock.replacePipelineCallCount, 1, "Build after stop should preserve the pipeline")
         XCTAssertEqual(mock.startPlaybackCallCount, 0, "Build after stop must not start playback")
-        XCTAssertFalse(runtime.previewAudioDirty, "Prepared pipeline after stop should clear dirty")
+        XCTAssertFalse(runtime.isPlaying, "Playback must remain stopped after a cancelled gated start")
 
         controllable.drainAll()
     }
@@ -810,27 +1075,30 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         }
 
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
 
-        // Playback should have started (isPlaying=true, output emitted)
-        // BEFORE the audio pipeline builder completes
-        XCTAssertTrue(runtime.isPlaying, "Video playback must start without waiting for audio pipeline")
-        XCTAssertTrue(playbackStarted, "playbackStateChanged(isPlaying: true) must be emitted before audio build completes")
-        XCTAssertEqual(mock.replacePipelineCallCount, 0, "Audio pipeline should not yet be replaced (builder still pending)")
-
-        // Allow the rebuild task to reach the builder await
-        for _ in 0..<10 {
+        // HARD GATE: with audible audio, the shared boundary must NOT open while the
+        // audio pipeline is still building. Let the start task reach the builder.
+        for _ in 0..<40 {
             await Task.yield()
             if controllable.pendingCount >= 1 { break }
         }
-        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Builder should be suspended")
+        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Audio builder should be suspended (the gate)")
+        XCTAssertFalse(runtime.isPlaying,
+                       "Boundary must NOT open while audible audio is still building")
+        XCTAssertFalse(playbackStarted,
+                       "playbackStateChanged(isPlaying: true) must NOT be emitted before audio is ready")
 
-        // Now complete the builder → pipeline should be applied
+        // Complete the builder → audio primes → boundary opens → playback runs.
         controllable.completeNext(with: makeDummyPipeline())
-        for _ in 0..<5 { await Task.yield() }
+        for _ in 0..<40 {
+            await Task.yield()
+            if runtime.isPlaying { break }
+        }
 
-        XCTAssertEqual(mock.replacePipelineCallCount, 1, "Pipeline should be applied after builder completes")
-        XCTAssertGreaterThanOrEqual(mock.startPlaybackCallCount, 1, "Audio playback should start after pipeline is ready")
+        XCTAssertTrue(runtime.isPlaying, "Playback must start once audio is ready")
+        XCTAssertTrue(playbackStarted, "playbackStateChanged(true) must be emitted after audio is ready")
+        XCTAssertEqual(mock.replacePipelineCallCount, 1, "Pipeline should be applied")
+        XCTAssertGreaterThanOrEqual(mock.startPlaybackCallCount, 1, "Audio playback should start at the boundary")
 
         runtime.stopPlayback()
         controllable.drainAll()
@@ -847,32 +1115,27 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let controllable = ControllablePipelineBuilder()
         runtime.previewAudioPipelineBuilder = controllable.builder
 
-        // Start real playback → triggers async pipeline build
+        // Start real playback → the initial epoch's audio build is the gate.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
-        XCTAssertTrue(runtime.isPlaying)
-
-        // Allow rebuild task to reach builder
-        for _ in 0..<10 {
+        for _ in 0..<40 {
             await Task.yield()
             if controllable.pendingCount >= 1 { break }
         }
-        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Builder should be pending")
+        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Audio build (the gate) should be pending")
+        XCTAssertFalse(runtime.isPlaying, "Boundary must not open while audio is still building")
 
         // Reset counters
-        mock.replacePipelineCallCount = 0
         mock.startPlaybackCallCount = 0
 
-        // Stop preserves the in-flight build for next Play.
+        // Stop during the gated build aborts the start.
         runtime.stopPlayback()
 
-        // Complete the pending build — it should install/prepare for reuse, not start.
+        // Completing the now-superseded build must not start audio or open playback.
         controllable.completeNext(with: makeDummyPipeline())
         for _ in 0..<5 { await Task.yield() }
 
-        XCTAssertEqual(mock.replacePipelineCallCount, 1, "Build after stop should preserve the pipeline")
         XCTAssertEqual(mock.startPlaybackCallCount, 0, "Build after stop must not start audio playback")
-        XCTAssertFalse(runtime.previewAudioDirty, "Prepared pipeline after stop should clear dirty")
+        XCTAssertFalse(runtime.isPlaying, "Playback must remain stopped after a cancelled gated start")
 
         controllable.drainAll()
     }
@@ -931,20 +1194,20 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
             }
         }
 
-        // Start playback → rebuild → buildPreviewAudioPipeline → plan resolves → gate suspends
+        // Start playback → the audio build is the gate: it resolves the plan and
+        // suspends at the build gate BEFORE the boundary opens. Playback must NOT be
+        // running while the gated build is suspended.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
-        XCTAssertTrue(runtime.isPlaying)
 
-        for _ in 0..<20 {
+        for _ in 0..<40 {
             await Task.yield()
             if gateContinuation != nil { break }
         }
         XCTAssertNotNil(gateContinuation, "Production build must reach the build gate")
-        XCTAssertFalse(runtime.hasActivePreviewAudioBuildTask,
-                       "Detached build task should not exist yet (gate is before it)")
+        XCTAssertFalse(runtime.isPlaying,
+                       "Boundary must not open while the gated audio build is suspended")
 
-        // Stop must preserve the build so the result can be reused or marked clean.
+        // Stop during the gated build aborts the start.
         runtime.stopPlayback()
         XCTAssertFalse(runtime.isPlaying)
 
@@ -952,14 +1215,10 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         gateContinuation?.resume()
         await waitUntil(timeout: 2.0) { !runtime.hasActivePreviewAudioOrchestration }
 
-        XCTAssertEqual(mock.replacePipelineCallCount, 0,
-                       "Invalid stub audio should not produce a replacement pipeline")
         XCTAssertEqual(mock.startPlaybackCallCount, 0,
                        "Production build after stop must not start audio playback")
-        XCTAssertFalse(runtime.hasActivePreviewAudioBuildTask,
-                       "Build task handle must be clean after build completion")
-        XCTAssertFalse(runtime.previewAudioDirty,
-                       "No-audio result after stop should clear dirty to avoid rebuild churn")
+        XCTAssertFalse(runtime.isPlaying,
+                       "Playback must remain stopped after a cancelled gated start")
     }
 
     // MARK: - Test 17: production build normal completion clears build task handle
@@ -977,16 +1236,13 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         // which is caught and returns nil. The important thing: handle is cleaned up.
 
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
 
-        // Wait for the full production build cycle to complete:
-        // rebuild task → plan resolution → detached build → AVFoundation error → defer cleanup
-        for _ in 0..<50 {
-            await Task.yield()
-            if !runtime.hasActivePreviewAudioBuildTask { break }
-        }
+        // The gated epoch audio build now runs as part of the start (before the boundary).
+        // Wait on real time for the full production build cycle to complete:
+        // start task → plan resolution → detached build → AVFoundation error → defer cleanup.
+        await waitUntil(timeout: 3.0) { !runtime.hasActivePreviewAudioBuildTask && !runtime.hasActivePreviewAudioOrchestration }
 
-        // After build completes (error → nil), handle should be clean
+        // After build completes (error → nil), handle should be clean.
         XCTAssertFalse(runtime.hasActivePreviewAudioBuildTask,
                        "Build task handle must be nil after production build completion")
 
@@ -1005,27 +1261,24 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         runtime.setPreviewAudioController(mock)
         // NO injected builder and NO gate — production path runs freely.
 
-        // Start playback to get into playing state
+        // Start playback. With audible audio, the gated build runs as part of the start.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
-        XCTAssertTrue(runtime.isPlaying)
+        for _ in 0..<5 { await Task.yield() }
 
-        // Stop immediately while plan resolution may be in-flight. Normal pause should not
-        // invalidate this work; it only prevents auto-start while stopped.
+        // Stop while the gated plan resolution / build may be in-flight. This aborts the
+        // pending start; it must never auto-start audio.
         runtime.stopPlayback()
 
         // Let any in-flight work complete
         await waitUntil(timeout: 2.0) { !runtime.hasActivePreviewAudioOrchestration }
 
-        // Verify: no playback start and no dangling build task
-        XCTAssertEqual(mock.replacePipelineCallCount, 0,
-                       "Invalid stub audio should not produce a replacement pipeline")
+        // Verify: no audio playback started and no dangling build task.
         XCTAssertEqual(mock.startPlaybackCallCount, 0,
                        "Stop during plan resolution must prevent audio auto-start")
         XCTAssertFalse(runtime.hasActivePreviewAudioBuildTask,
                        "Detached build task should be clean after completion")
-        XCTAssertFalse(runtime.previewAudioDirty,
-                       "Completed no-audio result should clear dirty after stop")
+        XCTAssertFalse(runtime.isPlaying,
+                       "Playback must be stopped after a cancelled gated start")
     }
 
     // MARK: - Test 21: dirty rebuild defers start until prepare finishes
@@ -1040,38 +1293,40 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let controllable = ControllablePipelineBuilder()
         runtime.previewAudioPipelineBuilder = controllable.builder
 
+        // Hard-gated start: the boundary must not open until the audio pipeline has
+        // BUILT and PREROLLED (primed). With simulateImmediateReady = false, readiness
+        // must be driven manually.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
-        XCTAssertTrue(runtime.isPlaying)
 
-        // Allow rebuild task to reach builder
-        for _ in 0..<10 {
+        // Reach + complete the build (still not running: preroll pending).
+        for _ in 0..<40 {
             await Task.yield()
             if controllable.pendingCount >= 1 { break }
         }
         XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1)
-
-        // Complete the build → replacePipeline called but start deferred
         controllable.completeNext(with: makeDummyPipeline())
         for _ in 0..<10 { await Task.yield() }
 
         XCTAssertEqual(mock.replacePipelineCallCount, 1, "Pipeline should be replaced")
+        XCTAssertFalse(runtime.isPlaying, "Boundary must not open before preroll finishes")
         XCTAssertEqual(mock.startPlaybackCallCount, 0,
-                       "startPlayback must be deferred until preroll finishes")
-        XCTAssertTrue(runtime.previewAudioDirty,
-                      "dirty must remain true until preroll finishes")
+                       "audio start must not happen before preroll finishes")
 
-        // Simulate readiness → onReady fires → prepareForImmediatePlayback (waits for prepare)
+        // Drive readiness: onReady → prepareForImmediatePlayback → (manual) primed.
         mock.simulateReady()
+        for _ in 0..<5 { await Task.yield() }
         XCTAssertEqual(mock.prepareForImmediatePlaybackCallCount, 1)
-        XCTAssertEqual(mock.startPlaybackCallCount, 0,
-                       "startPlayback must still be deferred during preroll")
+        XCTAssertFalse(runtime.isPlaying, "Still gated during preroll")
 
-        // Simulate preroll complete → startPlayback called
         mock.simulatePrimed()
+        for _ in 0..<40 {
+            await Task.yield()
+            if runtime.isPlaying { break }
+        }
 
-        XCTAssertEqual(mock.startPlaybackCallCount, 1,
-                       "startPlayback must be called after preroll finishes")
+        XCTAssertTrue(runtime.isPlaying, "Boundary opens once audio preroll finishes")
+        XCTAssertGreaterThanOrEqual(mock.startPlaybackCallCount, 1,
+                       "audio start must happen at the boundary after preroll")
         XCTAssertFalse(runtime.previewAudioDirty,
                        "dirty must be cleared on successful preroll")
 
@@ -1091,34 +1346,41 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let controllable = ControllablePipelineBuilder()
         runtime.previewAudioPipelineBuilder = controllable.builder
 
+        // Hard-gated start from frame 0 → epoch project time is 0.0s.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
 
-        for _ in 0..<10 {
+        for _ in 0..<40 {
             await Task.yield()
             if controllable.pendingCount >= 1 { break }
         }
-
         controllable.completeNext(with: makeDummyPipeline())
         for _ in 0..<10 { await Task.yield() }
 
-        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Start deferred")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Audio not scheduled before preroll")
 
-        // Simulate ready → preroll starts
+        // Drive preroll.
         mock.simulateReady()
-        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Start still deferred during preroll")
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Still gated during preroll")
 
-        // Inject fresh transport time before preroll finishes
+        // Inject DIFFERENT mutable transport values before preroll finishes. Under the
+        // hard-gated contract the initial epoch audio must schedule from the CAPTURED
+        // epoch boundary (frame 0 → 0.0s), NOT from these mutable fields (Codex repair
+        // instruction #4).
         runtime.setPreviewAudioPlaybackTimeForTesting(
             projectTimeUs: 2_000_000, hostTime: CACurrentMediaTime()
         )
 
         mock.simulatePrimed()
+        for _ in 0..<40 {
+            await Task.yield()
+            if runtime.isPlaying { break }
+        }
 
-        XCTAssertEqual(mock.startPlaybackCallCount, 1)
+        XCTAssertGreaterThanOrEqual(mock.startPlaybackCallCount, 1)
         XCTAssertNotNil(mock.lastStartFromSeconds)
-        XCTAssertEqual(mock.lastStartFromSeconds!, 2.0, accuracy: 0.001,
-                       "preroll finish must use fresh transport time, not stale captured values")
+        XCTAssertEqual(mock.lastStartFromSeconds!, 0.0, accuracy: 0.001,
+                       "initial epoch audio must use the captured epoch boundary (frame 0 = 0.0s), not mutable runtime fields")
 
         runtime.stopPlayback()
         controllable.drainAll()
@@ -1136,31 +1398,31 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let controllable = ControllablePipelineBuilder()
         runtime.previewAudioPipelineBuilder = controllable.builder
 
+        // Gated start: build completes, preroll pending (not yet running).
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
-
-        for _ in 0..<10 {
+        for _ in 0..<40 {
             await Task.yield()
             if controllable.pendingCount >= 1 { break }
         }
-
         controllable.completeNext(with: makeDummyPipeline())
         for _ in 0..<10 { await Task.yield() }
 
         XCTAssertEqual(mock.replacePipelineCallCount, 1)
+        XCTAssertFalse(runtime.isPlaying, "Not running before preroll")
         mock.startPlaybackCallCount = 0
 
-        // Stop must not invalidate the preparing audio pipeline.
+        // Stop during preroll aborts the pending gated start.
         runtime.stopPlayback()
 
-        // Simulate readiness after stop → prepare may finish, but playback must not start.
+        // Readiness arriving after stop must not start playback (request superseded).
         mock.simulateReady()
         mock.simulatePrimed()
+        for _ in 0..<10 { await Task.yield() }
 
         XCTAssertEqual(mock.startPlaybackCallCount, 0,
-                       "onReady after stop must not call startPlayback while stopped")
-        XCTAssertFalse(runtime.previewAudioDirty,
-                       "Ready audio pipeline after stop should be kept for the next Play")
+                       "Readiness after stop must not start playback while stopped")
+        XCTAssertFalse(runtime.isPlaying,
+                       "Playback must remain stopped after a cancelled gated start")
 
         controllable.drainAll()
     }
@@ -1426,28 +1688,33 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Prepare should start build")
         let buildCountAfterPrepare = controllable.buildCallCount
 
-        // Now start playback — should join, not start second build
+        // Now start playback — the gated audio prep should JOIN the in-flight prepare,
+        // not start a new build, and must NOT open the boundary yet.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
-        for _ in 0..<5 { await Task.yield() }
+        for _ in 0..<10 { await Task.yield() }
 
         XCTAssertEqual(controllable.buildCallCount, buildCountAfterPrepare,
                        "Play should join in-flight prepare, not start a new build")
+        XCTAssertFalse(runtime.isPlaying, "Boundary must not open while joined build is pending")
 
-        // Complete the build
+        // Complete the joined build → installs pipeline.
         controllable.completeNext(with: makeDummyPipeline())
         for _ in 0..<10 { await Task.yield() }
 
         XCTAssertEqual(mock.replacePipelineCallCount, 1, "Should install pipeline once")
+        XCTAssertFalse(runtime.isPlaying, "Still gated before preroll")
 
-        // Simulate ready → triggers prepareForImmediatePlayback
+        // Drive preroll → boundary opens → playback runs.
         mock.simulateReady()
-        XCTAssertEqual(mock.startPlaybackCallCount, 0, "Start deferred during preroll")
-
-        // Simulate preroll complete → starts playback
+        for _ in 0..<5 { await Task.yield() }
         mock.simulatePrimed()
+        for _ in 0..<40 {
+            await Task.yield()
+            if runtime.isPlaying { break }
+        }
 
-        XCTAssertEqual(mock.startPlaybackCallCount, 1, "Should start playback after preroll completes")
+        XCTAssertTrue(runtime.isPlaying, "Boundary opens after the joined build prerolls")
+        XCTAssertGreaterThanOrEqual(mock.startPlaybackCallCount, 1, "Should start audio after preroll completes")
 
         runtime.stopPlayback()
         controllable.drainAll()
@@ -1969,10 +2236,10 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         let controllable = ControllablePipelineBuilder()
         runtime.previewAudioPipelineBuilder = controllable.builder
 
+        // Hard-gated: boundary must not open until preroll (primed) completes.
         runtime.startPlayback()
-        await waitForPlaybackStart(runtime)
 
-        for _ in 0..<10 {
+        for _ in 0..<40 {
             await Task.yield()
             if controllable.pendingCount >= 1 { break }
         }
@@ -1980,17 +2247,259 @@ final class ProjectAudioPreviewPlaybackTests: XCTestCase {
         for _ in 0..<10 { await Task.yield() }
 
         XCTAssertTrue(runtime.previewAudioDirty, "dirty must remain true until preroll finishes")
+        XCTAssertFalse(runtime.isPlaying, "boundary must not open before preroll")
         XCTAssertEqual(mock.startPlaybackCallCount, 0)
 
         // Simulate ready → prepareForImmediatePlayback → simulate primed
         mock.simulateReady()
+        for _ in 0..<5 { await Task.yield() }
         XCTAssertEqual(mock.prepareForImmediatePlaybackCallCount, 1)
 
         mock.simulatePrimed()
+        for _ in 0..<40 {
+            await Task.yield()
+            if runtime.isPlaying { break }
+        }
 
         XCTAssertFalse(runtime.previewAudioDirty, "dirty must be false after preroll finishes")
-        XCTAssertEqual(mock.startPlaybackCallCount, 1,
-                       "startPlayback must be called after preroll finishes while playing")
+        XCTAssertTrue(runtime.isPlaying, "boundary opens after preroll")
+        XCTAssertGreaterThanOrEqual(mock.startPlaybackCallCount, 1,
+                       "startPlayback must be called after preroll finishes")
+
+        runtime.stopPlayback()
+        controllable.drainAll()
+    }
+
+    // MARK: - Playback Start Contract: no-resolvable-audio opens boundary
+
+    /// Hard-gate contract: when there is no resolvable audible audio, the boundary may
+    /// open WITHOUT waiting for audio. A `{ nil }` builder resolves to no-audio.
+    func test_startPlayback_noResolvableAudio_opensBoundaryWithoutWaiting() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        // Builder resolves to no-audio.
+        runtime.previewAudioPipelineBuilder = { nil }
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+        for _ in 0..<40 {
+            await Task.yield()
+            if runtime.isPlaying { break }
+        }
+
+        XCTAssertTrue(runtime.isPlaying,
+                      "No-resolvable-audio start must open the boundary without waiting for audio")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0,
+                       "No audio means no audio scheduling")
+        XCTAssertFalse(runtime.previewAudioDirty, "No-audio result clears dirty")
+
+        runtime.stopPlayback()
+    }
+
+    // MARK: - Playback Start Contract: seek/edit invalidates pending start
+
+    /// Contract edge case "Seek or edit invalidates prepared start": a pending Play
+    /// from frame N must NOT open playback after the playhead moves to M while the start
+    /// is still in its async prepare phases.
+    func test_pendingStartFromN_invalidatedByPlayheadChangeToM_doesNotOpen() async throws {
+        #if DEBUG
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        runtime.previewAudioPipelineBuilder = { nil }  // no-audio: isolate the seek logic
+
+        var playbackStarted = false
+        runtime.onOutput = { output in
+            if case .playbackStateChanged(let isPlaying) = output, isPlaying {
+                playbackStarted = true
+            }
+        }
+
+        // Hold the start task at the gate so the prepare phases have not completed.
+        var releaseGate: (@MainActor () -> Void)?
+        runtime.playbackStartGate = {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                releaseGate = { cont.resume() }
+            }
+        }
+
+        // Play from frame N (0), held at the gate.
+        runtime.startPlayback()
+        for _ in 0..<40 {
+            await Task.yield()
+            if releaseGate != nil { break }
+        }
+        XCTAssertNotNil(releaseGate, "Start task should be held at the gate")
+        XCTAssertFalse(runtime.isPlaying, "Start is still pending at the gate")
+
+        // Seek to M while the start is pending → must invalidate the pending epoch.
+        runtime.handlePlayheadChanged(42)
+
+        // Release the held start — it must observe invalidation and NOT open playback.
+        releaseGate?()
+        for _ in 0..<40 { await Task.yield() }
+
+        XCTAssertFalse(runtime.isPlaying,
+                       "A pending Play from N must not open after the playhead moved to M")
+        XCTAssertFalse(playbackStarted,
+                       "No .playbackStateChanged(true) may be emitted for the invalidated start")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0,
+                       "Invalidated start must not schedule audio")
+
+        runtime.stopPlayback()
+        #endif
+    }
+
+    /// Repair #2: a media/audio edit through the production runtime entry point
+    /// (`markPreviewAudioDirty`, the chokepoint for media selection/visibility/slot and
+    /// audio edits) must invalidate a pending playback-start so it cannot open from a
+    /// stale epoch.
+    func test_pendingStart_invalidatedByMediaEdit_doesNotOpen() async throws {
+        #if DEBUG
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        runtime.previewAudioPipelineBuilder = { nil }
+
+        var playbackStarted = false
+        runtime.onOutput = { output in
+            if case .playbackStateChanged(let isPlaying) = output, isPlaying {
+                playbackStarted = true
+            }
+        }
+
+        var releaseGate: (@MainActor () -> Void)?
+        runtime.playbackStartGate = {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                releaseGate = { cont.resume() }
+            }
+        }
+
+        runtime.startPlayback()
+        for _ in 0..<40 {
+            await Task.yield()
+            if releaseGate != nil { break }
+        }
+        XCTAssertNotNil(releaseGate, "Start task should be held at the gate")
+        XCTAssertFalse(runtime.isPlaying)
+
+        // Media/audio edit through the production entry point while the start is pending.
+        runtime.markPreviewAudioDirty()
+
+        releaseGate?()
+        for _ in 0..<40 { await Task.yield() }
+
+        XCTAssertFalse(runtime.isPlaying,
+                       "A pending Play must not open after a media/audio edit")
+        XCTAssertFalse(playbackStarted,
+                       "No .playbackStateChanged(true) may be emitted for the edit-invalidated start")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0,
+                       "Edit-invalidated start must not schedule audio")
+
+        runtime.stopPlayback()
+        #endif
+    }
+
+    /// Repair #3: cancelling a pending start before the boundary (via an edit/seek) must
+    /// release the playback audio session that `startPlayback()` activated synchronously,
+    /// since playback never opened. Otherwise an edit-cancelled start leaks an active
+    /// audio session.
+    func test_pendingStartCancelledByEdit_releasesAudioSession() async throws {
+        #if DEBUG
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let sessionManager = try XCTUnwrap(runtime.audioSessionManager as? MockPreviewAudioSessionManager)
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        runtime.previewAudioPipelineBuilder = { nil }
+
+        // Hold the start at the gate, after the synchronous audio-session activation but
+        // before the boundary opens.
+        var releaseGate: (@MainActor () -> Void)?
+        runtime.playbackStartGate = {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                releaseGate = { cont.resume() }
+            }
+        }
+
+        runtime.startPlayback()
+        for _ in 0..<40 {
+            await Task.yield()
+            if releaseGate != nil { break }
+        }
+        XCTAssertNotNil(releaseGate, "Start task should be held at the gate")
+        XCTAssertFalse(runtime.isPlaying)
+        XCTAssertEqual(sessionManager.activateCallCount, 1, "Start activates the audio session synchronously")
+        let deactivateBefore = sessionManager.deactivateCallCount
+
+        // Edit invalidates the pending start before the boundary.
+        runtime.markPreviewAudioDirty()
+
+        releaseGate?()
+        for _ in 0..<40 { await Task.yield() }
+
+        XCTAssertFalse(runtime.isPlaying, "Edit-cancelled pending start must not open playback")
+        XCTAssertEqual(sessionManager.deactivateCallCount, deactivateBefore + 1,
+                       "Cancelling a pending start before boundary must release the audio session exactly once")
+
+        runtime.stopPlayback()
+        #endif
+    }
+
+    /// Repair #2: an audio edit (`markPreviewAudioDirty`) while the epoch audio build is
+    /// awaiting must NOT let the stale build open the boundary, and the stale result must
+    /// NOT clear `dirty`.
+    func test_pendingStart_audioDirtyDuringBuild_staleBuildDoesNotOpenOrClearDirty() async throws {
+        guard let (_, runtime) = await makePlayableRuntime() else {
+            throw XCTSkip("Metal device not available")
+        }
+        let mock = MockPreviewAudioController()
+        runtime.setPreviewAudioController(mock)
+        let controllable = ControllablePipelineBuilder()
+        runtime.previewAudioPipelineBuilder = controllable.builder
+
+        var playbackStarted = false
+        runtime.onOutput = { output in
+            if case .playbackStateChanged(let isPlaying) = output, isPlaying {
+                playbackStarted = true
+            }
+        }
+
+        // Start → the epoch audio build suspends in the builder (the gate).
+        runtime.startPlayback()
+        for _ in 0..<40 {
+            await Task.yield()
+            if controllable.pendingCount >= 1 { break }
+        }
+        XCTAssertGreaterThanOrEqual(controllable.pendingCount, 1, "Epoch audio build should be pending")
+        XCTAssertFalse(runtime.isPlaying, "Boundary not open while audio build pending")
+
+        // Audio edit during the awaited build → bumps audio generation (and invalidates
+        // the pending start).
+        runtime.markPreviewAudioDirty()
+        XCTAssertTrue(runtime.previewAudioDirty, "Edit marks audio dirty")
+
+        // Complete the now-stale build. It must NOT open the boundary, must NOT start
+        // audio, and must NOT clear dirty from the stale result.
+        controllable.completeNext(with: makeDummyPipeline())
+        for _ in 0..<40 { await Task.yield() }
+
+        XCTAssertFalse(runtime.isPlaying,
+                       "Stale epoch audio build must not open the boundary")
+        XCTAssertFalse(playbackStarted,
+                       "No .playbackStateChanged(true) for a stale audio epoch")
+        XCTAssertEqual(mock.startPlaybackCallCount, 0,
+                       "Stale audio build must not schedule audio")
+        XCTAssertTrue(runtime.previewAudioDirty,
+                      "Stale result must not clear dirty — a new Play must re-resolve audio")
 
         runtime.stopPlayback()
         controllable.drainAll()

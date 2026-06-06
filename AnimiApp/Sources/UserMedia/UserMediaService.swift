@@ -58,6 +58,9 @@ protocol VideoSetupProviding: AnyObject {
     func stopPlayback(flush: Bool)
     func frameTextureForPlayback(expectedVideoTime videoTimeSeconds: Double, hostTime: CFTimeInterval?) -> MTLTexture?
     func requestStillTexture(atVideoTime videoTimeSeconds: Double) async throws -> MTLTexture
+    /// Synchronous best-available start still for the playback-start handoff, or nil
+    /// when no matching cached still exists (caller falls back to an async request).
+    func currentStartStillTexture(atVideoTime videoTimeSeconds: Double) -> MTLTexture?
 
     // Playback window (trim clamp for AVPlayer overshoot)
     func setPlaybackWindow(start: Double, end: Double)
@@ -306,6 +309,17 @@ struct PlaybackVideoCandidate: Sendable {
 /// // Later...
 /// service.clear(blockId: "block_01")
 /// ```
+/// Per-service (per-scene) result of exact start-frame preparation. The owning
+/// `SceneInstanceRuntime` attaches its scene instance id to produce the
+/// runtime-level `PlaybackStartMediaResult`. `UserMediaService` has no instance
+/// identity, so it reports the block-scoped outcome only.
+public enum UserMediaStartFrameResult: Equatable, Sendable {
+    case prepared
+    case noVisibleVideo
+    case failed(blockId: String)
+    case cancelled
+}
+
 @MainActor
 public final class UserMediaService {
 
@@ -911,11 +925,128 @@ public final class UserMediaService {
                 blockId: blockId,
                 selection: selection
             )
+
+            // Start-frame handoff: bind a correct start frame for the committed video
+            // time BEFORE starting the provider. The deterministic exact-still bind is
+            // performed by the awaited `prepareStartFrames(...)` before the transport
+            // and display link start; this synchronous bind is a cheap reaffirmation
+            // for the already-warmed cache so the binding never carries a stale
+            // (scrub/poster/pre-commit) texture into the first nil playback-buffer
+            // window. No async still is launched here, so a late still can never
+            // overwrite a live playback texture.
+            let reaffirmedStill = provider.currentStartStillTexture(atVideoTime: videoTime)
+            if let startStill = reaffirmedStill {
+                let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+                for (_, assetId) in assetIds {
+                    textureProvider.setTexture(startStill, for: assetId)
+                }
+            }
+
+            #if DEBUG
+            VideoPlaybackTrace.log("startVideoPlayback.block service=\(ObjectIdentifier(self).hashValue) blockId=\(blockId) providerReady=\(provider.isReady) sceneFrame=\(sceneFrameIndex) mediaFrame=\(mediaFrameIndex) selection=[\(VideoPlaybackTrace.fmt(selection.trimStart)),\(VideoPlaybackTrace.fmt(selection.trimEnd))] videoTime=\(VideoPlaybackTrace.fmt(videoTime)) hostTime=\(hostTime.map { String(format: "%.6f", $0) } ?? "nil") reaffirmedStill=\(VideoPlaybackTrace.textureIdentifier(reaffirmedStill)) assets=\(player.bindingAssetIdsByVariant(blockId: blockId).values.sorted().joined(separator: ","))")
+            #endif
+
             provider.startPlayback(atVideoTime: videoTime, hostTime: hostTime)
         }
 
         // Update active set for diagnostics
         activeVideoBlockIds = grantedBlockIds.intersection(Set(videoProviders.keys))
+    }
+
+    /// Deterministic playback-start handoff: awaits an exact start still for each
+    /// granted visible video block and binds it into the block's binding assets.
+    ///
+    /// Called before the transport / display link start, so the binding texture is the
+    /// exact start frame for the committed video time before any playback tick can
+    /// expose a stale (scrub/poster/pre-commit/zero) frame. A synchronous cached-still
+    /// hit binds immediately; on a cache miss the exact still is awaited (not
+    /// fire-and-forget), so no pending start-still task survives into playback and a
+    /// late still can never overwrite a live playback texture.
+    ///
+    /// Latest-wins still requests are cancelled first so a stale in-flight still cannot
+    /// resolve after this deterministic bind.
+    @discardableResult
+    func prepareStartFrames(grantedBlockIds: Set<String>, sceneFrameIndex: Int, mediaFrameIndex: Int) async -> UserMediaStartFrameResult {
+        guard let player = activePlayer else { return .noVisibleVideo }
+
+        // Track whether any granted, visible video block was actually gated on. If
+        // none was visible, there is no active visual video participant to hard-gate
+        // (e.g. a photo-only start frame), so the caller may open the boundary.
+        var preparedAnyVisibleVideo = false
+
+        for (blockId, kind) in mediaState {
+            guard case .video(let selection) = kind,
+                  grantedBlockIds.contains(blockId),
+                  let provider = videoProviders[blockId],
+                  provider.isReady else { continue }
+
+            let timing = player.blockTiming(for: blockId)
+            guard timing?.isVisible(at: sceneFrameIndex) ?? false else { continue }
+
+            preparedAnyVisibleVideo = true
+
+            let videoTime = computeTargetVideoTime(
+                sceneFrameIndex: mediaFrameIndex,
+                blockId: blockId,
+                selection: selection
+            )
+            let assetIds = player.bindingAssetIdsByVariant(blockId: blockId)
+
+            #if DEBUG
+            VideoPlaybackTrace.log("prepareStartFrames.block service=\(ObjectIdentifier(self).hashValue) blockId=\(blockId) providerReady=\(provider.isReady) providerActive=\(provider.isPlaybackActive) sceneFrame=\(sceneFrameIndex) mediaFrame=\(mediaFrameIndex) selection=[\(VideoPlaybackTrace.fmt(selection.trimStart)),\(VideoPlaybackTrace.fmt(selection.trimEnd))] videoTime=\(VideoPlaybackTrace.fmt(videoTime)) assets=\(assetIds.values.sorted().joined(separator: ","))")
+            #endif
+
+            // Take an exclusive binding-writer epoch for this block BEFORE binding the
+            // start frame: cancel/invalidate every pending still writer (exact still,
+            // interactive scrub still, trim-preview still) so a stale completion from
+            // before Play cannot land after the handoff and overwrite the start frame
+            // or, later, a live playback texture.
+            invalidatePendingStillWriters(for: blockId)
+
+            // Synchronous cache hit — bind immediately, no await.
+            if let startStill = provider.currentStartStillTexture(atVideoTime: videoTime) {
+                for (_, assetId) in assetIds {
+                    textureProvider.setTexture(startStill, for: assetId)
+                }
+                #if DEBUG
+                VideoPlaybackTrace.log("prepareStartFrames.bindSyncCache blockId=\(blockId) videoTime=\(VideoPlaybackTrace.fmt(videoTime)) texture=\(VideoPlaybackTrace.textureIdentifier(startStill)) assets=\(assetIds.values.sorted().joined(separator: ","))")
+                #endif
+                continue
+            }
+
+            // Cache miss — await the exact start still and bind it. No pending task is
+            // left behind, so a late still can never overwrite a live playback texture.
+            do {
+                let texture = try await provider.requestStillTexture(atVideoTime: videoTime)
+                for (_, assetId) in assetIds {
+                    textureProvider.setTexture(texture, for: assetId)
+                }
+                #if DEBUG
+                VideoPlaybackTrace.log("prepareStartFrames.bindAwaitedStill blockId=\(blockId) videoTime=\(VideoPlaybackTrace.fmt(videoTime)) texture=\(VideoPlaybackTrace.textureIdentifier(texture)) assets=\(assetIds.values.sorted().joined(separator: ","))")
+                #endif
+            } catch is CancellationError {
+                #if DEBUG
+                VideoPlaybackTrace.log("prepareStartFrames.awaitedStillCancelled blockId=\(blockId) videoTime=\(VideoPlaybackTrace.fmt(videoTime))")
+                #endif
+                // Teardown / superseded — the epoch is no longer valid. Report
+                // cancellation so the caller drops this start instead of opening a
+                // boundary on a stale request.
+                return .cancelled
+            } catch {
+                // Awaited exact still failed (non-cancellation). Under the hard-gated
+                // start contract the exact start frame is not guaranteed, so the
+                // boundary must NOT open best-effort. Report failure to the epoch
+                // coordinator; the provider's stale-cache suppression and first-buffer
+                // acceptance remain as defense-in-depth for any non-gated path.
+                #if DEBUG
+                logger.debug("[UMS] prepareStartFrames exact still failed blockId=\(blockId): \(error)")
+                VideoPlaybackTrace.log("prepareStartFrames.awaitedStillFailed blockId=\(blockId) videoTime=\(VideoPlaybackTrace.fmt(videoTime)) error=\(error)")
+                #endif
+                return .failed(blockId: blockId)
+            }
+        }
+
+        return preparedAnyVisibleVideo ? .prepared : .noVisibleVideo
     }
 
     /// Updates video textures for granted blocks only.
@@ -1229,6 +1360,29 @@ public final class UserMediaService {
         scrubStillPendingTimeByBlock.removeAll()
     }
 
+    /// Invalidates and cancels every pending still writer for a single block: exact
+    /// still, interactive scrub still, and interactive trim-preview still. Bumps each
+    /// generation so any task completing after this call cannot write into the block's
+    /// binding assets, then cancels and removes the tasks and clears pending times.
+    ///
+    /// Synchronous. Used by the playback-start handoff to take an exclusive
+    /// binding-writer epoch before binding the start frame, and by cleanup paths.
+    private func invalidatePendingStillWriters(for blockId: String) {
+        stillGenerationByBlock[blockId, default: 0] += 1
+        stillTasksByBlock[blockId]?.cancel()
+        stillTasksByBlock.removeValue(forKey: blockId)
+
+        trimPreviewGenerationByBlock[blockId, default: 0] += 1
+        trimPreviewTasksByBlock[blockId]?.cancel()
+        trimPreviewTasksByBlock.removeValue(forKey: blockId)
+        trimPreviewPendingTimeByBlock.removeValue(forKey: blockId)
+
+        scrubStillGenerationByBlock[blockId, default: 0] += 1
+        scrubStillTasksByBlock[blockId]?.cancel()
+        scrubStillTasksByBlock.removeValue(forKey: blockId)
+        scrubStillPendingTimeByBlock.removeValue(forKey: blockId)
+    }
+
     /// PR2: Awaits all in-flight still tasks to complete.
     /// Used by readiness loop to ensure still frame is actually delivered before marking `.ready`.
     public func awaitPendingStillFrames() async {
@@ -1378,22 +1532,8 @@ public final class UserMediaService {
         mediaSetupTasksByBlock[blockId]?.cancel()
         mediaSetupTasksByBlock.removeValue(forKey: blockId)
 
-        // PR2: Cancel pending still frame extraction
-        stillGenerationByBlock[blockId, default: 0] += 1
-        stillTasksByBlock[blockId]?.cancel()
-        stillTasksByBlock.removeValue(forKey: blockId)
-
-        // Cancel interactive trim preview
-        trimPreviewGenerationByBlock[blockId, default: 0] += 1
-        trimPreviewTasksByBlock[blockId]?.cancel()
-        trimPreviewTasksByBlock.removeValue(forKey: blockId)
-        trimPreviewPendingTimeByBlock.removeValue(forKey: blockId)
-
-        // Cancel interactive scrub still
-        scrubStillGenerationByBlock[blockId, default: 0] += 1
-        scrubStillTasksByBlock[blockId]?.cancel()
-        scrubStillTasksByBlock.removeValue(forKey: blockId)
-        scrubStillPendingTimeByBlock.removeValue(forKey: blockId)
+        // Cancel pending still / trim-preview / scrub still writers for this block.
+        invalidatePendingStillWriters(for: blockId)
 
         // Release video provider
         if let provider = videoProviders.removeValue(forKey: blockId) {

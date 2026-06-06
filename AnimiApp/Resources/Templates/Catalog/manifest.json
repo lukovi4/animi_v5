@@ -49,6 +49,15 @@
       "titleKey": "template_full_image",
       "sceneTypeIds": ["full_image"],
       "openBehavior": "directToEditor"
+    },
+    {
+      "id": "6_frames_template",
+      "categoryId": "featured",
+      "order": 2,
+      "title": "6 Frames",
+      "titleKey": "template_6_frames",
+      "sceneTypeIds": ["6_frames_template"],
+      "openBehavior": "directToEditor"
     }
   ]
 }

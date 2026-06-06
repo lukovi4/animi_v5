@@ -86,6 +86,10 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
         var grantStartMediaFrames: [Int] = []
         var grantTickCalls: [(frame: Int, granted: Set<String>)] = []
         var grantTickMediaFrames: [Int] = []
+        /// Host time captured for each grant-aware playback tick (parallel to
+        /// `grantTickCalls`). Lets a test assert the resumed media-sync after the
+        /// playback-start hold uses the tick's authoritative host time.
+        var grantTickHostTimes: [CFTimeInterval?] = []
 
         // TT-03 Completion: Soft-stop tracking
         var softStopPreservingTexturesCalls: Int = 0
@@ -144,9 +148,19 @@ final class SceneInstanceRuntimeHoldFrameTests: XCTestCase {
             grantStartMediaFrames.append(mediaFrameIndex)
         }
 
+        var prepareStartFramesCalls: [(frame: Int, mediaFrame: Int, granted: Set<String>)] = []
+        /// Result the spy returns from prepareStartFrames. Defaults to `.prepared`
+        /// so existing tests are unaffected; failure/cancel tests override it.
+        var prepareStartFramesResult: UserMediaStartFrameResult = .prepared
+        func prepareStartFrames(grantedBlockIds: Set<String>, sceneFrameIndex: Int, mediaFrameIndex: Int) async -> UserMediaStartFrameResult {
+            prepareStartFramesCalls.append((frame: sceneFrameIndex, mediaFrame: mediaFrameIndex, granted: grantedBlockIds))
+            return prepareStartFramesResult
+        }
+
         func updateVideoFramesForPlayback(sceneFrameIndex: Int, mediaFrameIndex: Int, grantedBlockIds: Set<String>, hostTime: CFTimeInterval? = nil) {
             grantTickCalls.append((frame: sceneFrameIndex, granted: grantedBlockIds))
             grantTickMediaFrames.append(mediaFrameIndex)
+            grantTickHostTimes.append(hostTime)
         }
 
         // TT-03 Completion: Soft-stop implementation

@@ -241,6 +241,34 @@ private func makeFullyBootedRuntime(device: MTLDevice, commandQueue: MTLCommandQ
     return (session, runtime)
 }
 
+/// Boots a runtime WITHOUT pre-populating the engine resources cache, so the timeline
+/// engine cannot create the scene runtime and frame resolution fails
+/// (`.failed(.missingDependency)`). Used to exercise the render-payload HARD GATE: a
+/// non-resolving start must keep the boundary closed.
+@MainActor
+private func makeBootedRuntimeWithoutResources(device: MTLDevice, commandQueue: MTLCommandQueue) async -> (EditorSession, EditorRuntime)? {
+    let session = await makeBootstrappedSession()
+    guard let editorState = session.state else { return nil }
+
+    let runtime = EditorRuntime(session: session)
+    let metalContext = EditorRuntimeMetalContext(
+        device: device, commandQueue: commandQueue, colorPixelFormat: .bgra8Unorm
+    )
+    let library = SceneLibrarySnapshot(
+        fps: 30,
+        canvas: CanvasConfig(width: 1080, height: 1920),
+        scenes: [SceneTypeDescriptor(id: "scene_1", order: 0, title: "Test", baseDurationUs: 3_000_000)]
+    )
+    runtime.configureAndBoot(
+        metalContext: metalContext,
+        library: library,
+        loadResult: makeInitialLoadResult(device: device),
+        editorState: editorState
+    )
+    // Intentionally NO resourcesCache population → frame resolution fails.
+    return (session, runtime)
+}
+
 /// Creates a real SceneMediaSlot for injection into session state.
 private func makeTestSlot() -> SceneMediaSlot {
     let assetId = ProjectAssetID()
@@ -796,5 +824,422 @@ final class DebugCleanupTests: XCTestCase {
 
         XCTAssertEqual(audioTrackCount, 1,
             "TimelineView must have exactly 1 AudioTrackView — no synthetic debug tracks")
+    }
+}
+
+// MARK: - Playback-Start Render Payload Ownership (render-freeze)
+
+/// Proves the playback-start epoch OWNS the first rendered timeline payload for the
+/// requested start frame `N`, and that pre-boundary/first-sub-frame display ticks
+/// preserve it instead of re-deriving it through the async resolve path.
+///
+/// Uses the resolvable `makeFullyBootedRuntime` harness (scene_1 cached) so the start
+/// frame actually resolves to a render payload — the seam this contract is about.
+final class PlaybackStartRenderFreezeTests: XCTestCase {
+
+    /// Drives the async playback-start task to the running phase, polling cooperatively.
+    @MainActor
+    private func waitForPlaybackStart(_ runtime: EditorRuntime) async {
+        for _ in 0..<40 {
+            await Task.yield()
+            if runtime.isPlaying { break }
+        }
+    }
+
+    /// Render-freeze: pressing Play from a nonzero frame `N` installs the epoch-owned
+    /// frozen render payload for `N` as `currentRenderSource`. A deliberately stale
+    /// pre-Play render source (wrong frame tag) must NOT survive into running playback.
+    ///
+    /// Fails on pre-fix code: `currentRenderSource` was only written by the async
+    /// `applyResolvedTimelineFrame` path, so at the instant playback became running the
+    /// render source was still the stale pre-Play value.
+    @MainActor
+    func test_startPlayback_installsFrozenRenderSourceForN() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+        guard let (session, runtime) = await makeFullyBootedRuntime(device: device, commandQueue: commandQueue) else {
+            throw XCTSkip("Could not boot runtime")
+        }
+        runtime.audioSessionManager = MockPreviewAudioSessionManager()
+        runtime.setPreviewAudioController(MockPreviewAudioController())
+
+        // Let the boot-time frame-0 resolve settle, then overwrite with a STALE payload
+        // for a different frame so a missing freeze step is observable.
+        for _ in 0..<10 { await Task.yield() }
+        let staleFrame = 999
+        let staleResolved = try await unwrapResolved(runtime, frame: 0)
+        runtime.currentRenderSource = .timeline(TimelineRenderSourcePayload(
+            resolvedFrame: staleResolved,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            diagnosticFrameTag: staleFrame,
+            overlayItems: []
+        ))
+
+        let startFrame = 30
+        session.dispatch(.setPlayhead(compressedFrame: startFrame))
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+
+        XCTAssertTrue(runtime.isPlaying, "Play must reach the running phase")
+
+        guard case .timeline(let payload) = runtime.currentRenderSource else {
+            return XCTFail("Render source must be .timeline after Play, owned by the epoch")
+        }
+        XCTAssertEqual(payload.diagnosticFrameTag, startFrame,
+            "The frozen render payload must be the requested start frame N")
+        XCTAssertNotEqual(payload.diagnosticFrameTag, staleFrame,
+            "The stale pre-Play render source must not survive into running playback")
+        XCTAssertEqual(runtime.activePlaybackStartEpoch?.boundary.requestedCompressedFrame, startFrame,
+            "The active epoch must own the start frame")
+
+        runtime.stopPlayback()
+        XCTAssertNil(runtime.activePlaybackStartEpoch,
+            "Stop must clear the active epoch")
+    }
+
+    /// Render-freeze: while transport is holding the start frame (pre-boundary / first
+    /// sub-frame tick), a display tick must NOT launch a new async render resolve, and
+    /// the frozen `N` payload is preserved.
+    ///
+    /// Fails on pre-fix code: every timeline tick called
+    /// `handleTimelineModePlayheadChanged`, scheduling a new
+    /// `resolveAndPresentTimelineFrame` (observable via `timelinePresentResolveCount`),
+    /// so the held start frame was re-resolved and could be overwritten.
+    @MainActor
+    func test_displayTick_whileHoldingStartFrame_doesNotReResolve() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+        guard let (session, runtime) = await makeFullyBootedRuntime(device: device, commandQueue: commandQueue) else {
+            throw XCTSkip("Could not boot runtime")
+        }
+        runtime.audioSessionManager = MockPreviewAudioSessionManager()
+        runtime.setPreviewAudioController(MockPreviewAudioController())
+
+        for _ in 0..<10 { await Task.yield() }
+        let startFrame = 30
+        session.dispatch(.setPlayhead(compressedFrame: startFrame))
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+        XCTAssertTrue(runtime.isPlaying)
+
+        XCTAssertTrue(runtime.testTransportIsHoldingStartFrame,
+            "Transport must be holding the start frame immediately after epoch start")
+
+        let resolveCountBefore = runtime.timelinePresentResolveCount
+        let revisionBefore = runtime.renderSourceRevision
+
+        // Pre-boundary display tick (defaults to the epoch boundary host time).
+        runtime.simulateDisplayTickForTesting()
+
+        XCTAssertTrue(runtime.testTransportIsHoldingStartFrame,
+            "Pre-boundary tick must keep the transport holding the start frame")
+        XCTAssertEqual(runtime.timelinePresentResolveCount, resolveCountBefore,
+            "While holding the start frame, the tick must NOT launch a new async render resolve")
+
+        guard case .timeline(let payload) = runtime.currentRenderSource else {
+            return XCTFail("Render source must remain .timeline")
+        }
+        XCTAssertEqual(payload.diagnosticFrameTag, startFrame,
+            "The frozen N payload must be preserved across a hold tick")
+        XCTAssertEqual(runtime.renderSourceRevision, revisionBefore,
+            "No re-resolve means no new render-source emission while holding N")
+
+        runtime.stopPlayback()
+    }
+
+    /// Render-freeze hard gate: when the start frame does NOT resolve a render payload,
+    /// `startPlayback()` must keep the boundary closed — it must not set `isPlaying`,
+    /// must not leave an `activePlaybackStartEpoch`, and must not emit
+    /// `.playbackStateChanged(true)`. A stale pre-Play `currentRenderSource` may remain
+    /// while paused, but it is never treated as the first running frame.
+    ///
+    /// (Repair #2 instruction 4.) Boots WITHOUT pre-populating the engine resources
+    /// cache, so the scene type cannot be created and `makePlaybackStartFrameSnapshot`
+    /// resolves to `.failed(.missingDependency)` → nil snapshot → aborted start.
+    @MainActor
+    func test_startPlayback_missingRenderPayload_keepsBoundaryClosed() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+        // Boot WITHOUT the resources cache so frame resolution fails.
+        guard let (session, runtime) = await makeBootedRuntimeWithoutResources(device: device, commandQueue: commandQueue) else {
+            throw XCTSkip("Could not boot runtime")
+        }
+        runtime.audioSessionManager = MockPreviewAudioSessionManager()
+        runtime.setPreviewAudioController(MockPreviewAudioController())
+
+        var sawPlayingTrue = false
+        runtime.onOutput = { output in
+            if case .playbackStateChanged(let isPlaying) = output, isPlaying { sawPlayingTrue = true }
+        }
+
+        session.dispatch(.setPlayhead(compressedFrame: 30))
+
+        runtime.startPlayback()
+        // Give the start task real time to run its async phases and (correctly) abort.
+        for _ in 0..<60 {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 5_000_000)
+            if runtime.isPlaying { break }
+        }
+
+        XCTAssertFalse(runtime.isPlaying,
+            "Start must NOT open the boundary when the start frame has no render payload")
+        XCTAssertNil(runtime.activePlaybackStartEpoch,
+            "No epoch may be left active when the render payload is missing")
+        XCTAssertFalse(sawPlayingTrue,
+            "playbackStateChanged(true) must NOT be emitted for a render-gated start")
+
+        runtime.stopPlayback()
+    }
+
+    /// Render-freeze scrub-to-play: with a STALE current render source (frame `M`) and a
+    /// pending playhead resolve in flight, pressing Play from the scrubbed/committed
+    /// playhead frame `N` must install the frozen payload for `N` (not `M`), and a
+    /// pre-boundary hold tick must not re-resolve or overwrite it.
+    ///
+    /// (Repair #2 instruction 5.)
+    @MainActor
+    func test_scrubToPlay_installsScrubbedFrameNotStale() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+        guard let (session, runtime) = await makeFullyBootedRuntime(device: device, commandQueue: commandQueue) else {
+            throw XCTSkip("Could not boot runtime")
+        }
+        runtime.audioSessionManager = MockPreviewAudioSessionManager()
+        runtime.setPreviewAudioController(MockPreviewAudioController())
+
+        for _ in 0..<10 { await Task.yield() }
+
+        // Simulate a prior scrub that left a STALE render source for frame M and a pending
+        // async playhead resolve (scrub-to-play must invalidate both).
+        let staleFrameM = 12
+        let staleResolved = try await unwrapResolved(runtime, frame: 0)
+        runtime.currentRenderSource = .timeline(TimelineRenderSourcePayload(
+            resolvedFrame: staleResolved,
+            backgroundState: nil,
+            backgroundTextureProvider: nil,
+            diagnosticFrameTag: staleFrameM,
+            overlayItems: []
+        ))
+        // Kick a pending playhead resolve at M (the stale scrub resolve still in flight).
+        runtime.handlePlayheadChanged(staleFrameM)
+
+        // The committed scrub playhead is N (≈3s region). Play from N.
+        let scrubbedFrameN = 45
+        session.dispatch(.setPlayhead(compressedFrame: scrubbedFrameN))
+
+        runtime.startPlayback()
+        await waitForPlaybackStart(runtime)
+        XCTAssertTrue(runtime.isPlaying, "Play must reach running for a resolvable scrubbed frame")
+
+        guard case .timeline(let payload) = runtime.currentRenderSource else {
+            return XCTFail("Render source must be .timeline after scrub-to-play")
+        }
+        XCTAssertEqual(payload.diagnosticFrameTag, scrubbedFrameN,
+            "Scrub-to-play must install the scrubbed frame N, not the stale frame M")
+        XCTAssertNotEqual(payload.diagnosticFrameTag, staleFrameM,
+            "The stale scrub render source for M must not survive into running playback")
+        XCTAssertEqual(runtime.activePlaybackStartEpoch?.boundary.requestedCompressedFrame, scrubbedFrameN)
+
+        // A pre-boundary hold tick must not re-resolve / overwrite the frozen N payload,
+        // even though a stale resolve for M was pending before Play.
+        let resolveCountBefore = runtime.timelinePresentResolveCount
+        runtime.simulateDisplayTickForTesting()
+        XCTAssertEqual(runtime.timelinePresentResolveCount, resolveCountBefore,
+            "Hold tick must not launch a stale async resolve after scrub-to-play")
+        if case .timeline(let after) = runtime.currentRenderSource {
+            XCTAssertEqual(after.diagnosticFrameTag, scrubbedFrameN,
+                "Frozen N payload must be preserved across the hold tick")
+        } else {
+            XCTFail("Render source must remain .timeline")
+        }
+
+        runtime.stopPlayback()
+    }
+
+    /// Resolves a real `ResolvedTimelineFrame` from the runtime's engine, for seeding a
+    /// stale render source.
+    @MainActor
+    private func unwrapResolved(_ runtime: EditorRuntime, frame: Int) async throws -> ResolvedTimelineFrame {
+        let engine = try XCTUnwrap(runtime.testTimelineCompositionEngine)
+        await engine.prepareForPlayback(startingAt: frame)
+        guard case .resolved(let resolved) = await engine.resolveFrame(frame, policy: .presentation) else {
+            throw XCTSkip("Frame \(frame) did not resolve in this environment")
+        }
+        return resolved
+    }
+
+    // MARK: - Texture-binding boundary (hold-phase no media publication)
+
+    /// Boots a runtime, then swaps in a spy-backed `TimelineCompositionEngine` that uses
+    /// the SAME `canonicalTimeline` the session already has (so session + engine agree on
+    /// frame boundaries / instance ids) and routes per-scene media sync through a
+    /// `MediaSyncingSpy`. The spy reports media-ready immediately, so production
+    /// `startPlayback()` resolves frame `N` and opens the boundary through the real path,
+    /// while every `syncPlaybackTick -> updateVideoFramesForPlayback` call is recorded.
+    /// Returns the runtime and the spy. Returns nil if Metal is unavailable.
+    @MainActor
+    private func makeSpyBackedRuntime(
+        device: MTLDevice, commandQueue: MTLCommandQueue
+    ) async -> (EditorSession, EditorRuntime, SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy)? {
+        guard let (session, runtime) = await makeFullyBootedRuntime(device: device, commandQueue: commandQueue) else {
+            return nil
+        }
+        guard let editorState = session.state else { return nil }
+
+        let spy = SceneInstanceRuntimeHoldFrameTests.MediaSyncingSpy()
+        spy.isSceneMediaReady = true
+
+        // Spy engine cache: the same scene type the session/boot uses (`scene_1`, 90f).
+        let cache = SceneTypeResourcesCache(device: device, commandQueue: commandQueue)
+        cache.addToCache(makeMinimalResources(durationFrames: 90, sceneTypeId: "scene_1"))
+
+        let spyEngine = TimelineCompositionEngine(
+            device: device,
+            commandQueue: commandQueue,
+            fps: 30,
+            mediaLocator: session.mediaLocator,
+            resourcesCache: cache,
+            runtimeFactory: { instanceId, resources, dev, queue in
+                SceneInstanceRuntime(
+                    sceneInstanceId: instanceId,
+                    resources: resources,
+                    device: dev,
+                    commandQueue: queue,
+                    mediaSyncing: spy
+                )
+            }
+        )
+        // Apply the SAME timeline the session has so session/engine agree.
+        spyEngine.setTimeline(
+            editorState.canonicalTimeline,
+            sceneStates: editorState.draft.sceneInstanceStates,
+            assetRegistry: editorState.draft.assetRegistry.selfHealed(for: editorState.draft)
+        )
+        runtime.injectTimelineCompositionEngine(spyEngine)
+        runtime.audioSessionManager = MockPreviewAudioSessionManager()
+        runtime.setPreviewAudioController(MockPreviewAudioController())
+        return (session, runtime, spy)
+    }
+
+    /// Real-time deadline wait for the production start task to reach running. The
+    /// spy-backed engine's `prepareForPlayback` readiness settles on real time, so a
+    /// cooperative yield loop can return before `isPlaying`.
+    @MainActor
+    private func waitForPlaybackStartRealTime(_ runtime: EditorRuntime, timeout: TimeInterval = 2.0) async {
+        let deadline = CFAbsoluteTimeGetCurrent() + timeout
+        while !runtime.isPlaying && CFAbsoluteTimeGetCurrent() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        }
+    }
+
+    /// Texture-binding boundary: while transport holds the start frame `N`, a display tick
+    /// must NOT invoke timeline media sync (`engine.syncPlaybackTick ->
+    /// updateVideoFramesForPlayback`), because that polls video providers and writes
+    /// textures into the mutable provider the frozen `ResolvedTimelineFrame` references —
+    /// changing a render-visible binding while transport still claims `N` (the start-time
+    /// tick/glint). The spy must observe ZERO grant-aware tick calls during the hold.
+    ///
+    /// Fails on pre-fix code: the hold branch of `processPlaybackTick` called
+    /// `syncPlaybackTick(...)`, so the spy recorded a tick during the hold.
+    @MainActor
+    func test_holdPhaseTick_doesNotPublishMediaBinding() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+        guard let (session, runtime, spy) = await makeSpyBackedRuntime(device: device, commandQueue: commandQueue) else {
+            throw XCTSkip("Could not boot spy-backed runtime")
+        }
+
+        let startFrame = 30
+        session.dispatch(.setPlayhead(compressedFrame: startFrame))
+
+        runtime.startPlayback()
+        await waitForPlaybackStartRealTime(runtime)
+        XCTAssertTrue(runtime.isPlaying, "Play must reach running")
+        XCTAssertTrue(runtime.testTransportIsHoldingStartFrame,
+            "Transport must be holding the start frame immediately after epoch start")
+
+        // The start-frame handoff (engine.startPlayback(epoch:)) legitimately schedules
+        // providers once via the grant-aware START call. Snapshot the per-tick publication
+        // count and drive a hold-phase display tick.
+        let tickCallsBefore = spy.grantTickCalls.count
+        runtime.simulateDisplayTickForTesting()  // pre-boundary hold tick
+
+        XCTAssertTrue(runtime.testTransportIsHoldingStartFrame,
+            "Pre-boundary tick must keep transport holding the start frame")
+        XCTAssertEqual(spy.grantTickCalls.count, tickCallsBefore,
+            "During the start-frame hold, a display tick must NOT invoke media sync (no binding publication)")
+
+        runtime.stopPlayback()
+    }
+
+    /// Paired contract: once transport advances by an integer frame from `N`
+    /// (`isHoldingStartFrame == false`), normal media sync resumes — exactly once per
+    /// tick — using the tick's authoritative compressed frame and host time.
+    ///
+    /// Asserts a SYNCHRONOUS call-count delta around a single
+    /// `simulateDisplayTickForTesting(hostTime:)` (not a fragile absolute count after
+    /// async waiting), and captures the grant-aware host time the resumed sync used.
+    @MainActor
+    func test_firstAdvanceTick_resumesMediaSyncWithAuthoritativeFrameAndHostTime() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device not available")
+        }
+        guard let (session, runtime, spy) = await makeSpyBackedRuntime(device: device, commandQueue: commandQueue) else {
+            throw XCTSkip("Could not boot spy-backed runtime")
+        }
+
+        let startFrame = 30
+        session.dispatch(.setPlayhead(compressedFrame: startFrame))
+
+        runtime.startPlayback()
+        await waitForPlaybackStartRealTime(runtime)
+        XCTAssertTrue(runtime.isPlaying)
+
+        let boundary = try XCTUnwrap(runtime.activePlaybackStartEpoch?.boundary.hostTime,
+            "An active epoch boundary host time must exist after Play")
+
+        // Advance transport well past the boundary so `isHoldingStartFrame` is false and an
+        // integer frame has elapsed. Host time = boundary + ~5 frame intervals @30fps.
+        let frameInterval = 1.0 / 30.0
+        let advancedHostTime = boundary + frameInterval * 5.0
+
+        // Synchronous call-count delta around exactly one advancing tick.
+        let tickCallsBefore = spy.grantTickCalls.count
+        let hostTimesBefore = spy.grantTickHostTimes.count
+        runtime.simulateDisplayTickForTesting(hostTime: advancedHostTime)
+
+        XCTAssertFalse(runtime.testTransportIsHoldingStartFrame,
+            "Transport must have advanced past the start frame for this tick")
+        XCTAssertEqual(spy.grantTickCalls.count, tickCallsBefore + 1,
+            "After advancing past the hold, exactly one media-sync tick must occur")
+
+        // The resumed sync must use the tick's authoritative host time.
+        XCTAssertEqual(spy.grantTickHostTimes.count, hostTimesBefore + 1)
+        let usedHostTime = try XCTUnwrap(spy.grantTickHostTimes.last ?? nil,
+            "Resumed media sync must carry the tick host time")
+        XCTAssertEqual(usedHostTime, advancedHostTime, accuracy: 1e-9,
+            "Resumed media sync must use the advancing tick's authoritative host time")
+
+        // And the authoritative advanced compressed frame (> N).
+        let syncedFrame = try XCTUnwrap(spy.grantTickCalls.last?.frame)
+        XCTAssertGreaterThan(syncedFrame, startFrame,
+            "Resumed media sync must use the advanced compressed frame, not the held N")
+
+        runtime.stopPlayback()
     }
 }

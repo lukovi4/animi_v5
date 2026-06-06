@@ -94,6 +94,244 @@ final class PlaybackTransportTests: XCTestCase {
         XCTAssertEqual(sample?.compressedFrame, 29)
     }
 
+    // MARK: - Pre-Start Boundary Clamp (repair #7)
+
+    /// A display-link callback whose host time is before the chosen (future) start host
+    /// time must present the exact start frame, never a negative/advanced elapsed sample.
+    func testSampleBeforeStartBoundary_holdsStartFrame() {
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: 30, durationFrames: 300)
+
+        // Start anchored 0.1s in the FUTURE (shared start boundary).
+        let startHost: CFTimeInterval = 1000.1
+        transport.start(atProjectTimeUs: 0, hostTime: startHost, fps: 30)
+
+        // Callback fires before the boundary — must hold start frame 0, not go negative.
+        let sample = transport.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: 1000.0)
+        XCTAssertNotNil(sample)
+        XCTAssertEqual(sample?.compressedFrame, 0)
+        XCTAssertEqual(sample?.projectTimeUs, 0)
+    }
+
+    /// Pre-start clamp must hold the requested NON-zero start frame for early callbacks.
+    func testSampleBeforeStartBoundary_holdsNonzeroStartFrame() {
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: 30, durationFrames: 300)
+
+        let startTimeUs: TimeUs = 2_000_000 // frame 60
+        let startHost: CFTimeInterval = 1000.1
+        transport.start(atProjectTimeUs: startTimeUs, hostTime: startHost, fps: 30)
+
+        let sample = transport.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: 1000.05)
+        XCTAssertNotNil(sample)
+        XCTAssertEqual(sample?.compressedFrame, 60)
+        XCTAssertEqual(sample?.projectTimeUs, startTimeUs)
+    }
+
+    /// Core repair #7 regression: even if the FIRST display-link callback arrives 1-3 frame
+    /// intervals after Play was requested, the first presented frame must still be the start
+    /// frame, not `start + elapsed-startup-frames`. This is achieved by anchoring the
+    /// transport to a short future boundary and relying on `.playback` floor quantization for
+    /// the sub-frame overshoot of the first post-boundary callback.
+    func testFirstCallbackAfterDelayedStartup_presentsStartFrame() {
+        let fps = 30
+        let frameInterval = 1.0 / CFTimeInterval(fps)
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: fps, durationFrames: 300)
+
+        // Play requested at t0; shared start boundary placed `lead` frames in the future.
+        let t0: CFTimeInterval = 1000.0
+        let leadFrames = 4
+        let startHost = t0 + frameInterval * CFTimeInterval(leadFrames)
+        transport.start(atProjectTimeUs: 0, hostTime: startHost, fps: fps)
+
+        // Display-link callbacks are one interval apart. Simulate startup taking 3 frames:
+        // the first callback that actually reaches the runtime fires ~3 intervals after t0
+        // (still before the 4-frame boundary) and must hold frame 0.
+        let firstCallback = t0 + frameInterval * 3.0
+        let earlySample = transport.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: firstCallback)
+        XCTAssertEqual(earlySample?.compressedFrame, 0,
+                       "Delayed startup before the boundary must hold the start frame")
+
+        // The first callback that crosses the boundary is at most one interval past it.
+        let crossingCallback = startHost + frameInterval * 0.5
+        let crossingSample = transport.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: crossingCallback)
+        XCTAssertEqual(crossingSample?.compressedFrame, 0,
+                       "First post-boundary callback (<1 frame overshoot) must still floor to the start frame")
+
+        // Well past the boundary, playback advances normally (sanity): ~2.5 intervals
+        // beyond the boundary floors to frame 2.
+        let nextSample = transport.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: startHost + frameInterval * 2.5)
+        XCTAssertEqual(nextSample?.compressedFrame, 2)
+    }
+
+    // MARK: - Epoch Start Contract (frame-delta from captured boundary)
+
+    private func makeBoundary(
+        compressedFrame: Int,
+        nominalFrame: Int,
+        projectTimeUs: TimeUs,
+        hostTime: CFTimeInterval
+    ) -> PlaybackStartBoundary {
+        PlaybackStartBoundary(
+            hostTime: hostTime,
+            requestedCompressedFrame: compressedFrame,
+            requestedNominalFrame: nominalFrame,
+            requestedProjectTimeUs: projectTimeUs
+        )
+    }
+
+    /// Epoch start: before the boundary, sampling returns the EXACT captured start
+    /// frame — not a value re-derived through elapsed-time mapping.
+    func testEpochStart_beforeBoundary_returnsExactCapturedFrame() {
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: 30, durationFrames: 300)
+
+        // Capture start frame 60 explicitly; boundary 0.1s in the future.
+        let boundary = makeBoundary(compressedFrame: 60, nominalFrame: 60,
+                                    projectTimeUs: 2_000_000, hostTime: 1000.1)
+        transport.start(boundary: boundary, fps: 30)
+
+        let sample = transport.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: 1000.0)
+        XCTAssertEqual(sample?.compressedFrame, 60)
+        XCTAssertEqual(sample?.projectTimeUs, 2_000_000)
+    }
+
+    /// Epoch start: the first post-boundary callback with sub-frame elapsed still
+    /// returns the exact start frame (floor of <1 frame advance == 0).
+    func testEpochStart_subFrameAfterBoundary_holdsExactFrame() {
+        let fps = 30
+        let frameInterval = 1.0 / CFTimeInterval(fps)
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: fps, durationFrames: 300)
+
+        let startHost: CFTimeInterval = 1000.0
+        let boundary = makeBoundary(compressedFrame: 60, nominalFrame: 60,
+                                    projectTimeUs: 2_000_000, hostTime: startHost)
+        transport.start(boundary: boundary, fps: fps)
+
+        let sample = transport.sample(mapper: mapper, maxCompressedFrame: 299,
+                                      hostTime: startHost + frameInterval * 0.5)
+        XCTAssertEqual(sample?.compressedFrame, 60,
+                       "Sub-frame elapsed after boundary must floor to the captured start frame")
+    }
+
+    /// Epoch start: later ticks advance by integer frame delta from the boundary,
+    /// added to the captured nominal frame — no lossy first-frame recompute.
+    func testEpochStart_advancesByFrameDeltaFromBoundary() {
+        let fps = 30
+        let frameInterval = 1.0 / CFTimeInterval(fps)
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: fps, durationFrames: 300)
+
+        let startHost: CFTimeInterval = 1000.0
+        let boundary = makeBoundary(compressedFrame: 60, nominalFrame: 60,
+                                    projectTimeUs: 2_000_000, hostTime: startHost)
+        transport.start(boundary: boundary, fps: fps)
+
+        // 5.5 frame intervals past boundary → floor 5 → nominal 65 → compressed 65.
+        let sample = transport.sample(mapper: mapper, maxCompressedFrame: 299,
+                                      hostTime: startHost + frameInterval * 5.5)
+        XCTAssertEqual(sample?.compressedFrame, 65)
+    }
+
+    // MARK: - Render-freeze hold signal (isHoldingStartFrame)
+
+    /// `isHoldingStartFrame` is the authoritative "transport is presenting the exact
+    /// start frame" signal the render-freeze contract gates on. It must be true for
+    /// every pre-boundary callback and for the first post-boundary sub-frame tick, and
+    /// false once transport advances by an integer frame delta.
+    func testHoldSignal_falseBeforeStartAndTrueAfterEpochStart() {
+        let transport = PlaybackTransport()
+        XCTAssertFalse(transport.isHoldingStartFrame, "No sample yet → not holding")
+
+        let boundary = makeBoundary(compressedFrame: 60, nominalFrame: 60,
+                                    projectTimeUs: 2_000_000, hostTime: 1000.1)
+        transport.start(boundary: boundary, fps: 30)
+        // start(boundary:) eagerly captures the start frame, so the hold is armed.
+        XCTAssertTrue(transport.isHoldingStartFrame, "Epoch start arms the hold")
+    }
+
+    func testHoldSignal_trueAtAndBeforeBoundary() {
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: 30, durationFrames: 300)
+        let boundary = makeBoundary(compressedFrame: 60, nominalFrame: 60,
+                                    projectTimeUs: 2_000_000, hostTime: 1000.1)
+        transport.start(boundary: boundary, fps: 30)
+
+        _ = transport.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: 1000.0)
+        XCTAssertTrue(transport.isHoldingStartFrame,
+                      "Pre-boundary sample must hold the start frame")
+    }
+
+    func testHoldSignal_trueOnFirstSubFrameTick_falseAfterAdvance() {
+        let fps = 30
+        let frameInterval = 1.0 / CFTimeInterval(fps)
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: fps, durationFrames: 300)
+        let startHost: CFTimeInterval = 1000.0
+        let boundary = makeBoundary(compressedFrame: 60, nominalFrame: 60,
+                                    projectTimeUs: 2_000_000, hostTime: startHost)
+        transport.start(boundary: boundary, fps: fps)
+
+        // First post-boundary sub-frame tick: still holding `N`.
+        _ = transport.sample(mapper: mapper, maxCompressedFrame: 299,
+                             hostTime: startHost + frameInterval * 0.5)
+        XCTAssertTrue(transport.isHoldingStartFrame,
+                      "First post-boundary sub-frame tick must still hold the start frame")
+
+        // Advance past one full frame: hold ends.
+        _ = transport.sample(mapper: mapper, maxCompressedFrame: 299,
+                             hostTime: startHost + frameInterval * 1.5)
+        XCTAssertFalse(transport.isHoldingStartFrame,
+                       "Once transport advances by a frame, the hold ends")
+    }
+
+    func testHoldSignal_clearedOnStop() {
+        let transport = PlaybackTransport()
+        let boundary = makeBoundary(compressedFrame: 60, nominalFrame: 60,
+                                    projectTimeUs: 2_000_000, hostTime: 1000.0)
+        transport.start(boundary: boundary, fps: 30)
+        XCTAssertTrue(transport.isHoldingStartFrame)
+        transport.stop()
+        XCTAssertFalse(transport.isHoldingStartFrame, "Stop clears the hold signal")
+    }
+
+    func testHoldSignal_falseWhenNotRunning() {
+        let transport = PlaybackTransport()
+        let mapper = makeSingleSceneMapper(fps: 30, durationFrames: 300)
+        // Sampling a stopped transport returns nil and must not report a hold.
+        _ = transport.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: 1000.0)
+        XCTAssertFalse(transport.isHoldingStartFrame)
+    }
+
+    /// Parity: the legacy `start(atProjectTimeUs:)` entry resolves the SAME start
+    /// frame identity from the mapper as the epoch path captures explicitly, so the
+    /// two start paths present the identical first frame.
+    func testLegacyAndEpochStart_presentSameFirstFrame() {
+        let mapper = makeSingleSceneMapper(fps: 30, durationFrames: 300)
+        let startHost: CFTimeInterval = 1000.1
+        let projectTimeUs: TimeUs = 2_000_000
+
+        let legacy = PlaybackTransport()
+        legacy.start(atProjectTimeUs: projectTimeUs, hostTime: startHost, fps: 30)
+        let legacySample = legacy.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: 1000.0)
+
+        let nominal = mapper.nominalFrame(forCompressedFrame:
+            mapper.compressedFrame(forTimeUs: projectTimeUs, quantize: .playback))
+        let epoch = PlaybackTransport()
+        epoch.start(
+            boundary: makeBoundary(
+                compressedFrame: mapper.compressedFrame(forTimeUs: projectTimeUs, quantize: .playback),
+                nominalFrame: nominal, projectTimeUs: projectTimeUs, hostTime: startHost),
+            fps: 30
+        )
+        let epochSample = epoch.sample(mapper: mapper, maxCompressedFrame: 299, hostTime: 1000.0)
+
+        XCTAssertEqual(legacySample?.compressedFrame, epochSample?.compressedFrame)
+        XCTAssertEqual(legacySample?.compressedFrame, 60)
+    }
+
     // MARK: - Host Time Passthrough
 
     func testSampleReturnsProvidedHostTime() {

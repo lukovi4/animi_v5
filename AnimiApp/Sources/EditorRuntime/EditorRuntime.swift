@@ -7,6 +7,38 @@ import os.log
 
 private let logger = Logger(subsystem: "com.animi.app", category: "EditorRuntime")
 
+#if DEBUG
+/// Temporary DEBUG trace for the preview video playback-start handoff
+/// (task 2026-06-03-preview-video-start-frame). Toggle:
+/// `UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")`. Read-only; no
+/// behavioral effect. Prefix `[VideoPlaybackTrace]` matches the other instrumented
+/// layers so one grep collects the full Play→render trace.
+private enum EditorRuntimeVideoPlaybackTrace {
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "DebugVideoPlaybackTrace")
+    }
+    static func log(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        print("[VideoPlaybackTrace] \(message())")
+    }
+    static func renderSourceDescription(_ source: EditorRuntimeRenderSource) -> String {
+        switch source {
+        case .timeline(let payload):
+            switch payload.resolvedFrame {
+            case .single(let ctx):
+                return "timeline.single instance=\(ctx.sceneInstanceId.uuidString.prefix(8)) local=\(ctx.localFrame) media=\(ctx.mediaLocalFrame)"
+            case .transition:
+                return "timeline.transition"
+            }
+        case .sceneEdit:
+            return "sceneEdit"
+        case .none:
+            return "none"
+        }
+    }
+}
+#endif
+
 /// Error emitted when export fails before the VideoExporter session starts.
 struct ExportAbortError: LocalizedError {
     let message: String
@@ -173,6 +205,13 @@ final class EditorRuntime {
     private var displayLink: CADisplayLink?
     private var playheadAsyncTask: Task<Void, Never>?
     private var playbackStartTask: Task<Void, Never>?
+
+    /// Identity of the in-flight / current playback-start epoch request. A new Play
+    /// request bumps this; stop/abort clears it. The phased start coordinator checks
+    /// it before opening the shared boundary so a request superseded or cancelled
+    /// mid-preparation (rapid stop/pause, seek/edit) cannot open a stale boundary or
+    /// let a late media/audio start advance old playback.
+    private var currentPlaybackStartRequestId: UUID?
     var lastStillSyncFrame: Int = -1
     private let playbackTransport = PlaybackTransport()
     private var playbackStopGeneration: UInt = 0
@@ -193,6 +232,22 @@ final class EditorRuntime {
 
     private var playbackCurrentCompressedFrame: Int = 0
     var playbackCurrentProjectTimeUs: TimeUs = 0
+
+    /// The active playback-start epoch, set once the boundary opens. Owns the frozen
+    /// render payload for the start frame `N`. The display tick consults it (together
+    /// with `PlaybackTransport.isHoldingStartFrame`) to keep `N` frozen until transport
+    /// advances. Cleared on stop. Read-only test seam.
+    private(set) var activePlaybackStartEpoch: PlaybackStartEpoch?
+
+    /// Display-derived lead (in display refresh intervals) used to place the shared
+    /// playback start host time slightly in the future, so the runloop/startup delay
+    /// between `startPlayback` and the first display-link callback is absorbed by the lead
+    /// instead of being counted as elapsed playback time. Captured device traces showed up
+    /// to ~3 frames of startup delay; a 4-interval lead covers that with margin. Combined
+    /// with `PlaybackTransport`'s pre-start clamp and `.playback` floor quantization, the
+    /// first presented playback frame is exactly the requested start frame whenever startup
+    /// completes within the lead. Overridable for deterministic tests.
+    var playbackStartLeadFrames: Int = 4
 
     // MARK: - Preview Audio
     private(set) lazy var previewAudio = EditorRuntimePreviewAudioCoordinator(runtime: self)
@@ -252,6 +307,14 @@ final class EditorRuntime {
         self.isPlaying = playing
     }
 
+    /// Test seam: drives one playback tick at a chosen host time, exercising the exact
+    /// production per-tick path (`processPlaybackTick`) without a real `CADisplayLink`.
+    /// Defaults to the current epoch boundary so the tick is a pre-boundary hold tick.
+    func simulateDisplayTickForTesting(hostTime: CFTimeInterval? = nil) {
+        let t = hostTime ?? activePlaybackStartEpoch?.boundary.hostTime ?? playbackCurrentHostTime
+        processPlaybackTick(hostTime: t)
+    }
+
     /// Test seam: forwards to the production `handleMediaReadyForPlacement`.
     /// Exercises the exact same path that `UserMediaService.onMediaReady` invokes in production.
     func simulateMediaReadyCallback(blockId: String) {
@@ -260,6 +323,10 @@ final class EditorRuntime {
 
     /// Test seam: exposes the timeline composition engine for cache pre-population.
     var testTimelineCompositionEngine: TimelineCompositionEngine? { timelineCompositionEngine }
+
+    /// Test seam: whether the playback transport is currently holding the start frame
+    /// (the render-freeze hold signal). Read-only.
+    var testTransportIsHoldingStartFrame: Bool { playbackTransport.isHoldingStartFrame }
 
     /// Test seam: exposes background texture service for export-restore verification.
     var testBackgroundTextureService: BackgroundTextureService? { background.backgroundTextureService }
@@ -286,6 +353,9 @@ final class EditorRuntime {
 
     var previewAudioDirty: Bool { previewAudio.dirty }
     var previewAudioGeneration: UInt { previewAudio.generation }
+    /// Test seam: whether any preview-audio build/orchestration/scheduled-prepare is in
+    /// flight (used to assert the boot-time audio prepare has settled).
+    var previewAudioHasActiveWork: Bool { previewAudio.hasActiveAudioWorkForTesting }
 
     /// Test seam: override pipeline builder for controllable async builds.
     var previewAudioPipelineBuilder: (() async -> BuiltAudioPipeline?)? {
@@ -554,6 +624,15 @@ final class EditorRuntime {
     func setupTimelineCompositionEngine(state editorState: EditorState) {
         guard let ctx = metalContext, let library = sceneLibrarySnapshot else { return }
 
+        // Re-applying the timeline to an existing engine is a timeline/media edit: it
+        // rebuilds transition math and evicts runtimes, which can change the epoch.
+        // Invalidate any pending playback-start before applying the new timeline so a
+        // start in its prepare phases cannot open from stale participants. (No-op on the
+        // initial-boot creation path, where nothing is pending.)
+        if timelineCompositionEngine != nil {
+            invalidatePendingPlaybackStart()
+        }
+
         let engine: TimelineCompositionEngine
         if let existing = timelineCompositionEngine {
             engine = existing
@@ -741,6 +820,12 @@ final class EditorRuntime {
         // During playback, transport drives presentation directly via displayLinkFired.
         // Store playhead changes are UI-mirror only — must not re-enter presentation path.
         guard !isPlaying else { return }
+
+        // Seek/edit invalidates any prepared playback start. A pending Play (still in
+        // its async prepare phases, isPlaying == false) captured frame N; a playhead
+        // change to M means that epoch is stale and must not later open playback from N.
+        // Invalidate the request id and cancel the pending task BEFORE resolving M.
+        invalidatePendingPlaybackStart()
 
         // Any playhead interaction (scrub, scene-edit, trim) keeps resources warm:
         // cancel pending idle reclaim before presenting so the first interactive
@@ -954,6 +1039,20 @@ final class EditorRuntime {
             }
         }
 
+        installTimelineRenderSource(resolved: resolved, compressedFrame: compressedFrame)
+    }
+
+    /// Builds the `TimelineRenderSourcePayload` for a resolved frame and installs it
+    /// as `currentRenderSource`, emitting a render output.
+    ///
+    /// This is the single owner of timeline render-source construction. It is
+    /// render-only: it resolves overlays + per-scene background and assigns the
+    /// payload. It does NOT touch `syncVideoFrame` / media state — media readiness is
+    /// owned separately (the scrub still path in `applyResolvedTimelineFrame`, or the
+    /// playback-start media hard gate for the epoch install). Both the live async
+    /// resolve path and the playback-start frozen-payload install go through here so
+    /// the payload shape cannot drift between them.
+    private func installTimelineRenderSource(resolved: ResolvedTimelineFrame, compressedFrame: Int) {
         // Resolve overlays via shared OverlayResolver
         let overlayItems: [ResolvedOverlayRenderItem]
         if let engine = timelineCompositionEngine,
@@ -982,6 +1081,45 @@ final class EditorRuntime {
             overlayItems: overlayItems
         ))
         onOutput?(.renderSourceUpdated)
+    }
+
+    /// Installs the playback-start epoch's frozen render payload as the current
+    /// render source for `N`, BEFORE the shared boundary opens.
+    ///
+    /// This is the render-payload-ownership step of the playback-start contract: the
+    /// epoch owns the exact `ResolvedTimelineFrame` for `N` (captured in the snapshot),
+    /// so the first visible frame after Play is `N` and is not (re)computed by the
+    /// async `resolveAndPresentTimelineFrame -> applyResolvedTimelineFrame` path.
+    ///
+    /// Any pending playhead/scrub async resolve is cancelled and the scrub generation
+    /// is bumped first, so an in-flight scrub still / stale resolve cannot land after
+    /// the frozen payload (scrub-to-play invalidation). Media for `N` is already bound
+    /// by the start-frame hard gate (`prepareStartFrames`), so this path is render-only
+    /// and must NOT re-enter `syncVideoFrame`.
+    private func installFrozenStartRenderSource(epoch: PlaybackStartEpoch) {
+        let snapshot = epoch.frameSnapshot
+
+        // Invalidate stale scrub/playhead work so it cannot overwrite the frozen
+        // payload after install (scrub-to-play). Late completions are also rejected by
+        // request-id/generation via `isPlaybackStartCurrent`, but cancelling here stops
+        // the work as early as possible.
+        cancelPendingPlayheadResolve()
+        timelineCompositionEngine?.invalidateScrub()
+
+        // The epoch always owns a resolved frame (the start hard-gated on it), so the
+        // frozen payload for `N` is installed unconditionally before motion opens.
+        let resolved = snapshot.resolvedFrame
+        cachedTimelineFrame = resolved
+        cachedTimelineCompressedFrame = snapshot.compressedFrame
+
+        switch resolved {
+        case .single(let ctx):
+            sceneEdit.activeSceneInstanceId = ctx.sceneInstanceId
+        case .transition:
+            sceneEdit.activeSceneInstanceId = timelineCompositionEngine?.sceneInstanceId(at: snapshot.compressedFrame)
+        }
+
+        installTimelineRenderSource(resolved: resolved, compressedFrame: snapshot.compressedFrame)
     }
 
     // MARK: - Post-Export Preview Restore
@@ -1124,40 +1262,168 @@ final class EditorRuntime {
         let compressedFrame = session.state?.playheadCompressedFrame ?? 0
         let fps = Float(sceneFPS)
 
+        // Create the playback-start request identity for this Play. The phased
+        // coordinator below opens the shared boundary only if this request is still
+        // current, so a stop/seek/edit during preparation invalidates the epoch.
+        let startRequest = PlaybackStartRequest(
+            id: UUID(),
+            requestedCompressedFrame: compressedFrame,
+            fps: Int(sceneFPS),
+            timelineGeneration: engine.currentScrubGeneration
+        )
+        currentPlaybackStartRequestId = startRequest.id
+
         playbackStartTask = Task { @MainActor in
             #if DEBUG
             if let gate = self.playbackStartGate { await gate() }
             guard !Task.isCancelled else {
-                self.playbackStartTask = nil
+                self.failPlaybackStart(request: startRequest, reason: "cancelledAtGate")
                 return
             }
             #endif
-            await engine.prepareForPlayback(startingAt: compressedFrame)
+            #if DEBUG
+            EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.begin obj=\(ObjectIdentifier(self).hashValue) compressedFrame=\(compressedFrame) uiMode=\(String(describing: self.session.state?.uiMode)) renderSource=\(EditorRuntimeVideoPlaybackTrace.renderSourceDescription(self.currentRenderSource))")
+            #endif
 
-            guard !Task.isCancelled else {
-                self.playbackStartTask = nil
+            // PHASE: preparing(epoch) — resolve and freeze the start-frame participant
+            // snapshot. This ensures active participants are ready for `compressedFrame`
+            // and captures mode/local frames/grants ONCE so participant identity cannot
+            // drift between prepare, start, and the first tick.
+            guard let frameSnapshot = await engine.makePlaybackStartFrameSnapshot(at: compressedFrame),
+                  self.isPlaybackStartCurrent(startRequest)
+            else {
+                self.failPlaybackStart(request: startRequest, reason: "snapshotUnavailableOrSuperseded")
                 return
             }
 
-            // Compute start project time from compressed frame
+            #if DEBUG
+            EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.afterPrepareForPlayback obj=\(ObjectIdentifier(self).hashValue) compressedFrame=\(compressedFrame) renderSource=\(EditorRuntimeVideoPlaybackTrace.renderSourceDescription(self.currentRenderSource))")
+            #endif
+
+            // PHASE: frozen(N) — deterministic exact start-frame handoff, now
+            // result-bearing. Consumes the CAPTURED snapshot (not a live recompute) so
+            // prepare and start use the same participant frames/grants. Awaits exact
+            // start still binding for every granted visible video block BEFORE transport
+            // and display link start.
+            let mediaResult = await engine.prepareStartFrames(forSnapshot: frameSnapshot)
+
+            guard self.isPlaybackStartCurrent(startRequest) else {
+                self.failPlaybackStart(request: startRequest, reason: "supersededAfterStartFrames")
+                return
+            }
+
+            // HARD GATE: if the exact visual start frame is not guaranteed for an
+            // active visual participant, playback must NOT silently start best-effort
+            // and catch up later. Stay paused holding the requested frame and revert to
+            // the existing non-playing state (no new UI is introduced).
+            guard mediaResult.allowsBoundaryOpen else {
+                #if DEBUG
+                MemoryDiagnostics.event("playback.start.gatedOnMedia", "compressedFrame=\(compressedFrame) result=\(String(describing: mediaResult))")
+                EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.gatedOnMedia compressedFrame=\(compressedFrame) result=\(String(describing: mediaResult))")
+                #endif
+                self.failPlaybackStart(request: startRequest, reason: "mediaNotReady")
+                return
+            }
+
+            #if DEBUG
+            EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.afterPrepareStartFrames obj=\(ObjectIdentifier(self).hashValue) compressedFrame=\(compressedFrame) renderSource=\(EditorRuntimeVideoPlaybackTrace.renderSourceDescription(self.currentRenderSource)) mediaResult=\(String(describing: mediaResult))")
+            #endif
+
+            // HARD GATE (audio): preview audio readiness is an explicit epoch
+            // participant. Resolve/prime it BEFORE opening the shared boundary so the
+            // boundary is not opened best-effort while audio is still building. This
+            // does not schedule audio yet — scheduling happens from the captured epoch
+            // boundary below. Dirty/unprimed audible audio waits here; on failure the
+            // boundary stays closed and we hold the requested frame (no new UI).
+            let audioReadiness = await self.previewAudio.prepareAudioForEpochStart()
+
+            guard self.isPlaybackStartCurrent(startRequest) else {
+                self.failPlaybackStart(request: startRequest, reason: "supersededAfterAudioReady")
+                return
+            }
+
+            // Boundary may open only when audio is not needed or fully ready. `.failed`
+            // (existing failure/dirty path) and `.stale` (audio edit raced the epoch)
+            // both keep the boundary closed and hold the requested frame (no new UI).
+            guard audioReadiness == .noAudio || audioReadiness == .ready else {
+                #if DEBUG
+                MemoryDiagnostics.event("playback.start.gatedOnAudio", "compressedFrame=\(compressedFrame) readiness=\(String(describing: audioReadiness))")
+                EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.gatedOnAudio compressedFrame=\(compressedFrame) readiness=\(String(describing: audioReadiness))")
+                #endif
+                self.failPlaybackStart(request: startRequest, reason: "audioNotReady(\(audioReadiness))")
+                return
+            }
+
+            #if DEBUG
+            EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.afterAudioReady obj=\(ObjectIdentifier(self).hashValue) compressedFrame=\(compressedFrame) audioReadiness=\(String(describing: audioReadiness))")
+            #endif
+
+            // PHASE: scheduled(boundary) — build the single shared boundary.
+            //
+            // Anchoring the transport to `CACurrentMediaTime()` (now) would count the
+            // runloop/startup delay between now and the first display-link callback as
+            // elapsed playback time, advancing the first presented frame past the
+            // requested start frame. Instead, choose a single shared start host time a
+            // short, display-derived lead in the FUTURE; transport, video providers, and
+            // preview audio all open against this one boundary.
+            //
+            // The lead is one display refresh interval times `playbackStartLeadFrames`.
+            // Because display-link callbacks are one interval apart and transport holds
+            // the start frame at/before the boundary, the first callback that crosses the
+            // boundary is at most one interval past it. Under `.playback` floor
+            // quantization that sub-frame elapsed resolves to the start frame, so the
+            // first presented playback frame is exactly the requested start frame whenever
+            // startup completes within the lead.
             let mapper = self.session.state?.makePlayheadMapper() ?? .empty
             let startProjectTimeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)
-            let hostTime = CACurrentMediaTime()
-            self.playbackCurrentHostTime = hostTime
+            let startNominalFrame = mapper.nominalFrame(forCompressedFrame: compressedFrame)
+
+            let frameInterval = self.sceneFPS > 0 ? 1.0 / CFTimeInterval(self.sceneFPS) : 1.0 / 30.0
+            let lead = frameInterval * CFTimeInterval(self.playbackStartLeadFrames)
+            let startHostTime = CACurrentMediaTime() + lead
+
+            let boundary = PlaybackStartBoundary(
+                hostTime: startHostTime,
+                requestedCompressedFrame: compressedFrame,
+                requestedNominalFrame: startNominalFrame,
+                requestedProjectTimeUs: startProjectTimeUs
+            )
+            let epoch = PlaybackStartEpoch(
+                request: startRequest,
+                boundary: boundary,
+                frameSnapshot: frameSnapshot
+            )
 
             #if DEBUG
             MemoryDiagnostics.event("playback.audio.start.begin", "compressedFrame=\(compressedFrame) projectTimeUs=\(startProjectTimeUs) state=\(String(describing: self.state)) isPlayingBefore=\(self.isPlaying ? 1 : 0)")
             #endif
 
+            // Mirror the epoch start values into the runtime's playback fields so the
+            // tick path and resume/route-change paths keep working.
             self.playbackCurrentCompressedFrame = compressedFrame
             self.playbackCurrentProjectTimeUs = startProjectTimeUs
-            self.playbackTransport.start(
-                atProjectTimeUs: startProjectTimeUs,
-                hostTime: hostTime,
-                fps: Int(self.sceneFPS)
-            )
+            self.playbackCurrentHostTime = startHostTime
+            self.activePlaybackStartEpoch = epoch
+
+            // PHASE: frozen-render(N) — install the epoch-owned render payload for `N`
+            // BEFORE any movement opens. After this, the first frame Metal presents is
+            // `N`; the old async resolve path is no longer the owner of the first visual
+            // frame. Render-only: media for `N` is already bound by the start-frame hard
+            // gate above.
+            self.installFrozenStartRenderSource(epoch: epoch)
+
+            #if DEBUG
+            EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.installedFrozenRenderSource obj=\(ObjectIdentifier(self).hashValue) compressedFrame=\(compressedFrame) renderSource=\(EditorRuntimeVideoPlaybackTrace.renderSourceDescription(self.currentRenderSource))")
+            #endif
+
+            // PHASE: running(epoch) — open all participants against the same boundary.
+            self.playbackTransport.start(boundary: boundary, fps: Int(self.sceneFPS))
 
             self.isPlaying = true
+
+            #if DEBUG
+            EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.beforeDisplayLink obj=\(ObjectIdentifier(self).hashValue) compressedFrame=\(compressedFrame) startHostTime=\(String(format: "%.6f", startHostTime)) lead=\(String(format: "%.6f", lead))")
+            #endif
 
             self.displayLink = CADisplayLink(target: DisplayLinkTarget { [weak self] link in
                 self?.displayLinkFired(link)
@@ -1170,15 +1436,80 @@ final class EditorRuntime {
             MemoryDiagnostics.checkpoint("playback.start", metal: self.metalContext?.device)
             #endif
 
-            engine.startPlayback(at: compressedFrame, hostTime: hostTime)
+            #if DEBUG
+            EditorRuntimeVideoPlaybackTrace.log("editorRuntime.startPlayback.beforeEngineStart obj=\(ObjectIdentifier(self).hashValue) compressedFrame=\(compressedFrame) startHostTime=\(String(format: "%.6f", startHostTime))")
+            #endif
+            engine.startPlayback(epoch: epoch)
 
             self.onOutput?(.playbackStateChanged(isPlaying: true))
 
             #if DEBUG
-            MemoryDiagnostics.event("playback.audio.previewStart.call", "projectTimeUs=\(startProjectTimeUs) hostTime=\(hostTime)")
+            MemoryDiagnostics.event("playback.audio.previewStart.call", "projectTimeUs=\(startProjectTimeUs) hostTime=\(startHostTime)")
             #endif
-            self.previewAudio.startForTimelinePlayback()
+            // Preview audio consumes the SAME epoch boundary as transport/video/render.
+            self.previewAudio.startForTimelinePlayback(
+                audioStart: PlaybackAudioStart(
+                    fromSeconds: usToSeconds(startProjectTimeUs),
+                    boundaryHostTime: startHostTime
+                )
+            )
             self.playbackStartTask = nil
+        }
+    }
+
+    /// Whether `request` is still the current playback-start request. False if a
+    /// stop/seek/edit superseded it, the task was cancelled, or the timeline
+    /// generation changed (an edit/scrub that bumped the scrub generation invalidates
+    /// the prepared start even if the request id check were somehow bypassed).
+    private func isPlaybackStartCurrent(_ request: PlaybackStartRequest) -> Bool {
+        guard !Task.isCancelled, currentPlaybackStartRequestId == request.id else { return false }
+        if let captured = request.timelineGeneration,
+           let current = timelineCompositionEngine?.currentScrubGeneration,
+           captured != current {
+            return false
+        }
+        return true
+    }
+
+    /// Invalidates any in-flight playback-start epoch: cancels the start task and
+    /// clears the request id so a late snapshot/media/audio completion cannot open a
+    /// stale boundary. Safe to call when no start is pending.
+    private func invalidatePendingPlaybackStart() {
+        let hadPendingStart = playbackStartTask != nil
+        guard hadPendingStart || currentPlaybackStartRequestId != nil else { return }
+        #if DEBUG
+        MemoryDiagnostics.event("playback.start.invalidatePending", "hadTask=\(hadPendingStart ? 1 : 0)")
+        #endif
+        playbackStartTask?.cancel()
+        playbackStartTask = nil
+        currentPlaybackStartRequestId = nil
+        activePlaybackStartEpoch = nil
+
+        // `startPlayback()` activates the playback audio session synchronously before the
+        // async start phases. If we cancel a start that never opened the boundary, the
+        // cancelled task's `failPlaybackStart` returns early (request id already cleared)
+        // and would not deactivate the session. Release it here so an edit/seek-cancelled
+        // pending start does not leak an active audio session. Never touch the session
+        // for active playback.
+        if hadPendingStart, !isPlaying {
+            try? audioSessionManager?.deactivateAfterPlayback()
+        }
+    }
+
+    /// Reverts a playback-start that cannot open the boundary (cancelled, superseded,
+    /// or hard-gated on unready media). Stays in the existing non-playing state holding
+    /// the requested frame — no new UI is introduced. Idempotent w.r.t. the request id.
+    private func failPlaybackStart(request: PlaybackStartRequest, reason: String) {
+        self.playbackStartTask = nil
+        guard currentPlaybackStartRequestId == request.id else { return }
+        currentPlaybackStartRequestId = nil
+        #if DEBUG
+        MemoryDiagnostics.event("playback.start.aborted", "compressedFrame=\(request.requestedCompressedFrame) reason=\(reason)")
+        #endif
+        // Release the playback audio session if no playback actually started, so a
+        // gated/cancelled start does not leave the session active.
+        if !isPlaying {
+            try? audioSessionManager?.deactivateAfterPlayback()
         }
     }
 
@@ -1187,6 +1518,9 @@ final class EditorRuntime {
 
         playbackStartTask?.cancel()
         playbackStartTask = nil
+        // Invalidate any in-flight playback-start epoch so a late snapshot/media/audio
+        // start from the cancelled request cannot open a stale boundary.
+        currentPlaybackStartRequestId = nil
 
         #if DEBUG
         MemoryDiagnostics.event("playback.audio.stop.begin", "")
@@ -1202,6 +1536,9 @@ final class EditorRuntime {
 
         playbackTransport.stop()
         isPlaying = false
+        // The frozen-start render-freeze hold ends with the epoch; subsequent
+        // scrub/seek resolves own presentation again.
+        activePlaybackStartEpoch = nil
 
         if let link = displayLink {
             link.invalidate()
@@ -1343,11 +1680,13 @@ final class EditorRuntime {
 
         playbackStartTask?.cancel()
         playbackStartTask = nil
+        currentPlaybackStartRequestId = nil
 
         previewAudio.controller.pause()
         previewAudio.cancelBuild()
 
         playbackTransport.stop()
+        activePlaybackStartEpoch = nil
 
         if let link = displayLink {
             link.invalidate()
@@ -1430,9 +1769,15 @@ final class EditorRuntime {
     #endif
 
     private func displayLinkFired(_ link: CADisplayLink) {
+        processPlaybackTick(hostTime: link.targetTimestamp)
+    }
+
+    /// Core per-tick playback processing, parameterized on host time so it is testable
+    /// without a real `CADisplayLink`. Production drives it from
+    /// `displayLinkFired` using the display link's `targetTimestamp`.
+    private func processPlaybackTick(hostTime: CFTimeInterval) {
         guard let editorState = session.state else { return }
 
-        let hostTime = link.targetTimestamp
         let mapper = editorState.makePlayheadMapper()
         let maxFrame = editorState.compressedDurationFrames - 1
 
@@ -1450,9 +1795,40 @@ final class EditorRuntime {
         let uiMode = editorState.uiMode
         switch uiMode {
         case .timeline:
-            // Drive frame presentation directly from transport
-            handleTimelineModePlayheadChanged(nextFrame)
-            timelineCompositionEngine?.syncPlaybackTick(nextFrame, hostTime: hostTime)
+            // Render-freeze hold + texture-binding boundary: while transport is still
+            // presenting the exact start frame `N` (pre-boundary, or the first
+            // post-boundary sub-frame tick whose elapsed floors to zero advance), the
+            // epoch owns the frozen render payload for `N`. During this hold we perform NO
+            // media publication:
+            //
+            //  - We must NOT call `handleTimelineModePlayheadChanged`, because that launches
+            //    a NEW async `resolveAndPresentTimelineFrame` that can complete late and
+            //    overwrite the frozen `N` payload with file-zero / N-1 / N+3 / a stale scrub
+            //    still.
+            //  - We must NOT call `timelineCompositionEngine.syncPlaybackTick(...)` either.
+            //    That polls each `VideoFrameProvider` and writes any returned texture into
+            //    the SAME mutable overlay `TextureProvider` the frozen `ResolvedTimelineFrame`
+            //    references, so a render-visible video binding would change while transport
+            //    still holds `N` — the source of the start-time tick/glint. The exact
+            //    prepared bindings for `N` (installed at start) must remain render-visible
+            //    for the whole hold; no provider polling result may be published.
+            //
+            // Provider/AVPlayer scheduling against the shared future boundary already
+            // happened once in `engine.startPlayback(epoch:)`; suppressing per-tick
+            // publication here does NOT defer scheduling — decoders still warm up.
+            //
+            // Once transport advances (`isHoldingStartFrame == false`, integer frame
+            // delta >= 1), normal advancing playback resumes: the async resolve owns
+            // subsequent frames and media sync publishes from the tick's authoritative
+            // compressed frame and host time.
+            if playbackTransport.isHoldingStartFrame, activePlaybackStartEpoch != nil {
+                // Hold: preserve the installed frozen render payload; do not publish.
+                break
+            } else {
+                // Drive frame presentation directly from transport
+                handleTimelineModePlayheadChanged(nextFrame)
+                timelineCompositionEngine?.syncPlaybackTick(nextFrame, hostTime: hostTime)
+            }
         case .sceneEdit:
             let fps = editorState.templateFPS
             let globalFrameIndex = Int(sample.projectTimeUs * TimeUs(fps) / 1_000_000)
@@ -1718,6 +2094,9 @@ final class EditorRuntime {
 
     /// Marks preview audio state as dirty (e.g. after timeline music changes).
     func markPreviewAudioDirty() {
+        // An audio/media edit changes the epoch. Invalidate any pending playback-start
+        // request first so a start in its prepare phases cannot open from stale audio.
+        invalidatePendingPlaybackStart()
         previewAudio.markDirty()
     }
 
