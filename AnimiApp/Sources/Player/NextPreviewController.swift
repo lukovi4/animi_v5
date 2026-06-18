@@ -1,0 +1,346 @@
+#if DEBUG
+import Foundation
+import Metal
+
+// MARK: - CP3: DEBUG-only Next preview cache + scheduler
+//
+// Splits the CP2 per-draw pipeline into:
+//   - a PREPARED template context (heavy: decode/convert/assets/session) cached per identity, and
+//   - a per-frame render (light: evaluate/resolve/compile/execute) served from a bounded frame cache.
+//
+// Threading model (crash-safe): ALL controller mutable state (epoch, key, context, frameCache,
+// stats) is touched ONLY on the main thread. The serial render queue runs pure rendering from
+// values passed into the closure — it never reads `self`'s mutable state and never calls
+// `DispatchQueue.main.sync` (which deadlocked under scrub load in the first cut). The non-Sendable
+// `MetalRenderSession` lives inside the context and every `execute` runs on the SAME serial queue,
+// so renders are serialized (no concurrent/reentrant Metal access). Results hop back to main; a
+// completion tagged with a stale epoch is dropped before publication.
+
+/// Identity that must be stable for a prepared context to be reused. Any change rebuilds it.
+struct NextPreviewKey: Equatable {
+    let sceneTypeId: String
+    let variantOverrides: [String: String]
+    let mediaBlockID: String
+    let mediaPath: String
+    let mediaSize: Int64
+    let mediaMTime: Double
+    let fitModeRaw: String
+    let offsetX: Double
+    let offsetY: Double
+    let userScale: Double
+    let rotationDegrees: Double
+
+    init?(inputs: NextBridgeInputs) {
+        self.sceneTypeId = inputs.sceneTypeId
+        self.variantOverrides = inputs.variantOverrides
+        self.mediaBlockID = inputs.mediaBlockID
+        self.mediaPath = inputs.mediaURL.path
+        let attrs = try? FileManager.default.attributesOfItem(atPath: inputs.mediaURL.path)
+        self.mediaSize = (attrs?[.size] as? NSNumber)?.int64Value ?? -1
+        self.mediaMTime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+        self.fitModeRaw = inputs.placement.fitModeRaw
+        self.offsetX = inputs.placement.offsetX
+        self.offsetY = inputs.placement.offsetY
+        self.userScale = inputs.placement.userScale
+        self.rotationDegrees = inputs.placement.rotationDegrees
+    }
+
+    /// Placement-FREE identity: the heavy decoded media (compiled.tve + photo + authored-asset
+    /// pixels) depends only on scene + variant + media — NOT on placement. A placement change keeps
+    /// the same `mediaKey`, so the expensive decode is reused and only the cheap convert re-runs.
+    struct MediaKey: Equatable {
+        let sceneTypeId: String
+        let variantOverrides: [String: String]
+        let mediaBlockID: String
+        let mediaPath: String
+        let mediaSize: Int64
+        let mediaMTime: Double
+    }
+    var mediaKey: MediaKey {
+        MediaKey(sceneTypeId: sceneTypeId, variantOverrides: variantOverrides, mediaBlockID: mediaBlockID,
+                 mediaPath: mediaPath, mediaSize: mediaSize, mediaMTime: mediaMTime)
+    }
+}
+
+struct NextPreviewStats {
+    var prepareHits = 0, prepareMisses = 0
+    var frameHits = 0, frameMisses = 0
+    var staleDropped = 0
+    var lastRenderMs = 0.0
+    var lastPrepareMs = 0.0
+}
+
+/// Owns the prepared context + a bounded frame cache + a serial render queue. Main-thread only for
+/// all state; the render queue is pure compute.
+final class NextPreviewController {
+
+    enum Outcome {
+        case frame(NextBridgeBGRAFrame)
+        case failure(Error)
+    }
+
+    private let device: MTLDevice
+    private let maxCachedFrames: Int
+
+    // --- main-thread-only state ---
+    private var key: NextPreviewKey?
+    private var context: NextPreparedContext?
+    private var frameCache: [Int: NextBridgeBGRAFrame] = [:]
+    private var lruOrder: [Int] = []
+    /// The most recent successfully rendered frame (any key). Presented by `draw(in:)` on a cache
+    /// MISS so a live gesture shows each just-rendered frame immediately, instead of stalling until
+    /// the key settles — the stream of new placement keys otherwise outran the cache and the frame
+    /// was rendered but never presented (preview only updated at gesture end). Main-thread only.
+    private(set) var latestFrame: NextBridgeBGRAFrame?
+    /// Bumped on every identity change. A completion carrying an old epoch is dropped.
+    private var epoch: UInt64 = 0
+    /// True while a prepare/render is in flight for the current epoch (avoids piling up work).
+    private var inFlight = false
+    /// Trailing-coalesced latest request that arrived while a render was in flight. Fired on completion.
+    private var pendingRequest: (inputs: NextBridgeInputs, completion: (Outcome) -> Void)?
+    /// Counts identity (placement/scrub) changes; prerender only runs once this stops advancing
+    /// (gesture settled), so live gestures get the render queue to themselves.
+    private var keyChangesSincePrerender: UInt64 = 0
+    private var lastPrerenderKeyChanges: UInt64 = 0
+
+    private let renderQueue = DispatchQueue(label: "com.animi.next-preview.render", qos: .userInitiated)
+    private(set) var stats = NextPreviewStats()
+
+    /// The single shared render session, built lazily on the render queue (reused across contexts).
+    private var sessionBox: NextSessionBox?
+    /// Render-queue-only: cached decoded media (placement-free) + the media key it was decoded for.
+    /// Reused across placement changes so dragging media does NOT re-decode the photo.
+    private var decodedMedia: NextDecodedMedia?
+    private var decodedMediaKey: NextPreviewKey.MediaKey?
+
+    // 8 cached BGRA8 frames at canvas size (1080×1920 ≈ 8.3MB) ≈ 66MB ceiling — bounded well under
+    // the process memory limit (the OOM that killed the app came from full-res photo decode + a
+    // large frame cache; both are now capped).
+    init(device: MTLDevice, maxCachedFrames: Int = 8) {
+        self.device = device
+        self.maxCachedFrames = max(2, maxCachedFrames)
+    }
+
+    /// Invalidate everything. Main-thread only.
+    func invalidateAll() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        epoch &+= 1
+        key = nil; context = nil
+        frameCache.removeAll(); lruOrder.removeAll()
+        latestFrame = nil
+        inFlight = false
+        pendingRequest = nil
+        keyChangesSincePrerender = 0; lastPrerenderKeyChanges = 0
+        prerenderToken?.cancel(); prerenderToken = nil
+    }
+
+    /// Request the frame for `inputs.frameIndex`. Returns a cached frame synchronously (fast scrub),
+    /// or nil after scheduling an async render whose result is delivered to `completion` on main.
+    func requestFrame(_ inputs: NextBridgeInputs, completion: @escaping (Outcome) -> Void) -> NextBridgeBGRAFrame? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let newKey = NextPreviewKey(inputs: inputs) else {
+            completion(.failure(NextBridgeError.mediaResolveFailed("unresolved media file")))
+            return nil
+        }
+
+        if newKey != key {
+            let mediaChanged = (newKey.mediaKey != key?.mediaKey)
+            key = newKey
+            // Context is placement-dependent → must rebuild on ANY key change. Frame cache is keyed
+            // by frameIndex for the CURRENT placement → invalid on any change.
+            context = nil
+            frameCache.removeAll(); lruOrder.removeAll()
+            pendingRequest = nil
+            prerenderToken?.cancel(); prerenderToken = nil
+            keyChangesSincePrerender &+= 1
+
+            // Epoch is bumped ONLY on MEDIA identity change. A placement-only change (the live
+            // gesture stream, many keys/sec) must NOT bump epoch — otherwise every in-flight render
+            // is marked stale by the next gesture tick before it can publish (18ms render vs a new
+            // key every ~16ms), so NO frame ever reaches the screen until the gesture stops. By not
+            // bumping epoch for placement, each completed placement render publishes as `latestFrame`
+            // and present-on-miss shows it live. The render reads the latest placement via the
+            // captured `inputs`, so the newest placement still wins.
+            if mediaChanged {
+                latestFrame = nil
+                epoch &+= 1
+                inFlight = false      // a stale media render's completion will be epoch-dropped
+            }
+        }
+
+        let frameIndex = max(0, inputs.frameIndex)
+
+        // Fast path: context ready + frame cached → synchronous.
+        if context != nil, let cached = frameCache[frameIndex] {
+            stats.frameHits += 1
+            touchLRU(frameIndex)
+            if stats.frameHits % 30 == 0 { logStats("scrub") }
+            return cached
+        }
+
+        // Trailing-coalesce: if a render is already in flight, stash THIS request as the pending
+        // latest. When the current render completes it fires the pending one immediately, so a live
+        // gesture (rotate/scale/move) keeps catching up to the newest placement instead of stalling
+        // until the next draw (which made dragging feel laggy even though each render is ~18ms).
+        if inFlight {
+            stats.frameMisses += 1
+            pendingRequest = (inputs, completion)
+            return nil
+        }
+
+        stats.frameMisses += 1
+        let renderEpoch = epoch
+        let renderKey = newKey
+        let captured = inputs
+        let mediaKey = newKey.mediaKey
+        let placement = inputs.placement
+        let existingContext = context          // value captured on main; immutable once built
+        inFlight = true
+        if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
+
+        // Pure render on the serial queue: state touched here (sessionBox, decodedMedia*) is ONLY
+        // ever touched on this serial queue.
+        renderQueue.async { [weak self, device] in
+            guard let self else { return }
+            typealias RenderOK = (frame: NextBridgeBGRAFrame, ctx: NextPreparedContext?, prepMs: Double, renderMs: Double)
+            // Drain per-render Metal allocations (textures, command buffers, IOSurfaces) immediately.
+            // Without this, a SLOW sustained gesture (many renders over seconds, each in its own GCD
+            // block) lets autoreleased Metal objects accumulate until the 3GB limit → OOM kill. A
+            // fast flick produces fewer renders and didn't hit it — matching the slow-crash symptom.
+            let result: Result<RenderOK, Error> = autoreleasepool {
+                do {
+                    // Shared session — built once on this queue, reused.
+                    let box: NextSessionBox
+                    if let existing = self.sessionBox { box = existing }
+                    else { box = try NextSingleSceneBridge.makeSession(device: device); self.sessionBox = box }
+
+                    var preparedNow: NextPreparedContext? = nil
+                    var prepMs = 0.0
+                    let ctx: NextPreparedContext
+                    if let existingContext {
+                        ctx = existingContext
+                    } else {
+                        let t0 = Self.nowMs()
+                        // Reuse decoded media (placement-free) if the media key matches — this is the
+                        // expensive photo/asset decode. A placement-only change hits this fast path.
+                        let decoded: NextDecodedMedia
+                        if let cached = self.decodedMedia, self.decodedMediaKey == mediaKey {
+                            decoded = cached
+                        } else {
+                            decoded = try NextSingleSceneBridge.decodeMedia(captured)
+                            self.decodedMedia = decoded
+                            self.decodedMediaKey = mediaKey
+                        }
+                        // Cheap: convert + window for THIS placement, reusing decoded pixels.
+                        let prepared = try NextSingleSceneBridge.assemble(decoded: decoded, placement: placement, sessionBox: box)
+                        prepMs = Self.nowMs() - t0
+                        preparedNow = prepared
+                        ctx = prepared
+                    }
+                    let t1 = Self.nowMs()
+                    let frame = try NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: frameIndex)
+                    return .success((frame, preparedNow, prepMs, Self.nowMs() - t1))
+                } catch {
+                    return .failure(error)
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.inFlight = false
+                let epochStale = (renderEpoch != self.epoch)
+                if epochStale { self.stats.staleDropped += 1 }
+                if !epochStale {
+                    switch result {
+                    case .success(let r):
+                        // Only adopt the prepared context / frame-cache entry if the key still
+                        // matches — during a live gesture the placement key moves on while this
+                        // render was in flight, and caching a stale-placement context/frame would
+                        // make later requests reuse the WRONG placement. `latestFrame` is always
+                        // published (present-on-miss shows the most recent rendered placement).
+                        let keyCurrent = (self.key == renderKey)
+                        if keyCurrent {
+                            if let prepared = r.ctx { self.context = prepared; self.stats.lastPrepareMs = r.prepMs }
+                            self.insertFrame(frameIndex, r.frame)
+                        }
+                        self.stats.lastRenderMs = r.renderMs
+                        self.latestFrame = r.frame
+                        completion(.frame(r.frame))
+                    case .failure(let error):
+                        completion(.failure(error))
+                    }
+                }
+                // Drain the trailing-coalesced latest request (live gesture catch-up).
+                if let pending = self.pendingRequest {
+                    self.pendingRequest = nil
+                    _ = self.requestFrame(pending.inputs, completion: pending.completion)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Atomic cancellation token shared with the running prerender batch (off-main safe).
+    private final class CancelToken { private let l = NSLock(); private var c = false
+        var cancelled: Bool { l.lock(); defer { l.unlock() }; return c }
+        func cancel() { l.lock(); c = true; l.unlock() } }
+    private var prerenderToken: CancelToken?
+
+    /// Pre-render a bounded sequence for smoother playback. Main-thread only; renders missing frames
+    /// on the serial queue and inserts them on main. Skips while a foreground render is in flight.
+    func prerenderSequence(from startFrame: Int, count: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !inFlight, let ctx = context else { return }
+        // Gesture-settled gate: only prerender once the identity (placement/scrub) has stopped
+        // changing since the last attempt. During a live move/scale/rotate the key advances every
+        // tick, so this stays a no-op and the serial render queue is reserved for the live frame.
+        guard keyChangesSincePrerender == lastPrerenderKeyChanges else {
+            lastPrerenderKeyChanges = keyChangesSincePrerender
+            return
+        }
+        let total = max(1, ctx.totalFrames)
+        let targets = (0..<max(0, count)).map { (startFrame + $0) % total }.filter { frameCache[$0] == nil }
+        guard !targets.isEmpty else { return }
+        // Cancel any prior batch and start a fresh token (cancellation is off-main safe).
+        prerenderToken?.cancel()
+        let token = CancelToken()
+        prerenderToken = token
+        let renderEpoch = epoch
+        renderQueue.async { [weak self] in
+            guard let self else { return }
+            for f in targets {
+                if token.cancelled { return }   // identity changed → stop the batch promptly
+                // Drain Metal allocations per prerendered frame (same OOM reason as the main render).
+                guard let frame = autoreleasepool(invoking: { try? NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: f) }) else { continue }
+                DispatchQueue.main.async {
+                    guard renderEpoch == self.epoch else { return }
+                    self.insertFrame(f, frame)
+                }
+            }
+        }
+    }
+
+    func logStats(_ tag: String) {
+        let s = stats
+        NSLog("[CP3 NextPreview] \(tag) prepare(hit=\(s.prepareHits) miss=\(s.prepareMisses)) frame(hit=\(s.frameHits) miss=\(s.frameMisses)) stale=\(s.staleDropped) lastPrep=\(String(format: "%.1f", s.lastPrepareMs))ms lastRender=\(String(format: "%.1f", s.lastRenderMs))ms cached=\(frameCache.count)")
+    }
+
+    // MARK: - Private (main-thread only)
+
+    private func insertFrame(_ index: Int, _ frame: NextBridgeBGRAFrame) {
+        if frameCache[index] == nil { lruOrder.append(index) }
+        frameCache[index] = frame
+        touchLRU(index)
+        while frameCache.count > maxCachedFrames, let evict = lruOrder.first {
+            lruOrder.removeFirst()
+            frameCache.removeValue(forKey: evict)
+        }
+    }
+
+    private func touchLRU(_ index: Int) {
+        if let i = lruOrder.firstIndex(of: index) { lruOrder.remove(at: i) }
+        lruOrder.append(index)
+    }
+
+    private static func nowMs() -> Double { Date().timeIntervalSince1970 * 1000.0 }
+}
+#endif

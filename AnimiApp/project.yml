@@ -2,13 +2,15 @@ name: AnimiApp
 options:
   bundleIdPrefix: com.animi
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "18.0"
   xcodeVersion: "15.0"
   generateEmptyDirectories: true
 
 packages:
   TVECore:
     path: ../TVECore
+  AnimiEngineNext:
+    path: ../AnimiEngineNext
 
 targets:
   AnimiApp:
@@ -42,6 +44,16 @@ targets:
     dependencies:
       - package: TVECore
         product: TVECore
+      - package: AnimiEngineNext
+        product: AnimiEngineCore
+      - package: AnimiEngineNext
+        product: AnimiEngineRenderModel
+      - package: AnimiEngineNext
+        product: AnimiEngineTemplateAdapter
+      - package: AnimiEngineNext
+        product: AnimiEngineRenderGraph
+      - package: AnimiEngineNext
+        product: AnimiEngineMetalRender
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.animi.app
@@ -51,7 +63,7 @@ targets:
         GENERATE_INFOPLIST_FILE: false
         SWIFT_VERSION: "5.9"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: KRX7JQ8GTF
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     info:
@@ -96,7 +108,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.animi.app.tests
         SWIFT_VERSION: "5.9"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: KRX7JQ8GTF
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:

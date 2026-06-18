@@ -97,6 +97,17 @@ internal final class EditorRuntimeSceneEditController {
         if case .sceneEdit = runtime.state {
             runtime.lastRefreshTrigger = .sceneEditMutation
             updateSceneEditRenderSource()
+            #if DEBUG
+            // WP9: when the AnimiEngineNext preview flag is ON, the Next bridge reads live placement
+            // straight from the store and does NOT need the TVECore `.sceneEdit` payload. But
+            // `updateSceneEditRenderSource()` can early-return at its readiness/resolve guards during
+            // a live gesture, swallowing the redraw — which made Next update only at gesture end.
+            // Unconditionally request a redraw so `draw(in:)` (→ Next bridge) fires every `.changed`.
+            // DEBUG-only and flag-gated: flag OFF keeps the exact prior TVECore behavior.
+            if UserDefaults.standard.bool(forKey: "DebugRenderWithNextEngine") {
+                runtime.onOutput?(.renderSourceUpdated)
+            }
+            #endif
         } else {
             runtime.onOutput?(.renderSourceUpdated)
         }

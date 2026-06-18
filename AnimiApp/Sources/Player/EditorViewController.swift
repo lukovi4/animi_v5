@@ -5,6 +5,9 @@ import UniformTypeIdentifiers
 import AVFoundation
 import TVECore
 import os.log
+#if DEBUG
+import MetalPerformanceShaders
+#endif
 
 private let logger = Logger(subsystem: "com.animi.app", category: "EditorViewController")
 
@@ -103,6 +106,17 @@ final class EditorViewController: UIViewController {
     private var renderer: MetalRenderer?
     #if DEBUG
     var debugRenderer: MetalRenderer? { renderer }
+
+    // CP2/CP3 Next-bridge (DEBUG only) transient state.
+    var nextBridgeErrorLogged = false
+    var nextBridgeErrorLabel: UILabel?
+    /// CP3: cached preview context + bounded frame cache + async scheduler.
+    var nextPreviewController: NextPreviewController?
+    /// CP3: an async render failure to surface inside the next valid `draw(in:)` cycle.
+    var pendingNextBridgeError: Error?
+    /// assetId.rawValue -> resolved absolute file URL (async-populated cache).
+    var nextBridgeMediaURLCache: [String: URL] = [:]
+    var nextBridgeMediaResolveInFlight: Set<String> = []
     #endif
 
     // MARK: - Scrub Render Throttle (A/B Testing)
@@ -746,6 +760,16 @@ extension EditorViewController: MTKViewDelegate {
         guard loadingState == .ready else { return }
         guard let runtime = runtime else { return }
 
+        #if DEBUG
+        // CP2: experimental AnimiEngineNext single-scene path. Default OFF; production
+        // path below is untouched unless a developer opts in at runtime. Fail-closed:
+        // a Next-path failure shows a visible debug error and does NOT fall back silently.
+        if NextEngineBridgeToggles.renderWithNextEngine {
+            renderWithNextEngineBridge(in: view)
+            return
+        }
+        #endif
+
         switch runtime.currentRenderSource {
         case .timeline(let payload):
             renderTimeline(in: view, payload: payload)
@@ -755,6 +779,259 @@ extension EditorViewController: MTKViewDelegate {
             return
         }
     }
+
+    #if DEBUG
+    /// CP3 DEBUG preview: serve the current frame from the cached Next preview context. The heavy
+    /// decode/convert/asset/session work is prepared once per template identity; per-frame work is
+    /// rendered async off the main thread and cached. A cached frame is presented synchronously
+    /// (smooth scrub); a miss schedules an async render and presents when ready. Fail-closed:
+    /// errors show the visible red debug error and never fall back to the old renderer.
+    private func renderWithNextEngineBridge(in view: MTKView) {
+        guard let device = metalView.device else { return }
+        let inputs: NextBridgeInputs
+        do { inputs = try makeNextBridgeInputs() }
+        catch { presentNextBridgeError(error, in: view); return }
+
+        if nextPreviewController == nil {
+            nextPreviewController = NextPreviewController(device: device)
+        }
+        guard let controller = nextPreviewController else { return }
+
+        // CRITICAL: `currentDrawable` is ONLY valid inside this `draw(in:)` call. So presentation
+        // happens here and nowhere else. The async completion must NOT present — it only caches the
+        // frame and requests another draw, which re-enters here and presents from the cache.
+        let cached = controller.requestFrame(inputs) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .frame:
+                // Frame is now cached by the controller; ask MTKView to redraw → presents from cache.
+                // Keep the prerender window small (< cache size) so it never thrashes eviction.
+                self.nextPreviewController?.prerenderSequence(from: inputs.frameIndex + 1, count: 5)
+                self.requestRender()
+            case .failure(let error):
+                self.pendingNextBridgeError = error
+                self.requestRender()
+            }
+        }
+        if let cached {
+            presentNextFrame(cached, in: view)
+            clearNextBridgeError()
+        } else if let err = pendingNextBridgeError {
+            // An async render failed earlier; surface it inside the valid draw cycle.
+            pendingNextBridgeError = nil
+            presentNextBridgeError(err, in: view)
+        } else if let latest = controller.latestFrame {
+            // Cache MISS (e.g. a live gesture where each tick is a new placement key): present the
+            // most recent rendered frame NOW. Without this the frame was rendered but never shown
+            // until the gesture stopped, because the next key arrived before draw caught the cache.
+            presentNextFrame(latest, in: view)
+            clearNextBridgeError()
+        }
+        // First-ever frame (no latest yet): leave the drawable as-is; the async completion triggers
+        // another draw once the first frame is ready.
+    }
+
+    /// Assemble Next-bridge inputs from existing app state. Throws `NextBridgeError` on
+    /// missing scene/media (fail closed).
+    private func makeNextBridgeInputs() throws -> NextBridgeInputs {
+        guard let state = session.state else { throw NextBridgeError.noScene }
+        let timeline = state.draft.canonicalTimeline
+
+        // Fix 1: exact single-scene instance resolution. Dictionary order is not semantic, so
+        // resolve the scene strictly from the timeline's single scene item, not values.first.
+        let sceneItems = timeline.sceneItems
+        guard sceneItems.count == 1 else {
+            throw NextBridgeError.multiSceneUnsupported(sceneItemCount: sceneItems.count)
+        }
+        let sceneItem = sceneItems[0]
+        guard sceneItem.kind == .scene,
+              case let .scene(scenePayload)? = timeline.payloads[sceneItem.payloadId] else {
+            throw NextBridgeError.notASceneItem
+        }
+        let sceneTypeId = scenePayload.sceneTypeId
+
+        guard let folderURL = sceneLibrarySnapshot?.scene(byId: sceneTypeId)?.folderURL else {
+            throw NextBridgeError.sceneFolderMissing(sceneTypeId: sceneTypeId)
+        }
+
+        // Scene state is keyed by the scene ITEM id (the scene instance), not values.first.
+        let sceneState = state.draft.sceneInstanceStates[sceneItem.id] ?? .empty
+        let variantOverrides = sceneState.variantOverrides
+
+        // Single media block. Select the one photo slot; fail closed otherwise.
+        let photoSlots = (sceneState.mediaSlotsByBlockId ?? [:]).filter { $0.value.mediaRef.mediaKind == .photo }
+        guard photoSlots.count == 1, let (blockID, slot) = photoSlots.first else {
+            // No bound photo (or more than one) — CP2 single-block scope: fail closed.
+            throw NextBridgeError.noMediaBound(blockID: photoSlots.first?.key ?? "(none)")
+        }
+
+        // Fix 2: respect visibility. A hidden block must NOT render silently.
+        guard slot.visibility else {
+            throw NextBridgeError.blockHidden(blockID: blockID)
+        }
+
+        // Resolve the bound photo URL via the async locator (cached). On a cache miss, kick off
+        // resolution and throw a typed "resolving" error so the next frame succeeds once warm.
+        let key = slot.mediaRef.assetId.rawValue.uuidString
+        guard let mediaURL = nextBridgeMediaURLCache[key] else {
+            resolveNextBridgeMediaURL(slot.mediaRef, registry: state.draft.assetRegistry)
+            throw NextBridgeError.mediaResolveFailed("resolving media URL… (retry)")
+        }
+
+        // Fix 3: pass the REAL app placement (converted to fixed-point inside the bridge).
+        let p = slot.placement
+        let placement = NextBridgePlacement(
+            fitModeRaw: p.fitMode.rawValue,
+            offsetX: p.offsetX,
+            offsetY: p.offsetY,
+            userScale: p.userScale,
+            rotationDegrees: p.rotationDegrees)
+
+        return NextBridgeInputs(
+            sceneTypeId: sceneTypeId,
+            sceneFolderURL: folderURL,
+            variantOverrides: variantOverrides,
+            mediaBlockID: blockID,
+            mediaURL: mediaURL,
+            placement: placement,
+            frameIndex: state.playheadCompressedFrame)
+    }
+
+    /// Aspect-fit the BGRA8 frame into the drawable and present. Deterministic Metal path:
+    /// upload bytes verbatim → MPS bilinear scale (no CoreImage colour management). MUST be called
+    /// only from inside `draw(in:)` — `currentDrawable` is invalid outside the draw cycle.
+    private func presentNextFrame(_ frame: NextBridgeBGRAFrame, in view: MTKView) {
+        guard let drawable = view.currentDrawable,
+              let cmdQueue = commandQueue,
+              let device = metalView.device,
+              let cmdBuf = cmdQueue.makeCommandBuffer() else { return }
+
+        let w = frame.width
+        let h = frame.height
+        let target = drawable.texture
+
+        // Guard against a degenerate frame (empty/zero-size bytes) — force-unwrapping a nil
+        // baseAddress would trap. Fail closed visibly instead of crashing.
+        let expectedBytes = frame.bytesPerRow * h
+        guard w > 0, h > 0, frame.bytesPerRow >= w * 4, frame.bytes.count >= expectedBytes, expectedBytes > 0 else {
+            presentNextBridgeError(NextBridgeError.engine("degenerate frame \(w)x\(h) bytes=\(frame.bytes.count)/\(expectedBytes)"), in: view)
+            return
+        }
+
+        // Deterministic presentation: upload the BGRA8 bytes verbatim into a source texture
+        // (no colour interpretation), then bilinear-scale (aspect-fit) into the drawable via MPS.
+        let srcDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false)
+        srcDesc.usage = [.shaderRead]
+        srcDesc.storageMode = .shared
+        guard let srcTex = device.makeTexture(descriptor: srcDesc) else { return }
+        frame.bytes.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            srcTex.replace(
+                region: MTLRegionMake2D(0, 0, w, h),
+                mipmapLevel: 0,
+                withBytes: base,
+                bytesPerRow: frame.bytesPerRow)
+        }
+
+        // Clear the drawable first (letterbox background), then scale the frame into it.
+        if let pass = view.currentRenderPassDescriptor {
+            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            pass.colorAttachments[0].loadAction = .clear
+            pass.colorAttachments[0].storeAction = .store
+            cmdBuf.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+        }
+
+        let scale = min(Double(target.width) / Double(w), Double(target.height) / Double(h))
+        let scaledW = Double(w) * scale
+        let scaledH = Double(h) * scale
+        let tx = (Double(target.width) - scaledW) / 2.0
+        let ty = (Double(target.height) - scaledH) / 2.0
+        var transform = MPSScaleTransform(scaleX: scale, scaleY: scale, translateX: tx, translateY: ty)
+        withUnsafePointer(to: &transform) { ptr in
+            let scaler = MPSImageBilinearScale(device: device)
+            scaler.scaleTransform = ptr
+            scaler.encode(commandBuffer: cmdBuf, sourceTexture: srcTex, destinationTexture: target)
+        }
+
+        cmdBuf.present(drawable)
+        cmdBuf.commit()
+    }
+
+    private func presentNextBridgeError(_ error: Error, in view: MTKView) {
+        let message = (error as? NextBridgeError)?.description ?? "\(error)"
+        if !nextBridgeErrorLogged {
+            nextBridgeErrorLogged = true
+            log("[CP2 NextBridge] FAIL-CLOSED: \(message)")
+        }
+        // Visible signal: paint the drawable red so the failure is unmistakable on device.
+        view.clearColor = MTLClearColor(red: 0.6, green: 0.0, blue: 0.0, alpha: 1.0)
+        if let drawable = view.currentDrawable,
+           let cmdQueue = commandQueue,
+           let cmdBuf = cmdQueue.makeCommandBuffer(),
+           let pass = view.currentRenderPassDescriptor {
+            pass.colorAttachments[0].clearColor = view.clearColor
+            pass.colorAttachments[0].loadAction = .clear
+            cmdBuf.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+            cmdBuf.present(drawable)
+            cmdBuf.commit()
+        }
+        // DEBUG-only: also show the exact error text on-device (no log access needed to diagnose).
+        showNextBridgeErrorLabel(message, over: view)
+    }
+
+    private func showNextBridgeErrorLabel(_ message: String, over view: MTKView) {
+        let label: UILabel
+        if let existing = nextBridgeErrorLabel {
+            label = existing
+        } else {
+            label = UILabel()
+            label.numberOfLines = 0
+            label.textColor = .white
+            label.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
+            label.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+                label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+                label.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+            ])
+            nextBridgeErrorLabel = label
+        }
+        label.text = "CP2 NextBridge FAIL-CLOSED\n\(message)"
+        label.isHidden = false
+        view.bringSubviewToFront(label)
+    }
+
+    private func clearNextBridgeError() {
+        if nextBridgeErrorLogged {
+            nextBridgeErrorLogged = false
+            metalView.clearColor = MTLClearColor(red: 0.1, green: 0.1, blue: 0.15, alpha: 1.0)
+        }
+        nextBridgeErrorLabel?.isHidden = true
+    }
+
+    /// Resolve a photo `MediaRef` to an absolute file URL via the async locator and cache it.
+    /// Triggers a redraw once warm so the next bridge frame can proceed.
+    private func resolveNextBridgeMediaURL(_ mediaRef: MediaRef, registry: ProjectAssetRegistry) {
+        let key = mediaRef.assetId.rawValue.uuidString
+        guard !nextBridgeMediaResolveInFlight.contains(key) else { return }
+        nextBridgeMediaResolveInFlight.insert(key)
+        let locator = session.mediaLocator
+        Task { [weak self] in
+            let resolved = try? await locator.absoluteURL(for: mediaRef, registry: registry)
+            await MainActor.run {
+                guard let self else { return }
+                self.nextBridgeMediaResolveInFlight.remove(key)
+                if let resolved {
+                    self.nextBridgeMediaURLCache[key] = resolved
+                    self.requestRender()
+                }
+            }
+        }
+    }
+    #endif
 
     private func renderTimeline(in view: MTKView, payload: TimelineRenderSourcePayload) {
         switch payload.resolvedFrame {
