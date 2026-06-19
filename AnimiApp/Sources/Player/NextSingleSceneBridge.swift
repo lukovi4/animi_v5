@@ -113,6 +113,30 @@ struct NextBridgeBlock {
     let placement: NextBridgePlacement
 }
 
+/// The canonical-namespace identity for ONE converted scene instance. CP2/CP4 single-scene used a
+/// fixed `"cp4-inst"`/`"cp4-pay"` and an un-namespaced media reference. CP5 needs every scene of a
+/// multi-scene timeline to carry UNIQUE ids and UNIQUE media references, because the canonical
+/// `RenderInputResolver` fixture keys and scene-binding keys are global — two scenes that reused the
+/// same reference would collide. `referencePrefix` namespaces each block's media reference.
+struct NextSceneIdentity: Equatable {
+    let sceneInstanceID: String
+    let scenePayloadID: String
+    /// Media references become `"\(referencePrefix)-\(blockID)"` — unique per scene instance.
+    let referencePrefix: String
+
+    /// The CP4 single-scene identity, preserved verbatim so the existing single-scene preview path
+    /// renders byte-identically (same references → same fixtures/material keys as before).
+    static let cp4Single = NextSceneIdentity(
+        sceneInstanceID: "cp4-inst", scenePayloadID: "cp4-pay", referencePrefix: "cp4")
+
+    /// A per-index CP5 timeline scene identity.
+    static func cp5Timeline(index: Int) -> NextSceneIdentity {
+        NextSceneIdentity(
+            sceneInstanceID: "cp5-inst-\(index)", scenePayloadID: "cp5-pay-\(index)",
+            referencePrefix: "cp5-s\(index)")
+    }
+}
+
 /// Inputs the caller must assemble from existing app state before invoking the bridge.
 /// CP4 single-scene scope: exactly ONE scene; ONE OR MORE photo media blocks.
 struct NextBridgeInputs {
@@ -126,6 +150,14 @@ struct NextBridgeInputs {
     let blocks: [NextBridgeBlock]
     /// Current playhead frame index (single-scene local frame == project frame).
     let frameIndex: Int
+    /// Canonical namespace identity for this scene instance. Defaults to the CP4 single-scene
+    /// identity so the existing CP4 preview path is unchanged.
+    var identity: NextSceneIdentity = .cp4Single
+    /// Post-roll (ticks) this scene's OUTGOING side must support to satisfy an animated transition
+    /// to the next scene. Single-scene / cut → 0. Set per CP5 boundary. Affects the converter's
+    /// per-layer effective active range AND the manifest `postRollCapability`, so it must be supplied
+    /// at convert time (not patched afterward).
+    var postRollTicks: Int64 = 0
 
     /// CP2/CP3 compatibility accessors for the FIRST block (used by single-block tests and the
     /// cache key's per-block fields). CP4 keys include every block, not just this one.
@@ -162,11 +194,18 @@ final class NextDecodedMedia {
     /// Decoded authored-asset pixels keyed by (materialID, assetID) — placement-free, reusable.
     let assetPixelsByKey: [ResolvedAssetKey: ResolvedPixelInput]
     let canvasMaxPixel: Int
+    /// The scene catalog id, namespace identity, and post-roll this media was decoded for. `assemble`
+    /// reuses them so the real convert matches the probe (same ids, references, layer ranges).
+    let sceneTypeId: String
+    let identity: NextSceneIdentity
+    let postRollTicks: Int64
 
     init(compiledData: Data, blocks: [NextDecodedBlock],
-         assetPixelsByKey: [ResolvedAssetKey: ResolvedPixelInput], canvasMaxPixel: Int) {
+         assetPixelsByKey: [ResolvedAssetKey: ResolvedPixelInput], canvasMaxPixel: Int,
+         sceneTypeId: String, identity: NextSceneIdentity, postRollTicks: Int64) {
         self.compiledData = compiledData; self.blocks = blocks
         self.assetPixelsByKey = assetPixelsByKey; self.canvasMaxPixel = canvasMaxPixel
+        self.sceneTypeId = sceneTypeId; self.identity = identity; self.postRollTicks = postRollTicks
     }
 }
 
@@ -251,20 +290,26 @@ enum NextSingleSceneBridge {
         for b in inputs.blocks {
             guard let inv = invByID[b.blockID] else { throw NextBridgeError.noMediaBound(blockID: b.blockID) }
             let variant = inputs.variantOverrides[b.blockID] ?? inv.selectedVariantID
-            let ref = "cp4-\(b.blockID)"
+            // CP5: media reference is namespaced per scene instance so two scenes never collide.
+            let ref = "\(inputs.identity.referencePrefix)-\(b.blockID)"
             chosenVariantByBlockID[b.blockID] = variant
             referenceByBlockID[b.blockID] = ref
             probeBindings[b.blockID] = .image(reference: ref, mediaPlacement: .identity(fitMode: .contain))
         }
 
-        // Convert with IDENTITY placements to obtain materials/canvas for asset walking.
+        // Convert with IDENTITY placements to obtain materials/canvas for asset walking. The probe
+        // uses the SAME post-roll as the real render so layer active ranges (and thus the asset
+        // walk) match the per-frame convert in `assemble`.
+        let postRoll: TickDuration
+        do { postRoll = try TickDuration(ticks: max(0, inputs.postRollTicks)) }
+        catch { throw NextBridgeError.engine("postRoll: \(error)") }
         let probeOut: CompiledTemplateConverter.Output
         do {
             probeOut = try CompiledTemplateConverter.convert(.init(
                 compiledTemplateData: data, catalogID: inputs.sceneTypeId,
-                sceneInstanceID: "cp4-inst", scenePayloadID: "cp4-pay",
+                sceneInstanceID: inputs.identity.sceneInstanceID, scenePayloadID: inputs.identity.scenePayloadID,
                 selection: TemplateVariantInventory.Selection(chosenVariantByBlockID: chosenVariantByBlockID),
-                mediaBindings: probeBindings, requiredPostRoll: .zero))
+                mediaBindings: probeBindings, requiredPostRoll: postRoll))
         } catch { throw NextBridgeError.engine("convert(probe): \(error)") }
 
         let canvas = probeOut.document.manifest.output.canvas
@@ -298,15 +343,26 @@ enum NextSingleSceneBridge {
 
         return NextDecodedMedia(
             compiledData: data, blocks: decodedBlocks,
-            assetPixelsByKey: assetPixelsByKey, canvasMaxPixel: maxPixel)
+            assetPixelsByKey: assetPixelsByKey, canvasMaxPixel: maxPixel,
+            sceneTypeId: inputs.sceneTypeId, identity: inputs.identity, postRollTicks: max(0, inputs.postRollTicks))
     }
 
     // MARK: - Assemble (light, placement-DEPENDENT — reuses decoded media)
 
-    /// Build a render context for given per-block placements, REUSING decoded media (no re-decode).
-    /// `placementByBlockID` maps each decoded block to its current app placement.
-    static func assemble(decoded: NextDecodedMedia, placementByBlockID: [String: NextBridgePlacement],
-                         sessionBox: NextSessionBox) throws -> NextPreparedContext {
+    /// One scene's placement-applied conversion: the converter `Output` (document + materials),
+    /// the per-block media pixels keyed by reference, and the de-duplicated authored-asset entries.
+    /// Reused by the single-scene `assemble` and the CP5 multi-scene timeline bridge.
+    struct NextSceneConversion {
+        let output: CompiledTemplateConverter.Output
+        let mediaPixelsByReference: [String: ResolvedPixelInput]
+        let assetEntries: [ResolvedAssetPixelEntry]
+    }
+
+    /// Convert ONE decoded scene with its current per-block placements (cheap: reuses decoded
+    /// pixels). Uses the decoded scene's stored identity + post-roll so the document matches the
+    /// probe and (for CP5) carries unique scene/payload ids.
+    static func convertScene(decoded: NextDecodedMedia, placementByBlockID: [String: NextBridgePlacement])
+        throws -> NextSceneConversion {
         var bindings: [String: CompiledTemplateConverter.MediaBinding] = [:]
         var chosenVariantByBlockID: [String: String] = [:]
         var mediaPixelsByReference: [String: ResolvedPixelInput] = [:]
@@ -319,31 +375,42 @@ enum NextSingleSceneBridge {
             mediaPixelsByReference[blk.mediaReference] = blk.photoPixels
         }
 
+        let postRoll: TickDuration
+        do { postRoll = try TickDuration(ticks: max(0, decoded.postRollTicks)) }
+        catch { throw NextBridgeError.engine("postRoll: \(error)") }
+
         let out: CompiledTemplateConverter.Output
         do {
             out = try CompiledTemplateConverter.convert(.init(
-                compiledTemplateData: decoded.compiledData, catalogID: "cp4", sceneInstanceID: "cp4-inst",
-                scenePayloadID: "cp4-pay",
+                compiledTemplateData: decoded.compiledData, catalogID: decoded.sceneTypeId,
+                sceneInstanceID: decoded.identity.sceneInstanceID, scenePayloadID: decoded.identity.scenePayloadID,
                 selection: TemplateVariantInventory.Selection(chosenVariantByBlockID: chosenVariantByBlockID),
-                mediaBindings: bindings, requiredPostRoll: .zero))
+                mediaBindings: bindings, requiredPostRoll: postRoll))
         } catch { throw NextBridgeError.engine("convert: \(error)") }
-
-        let (window, totalFrames) = try buildWindow(out.document)
 
         var assetEntries: [ResolvedAssetPixelEntry] = []
         for (key, pix) in decoded.assetPixelsByKey {
             assetEntries.append(ResolvedAssetPixelEntry(key: key, pixelInput: pix))
         }
+        return NextSceneConversion(output: out, mediaPixelsByReference: mediaPixelsByReference, assetEntries: assetEntries)
+    }
+
+    /// Build a single-scene render context for given per-block placements, REUSING decoded media.
+    /// CP4 single-scene path — unchanged behavior.
+    static func assemble(decoded: NextDecodedMedia, placementByBlockID: [String: NextBridgePlacement],
+                         sessionBox: NextSessionBox) throws -> NextPreparedContext {
+        let conv = try convertScene(decoded: decoded, placementByBlockID: placementByBlockID)
+        let (window, totalFrames) = try buildWindow(conv.output.document)
 
         let configuration: RenderConfiguration
         do {
             configuration = try RenderConfiguration(
-                output: out.document.manifest.output, colorContract: .task003, intermediateProfile: .rgba16FloatLinear)
+                output: conv.output.document.manifest.output, colorContract: .task003, intermediateProfile: .rgba16FloatLinear)
         } catch { throw NextBridgeError.engine("config: \(error)") }
 
         return NextPreparedContext(
-            materials: out.materials, window: window, mediaPixelsByReference: mediaPixelsByReference,
-            assetEntries: assetEntries, configuration: configuration,
+            materials: conv.output.materials, window: window, mediaPixelsByReference: conv.mediaPixelsByReference,
+            assetEntries: conv.assetEntries, configuration: configuration,
             session: sessionBox.session, totalFrames: totalFrames)
     }
 

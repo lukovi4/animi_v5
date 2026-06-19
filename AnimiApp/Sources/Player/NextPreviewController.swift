@@ -74,6 +74,49 @@ struct NextPreviewKey: Equatable {
     }
 }
 
+/// CP5: identity of a MULTI-SCENE timeline that must be stable for the prepared timeline context to
+/// be reused. Any change (scene set, per-scene media/placement/variant, or a boundary transition)
+/// rebuilds it. Composed from the per-scene `NextPreviewKey`s plus the boundary transition descriptors.
+struct NextTimelineKey: Equatable {
+    struct TransitionKey: Equatable {
+        let typeRaw: String
+        let direction: String?
+        let durationFrames: Int
+        let easingRaw: String
+    }
+    let sceneKeys: [NextPreviewKey]      // one per scene, in timeline order
+    let transitions: [TransitionKey]     // n-1, in boundary order
+    let fps: Int
+
+    init?(inputs: NextBridgeTimelineInputs) {
+        guard inputs.scenes.count >= 2 else { return nil }
+        var keys: [NextPreviewKey] = []
+        for ts in inputs.scenes {
+            guard let k = NextPreviewKey(inputs: ts.scene) else { return nil }
+            keys.append(k)
+        }
+        self.sceneKeys = keys
+        self.transitions = inputs.scenes.dropLast().map { ts in
+            let t = ts.transitionToNext
+            return TransitionKey(
+                typeRaw: t?.typeRaw ?? "none", direction: t?.direction,
+                durationFrames: t?.durationFrames ?? 0, easingRaw: t?.easingRaw ?? "linear")
+        }
+        self.fps = inputs.fps
+    }
+
+    /// Placement-FREE media identity for the whole timeline: the per-scene media keys + transitions.
+    /// A placement-only change on any scene keeps this stable, so the heavy per-scene decode is reused.
+    struct MediaKey: Equatable {
+        let sceneMediaKeys: [NextPreviewKey.MediaKey]
+        let transitions: [TransitionKey]
+        let fps: Int
+    }
+    var mediaKey: MediaKey {
+        MediaKey(sceneMediaKeys: sceneKeys.map { $0.mediaKey }, transitions: transitions, fps: fps)
+    }
+}
+
 struct NextPreviewStats {
     var prepareHits = 0, prepareMisses = 0
     var frameHits = 0, frameMisses = 0
@@ -125,6 +168,13 @@ final class NextPreviewController {
     private var decodedMedia: NextDecodedMedia?
     private var decodedMediaKey: NextPreviewKey.MediaKey?
 
+    // --- CP5 timeline-mode state (main-thread only, mirrors the single-scene fields) ---
+    private var timelineKey: NextTimelineKey?
+    private var timelineContext: NextTimelinePreparedContext?
+    /// Render-queue-only: cached per-scene decoded media (placement-free) + the timeline media key.
+    private var timelineDecoded: [NextDecodedMedia]?
+    private var timelineDecodedKey: NextTimelineKey.MediaKey?
+
     // 8 cached BGRA8 frames at canvas size (1080×1920 ≈ 8.3MB) ≈ 66MB ceiling — bounded well under
     // the process memory limit (the OOM that killed the app came from full-res photo decode + a
     // large frame cache; both are now capped).
@@ -144,6 +194,8 @@ final class NextPreviewController {
         pendingRequest = nil
         keyChangesSincePrerender = 0; lastPrerenderKeyChanges = 0
         prerenderToken?.cancel(); prerenderToken = nil
+        timelineKey = nil; timelineContext = nil
+        timelineDecoded = nil; timelineDecodedKey = nil
     }
 
     /// Request the frame for `inputs.frameIndex`. Returns a cached frame synchronously (fast scrub),
@@ -286,6 +338,127 @@ final class NextPreviewController {
                 if let pending = self.pendingRequest {
                     self.pendingRequest = nil
                     _ = self.requestFrame(pending.inputs, completion: pending.completion)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Trailing-coalesced latest TIMELINE request (separate from the single-scene `pendingRequest`).
+    private var pendingTimelineRequest: (inputs: NextBridgeTimelineInputs, completion: (Outcome) -> Void)?
+
+    /// CP5: request the frame for a MULTI-SCENE timeline at `inputs.nominalFrameIndex`. Mirrors
+    /// `requestFrame`'s epoch / bounded frame cache / latest-wins / trailing-coalesce machinery, but
+    /// builds a merged multi-scene context and renders `.single`/`.transition` frames through Next.
+    /// Returns a cached frame synchronously (fast scrub) or nil after scheduling an async render.
+    func requestTimelineFrame(_ inputs: NextBridgeTimelineInputs, completion: @escaping (Outcome) -> Void) -> NextBridgeBGRAFrame? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let newKey = NextTimelineKey(inputs: inputs) else {
+            completion(.failure(NextBridgeError.multiSceneUnsupported(sceneItemCount: inputs.scenes.count)))
+            return nil
+        }
+
+        if newKey != timelineKey {
+            let mediaChanged = (newKey.mediaKey != timelineKey?.mediaKey)
+            timelineKey = newKey
+            timelineContext = nil
+            frameCache.removeAll(); lruOrder.removeAll()
+            pendingTimelineRequest = nil
+            prerenderToken?.cancel(); prerenderToken = nil
+            keyChangesSincePrerender &+= 1
+            // Epoch bumps only on a MEDIA change (same reasoning as the single-scene path: a
+            // placement-only stream must not stale-drop every in-flight render before it publishes).
+            if mediaChanged {
+                latestFrame = nil
+                epoch &+= 1
+                inFlight = false
+            }
+        }
+
+        let frameIndex = max(0, inputs.nominalFrameIndex)
+
+        if timelineContext != nil, let cached = frameCache[frameIndex] {
+            stats.frameHits += 1
+            touchLRU(frameIndex)
+            if stats.frameHits % 30 == 0 { logStats("timeline-scrub") }
+            return cached
+        }
+
+        if inFlight {
+            stats.frameMisses += 1
+            pendingTimelineRequest = (inputs, completion)
+            return nil
+        }
+
+        stats.frameMisses += 1
+        let renderEpoch = epoch
+        let renderKey = newKey
+        let captured = inputs
+        let mediaKey = newKey.mediaKey
+        let existingContext = timelineContext
+        inFlight = true
+        if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
+
+        renderQueue.async { [weak self, device] in
+            guard let self else { return }
+            typealias RenderOK = (frame: NextBridgeBGRAFrame, ctx: NextTimelinePreparedContext?, prepMs: Double, renderMs: Double)
+            let result: Result<RenderOK, Error> = autoreleasepool {
+                do {
+                    let box: NextSessionBox
+                    if let existing = self.sessionBox { box = existing }
+                    else { box = try NextSingleSceneBridge.makeSession(device: device); self.sessionBox = box }
+
+                    var preparedNow: NextTimelinePreparedContext? = nil
+                    var prepMs = 0.0
+                    let ctx: NextTimelinePreparedContext
+                    if let existingContext {
+                        ctx = existingContext
+                    } else {
+                        let t0 = Self.nowMs()
+                        // Reuse per-scene decoded media (placement-free) if the timeline media key matches.
+                        let decoded: [NextDecodedMedia]
+                        if let cached = self.timelineDecoded, self.timelineDecodedKey == mediaKey {
+                            decoded = cached
+                        } else {
+                            decoded = try NextTimelineBridge.decodeTimeline(captured)
+                            self.timelineDecoded = decoded
+                            self.timelineDecodedKey = mediaKey
+                        }
+                        let prepared = try NextTimelineBridge.assembleTimeline(decoded: decoded, inputs: captured, sessionBox: box)
+                        prepMs = Self.nowMs() - t0
+                        preparedNow = prepared
+                        ctx = prepared
+                    }
+                    let t1 = Self.nowMs()
+                    let frame = try NextTimelineBridge.renderFrameBGRA(context: ctx, frameIndex: frameIndex)
+                    return .success((frame, preparedNow, prepMs, Self.nowMs() - t1))
+                } catch {
+                    return .failure(error)
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.inFlight = false
+                let epochStale = (renderEpoch != self.epoch)
+                if epochStale { self.stats.staleDropped += 1 }
+                if !epochStale {
+                    switch result {
+                    case .success(let r):
+                        let keyCurrent = (self.timelineKey == renderKey)
+                        if keyCurrent {
+                            if let prepared = r.ctx { self.timelineContext = prepared; self.stats.lastPrepareMs = r.prepMs }
+                            self.insertFrame(frameIndex, r.frame)
+                        }
+                        self.stats.lastRenderMs = r.renderMs
+                        self.latestFrame = r.frame
+                        completion(.frame(r.frame))
+                    case .failure(let error):
+                        completion(.failure(error))
+                    }
+                }
+                if let pending = self.pendingTimelineRequest {
+                    self.pendingTimelineRequest = nil
+                    _ = self.requestTimelineFrame(pending.inputs, completion: pending.completion)
                 }
             }
         }

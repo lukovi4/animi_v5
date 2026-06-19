@@ -788,7 +788,7 @@ extension EditorViewController: MTKViewDelegate {
     /// errors show the visible red debug error and never fall back to the old renderer.
     private func renderWithNextEngineBridge(in view: MTKView) {
         guard let device = metalView.device else { return }
-        let inputs: NextBridgeInputs
+        let inputs: NextBridgePreviewInputs
         do { inputs = try makeNextBridgeInputs() }
         catch { presentNextBridgeError(error, in: view); return }
 
@@ -800,17 +800,33 @@ extension EditorViewController: MTKViewDelegate {
         // CRITICAL: `currentDrawable` is ONLY valid inside this `draw(in:)` call. So presentation
         // happens here and nowhere else. The async completion must NOT present — it only caches the
         // frame and requests another draw, which re-enters here and presents from the cache.
-        let cached = controller.requestFrame(inputs) { [weak self] outcome in
-            guard let self else { return }
-            switch outcome {
-            case .frame:
-                // Frame is now cached by the controller; ask MTKView to redraw → presents from cache.
-                // Keep the prerender window small (< cache size) so it never thrashes eviction.
-                self.nextPreviewController?.prerenderSequence(from: inputs.frameIndex + 1, count: 5)
-                self.requestRender()
-            case .failure(let error):
-                self.pendingNextBridgeError = error
-                self.requestRender()
+        //
+        // CP5: a multi-scene timeline routes to the timeline path (cut/fade/slide via Next); a single
+        // scene stays on the CP4 single-scene path verbatim.
+        let cached: NextBridgeBGRAFrame?
+        switch inputs {
+        case .single(let single):
+            cached = controller.requestFrame(single) { [weak self] outcome in
+                guard let self else { return }
+                switch outcome {
+                case .frame:
+                    self.nextPreviewController?.prerenderSequence(from: single.frameIndex + 1, count: 5)
+                    self.requestRender()
+                case .failure(let error):
+                    self.pendingNextBridgeError = error
+                    self.requestRender()
+                }
+            }
+        case .timeline(let timeline):
+            cached = controller.requestTimelineFrame(timeline) { [weak self] outcome in
+                guard let self else { return }
+                switch outcome {
+                case .frame:
+                    self.requestRender()
+                case .failure(let error):
+                    self.pendingNextBridgeError = error
+                    self.requestRender()
+                }
             }
         }
         if let cached {
@@ -831,19 +847,38 @@ extension EditorViewController: MTKViewDelegate {
         // another draw once the first frame is ready.
     }
 
+    /// Either a single-scene CP4 input or a multi-scene CP5 timeline input.
+    private enum NextBridgePreviewInputs {
+        case single(NextBridgeInputs)
+        case timeline(NextBridgeTimelineInputs)
+    }
+
     /// Assemble Next-bridge inputs from existing app state. Throws `NextBridgeError` on
-    /// missing scene/media (fail closed).
-    private func makeNextBridgeInputs() throws -> NextBridgeInputs {
+    /// missing scene/media (fail closed). Routes to the single-scene (CP4) or multi-scene
+    /// timeline (CP5) path by the number of scene items.
+    private func makeNextBridgeInputs() throws -> NextBridgePreviewInputs {
         guard let state = session.state else { throw NextBridgeError.noScene }
         let timeline = state.draft.canonicalTimeline
-
-        // Fix 1: exact single-scene instance resolution. Dictionary order is not semantic, so
-        // resolve the scene strictly from the timeline's single scene item, not values.first.
         let sceneItems = timeline.sceneItems
-        guard sceneItems.count == 1 else {
-            throw NextBridgeError.multiSceneUnsupported(sceneItemCount: sceneItems.count)
+        guard !sceneItems.isEmpty else { throw NextBridgeError.noScene }
+
+        if sceneItems.count == 1 {
+            // CP4 single-scene path: local frame == project frame, no transitions.
+            let single = try makeNextSingleSceneInputs(
+                sceneItem: sceneItems[0], state: state, timeline: timeline,
+                frameIndex: state.playheadCompressedFrame)
+            return .single(single)
         }
-        let sceneItem = sceneItems[0]
+
+        // CP5 multi-scene timeline path.
+        return .timeline(try makeNextTimelineInputs(state: state, timeline: timeline, sceneItems: sceneItems))
+    }
+
+    /// Build the CP4 single-scene inputs for one scene item at a given LOCAL frame index.
+    /// Reused by the CP5 timeline builder (one per scene; identity/post-roll assigned later).
+    private func makeNextSingleSceneInputs(
+        sceneItem: TimelineItem, state: EditorState, timeline: CanonicalTimeline, frameIndex: Int
+    ) throws -> NextBridgeInputs {
         guard sceneItem.kind == .scene,
               case let .scene(scenePayload)? = timeline.payloads[sceneItem.payloadId] else {
             throw NextBridgeError.notASceneItem
@@ -854,27 +889,23 @@ extension EditorViewController: MTKViewDelegate {
             throw NextBridgeError.sceneFolderMissing(sceneTypeId: sceneTypeId)
         }
 
-        // Scene state is keyed by the scene ITEM id (the scene instance), not values.first.
+        // Scene state is keyed by the scene ITEM id (the scene instance).
         let sceneState = state.draft.sceneInstanceStates[sceneItem.id] ?? .empty
         let variantOverrides = sceneState.variantOverrides
 
-        // CP4: support N media blocks. Every assigned slot must be PHOTO, visible, and resolved.
-        // Anything else (video/audio media kind, hidden block) FAILS CLOSED — CP4 photo-only scope.
+        // CP4/CP5: support N media blocks. Every assigned slot must be PHOTO, visible, and resolved.
+        // Anything else (video/audio media kind, hidden block) FAILS CLOSED — photo-only scope.
         let allSlots = sceneState.mediaSlotsByBlockId ?? [:]
         guard !allSlots.isEmpty else { throw NextBridgeError.noMediaBound(blockID: "(none)") }
 
         var blocks: [NextBridgeBlock] = []
         for (blockID, slot) in allSlots.sorted(by: { $0.key < $1.key }) {
-            // Fail closed on non-photo media (video/audio): CP4 is photo-only; no silent skip.
             guard slot.mediaRef.mediaKind == .photo else {
                 throw NextBridgeError.unsupportedMediaKind(blockID: blockID, kind: slot.mediaRef.mediaKind.rawValue)
             }
-            // Fail closed on a hidden block: do NOT invent hidden-layer semantics (STOP-gated).
             guard slot.visibility else {
                 throw NextBridgeError.blockHidden(blockID: blockID)
             }
-            // Resolve the bound photo URL via the async locator (cached). On a miss, kick off
-            // resolution and throw a typed "resolving" error so the next frame succeeds once warm.
             let key = slot.mediaRef.assetId.rawValue.uuidString
             guard let mediaURL = nextBridgeMediaURLCache[key] else {
                 resolveNextBridgeMediaURL(slot.mediaRef, registry: state.draft.assetRegistry)
@@ -890,11 +921,65 @@ extension EditorViewController: MTKViewDelegate {
         }
 
         return NextBridgeInputs(
-            sceneTypeId: sceneTypeId,
-            sceneFolderURL: folderURL,
-            variantOverrides: variantOverrides,
-            blocks: blocks,
-            frameIndex: state.playheadCompressedFrame)
+            sceneTypeId: sceneTypeId, sceneFolderURL: folderURL,
+            variantOverrides: variantOverrides, blocks: blocks, frameIndex: frameIndex)
+    }
+
+    /// Build the CP5 multi-scene timeline inputs: per-scene inputs + boundary transitions + the
+    /// NOMINAL project frame. The canonical evaluator owns transition compression/progress, so we
+    /// hand it the NOMINAL frame (cumulative nominal scene frames) — NOT the app compressed playhead.
+    private func makeNextTimelineInputs(
+        state: EditorState, timeline: CanonicalTimeline, sceneItems: [TimelineItem]
+    ) throws -> NextBridgeTimelineInputs {
+        let fps = Self.nextTimelineFps
+
+        // Per-scene inputs (frame index is irrelevant per scene; the project frame drives evaluation).
+        var scenes: [NextBridgeTimelineScene] = []
+        for i in sceneItems.indices {
+            let sceneItem = sceneItems[i]
+            let single = try makeNextSingleSceneInputs(
+                sceneItem: sceneItem, state: state, timeline: timeline, frameIndex: 0)
+            // Boundary transition from THIS scene to the next (nil for the last scene).
+            var transitionToNext: NextBridgeTransition? = nil
+            if i < sceneItems.count - 1 {
+                let key = SceneBoundaryKey(sceneItem.id, sceneItems[i + 1].id)
+                if let appT = timeline.boundaryTransitions[key], appT.type != .none {
+                    transitionToNext = Self.makeNextTransition(appT)
+                }
+            }
+            scenes.append(NextBridgeTimelineScene(scene: single, transitionToNext: transitionToNext))
+        }
+
+        // Map the app COMPRESSED playhead → NOMINAL project frame via the app's own mapper, so the
+        // value handed to Next lines up with the canonical project duration (sum of nominal durations).
+        let math = TimelineTransitionMath(
+            sceneItems: sceneItems, boundaryTransitions: timeline.boundaryTransitions, fps: fps)
+        let mapper = TimelinePlayheadMapper(math: math)
+        let nominalFrame = mapper.nominalFrame(forCompressedFrame: state.playheadCompressedFrame)
+
+        return NextBridgeTimelineInputs(scenes: scenes, nominalFrameIndex: nominalFrame, fps: fps)
+    }
+
+    /// The v1 product timeline frame rate (matches `TimelineTransitionMath` defaults and the
+    /// canonical `FrameRate.fps30`). Kept as one constant so timing stays consistent.
+    private static let nextTimelineFps = 30
+
+    /// Map an app `SceneTransition` to the bridge's primitive transition descriptor. push/dipToBlack/
+    /// dipToWhite are carried through verbatim and fail closed later in `NextTransitionMapping`.
+    private static func makeNextTransition(_ t: SceneTransition) -> NextBridgeTransition {
+        let typeRaw: String
+        var direction: String? = nil
+        switch t.type {
+        case .none: typeRaw = "none"
+        case .fade: typeRaw = "fade"
+        case .slide(let d): typeRaw = "slide"; direction = d.rawValue
+        case .push(let d): typeRaw = "push"; direction = d.rawValue
+        case .dipToBlack: typeRaw = "dipToBlack"
+        case .dipToWhite: typeRaw = "dipToWhite"
+        }
+        return NextBridgeTransition(
+            typeRaw: typeRaw, direction: direction,
+            durationFrames: t.durationFrames, easingRaw: t.easingPreset.rawValue)
     }
 
     /// Aspect-fit the BGRA8 frame into the drawable and present. Deterministic Metal path:
