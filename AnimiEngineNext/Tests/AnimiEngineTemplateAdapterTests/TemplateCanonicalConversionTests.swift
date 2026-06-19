@@ -298,7 +298,10 @@ final class TemplateCanonicalConversionTests: XCTestCase {
             selection: Self.selection(inventory: inventory, overrideBlockID: "block_01", variantID: "v1"),
             mediaBindings: try Self.deterministicBindings(decoded: decoded), requiredPostRoll: .zero))
         // Pin the material hash so any accidental change to the program's field set/encoding is caught.
-        XCTAssertEqual(out.materialHash, "55b754c0e4e692c298b605a40260b5a48a1fa23a8952638ae3d069f7df33115b")
+        // CP4 Rev-4 canonical cleanup: the duplicate `mediaGeometry.animSize*` field was REMOVED (anim size
+        // is carried once by `RenderProgramMeta.width/height`), so the encoding — and this hash — change.
+        // Group-transform opacity stays UNIT (0–1), matching TVECore.
+        XCTAssertEqual(out.materialHash, "78599fefe12714fc419a15ea0b418c8b0ad2fb356295b101caec65dc58155822")
     }
 
     // MARK: - Hash separation (item 7)

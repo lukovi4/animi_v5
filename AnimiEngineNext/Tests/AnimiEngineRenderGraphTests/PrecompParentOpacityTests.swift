@@ -119,9 +119,13 @@ final class PrecompParentOpacityTests: XCTestCase {
         XCTAssertNotEqual(atZero.hash, atEnd.hash, "the opacity keyframe must change the graph payload/hash over time")
     }
 
-    // 5) null/parent opacity: a child whose parent is a null layer (opacity 0) draws transparent — parent
-    //    opacity is inherited like parent transform.
-    func testNullParentOpacityInheritedByChild() throws {
+    // 5) null/parent opacity is NOT inherited by the child. Per After Effects / Lottie semantics and the
+    //    TVECore oracle (`AnimIR.computeWorldTransform`: "Parenting chain affects ONLY transform, NOT
+    //    opacity"; `worldOpacity = baseWorldOpacity * localOpacity`), layer parenting propagates the world
+    //    MATRIX but never opacity. Only the enclosing precomp CONTAINER opacity (tests 1–4) propagates.
+    //    Regression for example_4blocks block_02: its alpha-matte source+consumer are parented to a
+    //    0%-opacity null layer (`img_1.2_parent`); inheriting that 0 blanked the whole block (empty matte).
+    func testNullParentOpacityNotInheritedByChild() throws {
         // Root comp: null/parent layer id 1 (opacity 0), child image layer id 2 parented to 1.
         let nullParent = RenderLayer(id: 1, name: "null", type: 3, timing: try timing(), parentLayerID: nil,
             transform: transform(opacity: .static(try OpacityScalar(rawValue: 0))), masks: [], matte: nil,
@@ -143,6 +147,7 @@ final class PrecompParentOpacityTests: XCTestCase {
         var ops: [Int64] = []
         for c in graph.commands { if case let .drawImage(_, _, op, _) = c.payload { ops.append(op.rawValue) } }
         XCTAssertFalse(ops.isEmpty, "child draws")
-        XCTAssertTrue(ops.allSatisfy { $0 == 0 }, "null parent opacity 0 ⇒ child draw opacity 0, got \(ops)")
+        XCTAssertTrue(ops.allSatisfy { $0 == OpacityScalar.unitsPerUnit },
+                      "null PARENT opacity 0 must NOT scale the child (parenting = transform only) ⇒ child draw opacity full, got \(ops)")
     }
 }

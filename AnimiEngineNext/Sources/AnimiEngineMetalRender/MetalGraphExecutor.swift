@@ -19,6 +19,10 @@ struct MetalGraphExecutor {
     let onExecutionEvent: ((ExecutionEvent) -> Void)?
     /// Corrective §7 — package-internal hook to surface the per-execution owner to a lifecycle test.
     let onOwnerCreated: ((MetalResourceOwner) -> Void)?
+    /// Diagnostic seam (package-internal, inert when nil) — fires after each render command is encoded into
+    /// the single command buffer, so a test can blit-read a surface's *intermediate* state at that exact
+    /// point in the GPU program. Production sets nothing, so this is a no-op and behaviour is unchanged.
+    var onCommandEncoded: ((Int, RenderCommandPayload, MetalResourceOwner, MTLCommandBuffer) -> Void)? = nil
 
     func execute(_ graph: RenderGraph) throws -> RenderedFrame {
         let configuration = graph.configuration
@@ -309,7 +313,7 @@ struct MetalGraphExecutor {
             try openSceneEncoder(target: id)
         }
 
-        for command in graph.commands {
+        for (commandIndex, command) in graph.commands.enumerated() {
             switch command.payload {
             case .declareResource, .offscreenSurface:
                 break
@@ -402,6 +406,13 @@ struct MetalGraphExecutor {
                 try encodeImageDraw(
                     resourceID: resourceID, transform: transform, opacity: opacity, target: target,
                     state: state, owner: owner, applyScissor: applyScissor)
+            }
+
+            // Diagnostic seam (inert in production): flush any open scene encoder so the captured surface
+            // reflects all draws encoded so far, then hand the test this command + owner + buffer to blit.
+            if let capture = onCommandEncoded {
+                try endEncoderIfOpen(state)
+                capture(commandIndex, command.payload, owner, commandBuffer)
             }
         }
         try endEncoderIfOpen(state)

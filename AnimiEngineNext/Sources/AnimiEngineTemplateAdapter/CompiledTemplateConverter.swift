@@ -348,6 +348,9 @@ public enum CompiledTemplateConverter {
                 points: baseline.contentSizeLocal.width, field: "block[\(block.blockID)].contentSize.width"),
             contentSizeHeight: try FixedPointConversion.canvasScalar(
                 points: baseline.contentSizeLocal.height, field: "block[\(block.blockID)].contentSize.height"),
+            // NOTE: the WHOLE animation coordinate space (TVECore animIR.meta.size) is NOT duplicated here;
+            // it is carried once by `RenderProgramMeta.width/height` (same animIR.meta.size). The canonical
+            // block→canvas transform reads it from `program.meta`. (CP4 Rev-4 canonical cleanup.)
             contentRect: try Self.fixedRect(baseline.contentRectLocal, field: "block[\(block.blockID)].contentRect"),
             placementRect: try Self.fixedRect(
                 runtimeBlock.mediaInputGeometry.placementRectLocal, field: "block[\(block.blockID)].placementRect"),

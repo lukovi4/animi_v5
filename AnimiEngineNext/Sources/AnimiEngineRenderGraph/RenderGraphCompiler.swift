@@ -14,7 +14,8 @@ import AnimiEngineRenderModel
 ///   * **#4** authored image layers draw their pre-resolved asset pixels; the binding layer draws the
 ///     user media; a missing asset is a typed error;
 ///   * **#6** a matte source is rendered into an explicit surface and linked to its consumer;
-///   * **#7** `blockToCanvas` carries the complete `Placement` (frame origin + scale + rotation);
+///   * **#7 / CP4** scene-layer `blockToCanvas` mirrors the TVECore block transform:
+///     identity when the authored animation spans the canvas, otherwise `animToInputContain`;
 ///   * **#9** dense unique composition orders and `SceneRole` vs body position are enforced.
 public enum RenderGraphCompiler {
 
@@ -160,8 +161,28 @@ public enum RenderGraphCompiler {
             return   // .inactive: nothing rendered.
         }
 
-        // blockToCanvas = the complete outer Placement (frame origin + scale + rotation), corrective #7.
-        let blockToCanvas = try placementMatrix(layer.placement)
+        // blockToCanvas: maps the block's ANIMATION coordinate space (where authored layer positions
+        // live) into the canvas, mirroring the TVECore oracle (SceneTransforms.blockTransform):
+        //   if animSize == canvasSize → IDENTITY (authored positions are canvas-absolute);
+        //   else → animToInputContain(animSize, blockRectCanvas) (uniform contain-scale + centre).
+        // animSize is the WHOLE animation coordinate space = AnimIR meta.size, carried canonically by
+        // `program.meta.width/height` (NOT duplicated in mediaGeometry — CP4 Rev-4 cleanup). It is
+        // DISTINCT from `mediaGeometry.contentSize` (the binding fit baseline). The previous model used
+        // `placementMatrix(Placement(frame: block.rect))`, which re-applied the block origin on top of
+        // already-canvas-absolute authored positions (the double-origin bug). MediaFitResolver still
+        // uses contentRect/contentSize as the fit baseline.
+        let canvasWRaw = try canvasRaw(ctx.configuration.output.canvas.width)
+        let canvasHRaw = try canvasRaw(ctx.configuration.output.canvas.height)
+        let animWidthRaw = program.meta.width.rawValue
+        let animHeightRaw = program.meta.height.rawValue
+        let blockToCanvas: FixedAffineTransform2D
+        if animWidthRaw == canvasWRaw && animHeightRaw == canvasHRaw {
+            blockToCanvas = .identity
+        } else {
+            blockToCanvas = try animToInputContain(
+                animWidth: animWidthRaw, animHeight: animHeightRaw,
+                blockRect: program.mediaGeometry.blockRectCanvas)
+        }
 
         // Expand the complete program tree from the root composition.
         guard let root = program.compositions.first(where: { $0.id == program.rootCompID }) else {
@@ -251,34 +272,27 @@ public enum RenderGraphCompiler {
         return world
     }
 
-    /// The accumulated opacity of `layer` within `comp` at `compFrame`, applying the **parent chain** —
-    /// symmetric to ``worldWithinComp`` for transforms. Each parent (e.g. a null/parent layer) contributes
-    /// its own sampled opacity at its OWN transform frame (same timing rule as the transform chain), so a
-    /// parent layer's opacity scales its children (bugfix: parent opacity was previously ignored — only the
-    /// transform chain was honoured). The product is checked fixed-point and clamped to `[0, 1]`.
+    /// The accumulated opacity of `layer` within `comp` at `compFrame`: the inherited **precomp-container**
+    /// opacity (`parentOpacity`) × this layer's OWN sampled opacity. Per After Effects / Lottie semantics
+    /// (and the TVECore oracle, `AnimIR.computeWorldTransform`: `worldOpacity = baseWorldOpacity * localOpacity`),
+    /// **layer parenting affects ONLY transform, never opacity** — the parent chain is honoured for the world
+    /// matrix (``worldWithinComp``) but must NOT scale opacity. Only the enclosing precomp container's opacity
+    /// (carried in `parentOpacity` across the recursion) propagates to children. (Corrective: a prior change
+    /// wrongly walked the parenting chain for opacity too, so a 0%-opacity parent/null layer zeroed its
+    /// children — e.g. example_4blocks block_02's `img_1.2_parent` blanked the alpha-matte source+consumer.)
+    /// The product is checked fixed-point and clamped to `[0, 1]`.
     static func opacityWithinComp(
         _ layer: RenderLayer, layersByID: [Int: RenderLayer], comp: RenderComposition,
         compFrame: RationalSourceTime, parentOpacity: OpacityScalar
     ) throws -> OpacityScalar {
-        // Walk the same layer→…→root chain worldWithinComp uses (cycles/missing parents already rejected
-        // there on this compile path; re-detect defensively to avoid an infinite loop).
-        var raw = parentOpacity.rawValue
-        var seen = Set<Int>()
-        var currentID: Int? = layer.id
-        while let id = currentID {
-            guard let l = layersByID[id] else {
-                throw RenderGraphError.missingParentLayer(compID: comp.id, layerID: layer.id, parentLayerID: id)
-            }
-            guard seen.insert(id).inserted else {
-                throw RenderGraphError.parentCycle(compID: comp.id, layerID: id)
-            }
-            // Parent opacity, like parent transform (corrective #3), is sampled at the parent's OWN
-            // transform frame regardless of its visible interval.
-            let lf = try AnimationSampler.layerTransformFrame(l.timing, compFrame: compFrame)
-            let op = try AnimationSampler.sampleOpacity(l.transform.opacity, at: lf, field: "comp[\(comp.id)].layer[\(l.id)].opacity")
-            raw = try FixedPointMath.multiplyDivideRounding(raw, op.rawValue, OpacityScalar.unitsPerUnit, "comp[\(comp.id)].layer[\(l.id)].opacityChain")
-            currentID = l.parentLayerID
-        }
+        // This layer's OWN opacity, sampled at its OWN transform frame (same timing rule as the transform).
+        let lf = try AnimationSampler.layerTransformFrame(layer.timing, compFrame: compFrame)
+        let own = try AnimationSampler.sampleOpacity(
+            layer.transform.opacity, at: lf, field: "comp[\(comp.id)].layer[\(layer.id)].opacity")
+        // precompContainer × own — the parenting chain contributes transform only (AE/Lottie/TVECore).
+        let raw = try FixedPointMath.multiplyDivideRounding(
+            parentOpacity.rawValue, own.rawValue, OpacityScalar.unitsPerUnit,
+            "comp[\(comp.id)].layer[\(layer.id)].opacityChain")
         return try OpacityScalar(rawValue: min(max(raw, 0), OpacityScalar.unitsPerUnit))
     }
 
@@ -553,16 +567,36 @@ public enum RenderGraphCompiler {
         return try SampledSRGBAColor(components: color.components + [.one])
     }
 
-    // MARK: - Transforms (corrective #7)
+    // MARK: - Transforms
 
-    /// The complete outer `Placement` as an affine (corrective #4): translate to the frame **origin**,
-    /// then apply the isotropic user scale + rotation about the frame **local** centre. With `scale = 1`
-    /// and `rotation = 0` this reduces to a pure translation by the frame origin (the previous version
-    /// erroneously cancelled the origin), so a non-zero origin always produces a translation.
-    ///
-    /// `final = T(origin) · T(localCentre) · S · R · T(-localCentre)`, where `localCentre = (w/2, h/2)`
-    /// is relative to the frame (not the absolute centre), so the scale/rotation pivot is the frame's
-    /// own centre and the origin is preserved.
+    /// TVECore oracle `GeometryMapping.animToInputContain`: uniformly scale the block's animation
+    /// (`animWidth`×`animHeight`, CanvasScalar raw) to CONTAIN it within `blockRect` (canvas,
+    /// CanvasScalar raw), centred, then translate to the block origin. Returns the anim→canvas affine.
+    /// Degenerate sizes fall back to a translate to the block origin (matching the oracle's guards).
+    static func animToInputContain(animWidth: Int64, animHeight: Int64, blockRect: FixedRect) throws -> FixedAffineTransform2D {
+        let bx = blockRect.x.rawValue, by = blockRect.y.rawValue
+        let bw = blockRect.width.rawValue, bh = blockRect.height.rawValue
+        guard animWidth > 0, animHeight > 0, bw > 0, bh > 0 else {
+            return FixedAffineTransform2D.translation(tx: bx, ty: by)
+        }
+        let unit = FixedAffineTransform2D.linearUnitsPerOne   // 1e6 raw per 1.0
+        let sX = try FixedPointMath.multiplyDivideRounding(bw, unit, animWidth, "contain.scaleX")
+        let sY = try FixedPointMath.multiplyDivideRounding(bh, unit, animHeight, "contain.scaleY")
+        let scaleRaw = min(sX, sY)
+        let scaledW = try FixedPointMath.multiplyDivideRounding(animWidth, scaleRaw, unit, "contain.scaledW")
+        let scaledH = try FixedPointMath.multiplyDivideRounding(animHeight, scaleRaw, unit, "contain.scaledH")
+        let tx = try CheckedInt64.add(bx, try FixedAffineTransform2D.divideRoundHalfAway(
+            try CheckedInt64.subtract(bw, scaledW, "contain.dw"), 2, "contain.cx"), "contain.tx")
+        let ty = try CheckedInt64.add(by, try FixedAffineTransform2D.divideRoundHalfAway(
+            try CheckedInt64.subtract(bh, scaledH, "contain.dh"), 2, "contain.cy"), "contain.ty")
+        return FixedAffineTransform2D(a: scaleRaw, b: 0, c: 0, d: scaleRaw, tx: tx, ty: ty)
+    }
+
+    /// Legacy `Placement` affine helper retained for focused geometry tests and non-scene placement math:
+    /// translate to the frame **origin**, then apply isotropic scale + rotation about the frame **local**
+    /// centre. Scene-layer `blockToCanvas` no longer calls this directly; it is derived from
+    /// `program.meta.width/height` (the AnimIR anim size) + `mediaGeometry.blockRectCanvas` to match the
+    /// TVECore block transform.
     static func placementMatrix(_ placement: Placement) throws -> FixedAffineTransform2D {
         let frame = placement.frame
         let localCentreX = try FixedAffineTransform2D.divideRoundHalfAway(frame.width.rawValue, 2, "place.lcx")

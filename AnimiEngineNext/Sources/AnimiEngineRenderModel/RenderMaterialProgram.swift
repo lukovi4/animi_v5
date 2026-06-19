@@ -14,7 +14,7 @@ import AnimiEngineCore
 ///   * position / anchor / path / stroke width → `CanvasScalar` (65,536 per point);
 ///   * scale → `ScaleScalar` (1,000,000 per 1.0; authored 100% → 1,000,000);
 ///   * layer / mask / fill opacity → `OpacityScalar` (authored `0...100` ÷ 100);
-///   * stroke opacity → `OpacityScalar` (authored `0...1` directly);
+///   * shape group-transform / stroke opacity → `OpacityScalar` (authored `0...1` directly);
 ///   * rotation → `RotationScalar`;
 ///   * easing tangents → `EasingScalar`; miter limit → `MiterScalar` (dimensionless, 1,000,000/unit);
 ///   * keyframe / meta / path times → exact `RationalSourceTime` (no decimal quantization).

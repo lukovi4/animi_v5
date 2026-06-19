@@ -25,6 +25,9 @@ public final class MetalRenderSession {
     var onExecutionEvent: ((ExecutionEvent) -> Void)?
     /// Corrective §7 — package-internal hook to surface the per-execution owner to a lifecycle test.
     var onOwnerCreated: ((MetalResourceOwner) -> Void)?
+    /// Diagnostic seam (package-internal, inert when nil) — forwarded to the executor; fires after each
+    /// render command is encoded so a test can blit-read intermediate surface state. Production unset → no-op.
+    var onCommandEncoded: ((Int, RenderCommandPayload, MetalResourceOwner, MTLCommandBuffer) -> Void)?
 
     /// Inject a device for tests (plan §10: "explicit MTLDevice injection for tests").
     public convenience init(device: MTLDevice) throws {
@@ -70,9 +73,10 @@ public final class MetalRenderSession {
             guardLock.unlock()
         }
 
-        let executor = MetalGraphExecutor(
+        var executor = MetalGraphExecutor(
             device: device, pipelines: pipelines, submitter: submitter,
             onExecutionEvent: onExecutionEvent, onOwnerCreated: onOwnerCreated)
+        executor.onCommandEncoded = onCommandEncoded
         return try executor.execute(graph)
     }
 }

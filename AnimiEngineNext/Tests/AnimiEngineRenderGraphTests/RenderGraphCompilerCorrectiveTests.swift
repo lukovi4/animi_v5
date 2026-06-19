@@ -182,31 +182,39 @@ final class RenderGraphCompilerCorrectiveTests: XCTestCase {
 
     // MARK: - Complete transforms (#7)
 
-    func testBlockToCanvasIncludesScaleAndRotation() throws {
+    /// CP4 canonical contract (supersedes the old corrective #7 "blockToCanvas carries the outer
+    /// Placement scale/rotation"): blockToCanvas mirrors the TVECore oracle — it maps the block's
+    /// ANIMATION space into the block rect via animToInputContain (identity when animSize == canvas).
+    /// The user scale/rotation lives in authored layer transforms / mediaPlacement, NOT in
+    /// blockToCanvas. Here animSize (100×100) ≠ canvas (1080×1920) and blockRect = (10,20,100×100), so
+    /// blockToCanvas = scale 1 (100/100) + translate to the block origin (10,20)pt — NO ×2 scale.
+    func testBlockToCanvasMatchesAnimToInputContain() throws {
         let p = try F.program(block: "a")
-        // Outer placement: non-zero origin (10,20)pt, scale ×2, rotation 90°.
-        let placement = try Placement(
-            frame: try FixedRect(x: cs(10 * pt), y: cs(20 * pt), width: cs(100 * pt), height: cs(100 * pt)),
-            scale: try ScaleScalar(positiveRawValue: 2_000_000), rotation: RotationScalar(rawValue: 90 * 1000))
+        let rect = try FixedRect(x: cs(10 * pt), y: cs(20 * pt), width: cs(100 * pt), height: cs(100 * pt))
+        let placement = try Placement(frame: rect, scale: .one, rotation: .zero)
         let layer = ActiveLayer(layerID: try LayerID("a"), zIndex: 0, stableOrdinal: 0, localCompositionOrder: 0,
             placement: placement, mediaPlacement: .identity(fitMode: .contain), content: .image(try ImageReference("img")),
             animationReference: nil, animationRequest: .holdLast)
-        // The program blockRectCanvas must equal placement.frame (resolver invariant) — rebuild geometry.
-        let rect = placement.frame
         let geom = RenderMediaGeometry(contentSizeWidth: cs(100 * pt), contentSizeHeight: cs(100 * pt),
             contentRect: try FixedRect(x: cs(0), y: cs(0), width: cs(100 * pt), height: cs(100 * pt)),
             placementRect: rect, blockRectCanvas: rect, containerClip: "none")
+        // animSize now lives in `meta.width/height` (CP4 Rev-4): 100×100 ≠ canvas 1080×1920 so blockToCanvas
+        // takes the animToInputContain branch (the whole point of this test).
+        let meta100 = RenderProgramMeta(width: cs(100 * pt), height: cs(100 * pt), fps: try F.frame(30),
+            inPoint: .zero, outPoint: try F.frame(150), sourceAnimRef: "anim.json")
         let p2 = try RenderMaterialProgram(id: p.id, blockID: "a", variantID: "v", animationRef: "anim.json", boundAssetID: "boundAsset",
             mediaGeometry: geom, rootCompID: "comp_0", compositions: p.compositions, assets: [],
-            binding: p.binding, inputGeometry: nil, meta: try F.meta(), pathResources: [], toggleIDs: [])
+            binding: p.binding, inputGeometry: nil, meta: meta100, pathResources: [], toggleIDs: [])
         let plan = try F.singlePlan(scene: "s", layers: [layer])
         let inp = try F.singleInput(scene: "s", [("a", p2, "px0")])
         let graph = try RenderGraphCompiler.compile(plan: plan, input: inp, configuration: try F.config())
         let draw = try XCTUnwrap(graph.commands.first { $0.category == .drawImage })
         guard case let .drawImage(_, transform, _, _) = draw.payload else { return XCTFail() }
-        // scale ×2 present in the linear part (a or d magnitude 2e6 after rotation).
-        XCTAssertTrue(abs(transform.a) == 2_000_000 || abs(transform.b) == 2_000_000,
-                      "blockToCanvas carries the user scale (corrective #7): \(transform)")
+        // blockToCanvas is contain-scale 1 (no user ×2); the block origin (10,20)pt is applied once.
+        XCTAssertEqual(transform.a, 1_000_000, "blockToCanvas contain-scale = 1 (no spurious user scale): \(transform)")
+        XCTAssertEqual(transform.d, 1_000_000)
+        XCTAssertEqual(transform.tx, cs(10 * pt).rawValue, "block origin x applied ONCE")
+        XCTAssertEqual(transform.ty, cs(20 * pt).rawValue, "block origin y applied ONCE")
     }
 
     // MARK: - Dense ordering (#9)

@@ -167,7 +167,8 @@ enum CompiledAnimationProgramConverter {
             anchor: try vectorTrack(t.anchor, field: "\(field).anchor"),
             scale: try scaleTrack(t.scale, field: "\(field).scale"),
             rotation: try rotationTrack(t.rotation, field: "\(field).rotation"),
-            opacity: try opacityPercentTrack(t.opacity, field: "\(field).opacity"))
+            // Group-transform opacity is UNIT (0–1), not percent — see opacityUnitTrack / TVECore.
+            opacity: try opacityUnitTrack(t.opacity, field: "\(field).opacity"))
     }
 
     private static func vectorTrack(_ track: CompiledVectorTrackDTO, field: String) throws -> RenderVectorTrack {
@@ -203,6 +204,20 @@ enum CompiledAnimationProgramConverter {
         case .keyframed(let ks):
             return .keyframed(try ks.enumerated().map { i, k in
                 try keyframe(k, field: "\(field)[\(i)]") { try FixedPointConversion.opacity(percent: $0, field: "\(field)[\(i)].value") } })
+        }
+    }
+
+    /// Shape GROUP-transform opacity is authored in the **0–1 unit** range (matches the TVECore oracle:
+    /// `GroupTransform.opacity` default `.static(1.0)`, `opacityValue` samples it raw with NO ÷100 —
+    /// unlike LAYER opacity which is 0–100). Converting it as a percent (÷100) wrongly turned an
+    /// authored 1.0 into 0.01, near-zeroing matte-source shapes so `alpha` mattes produced nothing
+    /// (example_4blocks block_02) and inverted mattes were wrong (block_03).
+    private static func opacityUnitTrack(_ track: CompiledScalarTrackDTO, field: String) throws -> RenderOpacityTrack {
+        switch track {
+        case .static(let v): return .static(try FixedPointConversion.opacity(unit: v, field: field))
+        case .keyframed(let ks):
+            return .keyframed(try ks.enumerated().map { i, k in
+                try keyframe(k, field: "\(field)[\(i)]") { try FixedPointConversion.opacity(unit: $0, field: "\(field)[\(i)].value") } })
         }
     }
 
