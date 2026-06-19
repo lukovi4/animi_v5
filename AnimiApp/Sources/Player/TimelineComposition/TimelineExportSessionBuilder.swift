@@ -100,6 +100,14 @@ internal enum TimelineExportSessionBuilder {
                 videoSelections[ref.blockId] = ref.selection
             }
 
+            // CP6: capture RAW placement (fit/offset/scale/rotation) per block for the Next export
+            // bridge, from the SAME persisted `state` used above. Snapshot-stable: later live-state
+            // mutations do not affect this. `resolvedTransforms` above is the Matrix2D form the old
+            // runner uses; the Next bridge needs the raw form and derives its own geometry.
+            let rawPlacements: [String: MediaPlacementState] = mediaSlots.reduce(into: [:]) { result, entry in
+                result[entry.key] = entry.value.placement
+            }
+
             let snapshot = TimelineCompositionEngine.TimelineExportSceneSnapshot(
                 sceneIndex: index,
                 instanceId: instanceId,
@@ -113,7 +121,9 @@ internal enum TimelineExportSessionBuilder {
                 pathRegistry: resources.pathRegistry,
                 assetSizes: resources.assetSizes,
                 sceneCanvasSize: resources.canvasSize,
-                templateBackground: compiled.runtime.scene.background
+                templateBackground: compiled.runtime.scene.background,
+                sceneTypeId: sceneTypeId,
+                rawPlacements: rawPlacements
             )
             scenesByInstanceId[instanceId] = snapshot
         }

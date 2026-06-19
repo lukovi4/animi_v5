@@ -134,7 +134,9 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
                 pathRegistry: res.pathRegistry,
                 assetSizes: res.assetSizes,
                 sceneCanvasSize: res.canvasSize,
-                templateBackground: res.compiled.runtime.scene.background
+                templateBackground: res.compiled.runtime.scene.background,
+                sceneTypeId: res.compiled.runtime.scene.sceneId ?? "test-scene",
+                rawPlacements: [:]
             )
             snapshots[instanceId] = snapshot
             audioData.append(TimelineCompositionEngine.SceneAudioExportData(
@@ -201,7 +203,9 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             assetIndex: res.compiled.mergedAssetIndex, resolver: res.resolver,
             bindingAssetIds: res.compiled.bindingAssetIds, pathRegistry: res.pathRegistry,
             assetSizes: res.assetSizes, sceneCanvasSize: res.canvasSize,
-            templateBackground: res.compiled.runtime.scene.background
+            templateBackground: res.compiled.runtime.scene.background,
+            sceneTypeId: res.compiled.runtime.scene.sceneId ?? "test-scene",
+            rawPlacements: [:]
         )
 
         let sceneTrack = Track(id: UUID(), kind: .sceneSequence, items: [item])
@@ -510,7 +514,9 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
             assetIndex: res.compiled.mergedAssetIndex, resolver: res.resolver,
             bindingAssetIds: res.compiled.bindingAssetIds, pathRegistry: res.pathRegistry,
             assetSizes: res.assetSizes, sceneCanvasSize: res.canvasSize,
-            templateBackground: res.compiled.runtime.scene.background
+            templateBackground: res.compiled.runtime.scene.background,
+            sceneTypeId: res.compiled.runtime.scene.sceneId ?? "test-scene",
+            rawPlacements: [:]
         )
         audioData.append(TimelineCompositionEngine.SceneAudioExportData(
             sceneIndex: 0, runtime: res.compiled.runtime, videoSelections: [:]
@@ -1265,7 +1271,9 @@ final class VideoExporterTimelineExportSessionTests: XCTestCase {
                 assetIndex: res.compiled.mergedAssetIndex, resolver: res.resolver,
                 bindingAssetIds: res.compiled.bindingAssetIds, pathRegistry: res.pathRegistry,
                 assetSizes: res.assetSizes, sceneCanvasSize: res.canvasSize,
-                templateBackground: nil
+                templateBackground: nil,
+                sceneTypeId: res.compiled.runtime.scene.sceneId ?? "test-scene",
+                rawPlacements: [:]
             )
         }
 

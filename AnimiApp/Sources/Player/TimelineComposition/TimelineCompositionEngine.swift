@@ -732,6 +732,16 @@ public final class TimelineCompositionEngine {
         let sceneCanvasSize: SizeD
         /// Template background for this specific scene (may differ across scenes in a timeline).
         let templateBackground: Background?
+        /// CP6 (AnimiEngineNext export): scene type id from the timeline payload, captured here so the
+        /// Next export bridge can resolve the scene package WITHOUT reading live editor state after the
+        /// session is built. The old TVECore export runner ignores this field (behavior-identical).
+        let sceneTypeId: String
+        /// CP6 (AnimiEngineNext export): RAW per-block placement (`MediaPlacementState`) keyed by blockID,
+        /// captured from the same persisted `SceneState` used for `renderState`. The Next bridge needs the
+        /// raw fit/offset/scale/rotation (it derives its own fixed-point geometry); `renderState`'s
+        /// `resolvedTransforms` already collapsed placement into `Matrix2D` and cannot be reversed. The old
+        /// runner ignores this field.
+        let rawPlacements: [String: MediaPlacementState]
     }
 
     /// Immutable export session built once before the export loop.

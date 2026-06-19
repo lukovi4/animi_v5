@@ -341,6 +341,117 @@ public final class VideoExporter: @unchecked Sendable {
     }
 }
 
+// MARK: - CP6: AnimiEngineNext export (DEBUG only)
+
+#if DEBUG
+extension VideoExporter {
+
+    /// Single-scene export through AnimiEngineNext. Reuses this exporter's `ExportSession` /
+    /// `exportQueue` / cancel / cleanup / completion ownership exactly like `exportVideo`; only the
+    /// frame SOURCE differs (Next bridge instead of the TVECore runner). Audio stays the old path —
+    /// it is built from `audioPlan` on the export queue, same builder as the old runner.
+    @MainActor
+    internal func exportVideoNext(
+        preparedContext: NextPreparedContext,
+        sessionBox: NextSessionBox,
+        sceneRuntime: SceneRuntime,
+        settings: NextExportVideoSettings,
+        audioPlan: AudioExportPlan?,
+        totalFrames: Int,
+        budget: ExportResourceBudget = .default,
+        onFinishing: (() -> Void)? = nil,
+        progress: @escaping (Double) -> Void,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        let session = ExportSession(completion: completion)
+        setActiveSession(session)
+        session.setOnTerminal { [weak self] in self?.setActiveSession(nil) }
+        if let onFinishing { session.setOnFinishing(onFinishing) }
+        if session.completeIfCancelled() { return }
+
+        exportQueue.async { [session, preparedContext, sessionBox, settings, audioPlan, totalFrames, sceneRuntime, budget] in
+            var audioPipeline: BuiltAudioPipeline?
+            if let plan = audioPlan {
+                do {
+                    audioPipeline = try AudioCompositionBuilder().build(
+                        runtime: sceneRuntime,
+                        fps: settings.fps,
+                        videoSelectionsByBlockId: [:],   // photo-only scope
+                        plan: plan
+                    )
+                } catch {
+                    session.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))
+                    return
+                }
+            }
+            NextVideoExportRunner.run(
+                source: .single(preparedContext),
+                sessionBox: sessionBox,
+                settings: settings,
+                audioPipeline: audioPipeline,
+                totalFrames: totalFrames,
+                maxFramesInFlight: budget.maxFramesInFlight,
+                session: session,
+                progress: progress
+            )
+        }
+    }
+
+    /// Timeline export through AnimiEngineNext. Same lifecycle ownership as `exportTimeline`; the
+    /// frame source is the Next timeline bridge driven by a compressed→nominal `TimelinePlayheadMapper`.
+    /// `totalFrames` is the COMPRESSED frame count (PTS/duration); audio is the old path built from
+    /// the immutable session's `audioSceneData`.
+    @MainActor
+    internal func exportTimelineNext(
+        preparedContext: NextTimelinePreparedContext,
+        sessionBox: NextSessionBox,
+        tlSession: TimelineCompositionEngine.TimelineExportSession,
+        settings: NextExportVideoSettings,
+        audioPlan: AudioExportPlan?,
+        budget: ExportResourceBudget = .default,
+        onFinishing: (() -> Void)? = nil,
+        progress: @escaping (Double) -> Void,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        let session = ExportSession(completion: completion)
+        setActiveSession(session)
+        session.setOnTerminal { [weak self] in self?.setActiveSession(nil) }
+        if let onFinishing { session.setOnFinishing(onFinishing) }
+        if session.completeIfCancelled() { return }
+
+        let mapper = TimelinePlayheadMapper(math: tlSession.transitionMath)
+        let totalFrames = tlSession.transitionMath.compressedDurationFrames
+
+        exportQueue.async { [session, preparedContext, sessionBox, settings, audioPlan, totalFrames, mapper, tlSession, budget] in
+            var audioPipeline: BuiltAudioPipeline?
+            if let plan = audioPlan {
+                do {
+                    audioPipeline = try AudioCompositionBuilder().buildTimeline(
+                        sceneData: tlSession.audioSceneData,
+                        transitionMath: tlSession.transitionMath,
+                        fps: settings.fps,
+                        plan: plan
+                    )
+                } catch {
+                    session.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))
+                    return
+                }
+            }
+            NextVideoExportRunner.run(
+                source: .timeline(preparedContext, mapper: mapper),
+                sessionBox: sessionBox,
+                settings: settings,
+                audioPipeline: audioPipeline,
+                totalFrames: totalFrames,
+                maxFramesInFlight: budget.maxFramesInFlight,
+                session: session,
+                progress: progress
+            )
+        }
+    }
+}
+#endif
+
 // MARK: - Compatibility: Deprecated Typealias
 
 extension VideoExporter {

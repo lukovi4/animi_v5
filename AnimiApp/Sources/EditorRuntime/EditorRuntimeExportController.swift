@@ -414,6 +414,20 @@ internal final class EditorRuntimeExportController {
         }
 
         #if DEBUG
+        // CP6: opt-in AnimiEngineNext export. When ON, route through the Next bridge and RETURN
+        // (no fallback). When OFF, fall through to the unchanged TVECore export below.
+        if NextExportEngineToggles.exportWithNextEngine {
+            await runNextSingleSceneExport(
+                ctx: ctx, exporter: exporter, requestId: requestId,
+                compiled: compiled, sceneRuntime: sceneRuntime,
+                settings: settings, mediaSnapshot: mediaSnapshot, bgSnapshot: bgSnapshot,
+                exportSizePx: exportSizePx, originalSizePx: originalSizePx,
+                budget: budget)
+            return
+        }
+        #endif
+
+        #if DEBUG
         if let request = activeExportRequest, request.isActive(for: requestId) {
             let renderStartNs = DispatchTime.now().uptimeNanoseconds
             request.debugRenderStartNs = renderStartNs
@@ -562,6 +576,20 @@ internal final class EditorRuntimeExportController {
             logger.info("[Export] Cancelled during preflight (stale request)")
             return
         }
+
+        #if DEBUG
+        // CP6: opt-in AnimiEngineNext timeline export. ON → Next bridge + RETURN (no fallback);
+        // OFF → unchanged TVECore timeline export below.
+        if NextExportEngineToggles.exportWithNextEngine {
+            await runNextTimelineExport(
+                ctx: ctx, exporter: exporter, requestId: requestId,
+                tlSession: tlSession, settings: settings,
+                exportSizePx: exportSizePx, originalSizePx: originalSizePx,
+                backgroundRegionCount: backgroundRegionCount,
+                budget: budget)
+            return
+        }
+        #endif
 
         #if DEBUG
         MemoryDiagnostics.event(
@@ -806,4 +834,182 @@ internal final class EditorRuntimeExportController {
             audioPlan: audioPlan
         )
     }
+
+    #if DEBUG
+    // MARK: - CP6: AnimiEngineNext export (DEBUG only)
+
+    /// Fail closed with a typed, visible export error and exit export mode. NO fallback to the old
+    /// renderer (the Next flag was explicitly ON).
+    private func failClosedNextExport(_ error: Error) async {
+        logger.error("[Export][Next] Fail closed: \(String(describing: error))")
+        await exitExportModeToIdle()
+        clearActiveExportRequest()
+        runtime.onOutput?(.exportRenderFailed(error))
+    }
+
+    /// Single-scene export through AnimiEngineNext. Builds inputs from the resolved `ExportMediaSnapshot`
+    /// + live scene state (single-scene has no immutable session), decodes/assembles the Next context,
+    /// and hands frames to `VideoExporter.exportVideoNext`. Photo-only; fails closed on reduced size,
+    /// video media, overlays, or any `NextBridgeError`.
+    private func runNextSingleSceneExport(
+        ctx: EditorRuntimeMetalContext,
+        exporter: VideoExporter,
+        requestId: UUID,
+        compiled: CompiledScene,
+        sceneRuntime: SceneRuntime,
+        settings: VideoExportSettings,
+        mediaSnapshot: ExportMediaSnapshot,
+        bgSnapshot: ExportBackgroundSnapshot?,
+        exportSizePx: (width: Int, height: Int),
+        originalSizePx: (width: Int, height: Int),
+        budget: ExportResourceBudget
+    ) async {
+        // Fail-closed guards (no silent omission).
+        guard exportSizePx == originalSizePx else {
+            await failClosedNextExport(NextBridgeError.engine("Next export has no downscale; preflight reduced size \(originalSizePx) → \(exportSizePx)"))
+            return
+        }
+        guard mediaSnapshot.videoRefs.isEmpty else {
+            await failClosedNextExport(NextBridgeError.unsupportedMediaKind(blockID: mediaSnapshot.videoRefs.first?.blockId ?? "(video)", kind: "video"))
+            return
+        }
+        guard (bgSnapshot?.regionRefs.isEmpty ?? true) else {
+            await failClosedNextExport(NextBridgeError.engine("custom background regions unsupported by Next export"))
+            return
+        }
+
+        guard let state = runtime.session.state else {
+            await failClosedNextExport(NextBridgeError.noScene); return
+        }
+        let timeline = state.draft.canonicalTimeline
+        // Overlays (text/sticker) are unsupported — fail closed if present.
+        if let overlayItems = timeline.overlayTrack?.items, !overlayItems.isEmpty {
+            await failClosedNextExport(NextBridgeError.engine("text/sticker overlays unsupported by Next export"))
+            return
+        }
+        guard let sceneItem = timeline.sceneItems.first,
+              case let .scene(scenePayload)? = timeline.payloads[sceneItem.payloadId] else {
+            await failClosedNextExport(NextBridgeError.notASceneItem); return
+        }
+        let sceneTypeId = scenePayload.sceneTypeId
+        guard let folderURL = runtime.nextSceneFolderURL(sceneTypeId: sceneTypeId) else {
+            await failClosedNextExport(NextBridgeError.sceneFolderMissing(sceneTypeId: sceneTypeId)); return
+        }
+        let sceneState = state.draft.sceneInstanceStates[sceneItem.id] ?? .empty
+
+        // Build inputs → session → decode → assemble (synchronous bridge calls).
+        let preparedContext: NextPreparedContext
+        let sessionBox: NextSessionBox
+        do {
+            let inputs = try NextExportInputsBuilder.makeSingleScene(
+                sceneTypeId: sceneTypeId, sceneFolderURL: folderURL,
+                sceneState: sceneState, mediaSnapshot: mediaSnapshot, frameIndex: 0)
+            sessionBox = try NextSingleSceneBridge.makeSession(device: ctx.device)
+            let decoded = try NextSingleSceneBridge.decodeMedia(inputs)
+            let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
+            preparedContext = try NextSingleSceneBridge.assemble(
+                decoded: decoded, placementByBlockID: placementByBlockID, sessionBox: sessionBox)
+        } catch {
+            await failClosedNextExport(error)
+            return
+        }
+
+        guard isActiveExportRequest(requestId) else { return }
+
+        let nextSettings = NextExportVideoSettings(
+            outputURL: settings.outputURL, sizePx: settings.sizePx, fps: settings.fps,
+            bitrate: settings.bitrate, gopSeconds: settings.gopSeconds)
+
+        exporter.exportVideoNext(
+            preparedContext: preparedContext, sessionBox: sessionBox, sceneRuntime: sceneRuntime,
+            settings: nextSettings, audioPlan: settings.audioPlan,
+            totalFrames: sceneRuntime.durationFrames,
+            budget: budget,
+            onFinishing: { [weak self] in
+                guard let self, self.isActiveExportRequest(requestId) else { return }
+                self.runtime.onOutput?(.exportFinishing)
+            },
+            progress: { [weak self] progress in
+                guard let self, self.isActiveExportRequest(requestId) else { return }
+                self.runtime.onOutput?(.exportProgress(Float(progress)))
+            },
+            completion: { [weak self] result in
+                guard let self else { return }
+                self.handleExportCompletion(result: result, requestId: requestId)
+            })
+    }
+
+    /// Timeline export through AnimiEngineNext, sourced PURELY from the immutable `TimelineExportSession`
+    /// (snapshot-stable; live state is not read here). Fails closed on reduced size, any scene's video
+    /// media, overlays, or any `NextBridgeError`/transition-mapping error.
+    private func runNextTimelineExport(
+        ctx: EditorRuntimeMetalContext,
+        exporter: VideoExporter,
+        requestId: UUID,
+        tlSession: TimelineCompositionEngine.TimelineExportSession,
+        settings: VideoExporter.TimelineExportSettings,
+        exportSizePx: (width: Int, height: Int),
+        originalSizePx: (width: Int, height: Int),
+        backgroundRegionCount: Int,
+        budget: ExportResourceBudget
+    ) async {
+        guard exportSizePx == originalSizePx else {
+            await failClosedNextExport(NextBridgeError.engine("Next export has no downscale; preflight reduced size \(originalSizePx) → \(exportSizePx)"))
+            return
+        }
+        guard backgroundRegionCount == 0 else {
+            await failClosedNextExport(NextBridgeError.engine("custom background regions unsupported by Next export"))
+            return
+        }
+        if !tlSession.overlaySnapshot.textItems.isEmpty || !tlSession.overlaySnapshot.stickerItems.isEmpty {
+            await failClosedNextExport(NextBridgeError.engine("text/sticker overlays unsupported by Next export"))
+            return
+        }
+        for (_, snap) in tlSession.scenesByInstanceId where !snap.mediaSnapshot.videoRefs.isEmpty {
+            await failClosedNextExport(NextBridgeError.unsupportedMediaKind(blockID: snap.mediaSnapshot.videoRefs.first?.blockId ?? "(video)", kind: "video"))
+            return
+        }
+
+        let preparedContext: NextTimelinePreparedContext
+        let sessionBox: NextSessionBox
+        do {
+            // Nominal start frame is irrelevant to a full export (the runner maps each compressed
+            // frame to nominal itself); pass 0 as the inputs' nominal seed.
+            let inputs = try NextExportInputsBuilder.makeTimeline(
+                session: tlSession,
+                sceneFolderURL: { [weak self] in self?.runtime.nextSceneFolderURL(sceneTypeId: $0) },
+                nominalFrameIndex: 0)
+            sessionBox = try NextSingleSceneBridge.makeSession(device: ctx.device)
+            let decoded = try NextTimelineBridge.decodeTimeline(inputs)
+            preparedContext = try NextTimelineBridge.assembleTimeline(
+                decoded: decoded, inputs: inputs, sessionBox: sessionBox)
+        } catch {
+            await failClosedNextExport(error)
+            return
+        }
+
+        guard isActiveExportRequest(requestId) else { return }
+
+        let nextSettings = NextExportVideoSettings(
+            outputURL: settings.outputURL, sizePx: settings.sizePx, fps: settings.fps,
+            bitrate: settings.bitrate, gopSeconds: settings.gopSeconds)
+
+        exporter.exportTimelineNext(
+            preparedContext: preparedContext, sessionBox: sessionBox, tlSession: tlSession,
+            settings: nextSettings, audioPlan: settings.audioPlan,
+            budget: budget,
+            onFinishing: { [weak self] in
+                guard let self, self.isActiveExportRequest(requestId) else { return }
+                self.runtime.onOutput?(.exportFinishing)
+            },
+            progress: { [weak self] progress in
+                guard let self, self.isActiveExportRequest(requestId) else { return }
+                self.runtime.onOutput?(.exportProgress(Float(progress)))
+            },
+            completion: { [weak self] result in
+                guard let self else { return }
+                self.handleExportCompletion(result: result, requestId: requestId)
+            })
+    }
+    #endif
 }

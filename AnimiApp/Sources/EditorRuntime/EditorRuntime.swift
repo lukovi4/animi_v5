@@ -607,6 +607,15 @@ final class EditorRuntime {
 
     // MARK: - Scene Loading
 
+    #if DEBUG
+    /// CP6 (DEBUG only): resolve a scene type's package folder URL for the AnimiEngineNext export
+    /// bridge. Mirrors the lookup the preview path uses via `EditorViewController.sceneLibrarySnapshot`,
+    /// exposed here so `EditorRuntimeExportController` can assemble Next export inputs.
+    func nextSceneFolderURL(sceneTypeId: String) -> URL? {
+        sceneLibrarySnapshot?.scene(byId: sceneTypeId)?.folderURL
+    }
+    #endif
+
     private func loadSceneTypeAsync(sceneTypeId: String) async throws -> TimelinePlaybackCoordinator.LoadedScene {
         guard let sceneDescriptor = sceneLibrarySnapshot?.scene(byId: sceneTypeId),
               let sceneURL = sceneDescriptor.folderURL else {

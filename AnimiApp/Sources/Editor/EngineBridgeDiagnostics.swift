@@ -24,4 +24,25 @@ enum NextEngineBridgeToggles {
 
     static let defaultsKey = "DebugRenderWithNextEngine"
 }
+
+// MARK: - CP6: AnimiEngineNext video EXPORT bridge (DEBUG only)
+//
+// Independent opt-in flag for routing VIDEO EXPORT frames through AnimiEngineNext (CP6),
+// separate from the preview flag above. The production export default is unaffected unless a
+// developer explicitly opts in at runtime. Compiled only in DEBUG; defaults to OFF.
+//
+// Photo/image scope only: any unsupported capability (video/text/sticker/custom background,
+// unknown transition) FAILS CLOSED with a typed visible error — never a silent old-render fallback.
+enum NextExportEngineToggles {
+    /// When true, `EditorRuntimeExportController` renders exported frames through AnimiEngineNext
+    /// (CP6) instead of the production TVECore export runners. Default OFF.
+    ///
+    /// Launch argument: `-DebugExportWithNextEngine YES`
+    /// Runtime toggle: `UserDefaults.standard.set(true, forKey: "DebugExportWithNextEngine")`
+    static var exportWithNextEngine: Bool {
+        UserDefaults.standard.bool(forKey: "DebugExportWithNextEngine")
+    }
+
+    static let defaultsKey = "DebugExportWithNextEngine"
+}
 #endif
