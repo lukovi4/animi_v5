@@ -17,48 +17,60 @@ import Metal
 // completion tagged with a stale epoch is dropped before publication.
 
 /// Identity that must be stable for a prepared context to be reused. Any change rebuilds it.
+/// CP4: includes EVERY bound block (media identity + placement), sorted by blockID for determinism.
 struct NextPreviewKey: Equatable {
-    let sceneTypeId: String
-    let variantOverrides: [String: String]
-    let mediaBlockID: String
-    let mediaPath: String
-    let mediaSize: Int64
-    let mediaMTime: Double
-    let fitModeRaw: String
-    let offsetX: Double
-    let offsetY: Double
-    let userScale: Double
-    let rotationDegrees: Double
-
-    init?(inputs: NextBridgeInputs) {
-        self.sceneTypeId = inputs.sceneTypeId
-        self.variantOverrides = inputs.variantOverrides
-        self.mediaBlockID = inputs.mediaBlockID
-        self.mediaPath = inputs.mediaURL.path
-        let attrs = try? FileManager.default.attributesOfItem(atPath: inputs.mediaURL.path)
-        self.mediaSize = (attrs?[.size] as? NSNumber)?.int64Value ?? -1
-        self.mediaMTime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
-        self.fitModeRaw = inputs.placement.fitModeRaw
-        self.offsetX = inputs.placement.offsetX
-        self.offsetY = inputs.placement.offsetY
-        self.userScale = inputs.placement.userScale
-        self.rotationDegrees = inputs.placement.rotationDegrees
-    }
-
-    /// Placement-FREE identity: the heavy decoded media (compiled.tve + photo + authored-asset
-    /// pixels) depends only on scene + variant + media — NOT on placement. A placement change keeps
-    /// the same `mediaKey`, so the expensive decode is reused and only the cheap convert re-runs.
-    struct MediaKey: Equatable {
-        let sceneTypeId: String
-        let variantOverrides: [String: String]
-        let mediaBlockID: String
+    /// Per-block media identity (placement-free).
+    struct BlockMedia: Equatable {
+        let blockID: String
         let mediaPath: String
         let mediaSize: Int64
         let mediaMTime: Double
     }
+    /// Per-block placement.
+    struct BlockPlacement: Equatable {
+        let blockID: String
+        let fitModeRaw: String
+        let offsetX: Double
+        let offsetY: Double
+        let userScale: Double
+        let rotationDegrees: Double
+    }
+
+    let sceneTypeId: String
+    let variantOverrides: [String: String]
+    let blockMedia: [BlockMedia]        // sorted by blockID
+    let blockPlacements: [BlockPlacement] // sorted by blockID
+
+    init?(inputs: NextBridgeInputs) {
+        guard !inputs.blocks.isEmpty else { return nil }
+        self.sceneTypeId = inputs.sceneTypeId
+        self.variantOverrides = inputs.variantOverrides
+        let sorted = inputs.blocks.sorted { $0.blockID < $1.blockID }
+        self.blockMedia = sorted.map { b in
+            let attrs = try? FileManager.default.attributesOfItem(atPath: b.mediaURL.path)
+            return BlockMedia(
+                blockID: b.blockID, mediaPath: b.mediaURL.path,
+                mediaSize: (attrs?[.size] as? NSNumber)?.int64Value ?? -1,
+                mediaMTime: (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1)
+        }
+        self.blockPlacements = sorted.map { b in
+            BlockPlacement(
+                blockID: b.blockID, fitModeRaw: b.placement.fitModeRaw,
+                offsetX: b.placement.offsetX, offsetY: b.placement.offsetY,
+                userScale: b.placement.userScale, rotationDegrees: b.placement.rotationDegrees)
+        }
+    }
+
+    /// Placement-FREE identity: the heavy decoded media (compiled.tve + per-block photos + authored
+    /// assets) depends only on scene + variant + per-block media — NOT on placement. A placement
+    /// change on any block keeps the same `mediaKey`, so the expensive decode is reused.
+    struct MediaKey: Equatable {
+        let sceneTypeId: String
+        let variantOverrides: [String: String]
+        let blockMedia: [BlockMedia]
+    }
     var mediaKey: MediaKey {
-        MediaKey(sceneTypeId: sceneTypeId, variantOverrides: variantOverrides, mediaBlockID: mediaBlockID,
-                 mediaPath: mediaPath, mediaSize: mediaSize, mediaMTime: mediaMTime)
+        MediaKey(sceneTypeId: sceneTypeId, variantOverrides: variantOverrides, blockMedia: blockMedia)
     }
 }
 
@@ -193,7 +205,8 @@ final class NextPreviewController {
         let renderKey = newKey
         let captured = inputs
         let mediaKey = newKey.mediaKey
-        let placement = inputs.placement
+        // Per-block placements for assemble() — placement-only changes reuse decoded pixels.
+        let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
         let existingContext = context          // value captured on main; immutable once built
         inFlight = true
         if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
@@ -232,7 +245,7 @@ final class NextPreviewController {
                             self.decodedMediaKey = mediaKey
                         }
                         // Cheap: convert + window for THIS placement, reusing decoded pixels.
-                        let prepared = try NextSingleSceneBridge.assemble(decoded: decoded, placement: placement, sessionBox: box)
+                        let prepared = try NextSingleSceneBridge.assemble(decoded: decoded, placementByBlockID: placementByBlockID, sessionBox: box)
                         prepMs = Self.nowMs() - t0
                         preparedNow = prepared
                         ctx = prepared

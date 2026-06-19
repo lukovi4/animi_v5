@@ -14,14 +14,25 @@ final class NextPreviewCacheKeyTests: XCTestCase {
         NextBridgePlacement(fitModeRaw: fit, offsetX: ox, offsetY: oy, userScale: scale, rotationDegrees: rot)
     }
 
-    /// Build inputs against a real temp media file (so size/mtime are stable and identity is real).
+    /// Build single-block inputs against a real temp media file (so size/mtime are stable).
     private func makeInputs(scene: String = "full_image", variants: [String: String] = [:],
                             block: String = "block_01", mediaURL: URL,
                             placement: NextBridgePlacement, frame: Int = 0) -> NextBridgeInputs {
         NextBridgeInputs(
             sceneTypeId: scene, sceneFolderURL: URL(fileURLWithPath: "/tmp/scenes/\(scene)"),
-            variantOverrides: variants, mediaBlockID: block, mediaURL: mediaURL,
-            placement: placement, frameIndex: frame)
+            variantOverrides: variants,
+            blocks: [NextBridgeBlock(blockID: block, mediaURL: mediaURL, placement: placement)],
+            frameIndex: frame)
+    }
+
+    /// Build MULTI-block inputs (CP4): one (blockID, url, placement) per block.
+    private func makeMultiInputs(scene: String = "polaroid_2", variants: [String: String] = [:],
+                                 blocks: [(String, URL, NextBridgePlacement)], frame: Int = 0) -> NextBridgeInputs {
+        NextBridgeInputs(
+            sceneTypeId: scene, sceneFolderURL: URL(fileURLWithPath: "/tmp/scenes/\(scene)"),
+            variantOverrides: variants,
+            blocks: blocks.map { NextBridgeBlock(blockID: $0.0, mediaURL: $0.1, placement: $0.2) },
+            frameIndex: frame)
     }
 
     private func tempFile(_ name: String, bytes: Int = 16) throws -> URL {
@@ -110,6 +121,51 @@ final class NextPreviewCacheKeyTests: XCTestCase {
         XCTAssertNotEqual(a?.mediaKey, b?.mediaKey, "variant change → mediaKey differs → re-decode")
     }
 
+    // MARK: - CP4 multi-block key behaviour
+
+    func test_multiBlock_sameInputs_reuseContext_orderIndependent() throws {
+        let m1 = try tempFile("mb1"); let m2 = try tempFile("mb2")
+        defer { try? FileManager.default.removeItem(at: m1); try? FileManager.default.removeItem(at: m2) }
+        // Same blocks supplied in DIFFERENT order must yield the SAME key (sorted by blockID).
+        let a = NextPreviewKey(inputs: makeMultiInputs(blocks: [("block_01", m1, placement()), ("block_02", m2, placement())]))
+        let b = NextPreviewKey(inputs: makeMultiInputs(blocks: [("block_02", m2, placement()), ("block_01", m1, placement())]))
+        XCTAssertNotNil(a)
+        XCTAssertEqual(a, b, "block order is not semantic — key is sorted by blockID")
+        XCTAssertEqual(a?.mediaKey, b?.mediaKey)
+    }
+
+    func test_multiBlock_oneBlockMediaChange_invalidates_butKeepsMediaKeyShape() throws {
+        let m1 = try tempFile("mbA"); let m2 = try tempFile("mbB"); let m2b = try tempFile("mbB2")
+        defer { [m1, m2, m2b].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let a = NextPreviewKey(inputs: makeMultiInputs(blocks: [("block_01", m1, placement()), ("block_02", m2, placement())]))
+        let b = NextPreviewKey(inputs: makeMultiInputs(blocks: [("block_01", m1, placement()), ("block_02", m2b, placement())]))
+        XCTAssertNotEqual(a, b, "changing one block's media invalidates the whole key")
+        XCTAssertNotEqual(a?.mediaKey, b?.mediaKey, "and its mediaKey (re-decode that block)")
+    }
+
+    func test_multiBlock_oneBlockPlacementChange_keepsMediaKey() throws {
+        let m1 = try tempFile("mbP1"); let m2 = try tempFile("mbP2")
+        defer { try? FileManager.default.removeItem(at: m1); try? FileManager.default.removeItem(at: m2) }
+        let a = NextPreviewKey(inputs: makeMultiInputs(blocks: [("block_01", m1, placement()), ("block_02", m2, placement())]))
+        let b = NextPreviewKey(inputs: makeMultiInputs(blocks: [("block_01", m1, placement(scale: 1.7)), ("block_02", m2, placement())]))
+        XCTAssertNotEqual(a, b, "a per-block placement change rebuilds context")
+        XCTAssertEqual(a?.mediaKey, b?.mediaKey, "but mediaKey is unchanged → decoded photos reused (no re-decode)")
+    }
+
+    func test_multiBlock_blockCountChange_invalidates() throws {
+        let m1 = try tempFile("mbC1"); let m2 = try tempFile("mbC2")
+        defer { try? FileManager.default.removeItem(at: m1); try? FileManager.default.removeItem(at: m2) }
+        let one = NextPreviewKey(inputs: makeMultiInputs(blocks: [("block_01", m1, placement())]))
+        let two = NextPreviewKey(inputs: makeMultiInputs(blocks: [("block_01", m1, placement()), ("block_02", m2, placement())]))
+        XCTAssertNotEqual(one, two, "adding a block changes identity")
+        XCTAssertNotEqual(one?.mediaKey, two?.mediaKey)
+    }
+
+    func test_emptyBlocks_yieldsNilKey() throws {
+        let k = NextPreviewKey(inputs: makeMultiInputs(blocks: []))
+        XCTAssertNil(k, "no bound blocks → no key (fail closed upstream)")
+    }
+
     func test_sceneChange_invalidates() throws {
         let media = try tempFile("scene")
         defer { try? FileManager.default.removeItem(at: media) }
@@ -119,11 +175,11 @@ final class NextPreviewCacheKeyTests: XCTestCase {
     }
 
     func test_unresolvedMediaFile_keyIsNilSafe() throws {
-        // A non-existent media path still yields a key (size/mtime = -1); identity is stable.
+        // A non-existent media path still yields a key (size/mtime = -1 per block); identity is stable.
         let missing = URL(fileURLWithPath: "/tmp/does-not-exist-\(UUID().uuidString)")
         let k = NextPreviewKey(inputs: makeInputs(mediaURL: missing, placement: placement()))
         XCTAssertNotNil(k)
-        XCTAssertEqual(k?.mediaSize, -1)
+        XCTAssertEqual(k?.blockMedia.first?.mediaSize, -1)
     }
 
     // MARK: - Stale-render prevention (controller epoch behaviour)

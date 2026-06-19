@@ -858,42 +858,42 @@ extension EditorViewController: MTKViewDelegate {
         let sceneState = state.draft.sceneInstanceStates[sceneItem.id] ?? .empty
         let variantOverrides = sceneState.variantOverrides
 
-        // Single media block. Select the one photo slot; fail closed otherwise.
-        let photoSlots = (sceneState.mediaSlotsByBlockId ?? [:]).filter { $0.value.mediaRef.mediaKind == .photo }
-        guard photoSlots.count == 1, let (blockID, slot) = photoSlots.first else {
-            // No bound photo (or more than one) — CP2 single-block scope: fail closed.
-            throw NextBridgeError.noMediaBound(blockID: photoSlots.first?.key ?? "(none)")
-        }
+        // CP4: support N media blocks. Every assigned slot must be PHOTO, visible, and resolved.
+        // Anything else (video/audio media kind, hidden block) FAILS CLOSED — CP4 photo-only scope.
+        let allSlots = sceneState.mediaSlotsByBlockId ?? [:]
+        guard !allSlots.isEmpty else { throw NextBridgeError.noMediaBound(blockID: "(none)") }
 
-        // Fix 2: respect visibility. A hidden block must NOT render silently.
-        guard slot.visibility else {
-            throw NextBridgeError.blockHidden(blockID: blockID)
+        var blocks: [NextBridgeBlock] = []
+        for (blockID, slot) in allSlots.sorted(by: { $0.key < $1.key }) {
+            // Fail closed on non-photo media (video/audio): CP4 is photo-only; no silent skip.
+            guard slot.mediaRef.mediaKind == .photo else {
+                throw NextBridgeError.unsupportedMediaKind(blockID: blockID, kind: slot.mediaRef.mediaKind.rawValue)
+            }
+            // Fail closed on a hidden block: do NOT invent hidden-layer semantics (STOP-gated).
+            guard slot.visibility else {
+                throw NextBridgeError.blockHidden(blockID: blockID)
+            }
+            // Resolve the bound photo URL via the async locator (cached). On a miss, kick off
+            // resolution and throw a typed "resolving" error so the next frame succeeds once warm.
+            let key = slot.mediaRef.assetId.rawValue.uuidString
+            guard let mediaURL = nextBridgeMediaURLCache[key] else {
+                resolveNextBridgeMediaURL(slot.mediaRef, registry: state.draft.assetRegistry)
+                throw NextBridgeError.mediaResolveFailed("resolving media URL for \(blockID)… (retry)")
+            }
+            let p = slot.placement
+            blocks.append(NextBridgeBlock(
+                blockID: blockID,
+                mediaURL: mediaURL,
+                placement: NextBridgePlacement(
+                    fitModeRaw: p.fitMode.rawValue, offsetX: p.offsetX, offsetY: p.offsetY,
+                    userScale: p.userScale, rotationDegrees: p.rotationDegrees)))
         }
-
-        // Resolve the bound photo URL via the async locator (cached). On a cache miss, kick off
-        // resolution and throw a typed "resolving" error so the next frame succeeds once warm.
-        let key = slot.mediaRef.assetId.rawValue.uuidString
-        guard let mediaURL = nextBridgeMediaURLCache[key] else {
-            resolveNextBridgeMediaURL(slot.mediaRef, registry: state.draft.assetRegistry)
-            throw NextBridgeError.mediaResolveFailed("resolving media URL… (retry)")
-        }
-
-        // Fix 3: pass the REAL app placement (converted to fixed-point inside the bridge).
-        let p = slot.placement
-        let placement = NextBridgePlacement(
-            fitModeRaw: p.fitMode.rawValue,
-            offsetX: p.offsetX,
-            offsetY: p.offsetY,
-            userScale: p.userScale,
-            rotationDegrees: p.rotationDegrees)
 
         return NextBridgeInputs(
             sceneTypeId: sceneTypeId,
             sceneFolderURL: folderURL,
             variantOverrides: variantOverrides,
-            mediaBlockID: blockID,
-            mediaURL: mediaURL,
-            placement: placement,
+            blocks: blocks,
             frameIndex: state.playheadCompressedFrame)
     }
 

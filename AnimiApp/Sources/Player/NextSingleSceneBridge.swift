@@ -39,6 +39,7 @@ enum NextBridgeError: Error, CustomStringConvertible {
     case multiBlockUnsupported(blockCount: Int)
     case noMediaBound(blockID: String)
     case blockHidden(blockID: String)
+    case unsupportedMediaKind(blockID: String, kind: String)
     case mediaResolveFailed(String)
     case imageDecodeFailed(URL)
     case placementConversion(String)
@@ -66,7 +67,9 @@ enum NextBridgeError: Error, CustomStringConvertible {
         case .noMediaBound(let blockID):
             return "Next bridge: no media bound to block '\(blockID)'. Add a photo first."
         case .blockHidden(let blockID):
-            return "Next bridge: media block '\(blockID)' is hidden (visibility=false). (CP2: fail closed)"
+            return "Next bridge: media block '\(blockID)' is hidden (visibility=false). (CP4: fail closed)"
+        case .unsupportedMediaKind(let blockID, let kind):
+            return "Next bridge: block '\(blockID)' has unsupported media kind '\(kind)'. CP4 is photo-only (video/audio fail closed)."
         case .mediaResolveFailed(let m):
             return "Next bridge: media resolve failed: \(m)."
         case .imageDecodeFailed(let url):
@@ -102,8 +105,16 @@ struct NextBridgePlacement {
     let rotationDegrees: Double
 }
 
+/// One bound PHOTO block (CP4): the block id, its resolved photo file URL, and its app placement.
+/// CP4 scope is photo-only — video/color/hidden/toggle blocks are fail-closed before this is built.
+struct NextBridgeBlock {
+    let blockID: String
+    let mediaURL: URL
+    let placement: NextBridgePlacement
+}
+
 /// Inputs the caller must assemble from existing app state before invoking the bridge.
-/// CP2 single-scene scope: exactly ONE scene, ONE media block.
+/// CP4 single-scene scope: exactly ONE scene; ONE OR MORE photo media blocks.
 struct NextBridgeInputs {
     /// Scene type id of the (single) open scene — from the single timeline scene item's payload.
     let sceneTypeId: String
@@ -111,14 +122,16 @@ struct NextBridgeInputs {
     let sceneFolderURL: URL
     /// Per-block variant selection — `SceneState.variantOverrides` (may be partial).
     let variantOverrides: [String: String]
-    /// The block id whose media the caller resolved (the single media block).
-    let mediaBlockID: String
-    /// Resolved absolute file URL of the bound photo for `mediaBlockID`.
-    let mediaURL: URL
-    /// App placement for `mediaBlockID` — converted to canonical fixed-point by the bridge.
-    let placement: NextBridgePlacement
+    /// All bound photo blocks, sorted by blockID for deterministic keys/binding order.
+    let blocks: [NextBridgeBlock]
     /// Current playhead frame index (single-scene local frame == project frame).
     let frameIndex: Int
+
+    /// CP2/CP3 compatibility accessors for the FIRST block (used by single-block tests and the
+    /// cache key's per-block fields). CP4 keys include every block, not just this one.
+    var mediaBlockID: String { blocks.first?.blockID ?? "" }
+    var mediaURL: URL { blocks.first?.mediaURL ?? URL(fileURLWithPath: "/") }
+    var placement: NextBridgePlacement { blocks.first?.placement ?? NextBridgePlacement(fitModeRaw: "contain", offsetX: 0, offsetY: 0, userScale: 1, rotationDegrees: 0) }
 }
 
 /// Plain BGRA8 frame the editor can present without importing any AnimiEngineNext module
@@ -130,25 +143,29 @@ struct NextBridgeBGRAFrame {
     let bytesPerRow: Int
 }
 
-/// Placement-INDEPENDENT decoded media (CP3 perf): the compiled.tve bytes + decoded photo pixels.
-/// Cached keyed by `(scene, variant, media)` ONLY — a placement/fit/scale/rotation change reuses
-/// this (no image re-decode), so dragging the media is fast. Authored-asset pixels also live here.
-final class NextDecodedMedia {
-    let compiledData: Data
+/// One block's placement-INDEPENDENT decoded photo (CP4): its binding reference, chosen variant,
+/// and decoded BGRA pixels. Reused across placement changes (no re-decode).
+struct NextDecodedBlock {
     let blockID: String
     let chosenVariantID: String
     let mediaReference: String
     let photoPixels: ResolvedPixelInput
-    /// Decoded authored-asset pixels keyed by (materialID, assetID) — content is placement-free, but
-    /// the RenderMaterialID embeds the compiled-template hash (stable across placement), so reusable.
+}
+
+/// Placement-INDEPENDENT decoded media (CP3/CP4 perf): the compiled.tve bytes + per-block decoded
+/// photo pixels + authored-asset pixels. Cached keyed by `(scene, variant, media)` for ALL blocks —
+/// a placement/fit/scale/rotation change on any block reuses this (no image re-decode).
+final class NextDecodedMedia {
+    let compiledData: Data
+    /// Decoded photo blocks, sorted by blockID (deterministic binding order).
+    let blocks: [NextDecodedBlock]
+    /// Decoded authored-asset pixels keyed by (materialID, assetID) — placement-free, reusable.
     let assetPixelsByKey: [ResolvedAssetKey: ResolvedPixelInput]
     let canvasMaxPixel: Int
 
-    init(compiledData: Data, blockID: String, chosenVariantID: String, mediaReference: String,
-         photoPixels: ResolvedPixelInput, assetPixelsByKey: [ResolvedAssetKey: ResolvedPixelInput],
-         canvasMaxPixel: Int) {
-        self.compiledData = compiledData; self.blockID = blockID; self.chosenVariantID = chosenVariantID
-        self.mediaReference = mediaReference; self.photoPixels = photoPixels
+    init(compiledData: Data, blocks: [NextDecodedBlock],
+         assetPixelsByKey: [ResolvedAssetKey: ResolvedPixelInput], canvasMaxPixel: Int) {
+        self.compiledData = compiledData; self.blocks = blocks
         self.assetPixelsByKey = assetPixelsByKey; self.canvasMaxPixel = canvasMaxPixel
     }
 }
@@ -162,18 +179,18 @@ final class NextDecodedMedia {
 final class NextPreparedContext {
     let materials: RenderMaterialTable
     let window: EvaluationWindow
-    let mediaReference: String
-    let photoPixels: ResolvedPixelInput
+    /// Per-block user-media pixels keyed by binding reference (mediaReference → photo pixels).
+    let mediaPixelsByReference: [String: ResolvedPixelInput]
     let assetEntries: [ResolvedAssetPixelEntry]
     let configuration: RenderConfiguration
     let session: MetalRenderSession
     let totalFrames: Int
 
-    init(materials: RenderMaterialTable, window: EvaluationWindow, mediaReference: String,
-         photoPixels: ResolvedPixelInput, assetEntries: [ResolvedAssetPixelEntry],
+    init(materials: RenderMaterialTable, window: EvaluationWindow,
+         mediaPixelsByReference: [String: ResolvedPixelInput], assetEntries: [ResolvedAssetPixelEntry],
          configuration: RenderConfiguration, session: MetalRenderSession, totalFrames: Int) {
-        self.materials = materials; self.window = window; self.mediaReference = mediaReference
-        self.photoPixels = photoPixels; self.assetEntries = assetEntries
+        self.materials = materials; self.window = window
+        self.mediaPixelsByReference = mediaPixelsByReference; self.assetEntries = assetEntries
         self.configuration = configuration; self.session = session; self.totalFrames = totalFrames
     }
 }
@@ -216,73 +233,103 @@ enum NextSingleSceneBridge {
             inventory = try TemplateVariantInventory(from: decoded)
         } catch { throw NextBridgeError.engine("decode/inventory: \(error)") }
 
-        guard inventory.blocks.count == 1 else {
+        // CP4: support N media blocks. The caller MUST supply exactly one bound photo per authored
+        // block (fail closed otherwise — no partial scenes, no inventing empty bindings).
+        guard !inputs.blocks.isEmpty else { throw NextBridgeError.noMediaBound(blockID: "(none)") }
+        let inventoryBlockIDs = Set(inventory.blocks.map { $0.blockID })
+        let inputBlockIDs = Set(inputs.blocks.map { $0.blockID })
+        guard inputBlockIDs == inventoryBlockIDs else {
+            // Every authored block must have a bound photo, and every bound block must be authored.
             throw NextBridgeError.multiBlockUnsupported(blockCount: inventory.blocks.count)
         }
-        let block = inventory.blocks[0]
-        guard block.blockID == inputs.mediaBlockID else {
-            throw NextBridgeError.noMediaBound(blockID: inputs.mediaBlockID)
-        }
-        let chosenVariantID = inputs.variantOverrides[block.blockID] ?? block.selectedVariantID
-        let mediaReference = "cp3-\(block.blockID)"
 
-        // Convert with IDENTITY placement just to obtain materials/canvas for asset walking. The
-        // assemble() step re-converts with the real placement (cheap).
-        let selection = TemplateVariantInventory.Selection(chosenVariantByBlockID: [block.blockID: chosenVariantID])
+        // Per-block: chosen variant, binding reference, identity-placement binding for the probe.
+        let invByID = Dictionary(uniqueKeysWithValues: inventory.blocks.map { ($0.blockID, $0) })
+        var chosenVariantByBlockID: [String: String] = [:]
+        var probeBindings: [String: CompiledTemplateConverter.MediaBinding] = [:]
+        var referenceByBlockID: [String: String] = [:]
+        for b in inputs.blocks {
+            guard let inv = invByID[b.blockID] else { throw NextBridgeError.noMediaBound(blockID: b.blockID) }
+            let variant = inputs.variantOverrides[b.blockID] ?? inv.selectedVariantID
+            let ref = "cp4-\(b.blockID)"
+            chosenVariantByBlockID[b.blockID] = variant
+            referenceByBlockID[b.blockID] = ref
+            probeBindings[b.blockID] = .image(reference: ref, mediaPlacement: .identity(fitMode: .contain))
+        }
+
+        // Convert with IDENTITY placements to obtain materials/canvas for asset walking.
         let probeOut: CompiledTemplateConverter.Output
         do {
             probeOut = try CompiledTemplateConverter.convert(.init(
                 compiledTemplateData: data, catalogID: inputs.sceneTypeId,
-                sceneInstanceID: "cp3-inst", scenePayloadID: "cp3-pay", selection: selection,
-                mediaBindings: [block.blockID: .image(reference: mediaReference, mediaPlacement: .identity(fitMode: .contain))],
-                requiredPostRoll: .zero))
+                sceneInstanceID: "cp4-inst", scenePayloadID: "cp4-pay",
+                selection: TemplateVariantInventory.Selection(chosenVariantByBlockID: chosenVariantByBlockID),
+                mediaBindings: probeBindings, requiredPostRoll: .zero))
         } catch { throw NextBridgeError.engine("convert(probe): \(error)") }
 
         let canvas = probeOut.document.manifest.output.canvas
         let maxPixel = Int(max(canvas.width, canvas.height))
 
-        // Decode photo (heavy) downsampled to canvas.
-        let photoPixels = try decodeImageToPixelInput(url: inputs.mediaURL, id: mediaReference, maxPixelSize: maxPixel)
+        // Decode each block's photo (heavy) downsampled to canvas; build fixtures for all references.
+        var decodedBlocks: [NextDecodedBlock] = []
+        var fixtures: [RenderInputResolver.FixtureKey: ResolvedPixelInput] = [:]
+        for b in inputs.blocks.sorted(by: { $0.blockID < $1.blockID }) {
+            let ref = referenceByBlockID[b.blockID]!
+            let pixels = try decodeImageToPixelInput(url: b.mediaURL, id: ref, maxPixelSize: maxPixel)
+            decodedBlocks.append(NextDecodedBlock(
+                blockID: b.blockID, chosenVariantID: chosenVariantByBlockID[b.blockID]!,
+                mediaReference: ref, photoPixels: pixels))
+            fixtures[.image(reference: ref)] = pixels
+        }
 
-        // Decode authored-asset pixels (e.g. plastik) using a frame-0 probe resolve.
+        // Decode authored-asset pixels using a frame-0 probe resolve (binds all block references).
         let probeWindow = try buildWindow(probeOut.document).window
         let probePlan = try evaluatePlan(window: probeWindow, frame: 0)
         guard case let .single(probeSubplan) = probePlan.body else {
             throw NextBridgeError.unsupportedFramePlan("expected single scene body")
         }
-        let probeFixtures = try buildFixtures(subplan: probeSubplan, mediaReference: mediaReference, photoPixels: photoPixels)
+        try assertReferencesPresent(subplan: probeSubplan, references: Set(referenceByBlockID.values))
         let probeBase: ResolvedFrameInput
-        do { probeBase = try RenderInputResolver.resolve(framePlan: probePlan, materials: probeOut.materials, fixtures: probeFixtures) }
+        do { probeBase = try RenderInputResolver.resolve(framePlan: probePlan, materials: probeOut.materials, fixtures: fixtures) }
         catch { throw NextBridgeError.engine("resolve(probe): \(error)") }
         let entries = try loadAuthoredAssets(subplan: probeSubplan, base: probeBase, maxPixelSize: maxPixel)
         var assetPixelsByKey: [ResolvedAssetKey: ResolvedPixelInput] = [:]
         for e in entries { assetPixelsByKey[e.key] = e.pixelInput }
 
         return NextDecodedMedia(
-            compiledData: data, blockID: block.blockID, chosenVariantID: chosenVariantID,
-            mediaReference: mediaReference, photoPixels: photoPixels,
+            compiledData: data, blocks: decodedBlocks,
             assetPixelsByKey: assetPixelsByKey, canvasMaxPixel: maxPixel)
     }
 
     // MARK: - Assemble (light, placement-DEPENDENT — reuses decoded media)
 
-    /// Build a render context for a given placement, REUSING the decoded media (no image re-decode).
-    /// Only convert + window are placement-dependent here.
-    static func assemble(decoded: NextDecodedMedia, placement: NextBridgePlacement, sessionBox: NextSessionBox) throws -> NextPreparedContext {
-        let mediaPlacement = try convertPlacement(placement)
-        let selection = TemplateVariantInventory.Selection(chosenVariantByBlockID: [decoded.blockID: decoded.chosenVariantID])
+    /// Build a render context for given per-block placements, REUSING decoded media (no re-decode).
+    /// `placementByBlockID` maps each decoded block to its current app placement.
+    static func assemble(decoded: NextDecodedMedia, placementByBlockID: [String: NextBridgePlacement],
+                         sessionBox: NextSessionBox) throws -> NextPreparedContext {
+        var bindings: [String: CompiledTemplateConverter.MediaBinding] = [:]
+        var chosenVariantByBlockID: [String: String] = [:]
+        var mediaPixelsByReference: [String: ResolvedPixelInput] = [:]
+        for blk in decoded.blocks {
+            guard let p = placementByBlockID[blk.blockID] else {
+                throw NextBridgeError.noMediaBound(blockID: blk.blockID)
+            }
+            bindings[blk.blockID] = .image(reference: blk.mediaReference, mediaPlacement: try convertPlacement(p))
+            chosenVariantByBlockID[blk.blockID] = blk.chosenVariantID
+            mediaPixelsByReference[blk.mediaReference] = blk.photoPixels
+        }
+
         let out: CompiledTemplateConverter.Output
         do {
             out = try CompiledTemplateConverter.convert(.init(
-                compiledTemplateData: decoded.compiledData, catalogID: "cp3", sceneInstanceID: "cp3-inst",
-                scenePayloadID: "cp3-pay", selection: selection,
-                mediaBindings: [decoded.blockID: .image(reference: decoded.mediaReference, mediaPlacement: mediaPlacement)],
-                requiredPostRoll: .zero))
+                compiledTemplateData: decoded.compiledData, catalogID: "cp4", sceneInstanceID: "cp4-inst",
+                scenePayloadID: "cp4-pay",
+                selection: TemplateVariantInventory.Selection(chosenVariantByBlockID: chosenVariantByBlockID),
+                mediaBindings: bindings, requiredPostRoll: .zero))
         } catch { throw NextBridgeError.engine("convert: \(error)") }
 
         let (window, totalFrames) = try buildWindow(out.document)
 
-        // Rebuild asset entries from cached pixels, keyed by the program material IDs in THIS convert.
         var assetEntries: [ResolvedAssetPixelEntry] = []
         for (key, pix) in decoded.assetPixelsByKey {
             assetEntries.append(ResolvedAssetPixelEntry(key: key, pixelInput: pix))
@@ -295,8 +342,8 @@ enum NextSingleSceneBridge {
         } catch { throw NextBridgeError.engine("config: \(error)") }
 
         return NextPreparedContext(
-            materials: out.materials, window: window, mediaReference: decoded.mediaReference,
-            photoPixels: decoded.photoPixels, assetEntries: assetEntries, configuration: configuration,
+            materials: out.materials, window: window, mediaPixelsByReference: mediaPixelsByReference,
+            assetEntries: assetEntries, configuration: configuration,
             session: sessionBox.session, totalFrames: totalFrames)
     }
 
@@ -331,7 +378,7 @@ enum NextSingleSceneBridge {
         guard case let .single(subplan) = plan.body else {
             throw NextBridgeError.unsupportedFramePlan("expected single scene body")
         }
-        let fixtures = try buildFixtures(subplan: subplan, mediaReference: ctx.mediaReference, photoPixels: ctx.photoPixels)
+        let fixtures = try buildFixtures(subplan: subplan, mediaPixelsByReference: ctx.mediaPixelsByReference)
         let base: ResolvedFrameInput
         do { base = try RenderInputResolver.resolve(framePlan: plan, materials: ctx.materials, fixtures: fixtures) }
         catch { throw NextBridgeError.engine("resolve: \(error)") }
@@ -350,21 +397,36 @@ enum NextSingleSceneBridge {
         catch { throw NextBridgeError.engine("evaluate: \(error)") }
     }
 
-    /// Bind the user photo ONLY to the media reference (authored assets use assetPixels, not this).
-    private static func buildFixtures(subplan: SceneSubplan, mediaReference: String, photoPixels: ResolvedPixelInput)
+    /// Bind each block's user photo to its media reference (authored assets use assetPixels, not this).
+    /// Every supplied reference MUST appear in the frame plan (fail closed otherwise).
+    private static func buildFixtures(subplan: SceneSubplan, mediaPixelsByReference: [String: ResolvedPixelInput])
         throws -> [RenderInputResolver.FixtureKey: ResolvedPixelInput] {
-        var fixtures: [RenderInputResolver.FixtureKey: ResolvedPixelInput] = [:]
-        var found = false
+        var present = Set<String>()
         for layer in subplan.layers {
-            if case let .image(ref) = layer.content, ref.raw == mediaReference {
-                fixtures[.image(reference: mediaReference)] = photoPixels
-                found = true
+            if case let .image(ref) = layer.content, mediaPixelsByReference[ref.raw] != nil {
+                present.insert(ref.raw)
             }
         }
-        guard found else {
-            throw NextBridgeError.unsupportedFramePlan("bound media reference '\(mediaReference)' not present in frame plan")
+        let missing = Set(mediaPixelsByReference.keys).subtracting(present)
+        guard missing.isEmpty else {
+            throw NextBridgeError.unsupportedFramePlan("bound media reference(s) not present in frame plan: \(missing.sorted())")
         }
+        var fixtures: [RenderInputResolver.FixtureKey: ResolvedPixelInput] = [:]
+        for (ref, pixels) in mediaPixelsByReference { fixtures[.image(reference: ref)] = pixels }
         return fixtures
+    }
+
+    /// Assert every supplied media reference is present in the (probe) subplan — fail closed if a
+    /// bound block's media layer is absent (e.g. an unexpected template shape).
+    private static func assertReferencesPresent(subplan: SceneSubplan, references: Set<String>) throws {
+        var present = Set<String>()
+        for layer in subplan.layers {
+            if case let .image(ref) = layer.content, references.contains(ref.raw) { present.insert(ref.raw) }
+        }
+        let missing = references.subtracting(present)
+        guard missing.isEmpty else {
+            throw NextBridgeError.unsupportedFramePlan("bound media reference(s) not present in frame plan: \(missing.sorted())")
+        }
     }
 
     // MARK: - Placement conversion (fix 3: checked fixed-point, no Float coercion)
@@ -463,14 +525,25 @@ enum NextSingleSceneBridge {
         subplan: SceneSubplan, base: ResolvedFrameInput, assetEntries: [ResolvedAssetPixelEntry]
     ) throws -> ResolvedFrameInput {
         var sceneEntries: [ResolvedSceneLayerEntry] = []
+        var dropped: [String] = []
         for layer in subplan.layers {
             let key = ResolvedLayerKey.sceneLayer(
                 sceneID: subplan.sceneID, role: .sole, layerID: layer.layerID)
             guard let program = base.program(for: key),
                   let placement = base.mediaPlacement(for: key),
-                  let pixels = base.pixelInput(for: key) else { continue }
+                  let pixels = base.pixelInput(for: key) else {
+                // CP4 fail-closed: a media-bearing scene layer with no resolved program/placement/
+                // pixels would silently vanish (this is why example_4blocks showed only 1 of 4).
+                // Surface it instead of dropping.
+                dropped.append(layer.layerID.raw)
+                continue
+            }
             sceneEntries.append(try ResolvedSceneLayerEntry(
                 key: key, program: program, pixelInput: pixels, placement: placement))
+        }
+        guard dropped.isEmpty else {
+            throw NextBridgeError.unsupportedFramePlan(
+                "scene layer(s) had no resolved media pixels (dropped): \(dropped.sorted())")
         }
         do {
             return try ResolvedFrameInput(
