@@ -26,6 +26,8 @@ public enum RenderCommandCategory: String, Hashable, Sendable, CaseIterable {
     case offscreenSurface
     case fadeTransition
     case slideTransition
+    case pushTransition
+    case dipTransition
     case overlay
     case finalLinearToSRGB
     case finalOutput
@@ -503,6 +505,19 @@ public enum RenderCommandPayload: Hashable, Sendable {
     /// direction at the eased progress, compositing into `targetSurfaceID`; the outgoing surface is read.
     case slideTransition(direction: RenderSlideDirection, easedProgress: UnitInterval,
                          offsetX: Int64, offsetY: Int64, outgoingSurfaceID: String, incomingSurfaceID: String, targetSurfaceID: String)
+    /// A push transition (CP5.5): BOTH scenes move. The outgoing surface is shifted by `(outgoingOffsetX,
+    /// outgoingOffsetY)` and the incoming surface by `(incomingOffsetX, incomingOffsetY)` (canvas-raw,
+    /// already eased); the incoming composites source-over the outgoing into `targetSurfaceID`. Off-edge
+    /// samples are transparent (clampToZero sampler).
+    case pushTransition(direction: RenderSlideDirection, easedProgress: UnitInterval,
+                        outgoingOffsetX: Int64, outgoingOffsetY: Int64,
+                        incomingOffsetX: Int64, incomingOffsetY: Int64,
+                        outgoingSurfaceID: String, incomingSurfaceID: String, targetSurfaceID: String)
+    /// A dip transition (CP5.5): dip through a solid `dipColor` (opaque black or white, premultiplied).
+    /// At eased progress `p`: `p < 0.5` → `mix(outgoing, dipColor, p·2)`; `p >= 0.5` →
+    /// `mix(dipColor, incoming, (p−0.5)·2)`. Composited into `targetSurfaceID`.
+    case dipTransition(dipColor: PremultipliedColor, easedProgress: UnitInterval,
+                       outgoingSurfaceID: String, incomingSurfaceID: String, targetSurfaceID: String)
     /// Composite a pre-resolved global overlay above the body, into `targetSurfaceID`.
     case overlay(resourceID: String, transform: FixedAffineTransform2D, opacity: OpacityScalar, compositionOrder: Int, targetSurfaceID: String)
     /// Convert the linear intermediate `sourceSurfaceID` to sRGB in `targetSurfaceID`.
@@ -528,6 +543,8 @@ public enum RenderCommandPayload: Hashable, Sendable {
         case .matteLink: return .matteLink
         case .fadeTransition: return .fadeTransition
         case .slideTransition: return .slideTransition
+        case .pushTransition: return .pushTransition
+        case .dipTransition: return .dipTransition
         case .overlay: return .overlay
         case .finalLinearToSRGB: return .finalLinearToSRGB
         case .finalOutput: return .finalOutput
@@ -574,6 +591,16 @@ public enum RenderCommandPayload: Hashable, Sendable {
             return [("direction", .string(direction.rawValue)), ("easedProgress", .int(easedProgress.rawValue)),
                     ("incomingSurfaceID", .string(incoming)), ("offsetX", .int(offsetX)),
                     ("offsetY", .int(offsetY)), ("outgoingSurfaceID", .string(outgoing)), ("target", .string(target))]
+        case let .pushTransition(direction, easedProgress, outX, outY, inX, inY, outgoing, incoming, target):
+            return [("direction", .string(direction.rawValue)), ("easedProgress", .int(easedProgress.rawValue)),
+                    ("incomingOffsetX", .int(inX)), ("incomingOffsetY", .int(inY)),
+                    ("incomingSurfaceID", .string(incoming)),
+                    ("outgoingOffsetX", .int(outX)), ("outgoingOffsetY", .int(outY)),
+                    ("outgoingSurfaceID", .string(outgoing)), ("target", .string(target))]
+        case let .dipTransition(dipColor, easedProgress, outgoing, incoming, target):
+            return [("dipColor", colorValue(dipColor)), ("easedProgress", .int(easedProgress.rawValue)),
+                    ("incomingSurfaceID", .string(incoming)), ("outgoingSurfaceID", .string(outgoing)),
+                    ("target", .string(target))]
         case let .overlay(resourceID, transform, opacity, compositionOrder, target):
             return [("compositionOrder", .int(Int64(compositionOrder))), ("opacity", .int(opacity.rawValue)),
                     ("resourceID", .string(resourceID)), ("target", .string(target)), ("transform", try transform.canonicalValue())]

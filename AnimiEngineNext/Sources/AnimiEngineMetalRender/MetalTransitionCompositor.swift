@@ -59,6 +59,62 @@ struct MetalTransitionCompositor {
         encoder.endEncoding()
     }
 
+    /// Encode a push (CP5.5) into `target`: BOTH scenes shifted, incoming source-over outgoing. The
+    /// canvas-raw offsets (already eased, computed by the graph) are converted to normalized UV shifts
+    /// using the target's pixel size, exactly like slide; `Float` only at the shader boundary.
+    func encodePush(
+        outgoing: MTLTexture, incoming: MTLTexture, target: MTLTexture,
+        outgoingOffsetX: Int64, outgoingOffsetY: Int64, incomingOffsetX: Int64, incomingOffsetY: Int64,
+        into commandBuffer: MTLCommandBuffer
+    ) throws {
+        let widthPx = Int64(target.width)
+        let heightPx = Int64(target.height)
+        guard widthPx > 0, heightPx > 0 else {
+            throw MetalRenderError.invalidSurfaceDimensions(resourceID: "push.target", width: widthPx, height: heightPx)
+        }
+        let denomX = try CheckedInt64.multiply(CanvasScalar.unitsPerPoint, widthPx, "push.denomX")
+        let denomY = try CheckedInt64.multiply(CanvasScalar.unitsPerPoint, heightPx, "push.denomY")
+        // Two offsets, packed as float4(outUV.xy, inUV.xy). The fragment samples each surface at
+        // `uv - offsetUV`, so a positive canvas offset moves that surface in the positive direction.
+        var offsets = SIMD4<Float>(
+            Float(outgoingOffsetX) / Float(denomX), Float(outgoingOffsetY) / Float(denomY),
+            Float(incomingOffsetX) / Float(denomX), Float(incomingOffsetY) / Float(denomY))
+
+        let encoder = try beginReplacePass(target: target, label: "push", into: commandBuffer)
+        encoder.setRenderPipelineState(try pipelines.pushPipeline(for: target.pixelFormat))
+        encoder.setFragmentTexture(outgoing, index: 0)
+        encoder.setFragmentSamplerState(pipelines.sampler(), index: 0)
+        encoder.setFragmentTexture(incoming, index: 1)
+        encoder.setFragmentBytes(&offsets, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+    }
+
+    /// Encode a dip (CP5.5) into `target`: dip through a solid premultiplied colour. The fragment uses
+    /// the eased progress: `p<0.5` → `mix(outgoing, dip, p·2)`; `p>=0.5` → `mix(dip, incoming, (p−0.5)·2)`.
+    /// The dip colour is converted to a linear-premultiplied `float4` (black/white are linear-invariant).
+    func encodeDip(
+        outgoing: MTLTexture, incoming: MTLTexture, target: MTLTexture,
+        dipColor: PremultipliedColor, easedProgress: UnitInterval, into commandBuffer: MTLCommandBuffer
+    ) throws {
+        // The shader packs (progress, dip.r, dip.g, dip.b, dip.a). Components are normalized fixed-point.
+        let n = Float(NormalizedColorComponent.unitsPerUnit)
+        var params = SIMD4<Float>(
+            Float(easedProgress.rawValue) / Float(UnitInterval.unitsPerUnit),
+            Float(dipColor.red.rawValue) / n, Float(dipColor.green.rawValue) / n, Float(dipColor.blue.rawValue) / n)
+        var dipAlpha = Float(dipColor.alpha.rawValue) / n
+
+        let encoder = try beginReplacePass(target: target, label: "dip", into: commandBuffer)
+        encoder.setRenderPipelineState(try pipelines.dipPipeline(for: target.pixelFormat))
+        encoder.setFragmentTexture(outgoing, index: 0)
+        encoder.setFragmentSamplerState(pipelines.sampler(), index: 0)
+        encoder.setFragmentTexture(incoming, index: 1)
+        encoder.setFragmentBytes(&params, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
+        encoder.setFragmentBytes(&dipAlpha, length: MemoryLayout<Float>.size, index: 1)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+    }
+
     /// A full-surface `.clear`/`.store` render pass into `target`; the fragment emits the final value, so
     /// blending stays disabled in the PSO (R1).
     private func beginReplacePass(target: MTLTexture, label: String, into commandBuffer: MTLCommandBuffer) throws -> MTLRenderCommandEncoder {

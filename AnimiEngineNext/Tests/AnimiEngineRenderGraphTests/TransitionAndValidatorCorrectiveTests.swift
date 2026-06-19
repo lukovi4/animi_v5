@@ -90,6 +90,90 @@ final class TransitionAndValidatorCorrectiveTests: XCTestCase {
         }
     }
 
+    // MARK: - CP5.5 push: exact command, correct direction + offsets (both scenes move)
+
+    func testPushEveryDirectionEmitsExactOffsets() throws {
+        // At progress 1/4 with linear easing: eased = 1/4. For width W=1080 (canvas-raw = W*unitsPerPoint):
+        //   outgoing magnitude = eased·W, incoming magnitude = (1−eased)·W.
+        let W: Int64 = 1080, H: Int64 = 1920
+        let outMagX = (W * pt) / 4, inMagX = (W * pt) * 3 / 4
+        let outMagY = (H * pt) / 4, inMagY = (H * pt) * 3 / 4
+        let expected: [String: (out: (Int64, Int64), inc: (Int64, Int64))] = [
+            "left":  ((outMagX, 0),  (-inMagX, 0)),
+            "right": ((-outMagX, 0), (inMagX, 0)),
+            "up":    ((0, outMagY),  (0, -inMagY)),
+            "down":  ((0, -outMagY), (0, inMagY)),
+        ]
+        for dir in ["left", "right", "up", "down"] {
+            let params = try TransitionParameterSet([TransitionParameter(key: "direction", value: .identifier(dir))])
+            let plan = try transitionPlan(effect: "push", params: params, num: 1, den: 4)
+            let graph = try RenderGraphCompiler.compile(plan: plan, input: try transitionInput(), configuration: try F.config())
+            let push = try XCTUnwrap(graph.commands.first { $0.category == .pushTransition })
+            guard case let .pushTransition(direction, eased, outX, outY, inX, inY, out, inc, _) = push.payload else { return XCTFail() }
+            XCTAssertEqual(direction.rawValue, dir)
+            XCTAssertEqual(eased.rawValue, UnitInterval.unitsPerUnit / 4, "linear eased = raw progress 1/4")
+            let exp = expected[dir]!
+            XCTAssertEqual(outX, exp.out.0, "push \(dir) outX"); XCTAssertEqual(outY, exp.out.1, "push \(dir) outY")
+            XCTAssertEqual(inX, exp.inc.0, "push \(dir) inX"); XCTAssertEqual(inY, exp.inc.1, "push \(dir) inY")
+            func sceneWrote(_ s: String) -> Bool { graph.commands.contains { if case let .beginScene(_, _, t) = $0.payload { return t == s }; return false } }
+            XCTAssertTrue(sceneWrote(out)); XCTAssertTrue(sceneWrote(inc))
+            XCTAssertNoThrow(try RenderGraphValidator.validate(graph, configuration: try F.config()))
+        }
+    }
+
+    func testPushMissingDirectionRejected() throws {
+        let plan = try transitionPlan(effect: "push", params: .empty)
+        XCTAssertThrowsError(try RenderGraphCompiler.compile(plan: plan, input: try transitionInput(), configuration: try F.config())) { error in
+            guard case RenderGraphError.unsupportedSlideDirection? = error as? RenderGraphError else { return XCTFail("\(error)") }
+        }
+    }
+
+    func testPushEasingAppliedBeforeOffsets() throws {
+        // easeInOut at progress 1/2 → smoothstep(0.5) = 0.5, so offsets equal the linear case at 1/2.
+        let params = try TransitionParameterSet([TransitionParameter(key: "direction", value: .identifier("left"))])
+        let plan = try transitionPlan(effect: "push", easing: "easeInOut", params: params, num: 1, den: 2)
+        let graph = try RenderGraphCompiler.compile(plan: plan, input: try transitionInput(), configuration: try F.config())
+        let push = try XCTUnwrap(graph.commands.first { $0.category == .pushTransition })
+        guard case let .pushTransition(_, eased, outX, _, inX, _, _, _, _) = push.payload else { return XCTFail() }
+        XCTAssertEqual(eased.rawValue, UnitInterval.unitsPerUnit / 2, "smoothstep(0.5)=0.5")
+        let W: Int64 = 1080
+        XCTAssertEqual(outX, (W * pt) / 2); XCTAssertEqual(inX, -((W * pt) / 2))
+    }
+
+    // MARK: - CP5.5 dip: exact command, correct colour
+
+    func testDipToBlackEmitsBlackColor() throws {
+        let plan = try transitionPlan(effect: "dipToBlack", num: 1, den: 3)
+        let graph = try RenderGraphCompiler.compile(plan: plan, input: try transitionInput(), configuration: try F.config())
+        let dip = try XCTUnwrap(graph.commands.first { $0.category == .dipTransition })
+        guard case let .dipTransition(color, eased, out, inc, _) = dip.payload else { return XCTFail() }
+        XCTAssertEqual(color.red.rawValue, 0); XCTAssertEqual(color.green.rawValue, 0); XCTAssertEqual(color.blue.rawValue, 0)
+        XCTAssertEqual(color.alpha.rawValue, NormalizedColorComponent.unitsPerUnit, "opaque black")
+        XCTAssertEqual(eased.rawValue, UnitInterval.unitsPerUnit / 3)
+        func sceneWrote(_ s: String) -> Bool { graph.commands.contains { if case let .beginScene(_, _, t) = $0.payload { return t == s }; return false } }
+        XCTAssertTrue(sceneWrote(out)); XCTAssertTrue(sceneWrote(inc))
+        XCTAssertNoThrow(try RenderGraphValidator.validate(graph, configuration: try F.config()))
+    }
+
+    func testDipToWhiteEmitsWhiteColor() throws {
+        let plan = try transitionPlan(effect: "dipToWhite", num: 2, den: 3)
+        let graph = try RenderGraphCompiler.compile(plan: plan, input: try transitionInput(), configuration: try F.config())
+        let dip = try XCTUnwrap(graph.commands.first { $0.category == .dipTransition })
+        guard case let .dipTransition(color, _, _, _, _) = dip.payload else { return XCTFail() }
+        let one = NormalizedColorComponent.unitsPerUnit
+        XCTAssertEqual(color.red.rawValue, one); XCTAssertEqual(color.green.rawValue, one)
+        XCTAssertEqual(color.blue.rawValue, one); XCTAssertEqual(color.alpha.rawValue, one, "opaque white")
+        XCTAssertNoThrow(try RenderGraphValidator.validate(graph, configuration: try F.config()))
+    }
+
+    func testDipRejectsExtraParameter() throws {
+        let params = try TransitionParameterSet([TransitionParameter(key: "direction", value: .identifier("left"))])
+        let plan = try transitionPlan(effect: "dipToBlack", params: params)
+        XCTAssertThrowsError(try RenderGraphCompiler.compile(plan: plan, input: try transitionInput(), configuration: try F.config())) { error in
+            guard case RenderGraphError.unsupportedTransitionEffect? = error as? RenderGraphError else { return XCTFail("\(error)") }
+        }
+    }
+
     // MARK: - Independent validator rejections (#10)
 
     private func validGraph() throws -> RenderGraph {

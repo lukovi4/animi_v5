@@ -25,6 +25,8 @@ final class MetalPipelineLibrary {
     // Step-12 functions.
     private let fadeFragment: MTLFunction
     private let slideFragment: MTLFunction
+    private let pushFragment: MTLFunction
+    private let dipFragment: MTLFunction
 
     private var imagePipelines: [MTLPixelFormat: MTLRenderPipelineState] = [:]
     private var finalPipelineState: MTLRenderPipelineState?
@@ -38,6 +40,9 @@ final class MetalPipelineLibrary {
     // Step-12 caches.
     private var fadePipelines: [MTLPixelFormat: MTLRenderPipelineState] = [:]
     private var slidePipelines: [MTLPixelFormat: MTLRenderPipelineState] = [:]
+    // CP5.5 caches.
+    private var pushPipelines: [MTLPixelFormat: MTLRenderPipelineState] = [:]
+    private var dipPipelines: [MTLPixelFormat: MTLRenderPipelineState] = [:]
     private let linearSampler: MTLSamplerState
 
     /// Step-11 (§7.2) — the required MSAA sample count for coverage rasterization.
@@ -65,6 +70,9 @@ final class MetalPipelineLibrary {
         // Step-12 functions (loaded eagerly; missing function is a typed failure).
         self.fadeFragment = try Self.function("fade_fragment", in: library)
         self.slideFragment = try Self.function("slide_fragment", in: library)
+        // CP5.5 functions (loaded eagerly; missing function is a typed failure).
+        self.pushFragment = try Self.function("push_fragment", in: library)
+        self.dipFragment = try Self.function("dip_fragment", in: library)
 
         // §7.2/§8 — require 4x MSAA capability up front; no lazy creation during execute.
         guard device.supportsTextureSampleCount(Self.coverageSampleCount) else {
@@ -97,6 +105,9 @@ final class MetalPipelineLibrary {
             // the fragment emits the final composited value.
             fadePipelines[format] = try makeReplaceFullSurfacePipeline(fragment: fadeFragment, format: format, detail: "fade")
             slidePipelines[format] = try makeReplaceFullSurfacePipeline(fragment: slideFragment, format: format, detail: "slide")
+            // CP5.5 push/dip are SELF-CONTAINED full-surface `.replace` passes (same contract as fade/slide).
+            pushPipelines[format] = try makeReplaceFullSurfacePipeline(fragment: pushFragment, format: format, detail: "push")
+            dipPipelines[format] = try makeReplaceFullSurfacePipeline(fragment: dipFragment, format: format, detail: "dip")
         }
     }
 
@@ -231,6 +242,18 @@ final class MetalPipelineLibrary {
     func slidePipeline(for format: MTLPixelFormat) throws -> MTLRenderPipelineState {
         guard let pso = slidePipelines[format] else {
             throw MetalRenderError.pipelineCreationFailed(detail: "slide pipeline for \(format.rawValue)")
+        }
+        return pso
+    }
+    func pushPipeline(for format: MTLPixelFormat) throws -> MTLRenderPipelineState {
+        guard let pso = pushPipelines[format] else {
+            throw MetalRenderError.pipelineCreationFailed(detail: "push pipeline for \(format.rawValue)")
+        }
+        return pso
+    }
+    func dipPipeline(for format: MTLPixelFormat) throws -> MTLRenderPipelineState {
+        guard let pso = dipPipelines[format] else {
+            throw MetalRenderError.pipelineCreationFailed(detail: "dip pipeline for \(format.rawValue)")
         }
         return pso
     }

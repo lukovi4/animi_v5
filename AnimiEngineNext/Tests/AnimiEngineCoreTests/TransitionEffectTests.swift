@@ -83,4 +83,71 @@ final class TransitionEffectTests: XCTestCase {
         XCTAssertNoThrow(try SupportedTransitionEffect.validate(try animated("fade", [], duration: 240_000)))
         XCTAssertNoThrow(try SupportedTransitionEffect.validate(try animated("fade", [], duration: 999_999)))
     }
+
+    // MARK: - CP5.5: push (directional, like slide)
+
+    func testPushValidDirectionsAccepted() throws {
+        for dir in ["left", "right", "up", "down"] {
+            XCTAssertNoThrow(try SupportedTransitionEffect.validate(
+                try animated("push", [TransitionParameter(key: "direction", value: .identifier(dir))])
+            ), "push direction \(dir)")
+        }
+    }
+
+    func testPushMissingDirectionRejected() throws {
+        XCTAssertThrowsError(try SupportedTransitionEffect.validate(try animated("push", []))) {
+            XCTAssertEqual($0 as? ProjectValidationError, .missingTransitionParameter(effectID: "push", key: "direction"))
+        }
+    }
+
+    func testPushWrongTypeDirectionRejected() throws {
+        XCTAssertThrowsError(try SupportedTransitionEffect.validate(
+            try animated("push", [TransitionParameter(key: "direction", value: .integer(1))])
+        )) {
+            XCTAssertEqual($0 as? ProjectValidationError, .wrongTypeTransitionParameter(effectID: "push", key: "direction"))
+        }
+    }
+
+    func testPushInvalidDirectionValueRejected() throws {
+        XCTAssertThrowsError(try SupportedTransitionEffect.validate(
+            try animated("push", [TransitionParameter(key: "direction", value: .identifier("diagonal"))])
+        ))
+    }
+
+    func testPushExtraParameterRejected() throws {
+        XCTAssertThrowsError(try SupportedTransitionEffect.validate(
+            try animated("push", [
+                TransitionParameter(key: "direction", value: .identifier("left")),
+                TransitionParameter(key: "speed", value: .integer(2))
+            ])
+        )) {
+            XCTAssertEqual($0 as? ProjectValidationError, .extraTransitionParameter(effectID: "push", key: "speed"))
+        }
+    }
+
+    // MARK: - CP5.5: dipToBlack / dipToWhite (empty params)
+
+    func testDipToBlackEmptyParametersAccepted() throws {
+        XCTAssertNoThrow(try SupportedTransitionEffect.validate(try animated("dipToBlack", [])))
+    }
+
+    func testDipToWhiteEmptyParametersAccepted() throws {
+        XCTAssertNoThrow(try SupportedTransitionEffect.validate(try animated("dipToWhite", [])))
+    }
+
+    func testDipToBlackRejectsExtraParameter() throws {
+        XCTAssertThrowsError(try SupportedTransitionEffect.validate(
+            try animated("dipToBlack", [TransitionParameter(key: "direction", value: .identifier("left"))])
+        )) {
+            XCTAssertEqual($0 as? ProjectValidationError, .extraTransitionParameter(effectID: "dipToBlack", key: "direction"))
+        }
+    }
+
+    func testDipToWhiteRejectsExtraParameter() throws {
+        XCTAssertThrowsError(try SupportedTransitionEffect.validate(
+            try animated("dipToWhite", [TransitionParameter(key: "x", value: .integer(1))])
+        )) {
+            XCTAssertEqual($0 as? ProjectValidationError, .extraTransitionParameter(effectID: "dipToWhite", key: "x"))
+        }
+    }
 }

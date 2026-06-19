@@ -281,6 +281,102 @@ final class TransitionOverlayTests: XCTestCase {
         XCTAssertThrowsError(try s.execute(try graph(8, 8, p)), "injected failure throws")
         XCTAssertTrue(released, "engine-owned resources released after injected failure during a transition")
     }
+
+    // MARK: - CP5.5 Push (both scenes move; off-edge transparent)
+
+    private func pushFrame(direction: RenderSlideDirection, outX: Int64, outY: Int64, inX: Int64, inY: Int64) throws -> RenderedFrame {
+        let (s, _) = try session()
+        var p = try twoScenes(8, 8, out: try red(), inc: try green(), outgoing: "o", incoming: "i")
+        p.append(.pushTransition(direction: direction, easedProgress: try UnitInterval(rawValue: 500_000),
+                                 outgoingOffsetX: outX, outgoingOffsetY: outY, incomingOffsetX: inX, incomingOffsetY: inY,
+                                 outgoingSurfaceID: "o", incomingSurfaceID: "i", targetSurfaceID: RenderSurface.linearCanvas))
+        return try s.execute(try graph(8, 8, p))
+    }
+
+    func testPushLeftMidShowsBothRegions() throws {
+        // direction .left at p=0.5: outgoing moves RIGHT by +4pt (A x=+W·p), incoming enters from left
+        // (B x=−W·(1−p)=−4pt). Right side shows outgoing red (shifted in), left side shows incoming green.
+        let f = try pushFrame(direction: .left, outX: 4 * pt, outY: 0, inX: -4 * pt, inY: 0)
+        XCTAssertEqual(MetalTestEnvironment.pixel(f, x: 1, y: 4).g, 255, "push-left: incoming green visible on the left")
+        XCTAssertEqual(MetalTestEnvironment.pixel(f, x: 7, y: 4).r, 255, "push-left: outgoing red (pushed right) visible on the right")
+    }
+
+    func testPushRightMidShowsBothRegions() throws {
+        // direction .right at p=0.5: outgoing moves LEFT (A x=−4pt), incoming enters from right (B x=+4pt).
+        let f = try pushFrame(direction: .right, outX: -4 * pt, outY: 0, inX: 4 * pt, inY: 0)
+        XCTAssertEqual(MetalTestEnvironment.pixel(f, x: 7, y: 4).g, 255, "push-right: incoming green on the right")
+        XCTAssertEqual(MetalTestEnvironment.pixel(f, x: 1, y: 4).r, 255, "push-right: outgoing red (pushed left) on the left")
+    }
+
+    func testPushUpMidShowsBothRegions() throws {
+        // direction .up at p=0.5: outgoing moves DOWN (A y=+4pt), incoming enters from top (B y=−4pt).
+        // v is top-left origin, so a row near the top (y=1) shows the incoming; near bottom (y=7) the outgoing.
+        let f = try pushFrame(direction: .up, outX: 0, outY: 4 * pt, inX: 0, inY: -4 * pt)
+        XCTAssertEqual(MetalTestEnvironment.pixel(f, x: 4, y: 1).g, 255, "push-up: incoming green near the top")
+        XCTAssertEqual(MetalTestEnvironment.pixel(f, x: 4, y: 7).r, 255, "push-up: outgoing red (pushed down) near the bottom")
+    }
+
+    func testPushDownMidShowsBothRegions() throws {
+        // direction .down at p=0.5: outgoing moves UP (A y=−4pt), incoming enters from bottom (B y=+4pt).
+        let f = try pushFrame(direction: .down, outX: 0, outY: -4 * pt, inX: 0, inY: 4 * pt)
+        XCTAssertEqual(MetalTestEnvironment.pixel(f, x: 4, y: 7).g, 255, "push-down: incoming green near the bottom")
+        XCTAssertEqual(MetalTestEnvironment.pixel(f, x: 4, y: 1).r, 255, "push-down: outgoing red (pushed up) near the top")
+    }
+
+    func testPushRepeatableSameDevice() throws {
+        let a = try pushFrame(direction: .left, outX: 4 * pt, outY: 0, inX: -4 * pt, inY: 0)
+        let b = try pushFrame(direction: .left, outX: 4 * pt, outY: 0, inX: -4 * pt, inY: 0)
+        let pa = MetalTestEnvironment.pixel(a, x: 1, y: 4), pb = MetalTestEnvironment.pixel(b, x: 1, y: 4)
+        XCTAssertEqual(pa.r, pb.r); XCTAssertEqual(pa.g, pb.g); XCTAssertEqual(pa.b, pb.b); XCTAssertEqual(pa.a, pb.a)
+    }
+
+    // MARK: - CP5.5 Dip (through solid colour, eased two-phase)
+
+    private func dipFrame(black: Bool, progress: Int64) throws -> RenderedFrame {
+        let (s, _) = try session()
+        let dip = black
+            ? try PremultipliedColor(red: .zero, green: .zero, blue: .zero, alpha: .one)
+            : try PremultipliedColor(red: .one, green: .one, blue: .one, alpha: .one)
+        var p = try twoScenes(8, 8, out: try red(), inc: try green(), outgoing: "o", incoming: "i")
+        p.append(.dipTransition(dipColor: dip, easedProgress: try UnitInterval(rawValue: progress),
+                                outgoingSurfaceID: "o", incomingSurfaceID: "i", targetSurfaceID: RenderSurface.linearCanvas))
+        return try s.execute(try graph(8, 8, p))
+    }
+
+    func testDipToBlackMidpointIsBlack() throws {
+        // At p=0.5 exactly, the shader's first branch (p<0.5 false) → mix(dip, B, 0) = dip = black.
+        let f = try dipFrame(black: true, progress: 500_000)
+        let px = MetalTestEnvironment.pixel(f, x: 4, y: 4)
+        XCTAssertLessThan(Int(px.r), 8, "dipToBlack midpoint dark R"); XCTAssertLessThan(Int(px.g), 8, "dark G"); XCTAssertLessThan(Int(px.b), 8, "dark B")
+    }
+
+    func testDipToBlackEndpointsAreScenes() throws {
+        // p=0 → outgoing (red); near p=1 → incoming (green).
+        let f0 = try dipFrame(black: true, progress: 0)
+        XCTAssertEqual(MetalTestEnvironment.pixel(f0, x: 4, y: 4).r, 255, "dip p=0 → outgoing red")
+        let f1 = try dipFrame(black: true, progress: 999_999)
+        XCTAssertGreaterThan(Int(MetalTestEnvironment.pixel(f1, x: 4, y: 4).g), 250, "dip p≈1 → incoming green")
+    }
+
+    func testDipToWhiteMidpointIsWhite() throws {
+        let f = try dipFrame(black: false, progress: 500_000)
+        let px = MetalTestEnvironment.pixel(f, x: 4, y: 4)
+        XCTAssertGreaterThan(Int(px.r), 247, "dipToWhite midpoint light R"); XCTAssertGreaterThan(Int(px.g), 247, "light G"); XCTAssertGreaterThan(Int(px.b), 247, "light B")
+    }
+
+    func testDipToWhiteEndpointsAreScenes() throws {
+        let f0 = try dipFrame(black: false, progress: 0)
+        XCTAssertEqual(MetalTestEnvironment.pixel(f0, x: 4, y: 4).r, 255, "dip p=0 → outgoing red")
+        let f1 = try dipFrame(black: false, progress: 999_999)
+        XCTAssertGreaterThan(Int(MetalTestEnvironment.pixel(f1, x: 4, y: 4).g), 250, "dip p≈1 → incoming green")
+    }
+
+    func testDipRepeatableSameDevice() throws {
+        let a = try dipFrame(black: true, progress: 500_000)
+        let b = try dipFrame(black: true, progress: 500_000)
+        let pa = MetalTestEnvironment.pixel(a, x: 4, y: 4), pb = MetalTestEnvironment.pixel(b, x: 4, y: 4)
+        XCTAssertEqual(pa.r, pb.r); XCTAssertEqual(pa.g, pb.g); XCTAssertEqual(pa.b, pb.b); XCTAssertEqual(pa.a, pb.a)
+    }
 }
 
 /// Minimal overlay placement transform helper for tests (source-pixel→frame sizing + frame origin),

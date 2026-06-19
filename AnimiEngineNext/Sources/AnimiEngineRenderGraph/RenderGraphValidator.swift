@@ -289,6 +289,14 @@ public enum RenderGraphValidator {
                 guard stack.isEmpty else { throw RenderGraphError.validatorInvalidCommandOrder(detail: "slide inside an open scope") }
                 try requireWritten(outgoing); try requireWritten(incoming); _ = try requireSurface(target); written.insert(target)
 
+            case let .pushTransition(_, _, _, _, _, _, outgoing, incoming, target):
+                guard stack.isEmpty else { throw RenderGraphError.validatorInvalidCommandOrder(detail: "push inside an open scope") }
+                try requireWritten(outgoing); try requireWritten(incoming); _ = try requireSurface(target); written.insert(target)
+
+            case let .dipTransition(_, _, outgoing, incoming, target):
+                guard stack.isEmpty else { throw RenderGraphError.validatorInvalidCommandOrder(detail: "dip inside an open scope") }
+                try requireWritten(outgoing); try requireWritten(incoming); _ = try requireSurface(target); written.insert(target)
+
             case let .finalLinearToSRGB(source, target):
                 guard stack.isEmpty else { throw RenderGraphError.validatorInvalidCommandOrder(detail: "finalLinearToSRGB inside an open scope") }
                 try requireWritten(source); _ = try requireSurface(target); written.insert(target)

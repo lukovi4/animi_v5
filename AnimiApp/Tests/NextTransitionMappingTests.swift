@@ -4,8 +4,8 @@ import Foundation
 @testable import AnimiApp
 import AnimiEngineCore
 
-/// CP5 — app→canonical transition mapping. Only cut/fade/slide are supported; push/dipToBlack/
-/// dipToWhite fail closed with a typed error (owner decision: no silent map, no schema change).
+/// CP5/CP5.5 — app→canonical transition mapping. The v1 boundary transition set
+/// (cut/fade/slide/push/dipToBlack/dipToWhite) maps explicitly; unknown effects still fail closed.
 /// Timing is exact integer ticks; the canonical evaluator owns the window + rational progress.
 final class NextTransitionMappingTests: XCTestCase {
 
@@ -90,44 +90,97 @@ final class NextTransitionMappingTests: XCTestCase {
 
     func test_slide_missingDirectionFailsClosed() {
         XCTAssertThrowsError(try NextTransitionMapping.map(t("slide", dir: nil), fps: 30)) { err in
-            guard case NextTransitionMappingError.missingSlideDirection = err else {
-                return XCTFail("expected missingSlideDirection, got \(err)")
+            guard case NextTransitionMappingError.missingDirection(let effect) = err else {
+                return XCTFail("expected missingDirection, got \(err)")
             }
+            XCTAssertEqual(effect, "slide")
         }
     }
 
     func test_slide_invalidDirectionFailsClosed() {
         XCTAssertThrowsError(try NextTransitionMapping.map(t("slide", dir: "diagonal"), fps: 30)) { err in
-            guard case NextTransitionMappingError.invalidSlideDirection = err else {
-                return XCTFail("expected invalidSlideDirection, got \(err)")
+            guard case NextTransitionMappingError.invalidDirection(let effect, let direction) = err else {
+                return XCTFail("expected invalidDirection, got \(err)")
+            }
+            XCTAssertEqual(effect, "slide")
+            XCTAssertEqual(direction, "diagonal")
+        }
+    }
+
+    // MARK: - CP5.5: push now canonically supported
+
+    func test_push_directionParam_allFour() throws {
+        for dir in ["left", "right", "up", "down"] {
+            let mapped = try NextTransitionMapping.map(t("push", dir: dir), fps: 30)
+            guard case let .animated(effect) = mapped.kind else { return XCTFail("expected animated") }
+            XCTAssertEqual(effect.effectID.raw, "push")
+            guard case let .identifier(value)? = effect.parameters.value(for: "direction") else {
+                return XCTFail("missing direction identifier")
+            }
+            XCTAssertEqual(value, dir)
+            XCTAssertEqual(mapped.duration.ticks, 14 * 8_000, "exact ticks")
+            XCTAssertNoThrow(try SupportedTransitionEffect.validate(mapped), "canonical accepts push \(dir)")
+        }
+    }
+
+    func test_push_missingDirectionFailsClosed() {
+        XCTAssertThrowsError(try NextTransitionMapping.map(t("push", dir: nil), fps: 30)) { err in
+            guard case NextTransitionMappingError.missingDirection(let effect) = err else {
+                return XCTFail("expected missingDirection, got \(err)")
+            }
+            XCTAssertEqual(effect, "push")
+        }
+    }
+
+    func test_push_invalidDirectionFailsClosed() {
+        XCTAssertThrowsError(try NextTransitionMapping.map(t("push", dir: "diagonal"), fps: 30)) { err in
+            guard case NextTransitionMappingError.invalidDirection(let effect, let direction) = err else {
+                return XCTFail("expected invalidDirection, got \(err)")
+            }
+            XCTAssertEqual(effect, "push")
+            XCTAssertEqual(direction, "diagonal")
+        }
+    }
+
+    func test_push_postRollIsHalfDuration() throws {
+        XCTAssertEqual(try NextTransitionMapping.postRollTicks(t("push", dir: "left", frames: 14), fps: 30).ticks, 7 * 8_000)
+    }
+
+    // MARK: - CP5.5: dipToBlack / dipToWhite now canonically supported (empty params)
+
+    func test_dipToBlack_mapsToEmptyParams() throws {
+        let mapped = try NextTransitionMapping.map(t("dipToBlack"), fps: 30)
+        guard case let .animated(effect) = mapped.kind else { return XCTFail("expected animated") }
+        XCTAssertEqual(effect.effectID.raw, "dipToBlack")
+        XCTAssertTrue(effect.parameters.sortedUniqueParameters.isEmpty, "dip takes no params")
+        XCTAssertEqual(mapped.duration.ticks, 14 * 8_000)
+        XCTAssertNoThrow(try SupportedTransitionEffect.validate(mapped))
+    }
+
+    func test_dipToWhite_mapsToEmptyParams() throws {
+        let mapped = try NextTransitionMapping.map(t("dipToWhite"), fps: 30)
+        guard case let .animated(effect) = mapped.kind else { return XCTFail("expected animated") }
+        XCTAssertEqual(effect.effectID.raw, "dipToWhite")
+        XCTAssertTrue(effect.parameters.sortedUniqueParameters.isEmpty)
+        XCTAssertNoThrow(try SupportedTransitionEffect.validate(mapped))
+    }
+
+    func test_dip_zeroDurationFailsClosed() {
+        XCTAssertThrowsError(try NextTransitionMapping.map(t("dipToBlack", frames: 0), fps: 30)) { err in
+            guard case NextTransitionMappingError.nonPositiveAnimatedDuration = err else {
+                return XCTFail("expected nonPositiveAnimatedDuration, got \(err)")
             }
         }
     }
 
-    // MARK: - unsupported types fail closed (NO silent map to fade/slide)
+    // MARK: - unknown types STILL fail closed (no silent mapping)
 
-    func test_push_failsClosed() {
-        XCTAssertThrowsError(try NextTransitionMapping.map(t("push", dir: "left"), fps: 30)) { err in
+    func test_unknownType_failsClosed() {
+        XCTAssertThrowsError(try NextTransitionMapping.map(t("wipe"), fps: 30)) { err in
             guard case NextTransitionMappingError.unsupportedTransitionType(let r) = err else {
                 return XCTFail("expected unsupportedTransitionType, got \(err)")
             }
-            XCTAssertEqual(r, "push")
-        }
-    }
-
-    func test_dipToBlack_failsClosed() {
-        XCTAssertThrowsError(try NextTransitionMapping.map(t("dipToBlack"), fps: 30)) { err in
-            guard case NextTransitionMappingError.unsupportedTransitionType = err else {
-                return XCTFail("expected unsupportedTransitionType, got \(err)")
-            }
-        }
-    }
-
-    func test_dipToWhite_failsClosed() {
-        XCTAssertThrowsError(try NextTransitionMapping.map(t("dipToWhite"), fps: 30)) { err in
-            guard case NextTransitionMappingError.unsupportedTransitionType = err else {
-                return XCTFail("expected unsupportedTransitionType, got \(err)")
-            }
+            XCTAssertEqual(r, "wipe")
         }
     }
 

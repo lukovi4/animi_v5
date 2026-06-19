@@ -964,8 +964,9 @@ extension EditorViewController: MTKViewDelegate {
     /// canonical `FrameRate.fps30`). Kept as one constant so timing stays consistent.
     private static let nextTimelineFps = 30
 
-    /// Map an app `SceneTransition` to the bridge's primitive transition descriptor. push/dipToBlack/
-    /// dipToWhite are carried through verbatim and fail closed later in `NextTransitionMapping`.
+    /// Map an app `SceneTransition` to the bridge's primitive transition descriptor. The v1 transition
+    /// set is carried through verbatim; `NextTransitionMapping` maps supported effects explicitly and
+    /// fails closed only for unknown transition types.
     private static func makeNextTransition(_ t: SceneTransition) -> NextBridgeTransition {
         let typeRaw: String
         var direction: String? = nil

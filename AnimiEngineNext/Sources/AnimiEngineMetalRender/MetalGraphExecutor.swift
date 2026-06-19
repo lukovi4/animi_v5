@@ -228,8 +228,10 @@ struct MetalGraphExecutor {
                  .drawShape, .beginMask, .endMask, .matteLink:
                 break
             case let .fadeTransition(_, outgoing, incoming, target),
-                 let .slideTransition(_, _, _, _, outgoing, incoming, target):
-                // Step-12: the two scene surfaces and the target must be declared offscreens.
+                 let .slideTransition(_, _, _, _, outgoing, incoming, target),
+                 let .pushTransition(_, _, _, _, _, _, outgoing, incoming, target),
+                 let .dipTransition(_, _, outgoing, incoming, target):
+                // Step-12 / CP5.5: the two scene surfaces and the target must be declared offscreens.
                 guard declared[outgoing]?.kind == .offscreen else { throw MetalRenderError.missingResource(resourceID: outgoing) }
                 guard declared[incoming]?.kind == .offscreen else { throw MetalRenderError.missingResource(resourceID: incoming) }
                 guard declared[target]?.kind == .offscreen else { throw MetalRenderError.missingResource(resourceID: target) }
@@ -397,6 +399,25 @@ struct MetalGraphExecutor {
                 try transitionCompositor.encodeSlide(
                     outgoing: try owner.surface(for: outgoing), incoming: try owner.surface(for: incoming),
                     target: try owner.surface(for: target), offsetX: offsetX, offsetY: offsetY, into: commandBuffer)
+                if !state.sceneRenderEmitted { state.sceneRenderEmitted = true; onExecutionEvent?(.sceneRender) }
+
+            case let .pushTransition(_, _, outX, outY, inX, inY, outgoing, incoming, target):
+                // CP5.5 push: self-contained `.replace` full-surface pass; both scenes shifted.
+                try endEncoderIfOpen(state)
+                try transitionCompositor.encodePush(
+                    outgoing: try owner.surface(for: outgoing), incoming: try owner.surface(for: incoming),
+                    target: try owner.surface(for: target),
+                    outgoingOffsetX: outX, outgoingOffsetY: outY, incomingOffsetX: inX, incomingOffsetY: inY,
+                    into: commandBuffer)
+                if !state.sceneRenderEmitted { state.sceneRenderEmitted = true; onExecutionEvent?(.sceneRender) }
+
+            case let .dipTransition(dipColor, easedProgress, outgoing, incoming, target):
+                // CP5.5 dip: self-contained `.replace` full-surface pass through the solid dip colour.
+                try endEncoderIfOpen(state)
+                try transitionCompositor.encodeDip(
+                    outgoing: try owner.surface(for: outgoing), incoming: try owner.surface(for: incoming),
+                    target: try owner.surface(for: target), dipColor: dipColor, easedProgress: easedProgress,
+                    into: commandBuffer)
                 if !state.sceneRenderEmitted { state.sceneRenderEmitted = true; onExecutionEvent?(.sceneRender) }
 
             case let .overlay(resourceID, transform, opacity, _, target):

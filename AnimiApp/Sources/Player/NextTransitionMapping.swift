@@ -3,13 +3,11 @@ import Foundation
 
 import AnimiEngineCore
 
-// MARK: - CP5: app SceneTransition -> canonical Next SceneTransition (DEBUG only)
+// MARK: - CP5 / CP5.5: app SceneTransition -> canonical Next SceneTransition (DEBUG only)
 //
-// The canonical Next model supports EXACTLY three boundary transitions: cut, fade, slide(direction)
-// (AnimiEngineCore SupportedTransitionEffect). The app model is richer — it also has push,
-// dipToBlack, dipToWhite. Per the approved CP5 owner decision, those richer types FAIL CLOSED with a
-// typed visible error under the Next path; they are NEVER silently mapped to fade/slide, and the
-// AnimiEngineNext schema is NOT extended for CP5.
+// CP5 added cut/fade/slide(direction). CP5.5 extends the canonical Next model to cover the remaining
+// app v1 boundary transitions: push(direction), dipToBlack, and dipToWhite. Unknown transition types
+// still fail closed; there is never a silent map to another effect.
 //
 // Timing is canonical: the app boundary duration is `durationFrames` at the timeline fps. We convert
 // it to canonical ticks (exact integer ticks-per-frame at 240,000 ticks/second) and hand it to Next;
@@ -20,9 +18,9 @@ import AnimiEngineCore
 /// only primitives so the type stays free of any TVECore dependency.
 struct NextBridgeTransition {
     /// App transition type raw discriminator. One of:
-    /// `none | fade | slide | push | dipToBlack | dipToWhite`. For `slide`, `direction` is required.
+    /// `none | fade | slide | push | dipToBlack | dipToWhite`. For `slide`/`push`, `direction` is required.
     let typeRaw: String
-    /// Slide direction (`left|right|up|down`) when `typeRaw == "slide"`; ignored otherwise.
+    /// Slide/push direction (`left|right|up|down`) when required; ignored otherwise.
     let direction: String?
     /// App boundary duration in frames at the timeline fps.
     let durationFrames: Int
@@ -33,8 +31,8 @@ struct NextBridgeTransition {
 /// Typed, visible failure for CP5 transition mapping. No silent substitution.
 enum NextTransitionMappingError: Error, CustomStringConvertible {
     case unsupportedTransitionType(typeRaw: String)
-    case missingSlideDirection
-    case invalidSlideDirection(direction: String)
+    case missingDirection(effect: String)
+    case invalidDirection(effect: String, direction: String)
     case unsupportedEasing(easingRaw: String)
     case nonPositiveAnimatedDuration(durationFrames: Int)
     case engine(String)
@@ -42,11 +40,11 @@ enum NextTransitionMappingError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .unsupportedTransitionType(let t):
-            return "Next bridge: transition type '\(t)' is not supported by AnimiEngineNext. CP5 supports only cut/fade/slide (push/dipToBlack/dipToWhite fail closed)."
-        case .missingSlideDirection:
-            return "Next bridge: slide transition requires a direction (left/right/up/down)."
-        case .invalidSlideDirection(let d):
-            return "Next bridge: slide direction '\(d)' invalid. Use left/right/up/down."
+            return "Next bridge: transition type '\(t)' is not supported by AnimiEngineNext."
+        case .missingDirection(let effect):
+            return "Next bridge: \(effect) transition requires a direction (left/right/up/down)."
+        case .invalidDirection(let effect, let d):
+            return "Next bridge: \(effect) direction '\(d)' invalid. Use left/right/up/down."
         case .unsupportedEasing(let e):
             return "Next bridge: easing '\(e)' not supported. CP5 maps only linear/easeInOut."
         case .nonPositiveAnimatedDuration(let n):
@@ -89,9 +87,9 @@ enum NextTransitionMapping {
         catch { throw NextTransitionMappingError.engine("easing reference '\(canonical)': \(error)") }
     }
 
-    /// Map one app transition to a canonical `SceneTransition`. Fail-closed on push/dip*; canonical
-    /// duration is the app frame count converted to exact ticks. The evaluator computes the window
-    /// and exact rational progress from this duration; we never compute progress here.
+    /// Map one app transition to a canonical `SceneTransition`. Canonical duration is the app frame
+    /// count converted to exact ticks. The evaluator computes the window and exact rational progress
+    /// from this duration; we never compute progress here.
     ///
     /// NOTE: `SceneTransition`/`TransitionEffect`/… are fully qualified `AnimiEngineCore.*` because the
     /// app declares its OWN `SceneTransition` (the v6 product model) with a different shape.
@@ -111,24 +109,40 @@ enum NextTransitionMapping {
         case "slide":
             try requirePositive(t.durationFrames)
             let ticks = try durationTicks(t.durationFrames, tpf)
-            guard let dir = t.direction else { throw NextTransitionMappingError.missingSlideDirection }
-            let allowed: Set<String> = ["left", "right", "up", "down"]
-            guard allowed.contains(dir) else { throw NextTransitionMappingError.invalidSlideDirection(direction: dir) }
-            let params: TransitionParameterSet
-            do {
-                params = try TransitionParameterSet([
-                    TransitionParameter(key: "direction", value: .identifier(dir))
-                ])
-            } catch { throw NextTransitionMappingError.engine("slide parameters: \(error)") }
+            let params = try directionParams(t.direction, effect: "slide")
             let effect = try makeEffect(id: SupportedTransitionEffect.slide, parameters: params)
             let easing = try easingReference(easingRaw: t.easingRaw, isCut: false)
             return AnimiEngineCore.SceneTransition(kind: .animated(effect), duration: ticks, easing: easing)
-        case "push", "dipToBlack", "dipToWhite":
-            // Owner decision (CP5): fail closed. No silent map to fade/slide; no schema change.
-            throw NextTransitionMappingError.unsupportedTransitionType(typeRaw: t.typeRaw)
+        case "push":
+            // CP5.5: push is now canonically supported (direction param, both scenes move).
+            try requirePositive(t.durationFrames)
+            let ticks = try durationTicks(t.durationFrames, tpf)
+            let params = try directionParams(t.direction, effect: "push")
+            let effect = try makeEffect(id: SupportedTransitionEffect.push, parameters: params)
+            let easing = try easingReference(easingRaw: t.easingRaw, isCut: false)
+            return AnimiEngineCore.SceneTransition(kind: .animated(effect), duration: ticks, easing: easing)
+        case "dipToBlack", "dipToWhite":
+            // CP5.5: dip is now canonically supported (empty params; dip colour is canonical per effect id).
+            try requirePositive(t.durationFrames)
+            let ticks = try durationTicks(t.durationFrames, tpf)
+            let id = (t.typeRaw == "dipToWhite") ? SupportedTransitionEffect.dipToWhite : SupportedTransitionEffect.dipToBlack
+            let effect = try makeEffect(id: id, parameters: .empty)
+            let easing = try easingReference(easingRaw: t.easingRaw, isCut: false)
+            return AnimiEngineCore.SceneTransition(kind: .animated(effect), duration: ticks, easing: easing)
         default:
+            // Unknown transition types remain fail-closed (no silent mapping).
             throw NextTransitionMappingError.unsupportedTransitionType(typeRaw: t.typeRaw)
         }
+    }
+
+    /// Build the `direction` parameter set for slide/push, validating the value is left/right/up/down.
+    private static func directionParams(_ direction: String?, effect: String) throws -> TransitionParameterSet {
+        guard let dir = direction else { throw NextTransitionMappingError.missingDirection(effect: effect) }
+        let allowed: Set<String> = ["left", "right", "up", "down"]
+        guard allowed.contains(dir) else { throw NextTransitionMappingError.invalidDirection(effect: effect, direction: dir) }
+        do {
+            return try TransitionParameterSet([TransitionParameter(key: "direction", value: .identifier(dir))])
+        } catch { throw NextTransitionMappingError.engine("\(effect) parameters: \(error)") }
     }
 
     /// The post-roll capability (ticks) the OUTGOING scene needs for one boundary: it continues

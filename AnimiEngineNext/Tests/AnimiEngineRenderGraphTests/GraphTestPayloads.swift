@@ -39,6 +39,8 @@ enum GraphTestPayloads {
         case .matteLink: return .matteLink(mode: .alpha, sourceLayerID: 1, consumerLayerID: 2, sourceSurfaceID: "s", consumerSurfaceID: "c", targetSurfaceID: lin)
         case .fadeTransition: return .fadeTransition(easedProgress: .zero, outgoingSurfaceID: "o", incomingSurfaceID: "i", targetSurfaceID: lin)
         case .slideTransition: return .slideTransition(direction: .left, easedProgress: .zero, offsetX: 0, offsetY: 0, outgoingSurfaceID: "o", incomingSurfaceID: "i", targetSurfaceID: lin)
+        case .pushTransition: return .pushTransition(direction: .left, easedProgress: .zero, outgoingOffsetX: 0, outgoingOffsetY: 0, incomingOffsetX: 0, incomingOffsetY: 0, outgoingSurfaceID: "o", incomingSurfaceID: "i", targetSurfaceID: lin)
+        case .dipTransition: return .dipTransition(dipColor: .transparentBlack, easedProgress: .zero, outgoingSurfaceID: "o", incomingSurfaceID: "i", targetSurfaceID: lin)
         case .overlay: return .overlay(resourceID: "r", transform: t, opacity: op, compositionOrder: 0, targetSurfaceID: lin)
         case .finalLinearToSRGB: return .finalLinearToSRGB(sourceSurfaceID: lin, targetSurfaceID: RenderSurface.sRGBSurface)
         case .finalOutput: return .finalOutput(sourceSurfaceID: RenderSurface.sRGBSurface)

@@ -216,29 +216,100 @@ final class NextTimelineRenderE2ETests: XCTestCase {
         }
     }
 
-    /// A `push` transition must fail closed (typed error) — no silent map to fade/slide, no render.
-    /// The boundary-transition map happens in `assembleTimeline`, so the typed failure surfaces there
-    /// (decode only needs the post-roll half-duration; the unsupported-type guard is at map time).
-    func test_pushTransition_failsClosed() throws {
+    /// CP5.5: all four push directions render end-to-end through Next; evaluated plan carries the
+    /// correct `push` effect + direction at a mid-transition frame.
+    func test_pushAllDirections_renderMidTransition() throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("no Metal device") }
         let folder = try sceneFolderURL("full_image")
-        let photoA = try tempPhoto("pA", r: 1, g: 0, b: 1)
-        let photoB = try tempPhoto("pB", r: 0, g: 1, b: 1)
+        let photoA = try tempPhoto("puA", r: 1, g: 0, b: 0)
+        let photoB = try tempPhoto("puB", r: 0, g: 0, b: 1)
         defer { [photoA, photoB].forEach { try? FileManager.default.removeItem(at: $0) } }
-        let push = NextBridgeTransition(typeRaw: "push", direction: "left", durationFrames: 14, easingRaw: "easeInOut")
+        let sessionBox = try NextSingleSceneBridge.makeSession(device: device)
+
+        for dir in ["left", "right", "up", "down"] {
+            let push = NextBridgeTransition(typeRaw: "push", direction: dir, durationFrames: 14, easingRaw: "easeInOut")
+            let inputs = NextBridgeTimelineInputs(
+                scenes: [
+                    scene("full_image", folder: folder, photo: photoA, transitionToNext: push),
+                    scene("full_image", folder: folder, photo: photoB, transitionToNext: nil)
+                ],
+                nominalFrameIndex: 0, fps: 30)
+            let decoded = try NextTimelineBridge.decodeTimeline(inputs)
+            let structure = try NextTimelineBridge.buildTimelineStructureForTesting(decoded: decoded, inputs: inputs)
+            let ctx = try NextTimelineBridge.assembleTimeline(decoded: decoded, inputs: inputs, sessionBox: sessionBox)
+            let mid = try midTransitionFrame(structure: structure)
+            let plan = try TimelineEvaluator.evaluate(structure.window, atFrame: try FrameIndex(value: Int64(mid)))
+            guard case let .transition(t) = plan.body else { return XCTFail("push \(dir): frame \(mid) not a transition") }
+            XCTAssertEqual(t.effectID.raw, "push", "push \(dir): effect is push")
+            guard case let .identifier(value)? = t.parameters.value(for: "direction") else {
+                return XCTFail("push \(dir): no direction parameter")
+            }
+            XCTAssertEqual(value, dir)
+            let frame = try NextTimelineBridge.renderFrameBGRA(context: ctx, frameIndex: mid)
+            XCTAssertEqual(frame.bytes.count, frame.bytesPerRow * frame.height, "push \(dir) frame complete")
+        }
+    }
+
+    /// CP5.5: dipToBlack mid-transition centre pixel is dark (dipped through black); dipToWhite is light.
+    func test_dip_midTransition_centerPixelMatchesDipColor() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("no Metal device") }
+        let folder = try sceneFolderURL("full_image")
+        let red = try tempPhoto("dRed", r: 1, g: 0, b: 0)
+        let blue = try tempPhoto("dBlue", r: 0, g: 0, b: 1)
+        defer { [red, blue].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let sessionBox = try NextSingleSceneBridge.makeSession(device: device)
+
+        func renderMid(_ type: String) throws -> SampledPixel {
+            let dip = NextBridgeTransition(typeRaw: type, direction: nil, durationFrames: 14, easingRaw: "linear")
+            let inputs = NextBridgeTimelineInputs(
+                scenes: [
+                    scene("full_image", folder: folder, photo: red, transitionToNext: dip),
+                    scene("full_image", folder: folder, photo: blue, transitionToNext: nil)
+                ],
+                nominalFrameIndex: 0, fps: 30)
+            let decoded = try NextTimelineBridge.decodeTimeline(inputs)
+            let structure = try NextTimelineBridge.buildTimelineStructureForTesting(decoded: decoded, inputs: inputs)
+            let ctx = try NextTimelineBridge.assembleTimeline(decoded: decoded, inputs: inputs, sessionBox: sessionBox)
+            let mid = try midTransitionFrame(structure: structure)
+            let plan = try TimelineEvaluator.evaluate(structure.window, atFrame: try FrameIndex(value: Int64(mid)))
+            guard case let .transition(t) = plan.body else { XCTFail("\(type): not a transition"); return SampledPixel(b: 0, g: 0, r: 0, a: 0) }
+            XCTAssertEqual(t.effectID.raw, type)
+            let frame = try NextTimelineBridge.renderFrameBGRA(context: ctx, frameIndex: mid)
+            return sample(frame, fracX: 0.5, fracY: 0.5)
+        }
+
+        let black = try renderMid("dipToBlack")
+        XCTAssertLessThan(black.r, 60, "dipToBlack mid darkish R: \(black)")
+        XCTAssertLessThan(black.g, 60, "dipToBlack mid darkish G: \(black)")
+        XCTAssertLessThan(black.b, 60, "dipToBlack mid darkish B: \(black)")
+
+        let white = try renderMid("dipToWhite")
+        XCTAssertGreaterThan(white.r, 200, "dipToWhite mid light R: \(white)")
+        XCTAssertGreaterThan(white.g, 200, "dipToWhite mid light G: \(white)")
+        XCTAssertGreaterThan(white.b, 200, "dipToWhite mid light B: \(white)")
+    }
+
+    /// Unknown transition types STILL fail closed (no silent mapping, no render).
+    func test_unknownTransition_failsClosed() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("no Metal device") }
+        let folder = try sceneFolderURL("full_image")
+        let photoA = try tempPhoto("uA", r: 1, g: 0, b: 1)
+        let photoB = try tempPhoto("uB", r: 0, g: 1, b: 1)
+        defer { [photoA, photoB].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let wipe = NextBridgeTransition(typeRaw: "wipe", direction: nil, durationFrames: 14, easingRaw: "linear")
         let inputs = NextBridgeTimelineInputs(
             scenes: [
-                scene("full_image", folder: folder, photo: photoA, transitionToNext: push),
+                scene("full_image", folder: folder, photo: photoA, transitionToNext: wipe),
                 scene("full_image", folder: folder, photo: photoB, transitionToNext: nil)
             ],
             nominalFrameIndex: 0, fps: 30)
         let sessionBox = try NextSingleSceneBridge.makeSession(device: device)
-        let decoded = try NextTimelineBridge.decodeTimeline(inputs)   // post-roll only — does not map type
+        let decoded = try NextTimelineBridge.decodeTimeline(inputs)
         XCTAssertThrowsError(try NextTimelineBridge.assembleTimeline(decoded: decoded, inputs: inputs, sessionBox: sessionBox)) { err in
             guard case NextTransitionMappingError.unsupportedTransitionType(let r) = err else {
                 return XCTFail("expected unsupportedTransitionType, got \(err)")
             }
-            XCTAssertEqual(r, "push")
+            XCTAssertEqual(r, "wipe")
         }
     }
 }

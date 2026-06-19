@@ -19,9 +19,9 @@ enum MetalSceneCompositor {
         case .drawShape, .beginMask, .endMask, .matteLink:
             // Step-11 categories are SUPPORTED (Rev-4 §7.8).
             return nil
-        case .fadeTransition, .slideTransition, .overlay:
-            // Step-12 categories are now SUPPORTED (cut/fade/slide/overlay execution); no category
-            // remains deferred.
+        case .fadeTransition, .slideTransition, .pushTransition, .dipTransition, .overlay:
+            // Step-12 + CP5.5 categories are SUPPORTED (cut/fade/slide/push/dip/overlay execution); no
+            // category remains deferred.
             return nil
         case .clearBackground, .declareResource, .offscreenSurface, .beginScene, .endScene,
              .drawImage, .drawVideoFrame, .beginClip, .endClip, .finalLinearToSRGB, .finalOutput:

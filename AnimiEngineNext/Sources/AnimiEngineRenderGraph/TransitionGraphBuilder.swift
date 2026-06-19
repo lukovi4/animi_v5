@@ -16,7 +16,9 @@ public enum TransitionGraphBuilder {
         targetSurface: String, canvasWidth: Int64, canvasHeight: Int64, into ctx: inout CompileContext
     ) throws {
         let effect = transition.effectID.raw
-        guard effect == "fade" || effect == "slide" else {
+        guard effect == SupportedTransitionEffect.fade || effect == SupportedTransitionEffect.slide
+                || effect == SupportedTransitionEffect.push
+                || effect == SupportedTransitionEffect.dipToBlack || effect == SupportedTransitionEffect.dipToWhite else {
             throw RenderGraphError.unsupportedTransitionEffect(effectID: effect)
         }
         let kind = try TransitionEasing.kind(from: transition.easing.raw)
@@ -25,17 +27,72 @@ public enum TransitionGraphBuilder {
         let eased = try TransitionEasing.eased(kind, progress: rawProgress)
 
         switch effect {
-        case "fade":
+        case SupportedTransitionEffect.fade:
             ctx.emit(.fadeTransition(easedProgress: eased, outgoingSurfaceID: outgoingSurface,
                                      incomingSurfaceID: incomingSurface, targetSurfaceID: targetSurface))
-        case "slide":
+        case SupportedTransitionEffect.slide:
             let direction = try slideDirection(from: transition.parameters)
             let (offsetX, offsetY) = try slideOffset(direction: direction, eased: eased, canvasWidth: canvasWidth, canvasHeight: canvasHeight)
             ctx.emit(.slideTransition(direction: direction, easedProgress: eased, offsetX: offsetX, offsetY: offsetY,
                                       outgoingSurfaceID: outgoingSurface, incomingSurfaceID: incomingSurface, targetSurfaceID: targetSurface))
+        case SupportedTransitionEffect.push:
+            let direction = try slideDirection(from: transition.parameters)
+            let (outOff, inOff) = try pushOffsets(direction: direction, eased: eased, canvasWidth: canvasWidth, canvasHeight: canvasHeight)
+            ctx.emit(.pushTransition(direction: direction, easedProgress: eased,
+                                     outgoingOffsetX: outOff.0, outgoingOffsetY: outOff.1,
+                                     incomingOffsetX: inOff.0, incomingOffsetY: inOff.1,
+                                     outgoingSurfaceID: outgoingSurface, incomingSurfaceID: incomingSurface, targetSurfaceID: targetSurface))
+        case SupportedTransitionEffect.dipToBlack, SupportedTransitionEffect.dipToWhite:
+            // Reject any supplied parameter (dip takes none) — keep the graph builder fail-closed too.
+            if let extra = transition.parameters.sortedUniqueParameters.first {
+                throw RenderGraphError.unsupportedTransitionEffect(effectID: "\(effect)(unexpected-param:\(extra.key))")
+            }
+            let dipColor = try (effect == SupportedTransitionEffect.dipToWhite) ? opaqueWhite() : opaqueBlack()
+            ctx.emit(.dipTransition(dipColor: dipColor, easedProgress: eased,
+                                    outgoingSurfaceID: outgoingSurface, incomingSurfaceID: incomingSurface, targetSurfaceID: targetSurface))
         default:
             throw RenderGraphError.unsupportedTransitionEffect(effectID: effect)
         }
+    }
+
+    /// Push offsets (CP5.5), mirroring the legacy oracle exactly. At eased progress `p` the OUTGOING
+    /// surface moves out by `p·extent` and the INCOMING surface enters from `(1−p)·extent` on the
+    /// opposite edge:
+    ///   left:  A x=+W·p, B x=−W·(1−p);   right: A x=−W·p, B x=+W·(1−p)
+    ///   up:    A y=+H·p, B y=−H·(1−p);   down:  A y=−H·p, B y=+H·(1−p)
+    /// All in exact fixed point.
+    static func pushOffsets(
+        direction: RenderSlideDirection, eased: UnitInterval, canvasWidth: Int64, canvasHeight: Int64
+    ) throws -> (out: (Int64, Int64), inc: (Int64, Int64)) {
+        let u = UnitInterval.unitsPerUnit
+        let p = eased.rawValue
+        let remaining = u - p
+        func scale(_ extent: Int64, _ factor: Int64) throws -> Int64 {
+            try FixedPointMath.multiplyDivideRounding(factor, extent, u, "push.offset")
+        }
+        func neg(_ v: Int64) throws -> Int64 { try CheckedInt64.subtract(0, v, "push.neg") }
+        switch direction {
+        case .left:
+            let a = try scale(canvasWidth, p), b = try neg(try scale(canvasWidth, remaining))
+            return ((a, 0), (b, 0))
+        case .right:
+            let a = try neg(try scale(canvasWidth, p)), b = try scale(canvasWidth, remaining)
+            return ((a, 0), (b, 0))
+        case .up:
+            let a = try scale(canvasHeight, p), b = try neg(try scale(canvasHeight, remaining))
+            return ((0, a), (0, b))
+        case .down:
+            let a = try neg(try scale(canvasHeight, p)), b = try scale(canvasHeight, remaining)
+            return ((0, a), (0, b))
+        }
+    }
+
+    /// Opaque black / white in premultiplied storage (each colour channel ≤ alpha = 1).
+    private static func opaqueBlack() throws -> PremultipliedColor {
+        try PremultipliedColor(red: .zero, green: .zero, blue: .zero, alpha: .one)
+    }
+    private static func opaqueWhite() throws -> PremultipliedColor {
+        try PremultipliedColor(red: .one, green: .one, blue: .one, alpha: .one)
     }
 
     static func slideDirection(from parameters: TransitionParameterSet) throws -> RenderSlideDirection {

@@ -250,6 +250,40 @@ fragment float4 slide_fragment(FullscreenOut in [[stage_in]],
     return src + bg * (1.0f - src.a);                          // premultiplied source-over
 }
 
+// CP5.5 push: BOTH scenes move. offsets.xy shifts outgoing, offsets.zw shifts incoming (UV space).
+// Each surface is sampled at `uv - offset`, so a positive offset moves that surface in the positive
+// direction; off-edge samples are transparent (clampToZero). The incoming composites source-over the
+// (also-moving) outgoing in premultiplied space.
+fragment float4 push_fragment(FullscreenOut in [[stage_in]],
+                              texture2d<float> outgoing [[texture(0)]],
+                              sampler samp [[sampler(0)]],
+                              texture2d<float> incoming [[texture(1)]],
+                              constant float4 &offsets [[buffer(0)]]) {
+    float4 bg = outgoing.sample(samp, in.uv - offsets.xy);    // shifted outgoing (linear-premultiplied)
+    float4 src = incoming.sample(samp, in.uv - offsets.zw);   // shifted incoming (linear-premultiplied)
+    return src + bg * (1.0f - src.a);                          // premultiplied source-over (B over A)
+}
+
+// CP5.5 dip: dip through a solid premultiplied colour. params.x is eased progress; params.yzw are the
+// dip rgb; dipAlpha is its alpha. Two-phase (oracle): p<0.5 → mix(A, dip, p*2); else mix(dip, B, (p-0.5)*2).
+// All operands are linear-premultiplied (black/white are linear-invariant), so the mix is correct.
+fragment float4 dip_fragment(FullscreenOut in [[stage_in]],
+                             texture2d<float> outgoing [[texture(0)]],
+                             sampler samp [[sampler(0)]],
+                             texture2d<float> incoming [[texture(1)]],
+                             constant float4 &params [[buffer(0)]],
+                             constant float &dipAlpha [[buffer(1)]]) {
+    float4 a = outgoing.sample(samp, in.uv);   // linear-premultiplied
+    float4 b = incoming.sample(samp, in.uv);   // linear-premultiplied
+    float4 dip = float4(params.y, params.z, params.w, dipAlpha);
+    float p = clamp(params.x, 0.0f, 1.0f);
+    if (p < 0.5f) {
+        return mix(a, dip, p * 2.0f);
+    } else {
+        return mix(dip, b, (p - 0.5f) * 2.0f);
+    }
+}
+
 fragment float4 final_srgb_fragment(FullscreenOut in [[stage_in]],
                                     texture2d<float> linearCanvas [[texture(0)]],
                                     sampler samp [[sampler(0)]]) {

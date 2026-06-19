@@ -32,17 +32,24 @@ public struct SceneTransition: Equatable, Sendable {
     }
 }
 
-/// The two animated effects supported in Task 002 (Task-002 plan, §7.1).
+/// The animated effects supported by the canonical engine (Task-002 plan §7.1; CP5.5 extension).
+///
+/// Task 002 shipped `fade`/`slide`. CP5.5 adds `push` (directional, both scenes move) and
+/// `dipToBlack`/`dipToWhite` (dip through a solid colour), reaching parity with the legacy product
+/// model. The dip colour and push offsets are expressed canonically (no engine reads mutable state).
 public enum SupportedTransitionEffect {
     public static let fade = "fade"
     public static let slide = "slide"
+    public static let push = "push"
+    public static let dipToBlack = "dipToBlack"
+    public static let dipToWhite = "dipToWhite"
 
-    /// Validates a `SceneTransition`'s kind/duration/parameters (Task-002 plan, §7.1).
+    /// Validates a `SceneTransition`'s kind/duration/parameters (Task-002 plan §7.1; CP5.5).
     ///
     /// - `.cut` accepts duration zero only.
     /// - Animated effects require duration > 0.
-    /// - `fade` accepts exactly its documented parameter set — empty in Task 002.
-    /// - `slide` requires exactly one `direction` identifier in `left/right/up/down`.
+    /// - `fade`, `dipToBlack`, `dipToWhite` accept exactly the empty parameter set.
+    /// - `slide` and `push` require exactly one `direction` identifier in `left/right/up/down`.
     /// - Missing, extra, duplicate, or wrong-type parameters are typed errors.
     /// - Unknown effect ids are typed unsupported-effect errors.
     public static func validate(_ transition: SceneTransition) throws {
@@ -61,31 +68,38 @@ public enum SupportedTransitionEffect {
 
     private static func validateEffectParameters(_ effect: TransitionEffect) throws {
         let id = effect.effectID.raw
-        let params = effect.parameters.sortedUniqueParameters
         switch id {
-        case fade:
-            // Fade accepts exactly the empty parameter set in Task 002.
-            if let extra = params.first {
-                throw ProjectValidationError.extraTransitionParameter(effectID: id, key: extra.key)
-            }
-        case slide:
-            // Slide requires exactly one `direction` identifier with a valid value.
-            guard let direction = effect.parameters.value(for: "direction") else {
-                throw ProjectValidationError.missingTransitionParameter(effectID: id, key: "direction")
-            }
-            guard case .identifier(let value) = direction else {
-                throw ProjectValidationError.wrongTypeTransitionParameter(effectID: id, key: "direction")
-            }
-            let allowed: Set<String> = ["left", "right", "up", "down"]
-            guard allowed.contains(value) else {
-                throw ProjectValidationError.wrongTypeTransitionParameter(effectID: id, key: "direction")
-            }
-            // Reject any parameter other than `direction`.
-            for parameter in params where parameter.key != "direction" {
-                throw ProjectValidationError.extraTransitionParameter(effectID: id, key: parameter.key)
-            }
+        case fade, dipToBlack, dipToWhite:
+            try requireEmptyParameters(effect)
+        case slide, push:
+            try requireDirectionOnly(effect)
         default:
             throw ProjectValidationError.unsupportedEffect(effectID: id)
+        }
+    }
+
+    /// An effect that takes no parameters; any supplied parameter is a typed error.
+    private static func requireEmptyParameters(_ effect: TransitionEffect) throws {
+        if let extra = effect.parameters.sortedUniqueParameters.first {
+            throw ProjectValidationError.extraTransitionParameter(effectID: effect.effectID.raw, key: extra.key)
+        }
+    }
+
+    /// An effect that requires exactly one `direction` identifier in `left/right/up/down`.
+    private static func requireDirectionOnly(_ effect: TransitionEffect) throws {
+        let id = effect.effectID.raw
+        guard let direction = effect.parameters.value(for: "direction") else {
+            throw ProjectValidationError.missingTransitionParameter(effectID: id, key: "direction")
+        }
+        guard case .identifier(let value) = direction else {
+            throw ProjectValidationError.wrongTypeTransitionParameter(effectID: id, key: "direction")
+        }
+        let allowed: Set<String> = ["left", "right", "up", "down"]
+        guard allowed.contains(value) else {
+            throw ProjectValidationError.wrongTypeTransitionParameter(effectID: id, key: "direction")
+        }
+        for parameter in effect.parameters.sortedUniqueParameters where parameter.key != "direction" {
+            throw ProjectValidationError.extraTransitionParameter(effectID: id, key: parameter.key)
         }
     }
 }
