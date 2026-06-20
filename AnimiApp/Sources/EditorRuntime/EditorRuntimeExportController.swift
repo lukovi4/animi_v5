@@ -849,8 +849,8 @@ internal final class EditorRuntimeExportController {
 
     /// Single-scene export through AnimiEngineNext. Builds inputs from the resolved `ExportMediaSnapshot`
     /// + live scene state (single-scene has no immutable session), decodes/assembles the Next context,
-    /// and hands frames to `VideoExporter.exportVideoNext`. Photo-only; fails closed on reduced size,
-    /// video media, overlays, or any `NextBridgeError`.
+    /// and hands frames to `VideoExporter.exportVideoNext`. Supports photo + user-video media; fails
+    /// closed on reduced size, custom background regions, overlays, or any `NextBridgeError`.
     private func runNextSingleSceneExport(
         ctx: EditorRuntimeMetalContext,
         exporter: VideoExporter,
@@ -869,10 +869,7 @@ internal final class EditorRuntimeExportController {
             await failClosedNextExport(NextBridgeError.engine("Next export has no downscale; preflight reduced size \(originalSizePx) → \(exportSizePx)"))
             return
         }
-        guard mediaSnapshot.videoRefs.isEmpty else {
-            await failClosedNextExport(NextBridgeError.unsupportedMediaKind(blockID: mediaSnapshot.videoRefs.first?.blockId ?? "(video)", kind: "video"))
-            return
-        }
+        // CP7: video media is now supported (resolved per-frame to BGRA8). No video fail-close here.
         guard (bgSnapshot?.regionRefs.isEmpty ?? true) else {
             await failClosedNextExport(NextBridgeError.engine("custom background regions unsupported by Next export"))
             return
@@ -901,9 +898,12 @@ internal final class EditorRuntimeExportController {
         let preparedContext: NextPreparedContext
         let sessionBox: NextSessionBox
         do {
+            // CP7 stretch guard: scene timeline span in frames (export fps == settings.fps).
+            let timelineFrames = Int((sceneItem.durationUs &* Int64(settings.fps)) / 1_000_000)
             let inputs = try NextExportInputsBuilder.makeSingleScene(
                 sceneTypeId: sceneTypeId, sceneFolderURL: folderURL,
-                sceneState: sceneState, mediaSnapshot: mediaSnapshot, frameIndex: 0)
+                sceneState: sceneState, mediaSnapshot: mediaSnapshot, frameIndex: 0,
+                timelineDurationFrames: timelineFrames)
             sessionBox = try NextSingleSceneBridge.makeSession(device: ctx.device)
             let decoded = try NextSingleSceneBridge.decodeMedia(inputs)
             let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
@@ -920,10 +920,17 @@ internal final class EditorRuntimeExportController {
             outputURL: settings.outputURL, sizePx: settings.sizePx, fps: settings.fps,
             bitrate: settings.bitrate, gopSeconds: settings.gopSeconds)
 
+        // CP7: include user-video-slot audio (trim/volume/mute) from the resolved snapshot — matches
+        // the OLD single-scene export's audio contract. Empty for photo-only scenes.
+        let videoSelectionsByBlockId: [String: VideoSelection] = mediaSnapshot.videoRefs.reduce(into: [:]) {
+            $0[$1.blockId] = $1.selection
+        }
+
         exporter.exportVideoNext(
             preparedContext: preparedContext, sessionBox: sessionBox, sceneRuntime: sceneRuntime,
             settings: nextSettings, audioPlan: settings.audioPlan,
             totalFrames: sceneRuntime.durationFrames,
+            videoSelectionsByBlockId: videoSelectionsByBlockId,
             budget: budget,
             onFinishing: { [weak self] in
                 guard let self, self.isActiveExportRequest(requestId) else { return }
@@ -940,8 +947,8 @@ internal final class EditorRuntimeExportController {
     }
 
     /// Timeline export through AnimiEngineNext, sourced PURELY from the immutable `TimelineExportSession`
-    /// (snapshot-stable; live state is not read here). Fails closed on reduced size, any scene's video
-    /// media, overlays, or any `NextBridgeError`/transition-mapping error.
+    /// (snapshot-stable; live state is not read here). Supports photo + user-video media; fails closed
+    /// on reduced size, custom background regions, overlays, or any `NextBridgeError`/transition error.
     private func runNextTimelineExport(
         ctx: EditorRuntimeMetalContext,
         exporter: VideoExporter,
@@ -965,8 +972,17 @@ internal final class EditorRuntimeExportController {
             await failClosedNextExport(NextBridgeError.engine("text/sticker overlays unsupported by Next export"))
             return
         }
-        for (_, snap) in tlSession.scenesByInstanceId where !snap.mediaSnapshot.videoRefs.isEmpty {
-            await failClosedNextExport(NextBridgeError.unsupportedMediaKind(blockID: snap.mediaSnapshot.videoRefs.first?.blockId ?? "(video)", kind: "video"))
+        // CP7: per-scene video media is now supported (resolved per-frame to BGRA8). No video fail-close.
+
+        // CP7 fix: a SINGLE-scene project still routes here (export route = timeline whenever the
+        // timeline engine is active, regardless of scene count), but the Next TIMELINE bridge requires
+        // >= 2 scenes (one scene must use the single-scene path — mirrors the preview contract in
+        // `EditorViewController.makeNextBridgeInputs`). Route a 1-scene session to the single-scene Next
+        // export instead of failing with `multiSceneUnsupported`.
+        if tlSession.transitionMath.sceneItems.count < 2 {
+            await runNextSingleSceneExportFromTimelineSession(
+                ctx: ctx, exporter: exporter, requestId: requestId,
+                tlSession: tlSession, settings: settings, budget: budget)
             return
         }
 
@@ -997,6 +1013,70 @@ internal final class EditorRuntimeExportController {
         exporter.exportTimelineNext(
             preparedContext: preparedContext, sessionBox: sessionBox, tlSession: tlSession,
             settings: nextSettings, audioPlan: settings.audioPlan,
+            budget: budget,
+            onFinishing: { [weak self] in
+                guard let self, self.isActiveExportRequest(requestId) else { return }
+                self.runtime.onOutput?(.exportFinishing)
+            },
+            progress: { [weak self] progress in
+                guard let self, self.isActiveExportRequest(requestId) else { return }
+                self.runtime.onOutput?(.exportProgress(Float(progress)))
+            },
+            completion: { [weak self] result in
+                guard let self else { return }
+                self.handleExportCompletion(result: result, requestId: requestId)
+            })
+    }
+
+    /// CP7: single-scene Next export driven from the immutable 1-scene timeline session. The export
+    /// route is "timeline" (the timeline engine is active) but a 1-scene project must use the
+    /// single-scene Next path — the >= 2-scene timeline bridge rejects one scene. Snapshot-stable:
+    /// inputs come from the lone `TimelineExportSceneSnapshot`, not live state.
+    private func runNextSingleSceneExportFromTimelineSession(
+        ctx: EditorRuntimeMetalContext,
+        exporter: VideoExporter,
+        requestId: UUID,
+        tlSession: TimelineCompositionEngine.TimelineExportSession,
+        settings: VideoExporter.TimelineExportSettings,
+        budget: ExportResourceBudget
+    ) async {
+        guard let item = tlSession.transitionMath.sceneItems.first,
+              let snap = tlSession.scenesByInstanceId[item.id] else {
+            await failClosedNextExport(NextBridgeError.noScene); return
+        }
+        guard let folderURL = runtime.nextSceneFolderURL(sceneTypeId: snap.sceneTypeId) else {
+            await failClosedNextExport(NextBridgeError.sceneFolderMissing(sceneTypeId: snap.sceneTypeId)); return
+        }
+
+        let preparedContext: NextPreparedContext
+        let sessionBox: NextSessionBox
+        do {
+            // CP7 stretch guard: scene timeline span in frames (from the immutable session item).
+            let timelineFrames = Int((item.durationUs &* Int64(settings.fps)) / 1_000_000)
+            let inputs = try NextExportInputsBuilder.makeSingleScene(
+                snapshot: snap, sceneFolderURL: folderURL, frameIndex: 0,
+                timelineDurationFrames: timelineFrames)
+            sessionBox = try NextSingleSceneBridge.makeSession(device: ctx.device)
+            let decoded = try NextSingleSceneBridge.decodeMedia(inputs)
+            let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
+            preparedContext = try NextSingleSceneBridge.assemble(
+                decoded: decoded, placementByBlockID: placementByBlockID, sessionBox: sessionBox)
+        } catch {
+            await failClosedNextExport(error)
+            return
+        }
+
+        guard isActiveExportRequest(requestId) else { return }
+
+        let nextSettings = NextExportVideoSettings(
+            outputURL: settings.outputURL, sizePx: settings.sizePx, fps: settings.fps,
+            bitrate: settings.bitrate, gopSeconds: settings.gopSeconds)
+
+        exporter.exportVideoNext(
+            preparedContext: preparedContext, sessionBox: sessionBox, sceneRuntime: snap.runtime,
+            settings: nextSettings, audioPlan: settings.audioPlan,
+            totalFrames: snap.runtime.durationFrames,
+            videoSelectionsByBlockId: snap.videoSelections,
             budget: budget,
             onFinishing: { [weak self] in
                 guard let self, self.isActiveExportRequest(requestId) else { return }

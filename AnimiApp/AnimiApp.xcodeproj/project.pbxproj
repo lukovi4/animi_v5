@@ -113,6 +113,7 @@
 		4ED868E6C2D88F7C2884E3AE /* TextOverlayRealtimePreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91DA5C45CD891BBD076FA464 /* TextOverlayRealtimePreviewTests.swift */; };
 		4FD93D25027B440F56B0F315 /* TimelineTransitionValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CD660D17DECCF5EDA5E0FFD /* TimelineTransitionValidator.swift */; };
 		503BCB97BBE5F15005FF8FA3 /* ExportSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766E44EE38DE9F88295B1446 /* ExportSession.swift */; };
+		5102A2C95F332D689A5082C5 /* NextVideoTimeMappingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C93B61520CF53DE4ED307855 /* NextVideoTimeMappingTests.swift */; };
 		525D5AAD2AF0725A541848FF /* AppLaunchRouterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5604708E3AC1A6297A0C73B2 /* AppLaunchRouterTests.swift */; };
 		53845173D28239E0152B1D67 /* EditorRuntimePreviewAudioCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B6CD831954F0DC2D4E61D95 /* EditorRuntimePreviewAudioCoordinator.swift */; };
 		538791C0C91FE732FEE80A6D /* BootstrapOverlayTrackSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8AC45E689A50480F2277D9A /* BootstrapOverlayTrackSyncTests.swift */; };
@@ -130,6 +131,7 @@
 		57DE15DF4368D76C4331A767 /* ExportDeliveryPlayerFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5AF506783B23A9AA032D9B5 /* ExportDeliveryPlayerFlowTests.swift */; };
 		58EE44C0463EA2560509056E /* AudioWriterPumpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 674596031572692DF249640B /* AudioWriterPumpTests.swift */; };
 		5A05EB4FEBF3A1FD9D628AF4 /* EditorSessionSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74C6E2BAD58DD29C50E60896 /* EditorSessionSnapshot.swift */; };
+		5A9F32CDCAD6F1F625E8C221 /* NextVideoExportIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF6523ABE196CAF12E8D802E /* NextVideoExportIntegrationTests.swift */; };
 		5AE780F375756FFEBA50D888 /* SingleSceneVideoExportRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EFBD746693AAA7D0FC7D69F /* SingleSceneVideoExportRunner.swift */; };
 		5B3C214EEC95FA95322E3F71 /* ExportVideoFrameProviderBlendTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7DA813366CB015C14593389 /* ExportVideoFrameProviderBlendTests.swift */; };
 		5C00B3EEFE58A0C860BF5CB5 /* SceneEditTargetInstanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D021C99C10DB0855254ACA28 /* SceneEditTargetInstanceTests.swift */; };
@@ -178,6 +180,7 @@
 		7DD71A383FF5DF545B1E272A /* EditorRuntimeState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D2FED3CC56A1D3581FF8392 /* EditorRuntimeState.swift */; };
 		7EF78B7D72F4CB23017AEC4C /* TextOverlayRuntimeHidingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C3DC46512082FC74BA37075 /* TextOverlayRuntimeHidingTests.swift */; };
 		8071D9F6B0509820F37B64FF /* TransitionBoundaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09294B94FC6996907B241426 /* TransitionBoundaryView.swift */; };
+		80FEE39CDDF048228C7819C6 /* NextVideoFrameResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF46814D0BF329A1CAAA302 /* NextVideoFrameResolver.swift */; };
 		81903D4914988F07E62B9861 /* EditorSessionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B83EF0C1EF4FB00069A3D46 /* EditorSessionState.swift */; };
 		81EBAE7453D96CC0EDC5F7C5 /* NextVideoExportRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D84468833835DB69DC2C920B /* NextVideoExportRunner.swift */; };
 		82B0FFBF9E87927F819CB766 /* TimelineFrameResolverSingleFlightTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7530259E11F33C73AC3DAA97 /* TimelineFrameResolverSingleFlightTests.swift */; };
@@ -213,6 +216,7 @@
 		8F2BE947369ABB1EACF82319 /* TransitionPickerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C41D98D66DEA22977CA2D4E /* TransitionPickerViewController.swift */; };
 		8F918FE9ABA9356FC0198F16 /* NextTimelineBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19BA097A0CF5366DFDC20268 /* NextTimelineBridge.swift */; };
 		902EAF22F2E3D1840F714372 /* DownsampledImageLoaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F9CDE81C26B36887FEDB85F /* DownsampledImageLoaderTests.swift */; };
+		9098B4E992F27FA421DBD72B /* NextVideoFrameResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D77B6F6E9A2CEB22E7127047 /* NextVideoFrameResolverTests.swift */; };
 		91247257CFD3723BF4548DE1 /* TemplateCatalogRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C6F6D9E214831C361A947FE /* TemplateCatalogRepositoryTests.swift */; };
 		912BD9B26BA17AFAF24EACFB /* EditorOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945142E5769BD54EFED06588 /* EditorOverlayView.swift */; };
 		919BAC7E239BC3293E538840 /* UserMediaDisplaySizeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE2AA1B1ECFE558BE1A234AC /* UserMediaDisplaySizeTests.swift */; };
@@ -555,6 +559,7 @@
 		5C18A36D51EA69B2D5DCA9B8 /* ExportFrameClamping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportFrameClamping.swift; sourceTree = "<group>"; };
 		5CA7A6FD8503DAF43604786F /* BackgroundTextureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundTextureService.swift; sourceTree = "<group>"; };
 		5CD660D17DECCF5EDA5E0FFD /* TimelineTransitionValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineTransitionValidator.swift; sourceTree = "<group>"; };
+		5DF46814D0BF329A1CAAA302 /* NextVideoFrameResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextVideoFrameResolver.swift; sourceTree = "<group>"; };
 		5EDF53BD187469675C24033F /* VideoFrameProviderPlaybackWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameProviderPlaybackWindowTests.swift; sourceTree = "<group>"; };
 		5FB93BE5BF4CF4C532336CD5 /* SceneEditToolModuleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEditToolModuleTests.swift; sourceTree = "<group>"; };
 		5FBCF7BD272720344FCC0196 /* MemoryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDiagnostics.swift; sourceTree = "<group>"; };
@@ -698,6 +703,7 @@
 		BE3662424B8D35F76D23F799 /* ExportMediaSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportMediaSnapshotTests.swift; sourceTree = "<group>"; };
 		BE555E6A0E60C9501F521ACB /* ExportResourceBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportResourceBudgetTests.swift; sourceTree = "<group>"; };
 		BE83C97F893ECB40F45E4309 /* UserMediaServiceReadinessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMediaServiceReadinessTests.swift; sourceTree = "<group>"; };
+		BF6523ABE196CAF12E8D802E /* NextVideoExportIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextVideoExportIntegrationTests.swift; sourceTree = "<group>"; };
 		BFA612729229AC5D7117B3B5 /* MusicExportBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicExportBridgeTests.swift; sourceTree = "<group>"; };
 		C0CE9CAB4B84AE0BD77F768F /* MusicTimelineInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicTimelineInteractionTests.swift; sourceTree = "<group>"; };
 		C1244C22C36801F4B52AFE62 /* ExportVideoFrameProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportVideoFrameProvider.swift; sourceTree = "<group>"; };
@@ -709,6 +715,7 @@
 		C463B57720E8B12E559B2CA6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C5C7008F00886664C0E46721 /* ExportResourceBudget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportResourceBudget.swift; sourceTree = "<group>"; };
 		C66B4720BBCFE380FEF3BC84 /* SavedProjectSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedProjectSummary.swift; sourceTree = "<group>"; };
+		C93B61520CF53DE4ED307855 /* NextVideoTimeMappingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextVideoTimeMappingTests.swift; sourceTree = "<group>"; };
 		CA08D7E49AF2FAED41B3739D /* EditorConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorConfig.swift; sourceTree = "<group>"; };
 		CA0A2B411C42C0C947DA93AC /* TimelineExportRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineExportRuntime.swift; sourceTree = "<group>"; };
 		CB2F904821B55FE7A3FC80AD /* StickerRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerRepository.swift; sourceTree = "<group>"; };
@@ -733,6 +740,7 @@
 		D531F2B70470609DAAEC0E92 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		D59971755844E2F253995D2F /* EditorRenderContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorRenderContract.swift; sourceTree = "<group>"; };
 		D5B121BAFB0DFC4A55F20BEE /* TrackViewContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackViewContracts.swift; sourceTree = "<group>"; };
+		D77B6F6E9A2CEB22E7127047 /* NextVideoFrameResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextVideoFrameResolverTests.swift; sourceTree = "<group>"; };
 		D84468833835DB69DC2C920B /* NextVideoExportRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextVideoExportRunner.swift; sourceTree = "<group>"; };
 		D910D732A40F53C827CAF44B /* ContextBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBar.swift; sourceTree = "<group>"; };
 		D919F203323B810A2AC93394 /* TimelinePerfCounters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePerfCounters.swift; sourceTree = "<group>"; };
@@ -843,6 +851,7 @@
 				9B32900D4143C735B9573572 /* NextSingleSceneBridge.swift */,
 				19BA097A0CF5366DFDC20268 /* NextTimelineBridge.swift */,
 				CBDD7FC911AAEED0D783D85A /* NextTransitionMapping.swift */,
+				5DF46814D0BF329A1CAAA302 /* NextVideoFrameResolver.swift */,
 				85271CBA652BF18E5476B593 /* PreparingOverlayView.swift */,
 				FE0AE21B0D44860C1F1503BB /* SceneRuntimeStateApplier.swift */,
 				DE5E9CF111CD6CF5A6213688 /* TimelinePlaybackCoordinator.swift */,
@@ -923,7 +932,10 @@
 				60459CC2ED2A708AD36AA1CD /* NextTimelinePlayheadAlignmentTests.swift */,
 				F6E04EEB811C2B40E030F2B3 /* NextTimelineRenderE2ETests.swift */,
 				22291715190EDD51B086D030 /* NextTransitionMappingTests.swift */,
+				BF6523ABE196CAF12E8D802E /* NextVideoExportIntegrationTests.swift */,
 				3209D040C7FD3E64B38AF0BE /* NextVideoExportRunnerTests.swift */,
+				D77B6F6E9A2CEB22E7127047 /* NextVideoFrameResolverTests.swift */,
+				C93B61520CF53DE4ED307855 /* NextVideoTimeMappingTests.swift */,
 				83E184F0661C2525982C5E11 /* OverlayExportResolverTests.swift */,
 				6C45B23A64D82965A2520E9D /* OverlayLaneTests.swift */,
 				A254BFFAACBF5B268A735473 /* OverlayRenderResourceCacheTests.swift */,
@@ -1582,7 +1594,10 @@
 				794AFEA796B87A95C9207E82 /* NextTimelinePlayheadAlignmentTests.swift in Sources */,
 				FA998AD0AC3DBE56EC911177 /* NextTimelineRenderE2ETests.swift in Sources */,
 				C28E7234F53E2D1F43E2AE84 /* NextTransitionMappingTests.swift in Sources */,
+				5A9F32CDCAD6F1F625E8C221 /* NextVideoExportIntegrationTests.swift in Sources */,
 				BB7AEBC70A90CBA5537ECB34 /* NextVideoExportRunnerTests.swift in Sources */,
+				9098B4E992F27FA421DBD72B /* NextVideoFrameResolverTests.swift in Sources */,
+				5102A2C95F332D689A5082C5 /* NextVideoTimeMappingTests.swift in Sources */,
 				679DA0EA0D0099A143A9A287 /* OverlayExportResolverTests.swift in Sources */,
 				14265F71F7FD72E4C72EFF48 /* OverlayLaneTests.swift in Sources */,
 				AFE1F9F08387DE8EA9F26522 /* OverlayRenderResourceCacheTests.swift in Sources */,
@@ -1769,6 +1784,7 @@
 				8F918FE9ABA9356FC0198F16 /* NextTimelineBridge.swift in Sources */,
 				1599180F190D5C5DA644B9D3 /* NextTransitionMapping.swift in Sources */,
 				81EBAE7453D96CC0EDC5F7C5 /* NextVideoExportRunner.swift in Sources */,
+				80FEE39CDDF048228C7819C6 /* NextVideoFrameResolver.swift in Sources */,
 				0AF81261425E3AB5C7322D54 /* OverlayCompositor.swift in Sources */,
 				C71D9F96728018C9061A8D30 /* OverlayExportSnapshot.swift in Sources */,
 				711C761950A8D1CB69E128EA /* OverlayLaneView.swift in Sources */,

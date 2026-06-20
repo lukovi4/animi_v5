@@ -17,12 +17,14 @@ final class NextPreviewCacheKeyTests: XCTestCase {
     /// Build single-block inputs against a real temp media file (so size/mtime are stable).
     private func makeInputs(scene: String = "full_image", variants: [String: String] = [:],
                             block: String = "block_01", mediaURL: URL,
-                            placement: NextBridgePlacement, frame: Int = 0) -> NextBridgeInputs {
+                            placement: NextBridgePlacement, frame: Int = 0,
+                            timelineDurationFrames: Int? = nil) -> NextBridgeInputs {
         NextBridgeInputs(
             sceneTypeId: scene, sceneFolderURL: URL(fileURLWithPath: "/tmp/scenes/\(scene)"),
             variantOverrides: variants,
             blocks: [NextBridgeBlock(blockID: block, mediaURL: mediaURL, placement: placement)],
-            frameIndex: frame)
+            frameIndex: frame,
+            timelineDurationFrames: timelineDurationFrames)
     }
 
     /// Build MULTI-block inputs (CP4): one (blockID, url, placement) per block.
@@ -119,6 +121,21 @@ final class NextPreviewCacheKeyTests: XCTestCase {
         let a = NextPreviewKey(inputs: makeInputs(variants: ["block_01": "no-anim"], mediaURL: media, placement: placement()))
         let b = NextPreviewKey(inputs: makeInputs(variants: ["block_01": "anim-1"], mediaURL: media, placement: placement()))
         XCTAssertNotEqual(a?.mediaKey, b?.mediaKey, "variant change → mediaKey differs → re-decode")
+    }
+
+    func test_timelineDurationChange_breaksMediaKey_forStretchGuard() throws {
+        let media = try tempFile("span")
+        defer { try? FileManager.default.removeItem(at: media) }
+        let nominal = NextPreviewKey(inputs: makeInputs(
+            mediaURL: media, placement: placement(), timelineDurationFrames: 150))
+        let stretched = NextPreviewKey(inputs: makeInputs(
+            mediaURL: media, placement: placement(), timelineDurationFrames: 300))
+
+        XCTAssertNotEqual(nominal, stretched, "timeline span change must invalidate the preview context")
+        XCTAssertNotEqual(
+            nominal?.mediaKey,
+            stretched?.mediaKey,
+            "timeline span change must re-enter decodeMedia so stretched scenes fail closed before render")
     }
 
     // MARK: - CP4 multi-block key behaviour

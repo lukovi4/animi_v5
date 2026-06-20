@@ -358,6 +358,7 @@ extension VideoExporter {
         settings: NextExportVideoSettings,
         audioPlan: AudioExportPlan?,
         totalFrames: Int,
+        videoSelectionsByBlockId: [String: VideoSelection] = [:],
         budget: ExportResourceBudget = .default,
         onFinishing: (() -> Void)? = nil,
         progress: @escaping (Double) -> Void,
@@ -369,14 +370,16 @@ extension VideoExporter {
         if let onFinishing { session.setOnFinishing(onFinishing) }
         if session.completeIfCancelled() { return }
 
-        exportQueue.async { [session, preparedContext, sessionBox, settings, audioPlan, totalFrames, sceneRuntime, budget] in
+        exportQueue.async { [session, preparedContext, sessionBox, settings, audioPlan, totalFrames, sceneRuntime, videoSelectionsByBlockId, budget] in
             var audioPipeline: BuiltAudioPipeline?
             if let plan = audioPlan {
                 do {
+                    // CP7: include user-video-slot audio (trim/volume/mute) — same audio path the OLD
+                    // single-scene export uses. Empty map ⇒ photo-only (unchanged for photo scenes).
                     audioPipeline = try AudioCompositionBuilder().build(
                         runtime: sceneRuntime,
                         fps: settings.fps,
-                        videoSelectionsByBlockId: [:],   // photo-only scope
+                        videoSelectionsByBlockId: videoSelectionsByBlockId,
                         plan: plan
                     )
                 } catch {

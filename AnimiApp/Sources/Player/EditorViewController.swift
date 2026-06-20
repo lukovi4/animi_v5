@@ -893,14 +893,17 @@ extension EditorViewController: MTKViewDelegate {
         let sceneState = state.draft.sceneInstanceStates[sceneItem.id] ?? .empty
         let variantOverrides = sceneState.variantOverrides
 
-        // CP4/CP5: support N media blocks. Every assigned slot must be PHOTO, visible, and resolved.
-        // Anything else (video/audio media kind, hidden block) FAILS CLOSED — photo-only scope.
+        // CP4/CP5: photo blocks. CP7: VIDEO blocks too. Every assigned slot must be photo OR video,
+        // visible, and resolved. Audio media kind / hidden blocks FAIL CLOSED (no silent omission).
         let allSlots = sceneState.mediaSlotsByBlockId ?? [:]
         guard !allSlots.isEmpty else { throw NextBridgeError.noMediaBound(blockID: "(none)") }
 
         var blocks: [NextBridgeBlock] = []
         for (blockID, slot) in allSlots.sorted(by: { $0.key < $1.key }) {
-            guard slot.mediaRef.mediaKind == .photo else {
+            // CP7: photo + video supported; audio (and any future kind) still fails closed.
+            switch slot.mediaRef.mediaKind {
+            case .photo, .video: break
+            case .audio:
                 throw NextBridgeError.unsupportedMediaKind(blockID: blockID, kind: slot.mediaRef.mediaKind.rawValue)
             }
             guard slot.visibility else {
@@ -911,18 +914,33 @@ extension EditorViewController: MTKViewDelegate {
                 resolveNextBridgeMediaURL(slot.mediaRef, registry: state.draft.assetRegistry)
                 throw NextBridgeError.mediaResolveFailed("resolving media URL for \(blockID)… (retry)")
             }
+            // CP7: a video block carries its trim window (seconds). A video slot with no persisted
+            // window is incomplete — fail closed rather than guessing.
+            var video: NextBridgeVideo? = nil
+            if slot.mediaRef.mediaKind == .video {
+                guard let w = slot.videoWindow else {
+                    throw NextBridgeError.mediaResolveFailed("video block \(blockID) has no trim window")
+                }
+                video = NextBridgeVideo(winStart: w.trimStart, winEnd: w.trimEnd)
+            }
             let p = slot.placement
             blocks.append(NextBridgeBlock(
                 blockID: blockID,
                 mediaURL: mediaURL,
                 placement: NextBridgePlacement(
                     fitModeRaw: p.fitMode.rawValue, offsetX: p.offsetX, offsetY: p.offsetY,
-                    userScale: p.userScale, rotationDegrees: p.rotationDegrees)))
+                    userScale: p.userScale, rotationDegrees: p.rotationDegrees),
+                video: video))
         }
+
+        // CP7 stretch guard input: the scene's TIMELINE span in frames (app `durationUs` at the v1
+        // product fps). The bridge fails closed if this exceeds the template's native nominal frames.
+        let timelineFrames = Int((sceneItem.durationUs &* Int64(Self.nextTimelineFps)) / 1_000_000)
 
         return NextBridgeInputs(
             sceneTypeId: sceneTypeId, sceneFolderURL: folderURL,
-            variantOverrides: variantOverrides, blocks: blocks, frameIndex: frameIndex)
+            variantOverrides: variantOverrides, blocks: blocks, frameIndex: frameIndex,
+            timelineDurationFrames: timelineFrames)
     }
 
     /// Build the CP5 multi-scene timeline inputs: per-scene inputs + boundary transitions + the

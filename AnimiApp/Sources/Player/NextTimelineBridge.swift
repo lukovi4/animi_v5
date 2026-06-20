@@ -10,7 +10,8 @@ import AnimiEngineMetalRender
 
 // MARK: - CP5: AnimiEngineNext MULTI-SCENE timeline preview bridge (DEBUG only)
 //
-// Renders ONE frame of a MULTI-SCENE timeline (cut/fade/slide) through AnimiEngineNext, end to end:
+// Renders ONE frame of a MULTI-SCENE timeline (cut/fade/slide/push/dip) through AnimiEngineNext,
+// end to end:
 //   per scene: compiled.tve -> decode -> photo + authored-asset pixels   (reuses CP4 NextSingleSceneBridge)
 //   assemble : N per-scene CanonicalProjectDocuments + boundary SceneTransitions
 //              -> ONE multi-scene CanonicalProjectManifest/Document        (canonical evaluator owns
@@ -21,12 +22,12 @@ import AnimiEngineMetalRender
 //              -> RenderGraphCompiler.compile (renders both scenes to surfaces + emits fade/slide)
 //              -> MetalRenderSession.execute  -> one composited BGRA8 RenderedFrame
 //
-// DEBUG-only. Fail-closed: any unsupported input (push/dip* transition, multi-scene mapping gap,
-// missing media) throws a typed `NextBridgeError`/`NextTransitionMappingError` — NO silent fallback.
+// DEBUG-only. Fail-closed: any unsupported input (multi-scene mapping gap, missing media, unsupported
+// media kind) throws a typed `NextBridgeError`/`NextTransitionMappingError` — NO silent fallback.
 //
-// Boundaries (owner-approved CP5): export, audio, video decode, background/text/sticker parity are
-// OUT of CP5. The app only supplies cut/fade/slide over photo scenes; anything else fails closed
-// before reaching here. The AnimiEngineNext schema is NOT changed.
+// Boundaries after CP7: photo + user-video media are supported; background/text/sticker parity remain
+// out of scope and fail closed before reaching here. The AnimiEngineNext schema is NOT changed for
+// CP7 video media.
 
 /// The app-supplied description of one timeline scene instance for CP5: its CP4-style per-scene
 /// inputs (scene type, folder, variant, photo blocks) plus the boundary transition to the NEXT scene
@@ -56,17 +57,24 @@ struct NextBridgeTimelineInputs {
 final class NextTimelinePreparedContext {
     let materials: RenderMaterialTable
     let window: EvaluationWindow
+    /// STATIC per-scene photo pixels keyed by namespaced reference (video references are absent here).
     let mediaPixelsByReference: [String: ResolvedPixelInput]
+    /// CP7: per-frame video resolvers keyed by namespaced reference. Empty for photo-only timelines.
+    let videoResolversByReference: [String: NextVideoBlockResolver]
     let assetEntries: [ResolvedAssetPixelEntry]
     let configuration: RenderConfiguration
     let session: MetalRenderSession
     let totalFrames: Int
 
     init(materials: RenderMaterialTable, window: EvaluationWindow,
-         mediaPixelsByReference: [String: ResolvedPixelInput], assetEntries: [ResolvedAssetPixelEntry],
+         mediaPixelsByReference: [String: ResolvedPixelInput],
+         videoResolversByReference: [String: NextVideoBlockResolver] = [:],
+         assetEntries: [ResolvedAssetPixelEntry],
          configuration: RenderConfiguration, session: MetalRenderSession, totalFrames: Int) {
         self.materials = materials; self.window = window
-        self.mediaPixelsByReference = mediaPixelsByReference; self.assetEntries = assetEntries
+        self.mediaPixelsByReference = mediaPixelsByReference
+        self.videoResolversByReference = videoResolversByReference
+        self.assetEntries = assetEntries
         self.configuration = configuration; self.session = session; self.totalFrames = totalFrames
     }
 }
@@ -147,6 +155,7 @@ enum NextTimelineBridge {
         var sceneEntries: [SceneManifestEntry] = []
         var scenePayloads: [ResolvedScenePayload] = []
         var mediaPixelsByReference: [String: ResolvedPixelInput] = [:]
+        var videoResolversByReference: [String: NextVideoBlockResolver] = [:]
         var assetByKey: [ResolvedAssetKey: ResolvedPixelInput] = [:]
         var materials = conversions[0].output.materials
 
@@ -168,6 +177,8 @@ enum NextTimelineBridge {
 
             // Merge media pixels (per-scene namespaced references never collide).
             for (ref, pix) in conv.mediaPixelsByReference { mediaPixelsByReference[ref] = pix }
+            // CP7: merge per-scene video resolvers (namespaced references never collide).
+            for (ref, resolver) in conv.videoResolversByReference { videoResolversByReference[ref] = resolver }
 
             // Merge authored-asset pixels. Keys are (materialID, assetID); shared programs ⇒ identical
             // asset, so coalescing is safe (dedup, do not duplicate).
@@ -193,6 +204,7 @@ enum NextTimelineBridge {
 
         return NextTimelinePreparedContext(
             materials: materials, window: window, mediaPixelsByReference: mediaPixelsByReference,
+            videoResolversByReference: videoResolversByReference,
             assetEntries: assetEntries, configuration: configuration,
             session: sessionBox.session, totalFrames: totalFrames)
     }
@@ -290,9 +302,21 @@ enum NextTimelineBridge {
             subplans = [(t.outgoing, .outgoing), (t.incoming, .incoming)]
         }
 
+        // CP7: resolve any video references PER participating subplan at THAT subplan's scene-local
+        // time. In a transition the outgoing and incoming scenes have DIFFERENT scene-local times, so
+        // each video frame must be sampled at its own subplan's time (not the shared project frame).
+        var mediaPixels = ctx.mediaPixelsByReference
+        if !ctx.videoResolversByReference.isEmpty {
+            for (subplan, _) in subplans {
+                let perScene = try NextSingleSceneBridge.mergeVideoPixels(
+                    subplan: subplan, staticPixels: [:], videoResolvers: ctx.videoResolversByReference)
+                for (ref, pix) in perScene { mediaPixels[ref] = pix }
+            }
+        }
+
         // Build fixtures for EVERY participating scene reference (per-scene namespaced). Every bound
         // media reference present in the plan must have pixels; every supplied fixture must be used.
-        let fixtures = try buildFixtures(subplans: subplans, mediaPixelsByReference: ctx.mediaPixelsByReference)
+        let fixtures = try buildFixtures(subplans: subplans, mediaPixelsByReference: mediaPixels)
 
         let base: ResolvedFrameInput
         do { base = try RenderInputResolver.resolve(framePlan: plan, materials: ctx.materials, fixtures: fixtures) }

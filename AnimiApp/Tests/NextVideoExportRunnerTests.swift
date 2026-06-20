@@ -218,13 +218,16 @@ final class NextVideoExportRunnerTests: XCTestCase {
 
     // MARK: - 4. Fail-closed (input builder)
 
-    func test_failClosed_unsupportedVideoMediaKind() throws {
+    func test_failClosed_audioMediaKind() throws {
+        // CP7: video is now supported. Audio (the remaining unsupported user-media kind) must still
+        // fail closed with the typed `unsupportedMediaKind` error.
         let folder = try sceneFolderURL("full_image")
-        let videoSlot = SceneMediaSlot.video(
-            mediaRef: MediaRef(storagePath: "v.mp4", mediaKind: .video),
-            placement: .defaultCover,
-            videoWindow: PersistedVideoSelection(trimStart: 0, trimEnd: 5.0))
-        let state = makeSceneState(slots: ["block_01": videoSlot])
+        let audioSlot = SceneMediaSlot(
+            visibility: true,
+            asset: SceneMediaAsset(
+                mediaRef: MediaRef(storagePath: "a.m4a", mediaKind: .audio),
+                placement: .defaultCover, videoWindow: nil))
+        let state = makeSceneState(slots: ["block_01": audioSlot])
         let snapshot = ExportMediaSnapshot(imageRefs: [], videoRefs: [], allAssetIds: [])
 
         XCTAssertThrowsError(try NextExportInputsBuilder.makeSingleScene(
@@ -232,7 +235,7 @@ final class NextVideoExportRunnerTests: XCTestCase {
             sceneState: state, mediaSnapshot: snapshot, frameIndex: 0)
         ) { error in
             guard case NextBridgeError.unsupportedMediaKind = error else {
-                return XCTFail("expected unsupportedMediaKind, got \(error)")
+                return XCTFail("expected unsupportedMediaKind for audio, got \(error)")
             }
         }
     }
@@ -280,6 +283,118 @@ final class NextVideoExportRunnerTests: XCTestCase {
         XCTAssertEqual(blockA.placement.offsetY, 22, accuracy: 0.001)
         XCTAssertEqual(blockA.placement.userScale, 1.5, accuracy: 0.001)
         XCTAssertEqual(blockA.placement.rotationDegrees, 33, accuracy: 0.001)
+    }
+
+    // MARK: - 5b. CP7: single-scene timeline session routes to the single-scene builder (video block)
+
+    func test_singleSceneTimelineSnapshot_buildsVideoBlock_notMultiSceneError() throws {
+        // A 1-scene project still uses the timeline export route (timeline engine active). The Next
+        // single-scene builder must accept that lone snapshot and build a VIDEO block — NOT throw
+        // multiSceneUnsupported (the bug the device E2E surfaced as "NextBridgeError error 0").
+        let folder = try sceneFolderURL("full_image")
+        let videoURL = FileManager.default.temporaryDirectory.appendingPathComponent("cp7-onescene-\(UUID()).mp4")
+        let sel = VideoSelection(url: videoURL, trimStart: 0, trimEnd: 2.0, isMuted: false, volume: 1)
+
+        let rt: SceneRuntime = {
+            let canvas = Canvas(width: 1080, height: 1920, fps: 30, durationFrames: 60)
+            let scene = Scene(schemaVersion: "1.0", sceneId: "full_image", canvas: canvas, background: nil, mediaBlocks: [])
+            return SceneRuntime(scene: scene, canvas: canvas, blocks: [], durationFrames: 60, fps: 30)
+        }()
+        let videoRef = ExportMediaSnapshot.VideoRef(blockId: "block_01", selection: sel, bindingAssetIds: ["a"])
+        let media = ExportMediaSnapshot(imageRefs: [], videoRefs: [videoRef], allAssetIds: [])
+        let render = SceneRenderStateSnapshot(resolvedTransforms: [:], variantOverrides: [:], userMediaPresent: ["block_01": true], layerToggleState: [:])
+        let snap = TimelineCompositionEngine.TimelineExportSceneSnapshot(
+            sceneIndex: 0, instanceId: UUID(), runtime: rt, renderState: render,
+            videoSelections: ["block_01": sel], mediaSnapshot: media, assetIndex: AssetIndexIR(),
+            resolver: CompositeAssetResolver(localIndex: .empty, sharedIndex: .empty),
+            bindingAssetIds: [], pathRegistry: PathRegistry(), assetSizes: [:],
+            sceneCanvasSize: SizeD(width: 1080, height: 1920), templateBackground: nil,
+            sceneTypeId: "full_image", rawPlacements: ["block_01": .defaultCover])
+
+        let inputs = try NextExportInputsBuilder.makeSingleScene(snapshot: snap, sceneFolderURL: folder, frameIndex: 0)
+        XCTAssertEqual(inputs.blocks.count, 1)
+        let block = try XCTUnwrap(inputs.blocks.first)
+        XCTAssertEqual(block.blockID, "block_01")
+        XCTAssertEqual(block.mediaURL, videoURL)
+        let video = try XCTUnwrap(block.video, "single-scene snapshot must build a VIDEO block (carries trim window)")
+        XCTAssertEqual(video.winStart, 0, accuracy: 1e-9)
+        XCTAssertEqual(video.winEnd, 2.0, accuracy: 1e-9)
+    }
+
+    // MARK: - 5c. CP7: stretched scene fails closed BEFORE rendering (no outsideProject leak)
+
+    func test_stretchedScene_failsClosed_beforeRender() throws {
+        // full_image template native duration == 150 frames (5s @30). A timeline span of 300 frames
+        // (scene stretched to 10s) must fail closed at decode (BEFORE any render), not leak the
+        // evaluator's `outsideProject`.
+        let folder = try sceneFolderURL("full_image")
+        let photo = try tempPhoto("red", r: 1, g: 0, b: 0)
+        defer { try? FileManager.default.removeItem(at: photo) }
+
+        var inputs = singleSceneInputs(folder: folder, photo: photo)
+        inputs.timelineDurationFrames = 300 // stretched 2× past native 150
+
+        XCTAssertThrowsError(try NextSingleSceneBridge.decodeMedia(inputs)) { error in
+            guard case NextBridgeError.stretchedSceneUnsupported(_, let native, let timeline) = error else {
+                return XCTFail("expected stretchedSceneUnsupported, got \(error)")
+            }
+            XCTAssertEqual(native, 150, "native frames = template duration")
+            XCTAssertEqual(timeline, 300, "timeline frames = stretched span")
+        }
+    }
+
+    func test_nonStretchedScene_nominalSpan_decodesOK() throws {
+        // A timeline span equal to native (150) is NOT stretched → decode proceeds (no throw).
+        let folder = try sceneFolderURL("full_image")
+        let photo = try tempPhoto("red", r: 1, g: 0, b: 0)
+        defer { try? FileManager.default.removeItem(at: photo) }
+
+        var inputs = singleSceneInputs(folder: folder, photo: photo)
+        inputs.timelineDurationFrames = 150 // == native, not stretched
+        XCTAssertNoThrow(try NextSingleSceneBridge.decodeMedia(inputs))
+    }
+
+    func test_nilTimelineDuration_skipsStretchCheck() throws {
+        // nil span → no stretch check (existing callers/tests unchanged).
+        let folder = try sceneFolderURL("full_image")
+        let photo = try tempPhoto("red", r: 1, g: 0, b: 0)
+        defer { try? FileManager.default.removeItem(at: photo) }
+
+        let inputs = singleSceneInputs(folder: folder, photo: photo) // timelineDurationFrames default nil
+        XCTAssertNil(inputs.timelineDurationFrames)
+        XCTAssertNoThrow(try NextSingleSceneBridge.decodeMedia(inputs))
+    }
+
+    func test_stretchedScene_inTimeline_failsClosed() throws {
+        // A stretched scene inside a 2-scene timeline must also fail closed at decodeTimeline.
+        let folder = try sceneFolderURL("full_image")
+        let red = try tempPhoto("red", r: 1, g: 0, b: 0)
+        let blue = try tempPhoto("blue", r: 0, g: 0, b: 1)
+        defer { [red, blue].forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        var sceneA = singleSceneInputs(folder: folder, photo: red)
+        sceneA.timelineDurationFrames = 300 // stretched
+        let sceneB = singleSceneInputs(folder: folder, photo: blue)
+        let inputs = NextBridgeTimelineInputs(
+            scenes: [NextBridgeTimelineScene(scene: sceneA, transitionToNext: nil),
+                     NextBridgeTimelineScene(scene: sceneB, transitionToNext: nil)],
+            nominalFrameIndex: 0, fps: 30)
+
+        XCTAssertThrowsError(try NextTimelineBridge.decodeTimeline(inputs)) { error in
+            guard case NextBridgeError.stretchedSceneUnsupported = error else {
+                return XCTFail("expected stretchedSceneUnsupported in timeline, got \(error)")
+            }
+        }
+    }
+
+    func test_nextBridgeError_localizedDescription_isHumanReadable() {
+        // The export UI shows `error.localizedDescription`. NextBridgeError must surface its readable
+        // `description` there — NOT Foundation's useless "NextBridgeError error <code>".
+        let err = NextBridgeError.stretchedSceneUnsupported(sceneTypeId: "full_image", nativeFrames: 150, timelineFrames: 300)
+        let localized = (err as Error).localizedDescription
+        XCTAssertTrue(localized.contains("stretched"), "localizedDescription must be readable, got: \(localized)")
+        XCTAssertFalse(localized.contains("error 1"), "must not be the raw enum-code fallback, got: \(localized)")
+        XCTAssertEqual(localized, err.description, "localizedDescription == description")
     }
 
     // MARK: - 6. Flag scoping (export vs preview flags are independent)

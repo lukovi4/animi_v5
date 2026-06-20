@@ -30,7 +30,7 @@ import AnimiEngineMetalRender
 // NO silent fallback inside the Next path — the caller surfaces the error visibly.
 
 /// Typed, visible failure for the CP2 Next bridge. No silent substitution.
-enum NextBridgeError: Error, CustomStringConvertible {
+enum NextBridgeError: Error, CustomStringConvertible, LocalizedError {
     case noScene
     case multiSceneUnsupported(sceneItemCount: Int)
     case notASceneItem
@@ -48,6 +48,12 @@ enum NextBridgeError: Error, CustomStringConvertible {
     case authoredAssetDecodeFailed(materialID: String, assetID: String, basename: String)
     case authoredAssetDuplicate(pixelID: String)
     case unsupportedFramePlan(String)
+    /// CP7: the scene's timeline span exceeds its native/template duration (a "stretched" scene). The
+    /// old app holds the VISUAL/template clock at the last native frame while the MEDIA/video clock
+    /// keeps advancing — a TWO-clock model the AnimiEngineNext evaluator does not expose (it has one
+    /// `scenePlaybackTime` and `projectDuration = sum(nominalDuration)`). Supporting it correctly
+    /// needs a canonical change, so CP7 fails closed here BEFORE rendering (no `outsideProject` leak).
+    case stretchedSceneUnsupported(sceneTypeId: String, nativeFrames: Int, timelineFrames: Int)
     case engine(String)
 
     var description: String {
@@ -86,10 +92,19 @@ enum NextBridgeError: Error, CustomStringConvertible {
             return "Next bridge: duplicate authored-asset pixel id '\(pid)'."
         case .unsupportedFramePlan(let m):
             return "Next bridge: unsupported frame plan: \(m). (CP2 = single scene only)"
+        case .stretchedSceneUnsupported(let id, let native, let timeline):
+            return "Next bridge: scene '\(id)' is stretched (timeline \(timeline)f > native \(native)f). " +
+                "Stretched scenes are not supported by the Next engine yet (needs a two-clock canonical model). (CP7: fail closed)"
         case .engine(let m):
             return "Next bridge engine error: \(m)."
         }
     }
+
+    /// Surface the human-readable `description` through `Error.localizedDescription` (the export/preview
+    /// UI shows `error.localizedDescription`). Without `LocalizedError` conformance Foundation returns
+    /// the useless `"AnimiApp.NextBridgeError error <code>"` — so every fail-closed reason (stretched
+    /// scene, unsupported media, etc.) was invisible to the user until this was added.
+    var errorDescription: String? { description }
 }
 
 /// App media-placement values, passed as primitives so this struct stays free of any
@@ -105,12 +120,24 @@ struct NextBridgePlacement {
     let rotationDegrees: Double
 }
 
-/// One bound PHOTO block (CP4): the block id, its resolved photo file URL, and its app placement.
-/// CP4 scope is photo-only — video/color/hidden/toggle blocks are fail-closed before this is built.
+/// CP7: the trim window for a bound VIDEO block, in seconds. Mirrors `VideoSelection.winStart/winEnd`
+/// (trim-only — no speed/loop/hold for user media, owner-confirmed). Carried as primitives so the
+/// bridge stays free of any TVECore dependency.
+struct NextBridgeVideo {
+    let winStart: Double
+    let winEnd: Double
+}
+
+/// One bound media block: the block id, its resolved file URL, and its app placement. CP4 was
+/// photo-only; CP7 adds an optional `video` descriptor — when present the block is a VIDEO whose
+/// per-frame pixels are resolved on demand (the URL is the video file). `video == nil` ⇒ photo
+/// (unchanged path). Color/hidden/toggle blocks are still fail-closed before this is built.
 struct NextBridgeBlock {
     let blockID: String
     let mediaURL: URL
     let placement: NextBridgePlacement
+    /// Trim window if this block is a video; nil for a photo.
+    var video: NextBridgeVideo? = nil
 }
 
 /// The canonical-namespace identity for ONE converted scene instance. CP2/CP4 single-scene used a
@@ -158,6 +185,11 @@ struct NextBridgeInputs {
     /// per-layer effective active range AND the manifest `postRollCapability`, so it must be supplied
     /// at convert time (not patched afterward).
     var postRollTicks: Int64 = 0
+    /// CP7: the scene's TIMELINE span in frames (the app's stretched `durationUs` → frames). When set
+    /// and it exceeds the converted canonical NOMINAL duration, the scene is "stretched" and the
+    /// bridge fails closed (`stretchedSceneUnsupported`) BEFORE rendering — the Next evaluator has no
+    /// two-clock model. `nil` skips the check (existing tests / callers that pass nominal-equal spans).
+    var timelineDurationFrames: Int? = nil
 
     /// CP2/CP3 compatibility accessors for the FIRST block (used by single-block tests and the
     /// cache key's per-block fields). CP4 keys include every block, not just this one.
@@ -175,13 +207,29 @@ struct NextBridgeBGRAFrame {
     let bytesPerRow: Int
 }
 
-/// One block's placement-INDEPENDENT decoded photo (CP4): its binding reference, chosen variant,
-/// and decoded BGRA pixels. Reused across placement changes (no re-decode).
+/// One block's placement-INDEPENDENT decoded media: its binding reference, chosen variant, and
+/// EITHER a decoded photo (CP4) OR a per-frame video resolver (CP7). Reused across placement changes
+/// (no re-decode of a photo; the video resolver streams forward across frames).
 struct NextDecodedBlock {
     let blockID: String
     let chosenVariantID: String
     let mediaReference: String
-    let photoPixels: ResolvedPixelInput
+    /// Decoded photo pixels (nil for a video block).
+    let photoPixels: ResolvedPixelInput?
+    /// Per-frame video resolver (nil for a photo block). Owns one AVAssetReader; stateful across
+    /// frames. Held here so it survives in the cached `NextDecodedMedia` (one decode per media key).
+    let videoResolver: NextVideoBlockResolver?
+
+    /// Photo block (CP4).
+    init(blockID: String, chosenVariantID: String, mediaReference: String, photoPixels: ResolvedPixelInput) {
+        self.blockID = blockID; self.chosenVariantID = chosenVariantID
+        self.mediaReference = mediaReference; self.photoPixels = photoPixels; self.videoResolver = nil
+    }
+    /// Video block (CP7).
+    init(blockID: String, chosenVariantID: String, mediaReference: String, videoResolver: NextVideoBlockResolver) {
+        self.blockID = blockID; self.chosenVariantID = chosenVariantID
+        self.mediaReference = mediaReference; self.photoPixels = nil; self.videoResolver = videoResolver
+    }
 }
 
 /// Placement-INDEPENDENT decoded media (CP3/CP4 perf): the compiled.tve bytes + per-block decoded
@@ -218,18 +266,25 @@ final class NextDecodedMedia {
 final class NextPreparedContext {
     let materials: RenderMaterialTable
     let window: EvaluationWindow
-    /// Per-block user-media pixels keyed by binding reference (mediaReference → photo pixels).
+    /// STATIC per-block photo pixels keyed by binding reference (video references are absent here).
     let mediaPixelsByReference: [String: ResolvedPixelInput]
+    /// CP7: per-frame video resolvers keyed by binding reference. Empty for photo-only scenes. The
+    /// per-frame render resolves each one at the scene-local time and merges into the fixtures.
+    let videoResolversByReference: [String: NextVideoBlockResolver]
     let assetEntries: [ResolvedAssetPixelEntry]
     let configuration: RenderConfiguration
     let session: MetalRenderSession
     let totalFrames: Int
 
     init(materials: RenderMaterialTable, window: EvaluationWindow,
-         mediaPixelsByReference: [String: ResolvedPixelInput], assetEntries: [ResolvedAssetPixelEntry],
+         mediaPixelsByReference: [String: ResolvedPixelInput],
+         videoResolversByReference: [String: NextVideoBlockResolver] = [:],
+         assetEntries: [ResolvedAssetPixelEntry],
          configuration: RenderConfiguration, session: MetalRenderSession, totalFrames: Int) {
         self.materials = materials; self.window = window
-        self.mediaPixelsByReference = mediaPixelsByReference; self.assetEntries = assetEntries
+        self.mediaPixelsByReference = mediaPixelsByReference
+        self.videoResolversByReference = videoResolversByReference
+        self.assetEntries = assetEntries
         self.configuration = configuration; self.session = session; self.totalFrames = totalFrames
     }
 }
@@ -315,16 +370,47 @@ enum NextSingleSceneBridge {
         let canvas = probeOut.document.manifest.output.canvas
         let maxPixel = Int(max(canvas.width, canvas.height))
 
-        // Decode each block's photo (heavy) downsampled to canvas; build fixtures for all references.
+        // CP7: STRETCH GUARD. The canonical NOMINAL frame count is fixed by the template. If the app's
+        // timeline span for this scene exceeds it, the scene is stretched — the old app holds the
+        // visual clock and advances the media clock independently (two clocks); the Next evaluator has
+        // only one clock + projectDuration == nominal, so fail closed BEFORE any frame render rather
+        // than letting the evaluator throw `outsideProject` mid-stream. Tolerance of 1 frame absorbs
+        // µs↔frame rounding between app `durationUs` and template frames.
+        if let timelineFrames = inputs.timelineDurationFrames {
+            let nominalFrames = Self.nominalFrameCount(of: probeOut.document)
+            if timelineFrames > nominalFrames + 1 {
+                throw NextBridgeError.stretchedSceneUnsupported(
+                    sceneTypeId: inputs.sceneTypeId, nativeFrames: nominalFrames, timelineFrames: timelineFrames)
+            }
+        }
+
+        // Decode each block's media downsampled to canvas; build fixtures for all references. A photo
+        // decodes once (placement-free, reused every frame). A VIDEO (CP7) builds a per-frame resolver
+        // and a frame-0 fixture for the probe resolve; the per-frame pixels come from the resolver.
         var decodedBlocks: [NextDecodedBlock] = []
         var fixtures: [RenderInputResolver.FixtureKey: ResolvedPixelInput] = [:]
         for b in inputs.blocks.sorted(by: { $0.blockID < $1.blockID }) {
             let ref = referenceByBlockID[b.blockID]!
-            let pixels = try decodeImageToPixelInput(url: b.mediaURL, id: ref, maxPixelSize: maxPixel)
-            decodedBlocks.append(NextDecodedBlock(
-                blockID: b.blockID, chosenVariantID: chosenVariantByBlockID[b.blockID]!,
-                mediaReference: ref, photoPixels: pixels))
-            fixtures[.image(reference: ref)] = pixels
+            if let v = b.video {
+                let resolver = NextVideoBlockResolver(
+                    blockID: b.blockID, mediaReference: ref,
+                    window: NextVideoWindow(url: b.mediaURL, winStart: v.winStart, winEnd: v.winEnd),
+                    maxPixelSize: maxPixel)
+                // Frame-0 pixels (scene-local time 0) for the probe resolve / authored-asset walk.
+                let frame0: ResolvedPixelInput
+                do { frame0 = try resolver.resolve(scenePlaybackSeconds: 0) }
+                catch { throw NextBridgeError.engine("video decode(probe) block \(b.blockID): \(error)") }
+                decodedBlocks.append(NextDecodedBlock(
+                    blockID: b.blockID, chosenVariantID: chosenVariantByBlockID[b.blockID]!,
+                    mediaReference: ref, videoResolver: resolver))
+                fixtures[.image(reference: ref)] = frame0
+            } else {
+                let pixels = try decodeImageToPixelInput(url: b.mediaURL, id: ref, maxPixelSize: maxPixel)
+                decodedBlocks.append(NextDecodedBlock(
+                    blockID: b.blockID, chosenVariantID: chosenVariantByBlockID[b.blockID]!,
+                    mediaReference: ref, photoPixels: pixels))
+                fixtures[.image(reference: ref)] = pixels
+            }
         }
 
         // Decode authored-asset pixels using a frame-0 probe resolve (binds all block references).
@@ -354,7 +440,10 @@ enum NextSingleSceneBridge {
     /// Reused by the single-scene `assemble` and the CP5 multi-scene timeline bridge.
     struct NextSceneConversion {
         let output: CompiledTemplateConverter.Output
+        /// STATIC photo pixels keyed by reference (video references are absent — resolved per frame).
         let mediaPixelsByReference: [String: ResolvedPixelInput]
+        /// CP7: per-frame video resolvers keyed by reference. Empty for photo-only scenes.
+        let videoResolversByReference: [String: NextVideoBlockResolver]
         let assetEntries: [ResolvedAssetPixelEntry]
     }
 
@@ -366,13 +455,20 @@ enum NextSingleSceneBridge {
         var bindings: [String: CompiledTemplateConverter.MediaBinding] = [:]
         var chosenVariantByBlockID: [String: String] = [:]
         var mediaPixelsByReference: [String: ResolvedPixelInput] = [:]
+        var videoResolversByReference: [String: NextVideoBlockResolver] = [:]
         for blk in decoded.blocks {
             guard let p = placementByBlockID[blk.blockID] else {
                 throw NextBridgeError.noMediaBound(blockID: blk.blockID)
             }
             bindings[blk.blockID] = .image(reference: blk.mediaReference, mediaPlacement: try convertPlacement(p))
             chosenVariantByBlockID[blk.blockID] = blk.chosenVariantID
-            mediaPixelsByReference[blk.mediaReference] = blk.photoPixels
+            if let photo = blk.photoPixels {
+                mediaPixelsByReference[blk.mediaReference] = photo
+            } else if let resolver = blk.videoResolver {
+                videoResolversByReference[blk.mediaReference] = resolver
+            } else {
+                throw NextBridgeError.engine("decoded block \(blk.blockID) has neither photo nor video")
+            }
         }
 
         let postRoll: TickDuration
@@ -392,7 +488,9 @@ enum NextSingleSceneBridge {
         for (key, pix) in decoded.assetPixelsByKey {
             assetEntries.append(ResolvedAssetPixelEntry(key: key, pixelInput: pix))
         }
-        return NextSceneConversion(output: out, mediaPixelsByReference: mediaPixelsByReference, assetEntries: assetEntries)
+        return NextSceneConversion(
+            output: out, mediaPixelsByReference: mediaPixelsByReference,
+            videoResolversByReference: videoResolversByReference, assetEntries: assetEntries)
     }
 
     /// Build a single-scene render context for given per-block placements, REUSING decoded media.
@@ -410,8 +508,18 @@ enum NextSingleSceneBridge {
 
         return NextPreparedContext(
             materials: conv.output.materials, window: window, mediaPixelsByReference: conv.mediaPixelsByReference,
+            videoResolversByReference: conv.videoResolversByReference,
             assetEntries: conv.assetEntries, configuration: configuration,
             session: sessionBox.session, totalFrames: totalFrames)
+    }
+
+    /// Canonical NOMINAL frame count of a converted document (projectDuration → frames). Used by the
+    /// CP7 stretch guard to compare against the app's timeline span. Returns 0 on any error so the
+    /// guard treats it conservatively (the real `buildWindow` later surfaces genuine failures).
+    static func nominalFrameCount(of document: CanonicalProjectDocument) -> Int {
+        guard let duration = try? document.manifest.projectDuration() else { return 0 }
+        let fr = document.manifest.output.frameRate
+        return Int((duration.ticks &* fr.numerator) / (Int64(TickClock.ticksPerSecond) &* fr.denominator))
     }
 
     /// Build the evaluation window + total frame count from a converted document.
@@ -445,7 +553,12 @@ enum NextSingleSceneBridge {
         guard case let .single(subplan) = plan.body else {
             throw NextBridgeError.unsupportedFramePlan("expected single scene body")
         }
-        let fixtures = try buildFixtures(subplan: subplan, mediaPixelsByReference: ctx.mediaPixelsByReference)
+        // CP7: resolve any video references at THIS frame's scene-local time, then merge with the
+        // static photo pixels. The merged map is the complete set of per-block media pixels.
+        let mediaPixels = try mergeVideoPixels(
+            subplan: subplan, staticPixels: ctx.mediaPixelsByReference,
+            videoResolvers: ctx.videoResolversByReference)
+        let fixtures = try buildFixtures(subplan: subplan, mediaPixelsByReference: mediaPixels)
         let base: ResolvedFrameInput
         do { base = try RenderInputResolver.resolve(framePlan: plan, materials: ctx.materials, fixtures: fixtures) }
         catch { throw NextBridgeError.engine("resolve: \(error)") }
@@ -481,6 +594,40 @@ enum NextSingleSceneBridge {
         var fixtures: [RenderInputResolver.FixtureKey: ResolvedPixelInput] = [:]
         for (ref, pixels) in mediaPixelsByReference { fixtures[.image(reference: ref)] = pixels }
         return fixtures
+    }
+
+    /// Scene-local playback time of a subplan, in seconds (canonical ticks are 240,000/sec). This is
+    /// the evaluator's own time-into-scene — transition compression / scene offsets already applied.
+    static func scenePlaybackSeconds(_ subplan: SceneSubplan) -> Double {
+        Double(subplan.scenePlaybackTime.ticks) / Double(TickClock.ticksPerSecond)
+    }
+
+    /// CP7: produce the COMPLETE per-block media-pixel map for one subplan at its scene-local time —
+    /// the static photo pixels plus a freshly-resolved BGRA8 frame for each VIDEO reference that
+    /// appears in this subplan. A video resolver whose reference is NOT in this subplan is skipped
+    /// (it belongs to a non-participating scene); a reference present in both maps is a programmer
+    /// error (a block is either photo or video) and fails closed.
+    static func mergeVideoPixels(
+        subplan: SceneSubplan,
+        staticPixels: [String: ResolvedPixelInput],
+        videoResolvers: [String: NextVideoBlockResolver]
+    ) throws -> [String: ResolvedPixelInput] {
+        guard !videoResolvers.isEmpty else { return staticPixels }
+        var merged = staticPixels
+        let seconds = scenePlaybackSeconds(subplan)
+        // Only resolve video references that actually appear in THIS subplan's image layers.
+        var refsInPlan = Set<String>()
+        for layer in subplan.layers {
+            if case let .image(ref) = layer.content { refsInPlan.insert(ref.raw) }
+        }
+        for (ref, resolver) in videoResolvers where refsInPlan.contains(ref) {
+            guard merged[ref] == nil else {
+                throw NextBridgeError.engine("reference '\(ref)' is bound as both photo and video")
+            }
+            do { merged[ref] = try resolver.resolve(scenePlaybackSeconds: seconds) }
+            catch { throw NextBridgeError.engine("video resolve '\(ref)' at \(seconds)s: \(error)") }
+        }
+        return merged
     }
 
     /// Assert every supplied media reference is present in the (probe) subplan — fail closed if a

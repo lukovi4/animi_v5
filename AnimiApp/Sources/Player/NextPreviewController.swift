@@ -25,6 +25,12 @@ struct NextPreviewKey: Equatable {
         let mediaPath: String
         let mediaSize: Int64
         let mediaMTime: Double
+        /// CP7: video trim window (winStart, winEnd) in seconds; nil for a photo. A trim change does
+        /// not alter the file (path/size/mtime stay the same), so it MUST participate in the media
+        /// identity — otherwise a re-trim would reuse the stale decoded resolver / cached frames.
+        let videoWindow: VideoWindowKey?
+
+        struct VideoWindowKey: Equatable { let winStart: Double; let winEnd: Double }
     }
     /// Per-block placement.
     struct BlockPlacement: Equatable {
@@ -38,6 +44,11 @@ struct NextPreviewKey: Equatable {
 
     let sceneTypeId: String
     let variantOverrides: [String: String]
+    /// CP7: timeline span participates in the media identity because `decodeMedia` owns the stretched
+    /// scene guard. If a scene is stretched after the Next context is already cached, the preview must
+    /// re-enter decode and fail closed with `stretchedSceneUnsupported` instead of reusing the old
+    /// nominal context and leaking `evaluate.outsideProject`.
+    let timelineDurationFrames: Int?
     let blockMedia: [BlockMedia]        // sorted by blockID
     let blockPlacements: [BlockPlacement] // sorted by blockID
 
@@ -45,13 +56,15 @@ struct NextPreviewKey: Equatable {
         guard !inputs.blocks.isEmpty else { return nil }
         self.sceneTypeId = inputs.sceneTypeId
         self.variantOverrides = inputs.variantOverrides
+        self.timelineDurationFrames = inputs.timelineDurationFrames
         let sorted = inputs.blocks.sorted { $0.blockID < $1.blockID }
         self.blockMedia = sorted.map { b in
             let attrs = try? FileManager.default.attributesOfItem(atPath: b.mediaURL.path)
             return BlockMedia(
                 blockID: b.blockID, mediaPath: b.mediaURL.path,
                 mediaSize: (attrs?[.size] as? NSNumber)?.int64Value ?? -1,
-                mediaMTime: (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1)
+                mediaMTime: (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1,
+                videoWindow: b.video.map { BlockMedia.VideoWindowKey(winStart: $0.winStart, winEnd: $0.winEnd) })
         }
         self.blockPlacements = sorted.map { b in
             BlockPlacement(
@@ -67,10 +80,15 @@ struct NextPreviewKey: Equatable {
     struct MediaKey: Equatable {
         let sceneTypeId: String
         let variantOverrides: [String: String]
+        let timelineDurationFrames: Int?
         let blockMedia: [BlockMedia]
     }
     var mediaKey: MediaKey {
-        MediaKey(sceneTypeId: sceneTypeId, variantOverrides: variantOverrides, blockMedia: blockMedia)
+        MediaKey(
+            sceneTypeId: sceneTypeId,
+            variantOverrides: variantOverrides,
+            timelineDurationFrames: timelineDurationFrames,
+            blockMedia: blockMedia)
     }
 }
 

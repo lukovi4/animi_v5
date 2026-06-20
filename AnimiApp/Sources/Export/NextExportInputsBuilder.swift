@@ -17,21 +17,24 @@ import TVECore
 //    `renderState.variantOverrides`, sceneTypeId from the captured `sceneTypeId`, and boundary
 //    transitions from `transitionMath`. Live editor state is NOT read after the session is built.
 //
-// Photo/image scope only. Any non-photo media kind, hidden block, missing media, unresolved URL, or
-// missing scene folder FAILS CLOSED with a typed `NextBridgeError` — never a silent fallback.
+// Photo + VIDEO (CP7) scope. Any other media kind, hidden block, missing media, unresolved URL, or
+// missing scene folder FAILS CLOSED with a typed `NextBridgeError` — never a silent fallback. Video
+// blocks carry their validated trim window from the export snapshot's `videoRefs`.
 enum NextExportInputsBuilder {
 
     // MARK: - Single-scene
 
     /// Build single-scene Next inputs from the resolved export media snapshot + live scene state.
-    /// `mediaSnapshot.imageRefs` already carries resolved photo URLs (sync), so we do not re-resolve.
+    /// `mediaSnapshot.imageRefs`/`videoRefs` already carry resolved URLs + validated trim (sync), so
+    /// we do not re-resolve.
     @MainActor
     static func makeSingleScene(
         sceneTypeId: String,
         sceneFolderURL: URL,
         sceneState: SceneState,
         mediaSnapshot: ExportMediaSnapshot,
-        frameIndex: Int
+        frameIndex: Int,
+        timelineDurationFrames: Int? = nil
     ) throws -> NextBridgeInputs {
         let slots = sceneState.mediaSlotsByBlockId ?? [:]
         guard !slots.isEmpty else { throw NextBridgeError.noMediaBound(blockID: "(none)") }
@@ -40,14 +43,48 @@ enum NextExportInputsBuilder {
         let urlByBlock: [String: URL] = mediaSnapshot.imageRefs.reduce(into: [:]) { result, ref in
             result[ref.blockId] = ref.url
         }
+        // Resolved + validated video selection per block (URL + winStart/winEnd live inside).
+        let videoByBlock: [String: VideoSelection] = mediaSnapshot.videoRefs.reduce(into: [:]) { result, ref in
+            result[ref.blockId] = ref.selection
+        }
 
-        let blocks = try makeBlocks(slots: slots, urlByBlock: urlByBlock)
+        let blocks = try makeBlocks(slots: slots, urlByBlock: urlByBlock, videoByBlock: videoByBlock)
         return NextBridgeInputs(
             sceneTypeId: sceneTypeId,
             sceneFolderURL: sceneFolderURL,
             variantOverrides: sceneState.variantOverrides,
             blocks: blocks,
-            frameIndex: frameIndex)
+            frameIndex: frameIndex,
+            timelineDurationFrames: timelineDurationFrames)
+    }
+
+    // MARK: - Single-scene from an immutable timeline snapshot (CP7: 1-scene timeline export)
+
+    /// Build single-scene Next inputs from ONE immutable `TimelineExportSceneSnapshot`. Used when the
+    /// export route is "timeline" (the timeline engine is active) but the project has exactly ONE
+    /// scene — that must go through the single-scene Next path, not the >= 2-scene timeline bridge.
+    @MainActor
+    static func makeSingleScene(
+        snapshot snap: TimelineCompositionEngine.TimelineExportSceneSnapshot,
+        sceneFolderURL: URL,
+        frameIndex: Int,
+        timelineDurationFrames: Int? = nil
+    ) throws -> NextBridgeInputs {
+        let imageRefs = snap.mediaSnapshot.imageRefs
+        let videoRefs = snap.mediaSnapshot.videoRefs
+        guard !imageRefs.isEmpty || !videoRefs.isEmpty else {
+            throw NextBridgeError.noMediaBound(blockID: "(none)")
+        }
+        let urlByBlock: [String: URL] = imageRefs.reduce(into: [:]) { $0[$1.blockId] = $1.url }
+        let videoByBlock: [String: VideoSelection] = videoRefs.reduce(into: [:]) { $0[$1.blockId] = $1.selection }
+        let blocks = try makeBlocks(placements: snap.rawPlacements, urlByBlock: urlByBlock, videoByBlock: videoByBlock)
+        return NextBridgeInputs(
+            sceneTypeId: snap.sceneTypeId,
+            sceneFolderURL: sceneFolderURL,
+            variantOverrides: snap.renderState.variantOverrides,
+            blocks: blocks,
+            frameIndex: frameIndex,
+            timelineDurationFrames: timelineDurationFrames)
     }
 
     // MARK: - Timeline
@@ -78,20 +115,29 @@ enum NextExportInputsBuilder {
                 throw NextBridgeError.sceneFolderMissing(sceneTypeId: snap.sceneTypeId)
             }
 
-            let slots = snap.mediaSnapshot.imageRefs
-            guard !slots.isEmpty else { throw NextBridgeError.noMediaBound(blockID: "(none)") }
-            let urlByBlock: [String: URL] = slots.reduce(into: [:]) { result, ref in
+            let imageRefs = snap.mediaSnapshot.imageRefs
+            let videoRefs = snap.mediaSnapshot.videoRefs
+            guard !imageRefs.isEmpty || !videoRefs.isEmpty else {
+                throw NextBridgeError.noMediaBound(blockID: "(none)")
+            }
+            let urlByBlock: [String: URL] = imageRefs.reduce(into: [:]) { result, ref in
                 result[ref.blockId] = ref.url
+            }
+            let videoByBlock: [String: VideoSelection] = videoRefs.reduce(into: [:]) { result, ref in
+                result[ref.blockId] = ref.selection
             }
 
             // Raw placement + variant come from the immutable snapshot (not live state).
-            let blocks = try makeBlocks(placements: snap.rawPlacements, urlByBlock: urlByBlock)
+            let blocks = try makeBlocks(placements: snap.rawPlacements, urlByBlock: urlByBlock, videoByBlock: videoByBlock)
+            // CP7 stretch guard: this scene's timeline span in frames (from the immutable session).
+            let timelineFrames = Int((item.durationUs &* Int64(math.fps)) / 1_000_000)
             let single = NextBridgeInputs(
                 sceneTypeId: snap.sceneTypeId,
                 sceneFolderURL: folderURL,
                 variantOverrides: snap.renderState.variantOverrides,
                 blocks: blocks,
-                frameIndex: 0)
+                frameIndex: 0,
+                timelineDurationFrames: timelineFrames)
 
             // Boundary transition from THIS scene to the next (nil for the last scene / cut).
             var transitionToNext: NextBridgeTransition? = nil
@@ -109,34 +155,46 @@ enum NextExportInputsBuilder {
 
     // MARK: - Shared block assembly
 
-    /// Build photo blocks from live `SceneMediaSlot`s (single-scene path). Fails closed on
-    /// non-photo kind, hidden slot, or a block whose resolved photo URL is missing.
+    /// Build media blocks from live `SceneMediaSlot`s (single-scene path). Photo blocks resolve their
+    /// URL from `urlByBlock`; VIDEO blocks resolve URL + trim from `videoByBlock` (CP7). Fails closed
+    /// on audio kind, hidden slot, or a block whose resolved media is missing.
     private static func makeBlocks(
         slots: [String: SceneMediaSlot],
-        urlByBlock: [String: URL]
+        urlByBlock: [String: URL],
+        videoByBlock: [String: VideoSelection]
     ) throws -> [NextBridgeBlock] {
         var blocks: [NextBridgeBlock] = []
         for (blockID, slot) in slots.sorted(by: { $0.key < $1.key }) {
-            guard slot.mediaRef.mediaKind == .photo else {
-                throw NextBridgeError.unsupportedMediaKind(blockID: blockID, kind: slot.mediaRef.mediaKind.rawValue)
-            }
             guard slot.visibility else {
                 throw NextBridgeError.blockHidden(blockID: blockID)
             }
-            guard let url = urlByBlock[blockID] else {
-                throw NextBridgeError.mediaResolveFailed("no resolved export URL for block \(blockID)")
+            switch slot.mediaRef.mediaKind {
+            case .photo:
+                guard let url = urlByBlock[blockID] else {
+                    throw NextBridgeError.mediaResolveFailed("no resolved export URL for block \(blockID)")
+                }
+                blocks.append(NextBridgeBlock(blockID: blockID, mediaURL: url, placement: mapPlacement(slot.placement)))
+            case .video:
+                guard let sel = videoByBlock[blockID] else {
+                    throw NextBridgeError.mediaResolveFailed("no resolved export video for block \(blockID)")
+                }
+                blocks.append(NextBridgeBlock(
+                    blockID: blockID, mediaURL: sel.url, placement: mapPlacement(slot.placement),
+                    video: NextBridgeVideo(winStart: sel.winStart, winEnd: sel.winEnd)))
+            case .audio:
+                throw NextBridgeError.unsupportedMediaKind(blockID: blockID, kind: slot.mediaRef.mediaKind.rawValue)
             }
-            blocks.append(NextBridgeBlock(blockID: blockID, mediaURL: url, placement: mapPlacement(slot.placement)))
         }
         return blocks
     }
 
-    /// Build photo blocks from raw placement map (timeline immutable-session path). Every entry in
-    /// `urlByBlock` is a visible photo (the snapshot only includes visible photos); a placement entry
-    /// without a URL means the block is non-photo or hidden — fail closed for that block.
+    /// Build media blocks from raw placement map (timeline immutable-session path). Every entry in
+    /// `urlByBlock` is a visible photo and every entry in `videoByBlock` is a visible video (the
+    /// snapshot only includes visible media). A media entry without a raw placement fails closed.
     private static func makeBlocks(
         placements: [String: MediaPlacementState],
-        urlByBlock: [String: URL]
+        urlByBlock: [String: URL],
+        videoByBlock: [String: VideoSelection]
     ) throws -> [NextBridgeBlock] {
         var blocks: [NextBridgeBlock] = []
         for (blockID, url) in urlByBlock.sorted(by: { $0.key < $1.key }) {
@@ -144,6 +202,14 @@ enum NextExportInputsBuilder {
                 throw NextBridgeError.mediaResolveFailed("no raw placement for block \(blockID)")
             }
             blocks.append(NextBridgeBlock(blockID: blockID, mediaURL: url, placement: mapPlacement(placement)))
+        }
+        for (blockID, sel) in videoByBlock.sorted(by: { $0.key < $1.key }) {
+            guard let placement = placements[blockID] else {
+                throw NextBridgeError.mediaResolveFailed("no raw placement for video block \(blockID)")
+            }
+            blocks.append(NextBridgeBlock(
+                blockID: blockID, mediaURL: sel.url, placement: mapPlacement(placement),
+                video: NextBridgeVideo(winStart: sel.winStart, winEnd: sel.winEnd)))
         }
         return blocks
     }
