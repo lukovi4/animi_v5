@@ -321,12 +321,11 @@ final class NextVideoExportRunnerTests: XCTestCase {
         XCTAssertEqual(video.winEnd, 2.0, accuracy: 1e-9)
     }
 
-    // MARK: - 5c. CP7: stretched scene fails closed BEFORE rendering (no outsideProject leak)
+    // MARK: - 5c. CP7.5: stretched scene is SUPPORTED (two-clock) — decodes + extends project duration
 
-    func test_stretchedScene_failsClosed_beforeRender() throws {
-        // full_image template native duration == 150 frames (5s @30). A timeline span of 300 frames
-        // (scene stretched to 10s) must fail closed at decode (BEFORE any render), not leak the
-        // evaluator's `outsideProject`.
+    func test_stretchedScene_decodesAndExtendsProjectDuration() throws {
+        // full_image native == 150 frames (5s @30). Stretched to 300 frames (10s): decode now SUCCEEDS
+        // (CP7.5 two-clock) and the canonical project duration reflects the stretched span.
         let folder = try sceneFolderURL("full_image")
         let photo = try tempPhoto("red", r: 1, g: 0, b: 0)
         defer { try? FileManager.default.removeItem(at: photo) }
@@ -334,39 +333,45 @@ final class NextVideoExportRunnerTests: XCTestCase {
         var inputs = singleSceneInputs(folder: folder, photo: photo)
         inputs.timelineDurationFrames = 300 // stretched 2× past native 150
 
-        XCTAssertThrowsError(try NextSingleSceneBridge.decodeMedia(inputs)) { error in
-            guard case NextBridgeError.stretchedSceneUnsupported(_, let native, let timeline) = error else {
-                return XCTFail("expected stretchedSceneUnsupported, got \(error)")
-            }
-            XCTAssertEqual(native, 150, "native frames = template duration")
-            XCTAssertEqual(timeline, 300, "timeline frames = stretched span")
-        }
+        let decoded = try NextSingleSceneBridge.decodeMedia(inputs)
+        // timelineSpan ticks = 300 frames @30fps = 300 * 8000 = 2_400_000.
+        XCTAssertEqual(decoded.timelineSpanTicks, 2_400_000, "stretched span resolved to ticks")
     }
 
-    func test_nonStretchedScene_nominalSpan_decodesOK() throws {
-        // A timeline span equal to native (150) is NOT stretched → decode proceeds (no throw).
+    func test_stretchedScene_assemblesWithStretchedTotalFrames() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("no Metal device") }
+        let folder = try sceneFolderURL("full_image")
+        let photo = try tempPhoto("red", r: 1, g: 0, b: 0)
+        defer { try? FileManager.default.removeItem(at: photo) }
+
+        var inputs = singleSceneInputs(folder: folder, photo: photo)
+        inputs.timelineDurationFrames = 300
+        let sessionBox = try NextSingleSceneBridge.makeSession(device: device)
+        let decoded = try NextSingleSceneBridge.decodeMedia(inputs)
+        let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
+        let ctx = try NextSingleSceneBridge.assemble(decoded: decoded, placementByBlockID: placementByBlockID, sessionBox: sessionBox)
+        // The prepared context's total frames must reflect the STRETCHED span (≈300), not native 150.
+        XCTAssertEqual(ctx.totalFrames, 300, "stretched scene renders across the full span")
+        // First, native-end, and last stretched frame all render without outsideProject.
+        _ = try NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: 0)
+        _ = try NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: 149)  // native end
+        _ = try NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: 299)  // stretched tail
+    }
+
+    func test_nonStretchedScene_nominalSpan_decodesUnstretched() throws {
+        // A timeline span equal to native (150) is NOT stretched → timelineSpanTicks nil (unstretched).
         let folder = try sceneFolderURL("full_image")
         let photo = try tempPhoto("red", r: 1, g: 0, b: 0)
         defer { try? FileManager.default.removeItem(at: photo) }
 
         var inputs = singleSceneInputs(folder: folder, photo: photo)
         inputs.timelineDurationFrames = 150 // == native, not stretched
-        XCTAssertNoThrow(try NextSingleSceneBridge.decodeMedia(inputs))
+        let decoded = try NextSingleSceneBridge.decodeMedia(inputs)
+        XCTAssertNil(decoded.timelineSpanTicks, "nominal span == native → unstretched")
     }
 
-    func test_nilTimelineDuration_skipsStretchCheck() throws {
-        // nil span → no stretch check (existing callers/tests unchanged).
-        let folder = try sceneFolderURL("full_image")
-        let photo = try tempPhoto("red", r: 1, g: 0, b: 0)
-        defer { try? FileManager.default.removeItem(at: photo) }
-
-        let inputs = singleSceneInputs(folder: folder, photo: photo) // timelineDurationFrames default nil
-        XCTAssertNil(inputs.timelineDurationFrames)
-        XCTAssertNoThrow(try NextSingleSceneBridge.decodeMedia(inputs))
-    }
-
-    func test_stretchedScene_inTimeline_failsClosed() throws {
-        // A stretched scene inside a 2-scene timeline must also fail closed at decodeTimeline.
+    func test_stretchedScene_inTimeline_decodesAllScenes() throws {
+        // A stretched scene inside a 2-scene timeline now decodes (no fail-closed).
         let folder = try sceneFolderURL("full_image")
         let red = try tempPhoto("red", r: 1, g: 0, b: 0)
         let blue = try tempPhoto("blue", r: 0, g: 0, b: 1)
@@ -380,20 +385,19 @@ final class NextVideoExportRunnerTests: XCTestCase {
                      NextBridgeTimelineScene(scene: sceneB, transitionToNext: nil)],
             nominalFrameIndex: 0, fps: 30)
 
-        XCTAssertThrowsError(try NextTimelineBridge.decodeTimeline(inputs)) { error in
-            guard case NextBridgeError.stretchedSceneUnsupported = error else {
-                return XCTFail("expected stretchedSceneUnsupported in timeline, got \(error)")
-            }
-        }
+        let decoded = try NextTimelineBridge.decodeTimeline(inputs)
+        XCTAssertEqual(decoded.count, 2)
+        XCTAssertEqual(decoded[0].timelineSpanTicks, 2_400_000, "scene A stretched span")
+        XCTAssertNil(decoded[1].timelineSpanTicks, "scene B unstretched")
     }
 
     func test_nextBridgeError_localizedDescription_isHumanReadable() {
         // The export UI shows `error.localizedDescription`. NextBridgeError must surface its readable
-        // `description` there — NOT Foundation's useless "NextBridgeError error <code>".
-        let err = NextBridgeError.stretchedSceneUnsupported(sceneTypeId: "full_image", nativeFrames: 150, timelineFrames: 300)
+        // `description` — NOT Foundation's useless "NextBridgeError error <code>".
+        let err = NextBridgeError.unsupportedMediaKind(blockID: "block_01", kind: "audio")
         let localized = (err as Error).localizedDescription
-        XCTAssertTrue(localized.contains("stretched"), "localizedDescription must be readable, got: \(localized)")
-        XCTAssertFalse(localized.contains("error 1"), "must not be the raw enum-code fallback, got: \(localized)")
+        XCTAssertTrue(localized.contains("audio"), "localizedDescription must be readable, got: \(localized)")
+        XCTAssertFalse(localized.hasPrefix("AnimiApp.NextBridgeError error"), "must not be the raw enum-code fallback")
         XCTAssertEqual(localized, err.description, "localizedDescription == description")
     }
 

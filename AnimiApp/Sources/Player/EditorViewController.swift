@@ -822,6 +822,9 @@ extension EditorViewController: MTKViewDelegate {
                 guard let self else { return }
                 switch outcome {
                 case .frame:
+                    // CP7.5: warm the timeline frame cache ahead of the playhead (mirrors the
+                    // single-scene prerender) so scrub/playback is not a cold render every frame.
+                    self.nextPreviewController?.prerenderTimelineSequence(from: timeline.nominalFrameIndex + 1, count: 5)
                     self.requestRender()
                 case .failure(let error):
                     self.pendingNextBridgeError = error

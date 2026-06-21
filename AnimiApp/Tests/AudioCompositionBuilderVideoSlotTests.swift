@@ -430,6 +430,30 @@ final class AudioCompositionBuilderVideoSlotTests: XCTestCase {
         XCTAssertGreaterThan(trackDuration, 7.0, "Audio duration should reflect stretched scene duration, not native (\(trackDuration)s)")
     }
 
+    func test_singleScene_stretched_audioExtendsToSpan() async throws {
+        // CP7.5 single-scene path (no transitionMath): native 5s (150f) stretched to 10s (300f) via
+        // the new `stretchedSceneDurationFrames` param. Video-slot audio (block fills native scene)
+        // must extend to ~10s, not stop at 5s.
+        let url = try await createTestVideoWithAudio(duration: 10.0)
+        let selection = VideoSelection(url: url, trimStart: 0, trimEnd: 10.0, isMuted: false, volume: 1.0)
+        let nativeFrames = 150
+        let block = makeBlock(blockId: "b1", startFrame: 0, endFrame: nativeFrames)
+        let runtime = makeRuntime(blocks: [block], durationFrames: nativeFrames)
+        let plan = AudioExportPlan(items: [], includeOriginalFromVideoSlots: true)
+
+        let builder = AudioCompositionBuilder()
+        // Unstretched build → ~5s.
+        let nativeResult = try builder.build(
+            runtime: runtime, fps: 30, videoSelectionsByBlockId: ["b1": selection], plan: plan)
+        XCTAssertLessThan(CMTimeGetSeconds(nativeResult.composition.duration), 6.0, "native build ≈ 5s")
+        // Stretched build → ~10s.
+        let stretchedResult = try builder.build(
+            runtime: runtime, fps: 30, videoSelectionsByBlockId: ["b1": selection], plan: plan,
+            stretchedSceneDurationFrames: 300)
+        XCTAssertGreaterThan(CMTimeGetSeconds(stretchedResult.composition.duration), 7.0,
+                             "stretched single-scene audio extends to the span, not native 5s")
+    }
+
     func test_stretchedScene_partialBlock_correctDuration() async throws {
         // Block 30..90, native=150, stretched=300
         // Partial block doesn't reach native end → native timing, no stretch

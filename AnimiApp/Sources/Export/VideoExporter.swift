@@ -376,11 +376,14 @@ extension VideoExporter {
                 do {
                     // CP7: include user-video-slot audio (trim/volume/mute) — same audio path the OLD
                     // single-scene export uses. Empty map ⇒ photo-only (unchanged for photo scenes).
+                    // CP7.5: `totalFrames` is the STRETCHED span; pass it so audio (incl. video-slot
+                    // audio) extends across the full stretched scene, not just the native duration.
                     audioPipeline = try AudioCompositionBuilder().build(
                         runtime: sceneRuntime,
                         fps: settings.fps,
                         videoSelectionsByBlockId: videoSelectionsByBlockId,
-                        plan: plan
+                        plan: plan,
+                        stretchedSceneDurationFrames: totalFrames > sceneRuntime.durationFrames ? totalFrames : nil
                     )
                 } catch {
                     session.complete(with: .failure(VideoExportError.failedToBuildAudioPipeline(error)))

@@ -82,16 +82,25 @@ public final class AudioCompositionBuilder {
         videoSelectionsByBlockId: [String: VideoSelection],
         plan: AudioExportPlan,
         transitionMath: TimelineTransitionMath? = nil,
-        sceneIndex: Int = 0
+        sceneIndex: Int = 0,
+        // CP7.5: when the single scene is STRETCHED, pass the stretched span in frames here. The audio
+        // project duration extends to the span and video-slot audio plays across it (a block reaching
+        // the native end is held/continued to the span end — same rule the old TVECore export uses).
+        // nil ⇒ unstretched (native runtime duration).
+        stretchedSceneDurationFrames: Int? = nil
     ) throws -> BuiltAudioPipeline {
         let composition = AVMutableComposition()
         var mixParameters: [AVMutableAudioMixInputParameters] = []
+
+        let nativeDurationFrames = runtime.durationFrames
+        // Effective single-scene span: stretched if provided and larger than native, else native.
+        let effectiveSceneDurationFrames = max(nativeDurationFrames, stretchedSceneDurationFrames ?? nativeDurationFrames)
 
         let projectDuration: Double
         if let math = transitionMath {
             projectDuration = Double(math.compressedDurationFrames) / Double(fps)
         } else {
-            projectDuration = Double(runtime.durationFrames) / Double(fps)
+            projectDuration = Double(effectiveSceneDurationFrames) / Double(fps)
         }
 
         // 1. Add all audio items from plan
@@ -112,6 +121,11 @@ public final class AudioCompositionBuilder {
                 guard selection.isValid else { continue }
                 guard !selection.isMuted else { continue }
 
+                // CP7.5: for a stretched single scene (no transitionMath), pass the stretched + native
+                // frame counts so a block reaching the native end extends to the stretched span end.
+                let stretchedFrames = (transitionMath == nil && effectiveSceneDurationFrames > nativeDurationFrames)
+                    ? effectiveSceneDurationFrames : nil
+                let nativeFrames = stretchedFrames != nil ? nativeDurationFrames : nil
                 let params = try insertVideoSlotAudio(
                     selection: selection,
                     block: block,
@@ -120,7 +134,9 @@ public final class AudioCompositionBuilder {
                     projectDuration: projectDuration,
                     defaultVolume: plan.originalDefaultVolume,
                     transitionMath: transitionMath,
-                    sceneIndex: sceneIndex
+                    sceneIndex: sceneIndex,
+                    sceneDurationFrames: stretchedFrames,
+                    nativeSceneDurationFrames: nativeFrames
                 )
                 if let params { mixParameters.append(params) }
             }

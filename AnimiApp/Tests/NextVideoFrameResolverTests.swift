@@ -370,6 +370,42 @@ final class NextVideoFrameResolverTests: XCTestCase {
         XCTAssertLessThan(leftMid, 75, "downsampled portrait: black still on the LEFT")
     }
 
+    // MARK: - CP7.5 perf: held-frame / repeated-time does not rebake
+
+    func test_repeatedSameTime_doesNotRebake() async throws {
+        let url = tempDir.appendingPathComponent("ramp.mp4")
+        try await createRampVideo(at: url, frameCount: 30, fps: 30, width: 64, height: 64)
+        let resolver = NextVideoBlockResolver(
+            blockID: "b", mediaReference: "ref",
+            window: NextVideoWindow(url: url, winStart: 0, winEnd: 1.0), maxPixelSize: 64)
+        defer { resolver.teardown() }
+        // First resolve bakes once.
+        _ = try resolver.resolve(scenePlaybackSeconds: 0.5)
+        XCTAssertEqual(resolver.bakeCountForTesting, 1)
+        // Same scene time again → same sample → cache hit, no rebake.
+        _ = try resolver.resolve(scenePlaybackSeconds: 0.5)
+        _ = try resolver.resolve(scenePlaybackSeconds: 0.5)
+        XCTAssertEqual(resolver.bakeCountForTesting, 1, "repeated same-time must not rebake")
+    }
+
+    func test_heldTail_pastTrimEnd_doesNotRebakeEachFrame() async throws {
+        // Past the trim end the target clamps to winEnd-1/600 (constant) → same held sample for every
+        // frame in the stretched tail → must bake only ONCE across many tail frames.
+        let url = tempDir.appendingPathComponent("ramp.mp4")
+        try await createRampVideo(at: url, frameCount: 30, fps: 30, width: 64, height: 64) // 1s video
+        let resolver = NextVideoBlockResolver(
+            blockID: "b", mediaReference: "ref",
+            window: NextVideoWindow(url: url, winStart: 0, winEnd: 1.0), maxPixelSize: 64)
+        defer { resolver.teardown() }
+        // Walk well past the 1s end (stretched-to-3s tail), 30 frames worth.
+        for f in 30..<90 {
+            _ = try resolver.resolve(scenePlaybackSeconds: Double(f) / 30.0)
+        }
+        // The held tail clamps to one sample → at most a couple of bakes (the last real sample), not 60.
+        XCTAssertLessThanOrEqual(resolver.bakeCountForTesting, 2,
+                                 "held tail must not rebake every frame (got \(resolver.bakeCountForTesting))")
+    }
+
     // MARK: - Fail closed: missing / corrupt
 
     func test_missingFile_failsClosed() {

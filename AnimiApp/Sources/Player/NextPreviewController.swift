@@ -44,10 +44,9 @@ struct NextPreviewKey: Equatable {
 
     let sceneTypeId: String
     let variantOverrides: [String: String]
-    /// CP7: timeline span participates in the media identity because `decodeMedia` owns the stretched
-    /// scene guard. If a scene is stretched after the Next context is already cached, the preview must
-    /// re-enter decode and fail closed with `stretchedSceneUnsupported` instead of reusing the old
-    /// nominal context and leaking `evaluate.outsideProject`.
+    /// CP7.5: the timeline span participates in the media identity because `decodeMedia` resolves the
+    /// stretched `timelineSpan` (two-clock). A scene stretched after the Next context is cached must
+    /// re-enter decode (new span → new evaluator window) instead of reusing the old nominal context.
     let timelineDurationFrames: Int?
     let blockMedia: [BlockMedia]        // sorted by blockID
     let blockPlacements: [BlockPlacement] // sorted by blockID
@@ -515,6 +514,37 @@ final class NextPreviewController {
                 if token.cancelled { return }   // identity changed → stop the batch promptly
                 // Drain Metal allocations per prerendered frame (same OOM reason as the main render).
                 guard let frame = autoreleasepool(invoking: { try? NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: f) }) else { continue }
+                DispatchQueue.main.async {
+                    guard renderEpoch == self.epoch else { return }
+                    self.insertFrame(f, frame)
+                }
+            }
+        }
+    }
+
+    /// CP7.5: TIMELINE prerender — the multi-scene equivalent of `prerenderSequence`. Without this a
+    /// timeline scrub/playback rendered EVERY frame cold (no cache warming), which dominated the
+    /// stretched-timeline slowdown. Mirrors the single-scene gating/cancellation/epoch exactly but uses
+    /// `timelineContext` + the timeline bridge. Frame index is the NOMINAL project frame.
+    func prerenderTimelineSequence(from startFrame: Int, count: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !inFlight, let ctx = timelineContext else { return }
+        guard keyChangesSincePrerender == lastPrerenderKeyChanges else {
+            lastPrerenderKeyChanges = keyChangesSincePrerender
+            return
+        }
+        let total = max(1, ctx.totalFrames)
+        let targets = (0..<max(0, count)).map { (startFrame + $0) % total }.filter { frameCache[$0] == nil }
+        guard !targets.isEmpty else { return }
+        prerenderToken?.cancel()
+        let token = CancelToken()
+        prerenderToken = token
+        let renderEpoch = epoch
+        renderQueue.async { [weak self] in
+            guard let self else { return }
+            for f in targets {
+                if token.cancelled { return }
+                guard let frame = autoreleasepool(invoking: { try? NextTimelineBridge.renderFrameBGRA(context: ctx, frameIndex: f) }) else { continue }
                 DispatchQueue.main.async {
                     guard renderEpoch == self.epoch else { return }
                     self.insertFrame(f, frame)

@@ -125,6 +125,17 @@ final class NextVideoBlockResolver {
     /// The pts of the currently promoted `last` sample, used to detect a backward request that needs
     /// a reader rebuild (AVAssetReader is forward-only).
     private var lastPromotedSeconds: Double = -.greatestFiniteMagnitude
+    /// CP7.5 perf: cache the last BAKED `ResolvedPixelInput` keyed by the chosen sample's PTS. When a
+    /// frame selects the SAME decoded sample (held-last tail, repeated scrub at one frame, or the same
+    /// 30fps output frame mapping to one 24fps source sample) we return the cached pixels instead of
+    /// re-running VTCreateCGImage + CGContext draw + Data copy every call. Reset on reader (re)start.
+    private var cachedBakePTS: CMTime = .invalid
+    private var cachedBake: ResolvedPixelInput?
+    #if DEBUG
+    /// Test-only: number of actual bakes (cache misses). A held tail / repeated same-frame request
+    /// must not increment this. Pinned by `NextVideoFrameResolverTests`.
+    private(set) var bakeCountForTesting = 0
+    #endif
 
     init(blockID: String, mediaReference: String, window: NextVideoWindow, maxPixelSize: Int) {
         self.blockID = blockID
@@ -144,6 +155,8 @@ final class NextVideoBlockResolver {
         pending = nil
         isPrepared = false
         isFinished = true
+        cachedBake = nil
+        cachedBakePTS = .invalid
     }
 
     // MARK: - Prepare
@@ -155,6 +168,7 @@ final class NextVideoBlockResolver {
         // Tear down any existing reader/buffers (forward-only → backward requires a fresh reader).
         reader?.cancelReading()
         reader = nil; output = nil; last = nil; pending = nil; isFinished = false
+        cachedBake = nil; cachedBakePTS = .invalid   // stale across a reader restart
 
         let asset = AVURLAsset(url: window.url)
         guard let track = asset.tracks(withMediaType: .video).first else {
@@ -255,8 +269,21 @@ final class NextVideoBlockResolver {
             throw NextVideoFrameResolverError.noFrameDecoded(window.url, targetTime: targetSeconds)
         }
 
-        // 3. Bake orientation + downsample → BGRA8 `Data` → ResolvedPixelInput.
-        return try makePixelInput(from: chosen.pixelBuffer)
+        // 3. Cache hit: same chosen sample as last bake → return cached pixels (no rebake). The bake
+        // (VTCreateCGImage + CGContext rotate/downsample + Data copy) is the dominant per-frame cost;
+        // skipping it when the held sample is unchanged removes the held-tail / repeated-scrub overhead.
+        if let cachedBake, cachedBakePTS.isValid, chosen.pts == cachedBakePTS {
+            return cachedBake
+        }
+
+        // 4. Bake orientation + downsample → BGRA8 `Data` → ResolvedPixelInput; cache by sample PTS.
+        let baked = try makePixelInput(from: chosen.pixelBuffer)
+        cachedBake = baked
+        cachedBakePTS = chosen.pts
+        #if DEBUG
+        bakeCountForTesting += 1
+        #endif
+        return baked
     }
 
     // MARK: - BGRA bake (orientation + downsample)

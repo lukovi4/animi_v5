@@ -929,7 +929,9 @@ internal final class EditorRuntimeExportController {
         exporter.exportVideoNext(
             preparedContext: preparedContext, sessionBox: sessionBox, sceneRuntime: sceneRuntime,
             settings: nextSettings, audioPlan: settings.audioPlan,
-            totalFrames: sceneRuntime.durationFrames,
+            // CP7.5: render the full STRETCHED span. `preparedContext.totalFrames` == projectDuration
+            // (timelineSpan) frames, equal to native for an unstretched scene.
+            totalFrames: preparedContext.totalFrames,
             videoSelectionsByBlockId: videoSelectionsByBlockId,
             budget: budget,
             onFinishing: { [weak self] in
@@ -1075,7 +1077,8 @@ internal final class EditorRuntimeExportController {
         exporter.exportVideoNext(
             preparedContext: preparedContext, sessionBox: sessionBox, sceneRuntime: snap.runtime,
             settings: nextSettings, audioPlan: settings.audioPlan,
-            totalFrames: snap.runtime.durationFrames,
+            // CP7.5: full STRETCHED span (preparedContext.totalFrames == timelineSpan frames).
+            totalFrames: preparedContext.totalFrames,
             videoSelectionsByBlockId: snap.videoSelections,
             budget: budget,
             onFinishing: { [weak self] in

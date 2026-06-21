@@ -48,12 +48,6 @@ enum NextBridgeError: Error, CustomStringConvertible, LocalizedError {
     case authoredAssetDecodeFailed(materialID: String, assetID: String, basename: String)
     case authoredAssetDuplicate(pixelID: String)
     case unsupportedFramePlan(String)
-    /// CP7: the scene's timeline span exceeds its native/template duration (a "stretched" scene). The
-    /// old app holds the VISUAL/template clock at the last native frame while the MEDIA/video clock
-    /// keeps advancing — a TWO-clock model the AnimiEngineNext evaluator does not expose (it has one
-    /// `scenePlaybackTime` and `projectDuration = sum(nominalDuration)`). Supporting it correctly
-    /// needs a canonical change, so CP7 fails closed here BEFORE rendering (no `outsideProject` leak).
-    case stretchedSceneUnsupported(sceneTypeId: String, nativeFrames: Int, timelineFrames: Int)
     case engine(String)
 
     var description: String {
@@ -92,9 +86,6 @@ enum NextBridgeError: Error, CustomStringConvertible, LocalizedError {
             return "Next bridge: duplicate authored-asset pixel id '\(pid)'."
         case .unsupportedFramePlan(let m):
             return "Next bridge: unsupported frame plan: \(m). (CP2 = single scene only)"
-        case .stretchedSceneUnsupported(let id, let native, let timeline):
-            return "Next bridge: scene '\(id)' is stretched (timeline \(timeline)f > native \(native)f). " +
-                "Stretched scenes are not supported by the Next engine yet (needs a two-clock canonical model). (CP7: fail closed)"
         case .engine(let m):
             return "Next bridge engine error: \(m)."
         }
@@ -185,10 +176,10 @@ struct NextBridgeInputs {
     /// per-layer effective active range AND the manifest `postRollCapability`, so it must be supplied
     /// at convert time (not patched afterward).
     var postRollTicks: Int64 = 0
-    /// CP7: the scene's TIMELINE span in frames (the app's stretched `durationUs` → frames). When set
-    /// and it exceeds the converted canonical NOMINAL duration, the scene is "stretched" and the
-    /// bridge fails closed (`stretchedSceneUnsupported`) BEFORE rendering — the Next evaluator has no
-    /// two-clock model. `nil` skips the check (existing tests / callers that pass nominal-equal spans).
+    /// CP7.5: the scene's TIMELINE span in frames (the app's `durationUs` → frames). When it exceeds
+    /// the template's native nominal frames the scene is STRETCHED — the bridge resolves it to a
+    /// canonical `timelineSpan` (ticks) and the Next evaluator runs the two-clock model (visual held
+    /// at nominal, media continuing to span). `nil` or a nominal-equal value ⇒ unstretched.
     var timelineDurationFrames: Int? = nil
 
     /// CP2/CP3 compatibility accessors for the FIRST block (used by single-block tests and the
@@ -247,13 +238,19 @@ final class NextDecodedMedia {
     let sceneTypeId: String
     let identity: NextSceneIdentity
     let postRollTicks: Int64
+    /// CP7.5: the scene's stretched timeline span in canonical ticks, or nil if unstretched. `assemble`
+    /// / `convertScene` pass it to the converter so the canonical doc carries `timelineSpan` and the
+    /// evaluator runs the two-clock model. Resolved once at decode against the template's frame rate.
+    let timelineSpanTicks: Int64?
 
     init(compiledData: Data, blocks: [NextDecodedBlock],
          assetPixelsByKey: [ResolvedAssetKey: ResolvedPixelInput], canvasMaxPixel: Int,
-         sceneTypeId: String, identity: NextSceneIdentity, postRollTicks: Int64) {
+         sceneTypeId: String, identity: NextSceneIdentity, postRollTicks: Int64,
+         timelineSpanTicks: Int64?) {
         self.compiledData = compiledData; self.blocks = blocks
         self.assetPixelsByKey = assetPixelsByKey; self.canvasMaxPixel = canvasMaxPixel
         self.sceneTypeId = sceneTypeId; self.identity = identity; self.postRollTicks = postRollTicks
+        self.timelineSpanTicks = timelineSpanTicks
     }
 }
 
@@ -353,11 +350,14 @@ enum NextSingleSceneBridge {
         }
 
         // Convert with IDENTITY placements to obtain materials/canvas for asset walking. The probe
-        // uses the SAME post-roll as the real render so layer active ranges (and thus the asset
-        // walk) match the per-frame convert in `assemble`.
+        // uses the SAME post-roll AND timeline span as the real render so layer active ranges, the
+        // asset walk, and the canonical project duration match the per-frame convert in `assemble`.
         let postRoll: TickDuration
         do { postRoll = try TickDuration(ticks: max(0, inputs.postRollTicks)) }
         catch { throw NextBridgeError.engine("postRoll: \(error)") }
+        // CP7.5: ONE probe convert (no span — span does not affect canvas/asset-walk/media decode,
+        // only the per-render window built in `assemble`). The stretched span in ticks is resolved
+        // from the probe's native nominal frame count and stored; `convertScene` applies it.
         let probeOut: CompiledTemplateConverter.Output
         do {
             probeOut = try CompiledTemplateConverter.convert(.init(
@@ -366,23 +366,11 @@ enum NextSingleSceneBridge {
                 selection: TemplateVariantInventory.Selection(chosenVariantByBlockID: chosenVariantByBlockID),
                 mediaBindings: probeBindings, requiredPostRoll: postRoll))
         } catch { throw NextBridgeError.engine("convert(probe): \(error)") }
+        let timelineSpanTicks = Self.timelineSpanTicks(
+            timelineDurationFrames: inputs.timelineDurationFrames, document: probeOut.document)
 
         let canvas = probeOut.document.manifest.output.canvas
         let maxPixel = Int(max(canvas.width, canvas.height))
-
-        // CP7: STRETCH GUARD. The canonical NOMINAL frame count is fixed by the template. If the app's
-        // timeline span for this scene exceeds it, the scene is stretched — the old app holds the
-        // visual clock and advances the media clock independently (two clocks); the Next evaluator has
-        // only one clock + projectDuration == nominal, so fail closed BEFORE any frame render rather
-        // than letting the evaluator throw `outsideProject` mid-stream. Tolerance of 1 frame absorbs
-        // µs↔frame rounding between app `durationUs` and template frames.
-        if let timelineFrames = inputs.timelineDurationFrames {
-            let nominalFrames = Self.nominalFrameCount(of: probeOut.document)
-            if timelineFrames > nominalFrames + 1 {
-                throw NextBridgeError.stretchedSceneUnsupported(
-                    sceneTypeId: inputs.sceneTypeId, nativeFrames: nominalFrames, timelineFrames: timelineFrames)
-            }
-        }
 
         // Decode each block's media downsampled to canvas; build fixtures for all references. A photo
         // decodes once (placement-free, reused every frame). A VIDEO (CP7) builds a per-frame resolver
@@ -430,7 +418,22 @@ enum NextSingleSceneBridge {
         return NextDecodedMedia(
             compiledData: data, blocks: decodedBlocks,
             assetPixelsByKey: assetPixelsByKey, canvasMaxPixel: maxPixel,
-            sceneTypeId: inputs.sceneTypeId, identity: inputs.identity, postRollTicks: max(0, inputs.postRollTicks))
+            sceneTypeId: inputs.sceneTypeId, identity: inputs.identity, postRollTicks: max(0, inputs.postRollTicks),
+            timelineSpanTicks: timelineSpanTicks)
+    }
+
+    /// CP7.5: resolve the stretched timeline span in canonical TICKS from the app's timeline-frame
+    /// count, using the template document's own frame rate. Returns nil when unstretched (frames <=
+    /// native nominal frames, within a 1-frame µs↔frame rounding tolerance) so the converter defaults
+    /// to `timelineSpan == nominalDuration`.
+    static func timelineSpanTicks(timelineDurationFrames: Int?, document: CanonicalProjectDocument) -> Int64? {
+        guard let frames = timelineDurationFrames else { return nil }
+        let nominalFrames = nominalFrameCount(of: document)
+        guard frames > nominalFrames + 1 else { return nil }   // unstretched (+1 rounding tolerance)
+        let fr = document.manifest.output.frameRate
+        // ticks = frames * ticksPerSecond * denominator / numerator (inverse of nominalFrameCount).
+        let ticks = (Int64(frames) &* Int64(TickClock.ticksPerSecond) &* fr.denominator) / fr.numerator
+        return ticks
     }
 
     // MARK: - Assemble (light, placement-DEPENDENT — reuses decoded media)
@@ -481,7 +484,8 @@ enum NextSingleSceneBridge {
                 compiledTemplateData: decoded.compiledData, catalogID: decoded.sceneTypeId,
                 sceneInstanceID: decoded.identity.sceneInstanceID, scenePayloadID: decoded.identity.scenePayloadID,
                 selection: TemplateVariantInventory.Selection(chosenVariantByBlockID: chosenVariantByBlockID),
-                mediaBindings: bindings, requiredPostRoll: postRoll))
+                mediaBindings: bindings, requiredPostRoll: postRoll,
+                timelineSpan: decoded.timelineSpanTicks.map { try? TickDuration(ticks: $0) } ?? nil))
         } catch { throw NextBridgeError.engine("convert: \(error)") }
 
         var assetEntries: [ResolvedAssetPixelEntry] = []
@@ -596,10 +600,11 @@ enum NextSingleSceneBridge {
         return fixtures
     }
 
-    /// Scene-local playback time of a subplan, in seconds (canonical ticks are 240,000/sec). This is
-    /// the evaluator's own time-into-scene — transition compression / scene offsets already applied.
+    /// MEDIA scene-local playback time of a subplan, in seconds (canonical ticks are 240,000/sec).
+    /// CP7.5: video sampling uses the MEDIA clock (continues across a stretched span); the evaluator
+    /// has already applied transition compression / scene offsets / the two-clock split.
     static func scenePlaybackSeconds(_ subplan: SceneSubplan) -> Double {
-        Double(subplan.scenePlaybackTime.ticks) / Double(TickClock.ticksPerSecond)
+        Double(subplan.mediaPlaybackTime.ticks) / Double(TickClock.ticksPerSecond)
     }
 
     /// CP7: produce the COMPLETE per-block media-pixel map for one subplan at its scene-local time —
