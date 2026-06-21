@@ -99,7 +99,7 @@ enum GraphTestFixtures {
     static func singlePlan(scene s: String, layers: [ActiveLayer], overlays: [ActiveOverlay] = []) throws -> FramePlan {
         FramePlan(output: OutputContext(canvas: try CanvasSize(width: 1080, height: 1920), frameRate: try FrameRate(numerator: 30, denominator: 1)),
             projectTime: try ProjectTime(ticks: 0),
-            body: .single(SceneSubplan(sceneID: try SceneInstanceID(s), role: .sole, scenePlaybackTime: .zero, transitionRelativeTime: nil, layers: layers)),
+            body: .single(SceneSubplan(sceneID: try SceneInstanceID(s), role: .sole, visualPlaybackTime: .zero, mediaPlaybackTime: .zero, transitionRelativeTime: nil, layers: layers)),
             overlays: overlays)
     }
 

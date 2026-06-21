@@ -14,7 +14,7 @@ final class TransitionAndValidatorCorrectiveTests: XCTestCase {
     private func cs(_ v: Int64) -> CanvasScalar { CanvasScalar(rawValue: v) }
 
     private func sub(_ s: String, role: SceneRole, layer l: String, ref: String) throws -> SceneSubplan {
-        SceneSubplan(sceneID: try SceneInstanceID(s), role: role, scenePlaybackTime: .zero, transitionRelativeTime: nil,
+        SceneSubplan(sceneID: try SceneInstanceID(s), role: role, visualPlaybackTime: .zero, mediaPlaybackTime: .zero, transitionRelativeTime: nil,
             layers: [ActiveLayer(layerID: try LayerID(l), zIndex: 0, stableOrdinal: 0, localCompositionOrder: 0,
                 placement: try Placement(frame: try FixedRect(x: cs(0), y: cs(0), width: cs(100 * pt), height: cs(100 * pt)), scale: .one, rotation: .zero),
                 mediaPlacement: .identity(fitMode: .contain), content: .image(try ImageReference(ref)),

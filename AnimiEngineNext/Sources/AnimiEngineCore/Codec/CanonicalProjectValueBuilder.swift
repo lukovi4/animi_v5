@@ -86,8 +86,12 @@ enum CanonicalProjectValueBuilder {
     // MARK: - Manifest
 
     private static func manifest(_ manifest: CanonicalProjectManifest) -> CanonicalValue {
+        // CP7.5 (D1): the canonical encoder always writes the CURRENT schema version (v2) and the
+        // `timelineSpan` key (emitted in `sceneEntry`). The on-disk format that carries `timelineSpan`
+        // IS v2, so a v1 in-memory manifest (e.g. a fixture, or a v1 doc decoded before uplift)
+        // re-encodes as a consistent v2 document — never a v1 header with a v2 body.
         .object([
-            ("schemaVersion", .int(Int64(manifest.schemaVersion))),
+            ("schemaVersion", .int(Int64(CanonicalProjectManifest.supportedSchemaVersion))),
             ("output", output(manifest.output)),
             ("scenes", .array(manifest.scenes.map(sceneEntry))),
             ("boundaryTransitions", .array(manifest.boundaryTransitions.map(transition))),
@@ -109,11 +113,15 @@ enum CanonicalProjectValueBuilder {
     }
 
     private static func sceneEntry(_ entry: SceneManifestEntry) -> CanonicalValue {
+        // CP7.5 (schema v2): emit `timelineSpan`. Keys are sorted lexicographically by the canonical
+        // writer, so the new key lands deterministically. This changes the project canonical hash
+        // for v2 documents (owner-approved D4 — does NOT affect ReferenceData render pixels).
         .object([
             ("id", .string(entry.id.raw)),
             ("payloadID", .string(entry.payloadID.raw)),
             ("nominalDuration", .int(entry.nominalDuration.ticks)),
-            ("postRollCapability", .int(entry.postRollCapability.ticks))
+            ("postRollCapability", .int(entry.postRollCapability.ticks)),
+            ("timelineSpan", .int(entry.timelineSpan.ticks))
         ])
     }
 

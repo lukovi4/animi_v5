@@ -82,7 +82,12 @@ final class Step15SealedRunTests: XCTestCase {
 
     /// The owner-pinned expected candidate count (plan §6.1). A mismatch is a STOP (#2): the test FAILs and
     /// prints the per-scene frame-time/skip breakdown rather than silently changing this number.
-    private let expectedCandidateCount = 64
+    /// CP7.5 (owner-approved): 64 → 84. The matte fix makes a MATTE SOURCE bypass the visible/timing
+    /// and hidden gates and render HELD at its last authored frame (TVECore oracle parity —
+    /// `emitLayerForMatteSource` applies no isVisible/isHidden check). That made 20 formerly-SKIPPED
+    /// `example_4blocks` mid/last frames legitimately renderable (the source is held, so the consumer
+    /// stays matted/visible), so they are now real candidates. The original 64 are unchanged.
+    private let expectedCandidateCount = 84
 
     // MARK: - The producer
 

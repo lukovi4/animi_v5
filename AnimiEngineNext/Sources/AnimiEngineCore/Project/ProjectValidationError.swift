@@ -8,6 +8,9 @@ public enum ProjectValidationError: Error, Equatable, Sendable {
     case unsupportedSchemaVersion(found: Int, supported: Int)
     case emptyProject
     case invalidSceneDuration(scene: String)
+    /// CP7.5: a scene's `timelineSpan` is smaller than its `nominalDuration` (a scene may be
+    /// stretched, never shrunk below its native duration).
+    case invalidTimelineSpan(scene: String)
     case invalidPostRollCapability(scene: String)
     case transitionCountMismatch(expected: Int, actual: Int)
     case cutWithNonZeroDuration

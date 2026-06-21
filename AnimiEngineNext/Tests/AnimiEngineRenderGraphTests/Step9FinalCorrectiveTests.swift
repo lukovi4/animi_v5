@@ -161,7 +161,7 @@ final class Step9FinalCorrectiveTests: XCTestCase {
                           "group opacity mutation changes hash")
     }
 
-    // MARK: - #4 Matte source full pipeline (own masks / nested matte) + clear-only rejection
+    // MARK: - #4 Matte source full pipeline (own masks / nested matte) + clear-only (empty source) allowance
 
     func testMatteSourceWithOwnMaskRendered() throws {
         // Matte source (id 2, image, isMatteSource) carries its OWN mask — the full pipeline must emit it.
@@ -289,8 +289,12 @@ final class Step9FinalCorrectiveTests: XCTestCase {
         }
     }
 
-    func testClearOnlyMatteSurfaceRejectedByValidator() throws {
-        // Hand-build a graph whose matte surface is cleared but never drawn into → validator rejects.
+    func testClearOnlyMatteSourceSurfaceAllowed() throws {
+        // CP7.5: a matte SOURCE surface cleared but never drawn into is an EMPTY (non-drawing) matte
+        // source — e.g. content fully clipped / zero-coverage at this frame. The validator must ACCEPT
+        // it (the matteLink composites an empty source). This is NOT the timing-inactive/hidden case:
+        // the compiler renders a timing-inactive or hidden matte source HELD (TVECore oracle parity),
+        // so that source IS drawn. This test only covers the genuinely-empty-but-declared source.
         func surface(_ id: String, _ profile: RenderSurfaceProfile) -> RenderCommandPayload {
             .offscreenSurface(RenderResourceDescriptor(offscreenID: id, width: 1, height: 1, profile: profile, colorContract: .task003))
         }
@@ -304,7 +308,36 @@ final class Step9FinalCorrectiveTests: XCTestCase {
             .declareResource(RenderResourceDescriptor(pixelInputID: "r", pixels: try F.pixels("r", 1, 1), colorContract: .task003)),
             .clearBackground(color: .transparentBlack, targetSurfaceID: RenderSurface.linearCanvas),
             .beginScene(sceneID: "s", role: .sole, targetSurfaceID: RenderSurface.linearCanvas),
-            .clearBackground(color: .transparentBlack, targetSurfaceID: matteS),   // cleared only (never drawn)
+            .clearBackground(color: .transparentBlack, targetSurfaceID: matteS),   // empty source: cleared only (no draw)
+            .clearBackground(color: .transparentBlack, targetSurfaceID: consumerS),
+            .drawImage(resourceID: "r", transform: .identity, opacity: .opaque, targetSurfaceID: consumerS),
+            .matteLink(mode: .alpha, sourceLayerID: 2, consumerLayerID: 1, sourceSurfaceID: matteS, consumerSurfaceID: consumerS, targetSurfaceID: RenderSurface.linearCanvas),
+            .endScene(sceneID: "s", role: .sole, targetSurfaceID: RenderSurface.linearCanvas),
+            .finalLinearToSRGB(sourceSurfaceID: RenderSurface.linearCanvas, targetSurfaceID: RenderSurface.sRGBSurface),
+            .finalOutput(sourceSurfaceID: RenderSurface.sRGBSurface)
+        ]
+        let graph = try RenderGraph(configuration: try F.config(), commands: try p.enumerated().map { try RenderCommand(ordinal: $0.offset, payload: $0.element) })
+        XCTAssertNoThrow(try RenderGraphValidator.validate(graph, configuration: try F.config()),
+                         "clear-only (empty/non-drawing) matte source is valid")
+    }
+
+    func testMatteSourceSurfaceNeverClearedStillRejected() throws {
+        // GUARD: a matte source surface that is neither drawn into NOR cleared as a matte isolation
+        // surface is still a genuine dependency bug → rejected.
+        func surface(_ id: String, _ profile: RenderSurfaceProfile) -> RenderCommandPayload {
+            .offscreenSurface(RenderResourceDescriptor(offscreenID: id, width: 1, height: 1, profile: profile, colorContract: .task003))
+        }
+        let matteS = "surface\u{1F}matte\u{1F}y"
+        let consumerS = "surface\u{1F}matteConsumer\u{1F}y"
+        let p: [RenderCommandPayload] = [
+            surface(RenderSurface.linearCanvas, .intermediate(.rgba16FloatLinear)),
+            surface(RenderSurface.sRGBSurface, .finalSRGB),
+            surface(matteS, .intermediate(.rgba16FloatLinear)),
+            surface(consumerS, .intermediate(.rgba16FloatLinear)),
+            .declareResource(RenderResourceDescriptor(pixelInputID: "r", pixels: try F.pixels("r", 1, 1), colorContract: .task003)),
+            .clearBackground(color: .transparentBlack, targetSurfaceID: RenderSurface.linearCanvas),
+            .beginScene(sceneID: "s", role: .sole, targetSurfaceID: RenderSurface.linearCanvas),
+            // matteS is NEVER cleared inside the scene (not a matte isolation surface) — genuine bug.
             .clearBackground(color: .transparentBlack, targetSurfaceID: consumerS),
             .drawImage(resourceID: "r", transform: .identity, opacity: .opaque, targetSurfaceID: consumerS),
             .matteLink(mode: .alpha, sourceLayerID: 2, consumerLayerID: 1, sourceSurfaceID: matteS, consumerSurfaceID: consumerS, targetSurfaceID: RenderSurface.linearCanvas),

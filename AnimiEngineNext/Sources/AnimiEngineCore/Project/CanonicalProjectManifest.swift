@@ -3,8 +3,12 @@
 /// The manifest plus a selected set of payloads is sufficient to evaluate any single frame; the
 /// full payload tables are never required by the evaluator.
 public struct CanonicalProjectManifest: Equatable, Sendable {
-    /// The only schema version Task 002 supports (corrective plan C-5).
-    public static let supportedSchemaVersion = 1
+    /// The schema version the CANONICAL ENCODER writes (CP7.5: bumped 1→2 to carry per-scene
+    /// `timelineSpan`). New documents are always v2.
+    public static let supportedSchemaVersion = 2
+    /// Schema versions the DECODER accepts. v1 documents are uplifted on decode
+    /// (`timelineSpan = nominalDuration`); v2 documents carry an explicit `timelineSpan`.
+    public static let acceptedSchemaVersions: Set<Int> = [1, 2]
 
     public let schemaVersion: Int
     public let output: OutputContext
@@ -27,12 +31,14 @@ public struct CanonicalProjectManifest: Equatable, Sendable {
         self.overlays = overlays
     }
 
-    /// The sum of all scene nominal durations (Task-002 plan, §7.4). Transition durations never
+    /// The sum of all scene TIMELINE SPANS (CP7.5). For an unstretched project `timelineSpan ==
+    /// nominalDuration` for every scene, so this equals the original "sum of nominal durations".
+    /// For a stretched scene the project extends across its full span. Transition durations never
     /// change this value.
     public func projectDuration() throws -> TickDuration {
         var total = TickDuration.zero
         for scene in scenes {
-            total = try total.adding(scene.nominalDuration)
+            total = try total.adding(scene.timelineSpan)
         }
         return total
     }

@@ -29,6 +29,8 @@ public enum TemplateConversionError: Error, Equatable, Sendable {
     case danglingPathResource(blockID: String, pathID: Int)
     /// `requiredPostRoll` was negative.
     case negativePostRoll(ticks: Int64)
+    /// CP7.5: the requested `timelineSpan` is smaller than the scene's nominal duration.
+    case invalidTimelineSpan(requested: Int64, nominal: Int64)
     /// A video layer cannot supply enough source material to satisfy the requested continuation.
     case insufficientVideoContinuation(blockID: String)
     /// A `becomeInactive` animation cannot satisfy the requested continuation (it would go inactive

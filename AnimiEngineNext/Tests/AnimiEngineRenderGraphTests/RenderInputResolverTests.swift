@@ -97,7 +97,7 @@ final class RenderInputResolverTests: XCTestCase {
         let output = OutputContext(canvas: try CanvasSize(width: 1080, height: 1920),
                                    frameRate: try FrameRate(numerator: 30, denominator: 1))
         let subplan = SceneSubplan(sceneID: try sceneID(s), role: .sole,
-                                   scenePlaybackTime: try ScenePlaybackTime(ticks: 0),
+                                   visualPlaybackTime: try ScenePlaybackTime(ticks: 0), mediaPlaybackTime: try ScenePlaybackTime(ticks: 0),
                                    transitionRelativeTime: nil, layers: layers)
         return FramePlan(output: output, projectTime: try ProjectTime(ticks: 0), body: .single(subplan), overlays: overlays)
     }
@@ -227,10 +227,10 @@ final class RenderInputResolverTests: XCTestCase {
         let output = OutputContext(canvas: try CanvasSize(width: 1080, height: 1920),
                                    frameRate: try FrameRate(numerator: 30, denominator: 1))
         let outgoing = SceneSubplan(sceneID: try sceneID(sOut), role: .outgoing,
-                                    scenePlaybackTime: try ScenePlaybackTime(ticks: 0),
+                                    visualPlaybackTime: try ScenePlaybackTime(ticks: 0), mediaPlaybackTime: try ScenePlaybackTime(ticks: 0),
                                     transitionRelativeTime: nil, layers: [try imageLayer(l, ref: "out.png", fit: .fill)])
         let incoming = SceneSubplan(sceneID: try sceneID(sIn), role: .incoming,
-                                    scenePlaybackTime: try ScenePlaybackTime(ticks: 0),
+                                    visualPlaybackTime: try ScenePlaybackTime(ticks: 0), mediaPlaybackTime: try ScenePlaybackTime(ticks: 0),
                                     transitionRelativeTime: nil, layers: [try imageLayer(l, ref: "in.png", fit: .fill)])
         let transition = TransitionPlan(
             effectID: try TransitionEffectID("fade"), parameters: .empty,

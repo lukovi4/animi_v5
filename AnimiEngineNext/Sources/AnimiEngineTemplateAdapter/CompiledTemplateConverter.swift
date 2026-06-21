@@ -55,6 +55,11 @@ public enum CompiledTemplateConverter {
         public let mediaBindings: [String: MediaBinding]
         /// Explicit requested continuation past nominal scene duration (item 5). No default.
         public let requiredPostRoll: TickDuration
+        /// CP7.5: the scene's TIMELINE span (`>= nominalDuration`). `nil` (default) ⇒ unstretched
+        /// (`timelineSpan == nominalDuration`). When the app stretches a scene, it passes the stretched
+        /// span here; the produced `SceneManifestEntry` carries it so the evaluator runs the two-clock
+        /// model (visual held at nominal, media continuing to span).
+        public let timelineSpan: TickDuration?
 
         public init(
             compiledTemplateData: Data,
@@ -63,7 +68,8 @@ public enum CompiledTemplateConverter {
             scenePayloadID: String,
             selection: TemplateVariantInventory.Selection,
             mediaBindings: [String: MediaBinding],
-            requiredPostRoll: TickDuration
+            requiredPostRoll: TickDuration,
+            timelineSpan: TickDuration? = nil
         ) {
             self.compiledTemplateData = compiledTemplateData
             self.catalogID = catalogID
@@ -72,6 +78,7 @@ public enum CompiledTemplateConverter {
             self.selection = selection
             self.mediaBindings = mediaBindings
             self.requiredPostRoll = requiredPostRoll
+            self.timelineSpan = timelineSpan
         }
     }
 
@@ -175,9 +182,21 @@ public enum CompiledTemplateConverter {
         let templateRef = try TemplateReference(catalogID: request.catalogID, sceneID: sceneID)
         let payload = ResolvedScenePayload(
             payloadID: payloadID, sceneID: instanceID, templateRef: templateRef, layers: layers)
+        // CP7.5: timeline span (>= nominal). nil ⇒ unstretched. A span below nominal is rejected.
+        let timelineSpan: TickDuration
+        if let requested = request.timelineSpan {
+            guard requested.ticks >= nominalDuration.ticks else {
+                throw TemplateConversionError.invalidTimelineSpan(
+                    requested: requested.ticks, nominal: nominalDuration.ticks)
+            }
+            timelineSpan = requested
+        } else {
+            timelineSpan = nominalDuration
+        }
         let sceneEntry = SceneManifestEntry(
             id: instanceID, payloadID: payloadID,
-            nominalDuration: nominalDuration, postRollCapability: request.requiredPostRoll)  // item 5
+            nominalDuration: nominalDuration, postRollCapability: request.requiredPostRoll,  // item 5
+            timelineSpan: timelineSpan)
         let manifest = CanonicalProjectManifest(
             schemaVersion: CanonicalProjectManifest.supportedSchemaVersion,
             output: outputContext, scenes: [sceneEntry], boundaryTransitions: [], overlays: [])

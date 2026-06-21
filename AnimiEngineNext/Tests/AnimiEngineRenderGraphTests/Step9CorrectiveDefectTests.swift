@@ -183,8 +183,8 @@ final class Step9CorrectiveDefectTests: XCTestCase {
 
     func testEmptyTransitionSceneSurfaceCleared() throws {
         // A transition outgoing scene with no draws still clears its surface so it is written before read.
-        let empty = SceneSubplan(sceneID: try SceneInstanceID("sOut"), role: .outgoing, scenePlaybackTime: .zero, transitionRelativeTime: nil, layers: [])
-        let incoming = SceneSubplan(sceneID: try SceneInstanceID("sIn"), role: .incoming, scenePlaybackTime: .zero, transitionRelativeTime: nil,
+        let empty = SceneSubplan(sceneID: try SceneInstanceID("sOut"), role: .outgoing, visualPlaybackTime: .zero, mediaPlaybackTime: .zero, transitionRelativeTime: nil, layers: [])
+        let incoming = SceneSubplan(sceneID: try SceneInstanceID("sIn"), role: .incoming, visualPlaybackTime: .zero, mediaPlaybackTime: .zero, transitionRelativeTime: nil,
             layers: [try F.imageActiveLayer("li", ref: "refI", order: 0)])
         let tp = TransitionPlan(effectID: try TransitionEffectID("fade"), parameters: .empty, easing: try EasingReference("linear"),
             progressNumerator: 1, progressDenominator: 2, outgoing: empty, incoming: incoming)

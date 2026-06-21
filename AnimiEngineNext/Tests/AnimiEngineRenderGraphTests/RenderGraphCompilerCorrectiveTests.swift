@@ -180,6 +180,41 @@ final class RenderGraphCompilerCorrectiveTests: XCTestCase {
         XCTAssertNoThrow(try RenderGraphValidator.validate(graph, configuration: try F.config()))
     }
 
+    func testTimingInactiveMatteSourceStillRendersHeld() throws {
+        // CP7.5 ORACLE PARITY: matte source layer id 2 is authored active only [0,30) but the compiled
+        // frame is past that (timing-inactive). TVECore renders a matte source via
+        // `emitLayerForMatteSource` WITHOUT any isVisible/isHidden gate (transform tracks clamp to the
+        // last keyframe = hold-last), so the consumer (block_02) stays matted/VISIBLE past the source's
+        // authored end. The Next compiler must therefore STILL RENDER the source (drawn into its
+        // surface), NOT leave it transparent and NOT throw.
+        let source = RenderLayer(id: 2, name: "matte", type: 2, timing: try F.timing(0, 30), parentLayerID: nil,
+            transform: F.staticTransform(), masks: [], matte: nil, content: .image(assetID: "matteAsset"),
+            isMatteSource: true, isHidden: false, toggleID: nil)
+        let boundWithMatte = RenderLayer(id: 1, name: "media", type: 2, timing: try F.timing(), parentLayerID: nil,
+            transform: F.staticTransform(), masks: [], matte: RenderMatte(mode: 1, sourceLayerID: 2),
+            content: .image(assetID: "boundAsset"), isMatteSource: false, isHidden: false, toggleID: nil)
+        let root = RenderComposition(id: "comp_0", width: cs(1080 * pt), height: cs(1920 * pt), layers: [boundWithMatte, source])
+        let binding = RenderBinding(bindingKey: "media", boundAssetID: "boundAsset", boundCompID: "comp_0", boundLayerID: 1)
+        let p = try RenderMaterialProgram(id: try RenderMaterialID(compiledTemplateHash: "t", blockID: "a", variantID: "v"),
+            blockID: "a", variantID: "v", animationRef: "anim.json", boundAssetID: "boundAsset",
+            mediaGeometry: try F.mediaGeometry(), rootCompID: "comp_0",
+            compositions: [root], assets: [RenderAsset(id: "matteAsset", resolvedID: "rm", basename: "m.png", width: cs(1), height: cs(1))],
+            binding: binding, inputGeometry: nil, meta: try F.meta(), pathResources: [], toggleIDs: [])
+        // holdLast program → compiled at meta.outPoint-1 (frame 149), well past the source's out=30.
+        let plan = try F.singlePlan(scene: "s", layers: [try F.imageActiveLayer("a", ref: "img", order: 0)])
+        let inp = try F.singleInput(scene: "s", [("a", p, "px0")], assetPixels: [
+            ResolvedAssetPixelEntry(key: ResolvedAssetKey(materialID: p.id, assetID: "matteAsset"), pixelInput: try F.pixels("mPix", 8, 8))])
+        let graph = try RenderGraphCompiler.compile(plan: plan, input: inp, configuration: try F.config())
+        let link = graph.commands.compactMap { c -> String? in
+            if case let .matteLink(_, _, _, surface, _, _) = c.payload { return surface }; return nil }.first
+        let matteSurface = try XCTUnwrap(link, "matteLink must be emitted")
+        // The timing-inactive matte source IS drawn into its surface (held), not left transparent.
+        let drewIntoSource = graph.commands.contains {
+            if case let .drawImage(_, _, _, target) = $0.payload { return target == matteSurface }; return false }
+        XCTAssertTrue(drewIntoSource, "timing-inactive matte source must still render (held) — oracle parity")
+        XCTAssertNoThrow(try RenderGraphValidator.validate(graph, configuration: try F.config()))
+    }
+
     // MARK: - Complete transforms (#7)
 
     /// CP4 canonical contract (supersedes the old corrective #7 "blockToCanvas carries the outer

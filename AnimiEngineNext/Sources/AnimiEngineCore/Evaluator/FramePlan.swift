@@ -53,7 +53,16 @@ public struct ActiveLayer: Equatable, Sendable {
 public struct SceneSubplan: Equatable, Sendable {
     public let sceneID: SceneInstanceID
     public let role: SceneRole
-    public let scenePlaybackTime: ScenePlaybackTime
+    /// CP7.5 TWO-CLOCK — VISUAL/template clock: scene-local time for template/layer animation and
+    /// `activeRange` visibility. CLAMPED/held at `nominalDuration - 1 tick` when the scene is
+    /// stretched, so animation freezes on the last native frame. Equals `mediaPlaybackTime` for an
+    /// unstretched scene (and inside its native span).
+    public let visualPlaybackTime: ScenePlaybackTime
+    /// CP7.5 TWO-CLOCK — MEDIA clock: scene-local time for user video `SourceRequest` target.
+    /// CONTINUES across the full timeline span (never clamped to nominal). For an animated transition
+    /// the outgoing scene's media time continues past its nominal end at normal speed. (This is the
+    /// former `scenePlaybackTime`, renamed for clarity — D2.)
+    public let mediaPlaybackTime: ScenePlaybackTime
     /// Present only for a scene participating in an animated transition.
     public let transitionRelativeTime: TransitionRelativeTime?
     public let layers: [ActiveLayer]
@@ -61,13 +70,15 @@ public struct SceneSubplan: Equatable, Sendable {
     public init(
         sceneID: SceneInstanceID,
         role: SceneRole,
-        scenePlaybackTime: ScenePlaybackTime,
+        visualPlaybackTime: ScenePlaybackTime,
+        mediaPlaybackTime: ScenePlaybackTime,
         transitionRelativeTime: TransitionRelativeTime?,
         layers: [ActiveLayer]
     ) {
         self.sceneID = sceneID
         self.role = role
-        self.scenePlaybackTime = scenePlaybackTime
+        self.visualPlaybackTime = visualPlaybackTime
+        self.mediaPlaybackTime = mediaPlaybackTime
         self.transitionRelativeTime = transitionRelativeTime
         self.layers = layers
     }

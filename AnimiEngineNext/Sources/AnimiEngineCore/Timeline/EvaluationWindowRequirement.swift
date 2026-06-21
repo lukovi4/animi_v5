@@ -4,8 +4,13 @@ public struct RequiredSceneSpan: Equatable, Sendable {
     public let payloadID: ScenePayloadID
     /// The scene's start instant on the project timeline.
     public let sceneStart: ProjectTime
+    /// NATIVE/template duration — the VISUAL clock holds here; layer activeRange/animation are
+    /// authored against this.
     public let nominalDuration: TickDuration
     public let postRollCapability: TickDuration
+    /// CP7.5: the scene's TIMELINE span on the project (`>= nominalDuration`). The scene occupies
+    /// `[sceneStart, sceneStart + timelineSpan)`; the MEDIA clock continues across it.
+    public let timelineSpan: TickDuration
 
     /// Package-internal: minted only by ``TimelineIndex`` (corrective plan C-4). External, non-`@testable`
     /// consumers can read these values but cannot construct them.
@@ -14,13 +19,15 @@ public struct RequiredSceneSpan: Equatable, Sendable {
         payloadID: ScenePayloadID,
         sceneStart: ProjectTime,
         nominalDuration: TickDuration,
-        postRollCapability: TickDuration
+        postRollCapability: TickDuration,
+        timelineSpan: TickDuration? = nil
     ) {
         self.sceneID = sceneID
         self.payloadID = payloadID
         self.sceneStart = sceneStart
         self.nominalDuration = nominalDuration
         self.postRollCapability = postRollCapability
+        self.timelineSpan = timelineSpan ?? nominalDuration
     }
 }
 

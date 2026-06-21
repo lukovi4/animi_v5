@@ -26,10 +26,14 @@ public enum TimelineEvaluator {
         // 4. Normal playback / cut: one .sole scene subplan.
         let scene = try soleScene(in: window, at: time)
         let sceneTime = try scene.span.sceneStart.distance(to: time)
+        // CP7.5 two-clock: media continues to span; visual holds at nominal-1tick when stretched.
+        let mediaTime = ScenePlaybackTime(uncheckedTicks: sceneTime.ticks)
+        let visualTime = Self.clampVisual(mediaTime, nominalDuration: scene.span.nominalDuration, timelineSpan: scene.span.timelineSpan)
         let subplan = try buildSceneSubplan(
             scene: scene,
             role: .sole,
-            scenePlaybackTime: ScenePlaybackTime(uncheckedTicks: sceneTime.ticks),
+            visualPlaybackTime: visualTime,
+            mediaPlaybackTime: mediaTime,
             transitionRelativeTime: nil
         )
         let overlays = try buildOverlays(window: window, at: time)
@@ -56,12 +60,30 @@ public enum TimelineEvaluator {
 
     private static func soleScene(in window: EvaluationWindow, at time: ProjectTime) throws -> WindowScene {
         for scene in window.scenes {
-            let end = try scene.span.sceneStart.adding(scene.span.nominalDuration)
+            // CP7.5: a scene occupies [start, start + timelineSpan) on the project (span, not nominal),
+            // so a frame in the stretched tail still resolves to this scene.
+            let end = try scene.span.sceneStart.adding(scene.span.timelineSpan)
             if time >= scene.span.sceneStart && time < end {
                 return scene
             }
         }
         throw ProjectValidationError.invalidRange(field: "evaluate.noSceneForTime")
+    }
+
+    /// CP7.5 VISUAL clamp: hold the template/animation clock at the last native tick — but ONLY for a
+    /// STRETCHED scene (`timelineSpan > nominalDuration`). For an UNSTRETCHED scene the visual clock
+    /// equals the media clock and is NEVER clamped, so the approved POST-ROLL behavior is preserved:
+    /// an outgoing scene's local time continues past nominal at normal speed during a transition tail,
+    /// yielding a `.holdLast` animation request (NOT a clamped `.sample`). The two "past nominal"
+    /// cases are distinct: post-roll (continue) vs stretch (hold). `clampVisual` only realises the
+    /// stretch hold; post-roll continuation flows through unclamped.
+    private static func clampVisual(
+        _ mediaTime: ScenePlaybackTime, nominalDuration: TickDuration, timelineSpan: TickDuration
+    ) -> ScenePlaybackTime {
+        guard timelineSpan.ticks > nominalDuration.ticks else { return mediaTime }  // unstretched → no clamp
+        let lastNativeTick = max(0, nominalDuration.ticks - 1)
+        if mediaTime.ticks <= lastNativeTick { return mediaTime }
+        return ScenePlaybackTime(uncheckedTicks: lastNativeTick)
     }
 
     private static func windowScene(in window: EvaluationWindow, id: SceneInstanceID) throws -> WindowScene {
@@ -95,24 +117,29 @@ public enum TimelineEvaluator {
             at: time, window: boundary.window, duration: boundary.transition.duration
         )
 
-        // Outgoing scene time: T - outgoingSceneStart, continuing past nominal end.
-        let outgoingSceneTime = try TransitionMath.outgoingSceneTime(
+        // Outgoing MEDIA time: T - outgoingSceneStart, continuing past nominal end (unchanged
+        // approved postRoll behavior). VISUAL time holds at nominal-1tick (D3).
+        let outgoingMediaTime = try TransitionMath.outgoingSceneTime(
             at: time, outgoingSceneStart: outgoingScene.span.sceneStart
         )
-        // Hold-first incoming scene time.
-        let incomingSceneTime = try TransitionMath.incomingSceneTime(at: time, boundary: boundary.boundary)
+        let outgoingVisualTime = Self.clampVisual(outgoingMediaTime, nominalDuration: outgoingScene.span.nominalDuration, timelineSpan: outgoingScene.span.timelineSpan)
+        // Hold-first incoming MEDIA time; VISUAL clamps too (no-op unless incoming is itself stretched).
+        let incomingMediaTime = try TransitionMath.incomingSceneTime(at: time, boundary: boundary.boundary)
+        let incomingVisualTime = Self.clampVisual(incomingMediaTime, nominalDuration: incomingScene.span.nominalDuration, timelineSpan: incomingScene.span.timelineSpan)
         let relative = TransitionMath.transitionRelativeTime(at: time, boundary: boundary.boundary)
 
         let outgoingSubplan = try buildSceneSubplan(
             scene: outgoingScene,
             role: .outgoing,
-            scenePlaybackTime: outgoingSceneTime,
+            visualPlaybackTime: outgoingVisualTime,
+            mediaPlaybackTime: outgoingMediaTime,
             transitionRelativeTime: relative
         )
         let incomingSubplan = try buildSceneSubplan(
             scene: incomingScene,
             role: .incoming,
-            scenePlaybackTime: incomingSceneTime,
+            visualPlaybackTime: incomingVisualTime,
+            mediaPlaybackTime: incomingMediaTime,
             transitionRelativeTime: relative
         )
 
@@ -132,12 +159,15 @@ public enum TimelineEvaluator {
     private static func buildSceneSubplan(
         scene: WindowScene,
         role: SceneRole,
-        scenePlaybackTime: ScenePlaybackTime,
+        visualPlaybackTime: ScenePlaybackTime,
+        mediaPlaybackTime: ScenePlaybackTime,
         transitionRelativeTime: TransitionRelativeTime?
     ) throws -> SceneSubplan {
-        // Visible layers, ordered by (zIndex, stableOrdinal).
+        // CP7.5: layer visibility (activeRange) + ordering use the VISUAL clock (held at nominal),
+        // so a layer authored to the native end stays visible across the stretched tail (its
+        // activeRange contains nominal-1tick). Video content sampling uses the MEDIA clock.
         let ordered = scene.payload.layers
-            .filter { $0.activeRange.contains(scenePlaybackTime) }
+            .filter { $0.activeRange.contains(visualPlaybackTime) }
             .sorted { lhs, rhs in
                 if lhs.zIndex != rhs.zIndex { return lhs.zIndex < rhs.zIndex }
                 return lhs.stableOrdinal < rhs.stableOrdinal
@@ -145,8 +175,9 @@ public enum TimelineEvaluator {
 
         var activeLayers: [ActiveLayer] = []
         for (order, layer) in ordered.enumerated() {
-            let content = try activeContent(for: layer, at: scenePlaybackTime)
-            let animationRequest = animationRequest(for: layer, at: scenePlaybackTime)
+            // VIDEO target by MEDIA time (continues); IMAGE has no time. Animation by VISUAL time.
+            let content = try activeContent(for: layer, atMediaTime: mediaPlaybackTime)
+            let animationRequest = animationRequest(for: layer, atVisualTime: visualPlaybackTime)
             activeLayers.append(ActiveLayer(
                 layerID: layer.id,
                 zIndex: layer.zIndex,
@@ -163,7 +194,8 @@ public enum TimelineEvaluator {
         return SceneSubplan(
             sceneID: scene.span.sceneID,
             role: role,
-            scenePlaybackTime: scenePlaybackTime,
+            visualPlaybackTime: visualPlaybackTime,
+            mediaPlaybackTime: mediaPlaybackTime,
             transitionRelativeTime: transitionRelativeTime,
             layers: activeLayers
         )
@@ -171,15 +203,15 @@ public enum TimelineEvaluator {
 
     private static func activeContent(
         for layer: SceneLayer,
-        at sceneTime: ScenePlaybackTime
+        atMediaTime mediaTime: ScenePlaybackTime
     ) throws -> ActiveSceneContent {
         switch layer.content {
         case .image(let image):
             return .image(image)
         case .video(let binding):
-            // Material was validated up front (C-1); the evaluator emits the exact request without
-            // re-checking the trim range. The target is never clamped.
-            let target = try binding.sourceMapping.target(for: sceneTime)
+            // CP7.5: video target uses the MEDIA clock (continues across the stretched span).
+            // Material was validated up front (C-1); the target is never clamped.
+            let target = try binding.sourceMapping.target(for: mediaTime)
             return .video(SourceRequest(
                 media: binding.media,
                 target: target,
@@ -190,10 +222,11 @@ public enum TimelineEvaluator {
 
     private static func animationRequest(
         for layer: SceneLayer,
-        at sceneTime: ScenePlaybackTime
+        atVisualTime visualTime: ScenePlaybackTime
     ) -> AnimationRequest? {
         guard let reference = layer.animation else { return nil }
-        let animationTime = sceneTime.asAnimationPlaybackTime()
+        // CP7.5: template/layer animation uses the VISUAL clock (held at nominal when stretched).
+        let animationTime = visualTime.asAnimationPlaybackTime()
         return AnimationRequestResolver.resolve(reference: reference, at: animationTime)
     }
 

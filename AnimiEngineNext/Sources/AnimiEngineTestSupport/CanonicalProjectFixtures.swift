@@ -216,16 +216,18 @@ public enum CanonicalProjectFixtures {
         payload: ResolvedScenePayload,
         nominalDurationTicks: Int64,
         postRollTicks: Int64 = 0,
+        timelineSpanTicks: Int64? = nil,
         output: OutputContext? = nil
     ) throws -> CanonicalProjectDocument {
         let entry = SceneManifestEntry(
             id: payload.sceneID,
             payloadID: payload.payloadID,
             nominalDuration: try TickDuration(ticks: nominalDurationTicks),
-            postRollCapability: try TickDuration(ticks: postRollTicks)
+            postRollCapability: try TickDuration(ticks: postRollTicks),
+            timelineSpan: try timelineSpanTicks.map { try TickDuration(ticks: $0) }
         )
         let manifest = CanonicalProjectManifest(
-            schemaVersion: 1,
+            schemaVersion: CanonicalProjectManifest.supportedSchemaVersion,
             output: try output ?? CanonicalProjectFixtures.output(),
             scenes: [entry],
             boundaryTransitions: [],
@@ -256,7 +258,7 @@ public enum CanonicalProjectFixtures {
             postRollCapability: try TickDuration(ticks: postRollTicks)
         )
         let manifest = CanonicalProjectManifest(
-            schemaVersion: 1,
+            schemaVersion: CanonicalProjectManifest.supportedSchemaVersion,
             output: try output ?? CanonicalProjectFixtures.output(),
             scenes: [entryA, entryB],
             boundaryTransitions: [transition],

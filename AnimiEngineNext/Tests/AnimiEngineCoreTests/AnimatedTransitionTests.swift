@@ -21,7 +21,7 @@ final class AnimatedTransitionTests: XCTestCase {
         let plan = try EvaluationHarness.evaluate(try workedExampleDocument(), atTick: 592_000)
         guard case .single(let subplan) = plan.body else { return XCTFail("expected single A") }
         XCTAssertEqual(subplan.sceneID.raw, "A")
-        XCTAssertEqual(subplan.scenePlaybackTime.ticks, 592_000)
+        XCTAssertEqual(subplan.mediaPlaybackTime.ticks, 592_000)
     }
 
     func testFrame75TransitionBegins() throws {
@@ -30,8 +30,8 @@ final class AnimatedTransitionTests: XCTestCase {
         guard case .transition(let t) = plan.body else { return XCTFail("expected transition") }
         XCTAssertEqual(t.progressNumerator, 0)
         XCTAssertEqual(t.progressDenominator, 240_000)
-        XCTAssertEqual(t.outgoing.scenePlaybackTime.ticks, 600_000)
-        XCTAssertEqual(t.incoming.scenePlaybackTime.ticks, 0)
+        XCTAssertEqual(t.outgoing.mediaPlaybackTime.ticks, 600_000)
+        XCTAssertEqual(t.incoming.mediaPlaybackTime.ticks, 0)
         XCTAssertEqual(t.outgoing.role, .outgoing)
         XCTAssertEqual(t.incoming.role, .incoming)
     }
@@ -41,8 +41,8 @@ final class AnimatedTransitionTests: XCTestCase {
         let plan = try EvaluationHarness.evaluate(try workedExampleDocument(), atTick: 720_000)
         guard case .transition(let t) = plan.body else { return XCTFail("expected transition") }
         XCTAssertEqual(t.progressNumerator, 120_000)
-        XCTAssertEqual(t.outgoing.scenePlaybackTime.ticks, 720_000)  // continues past nominal end
-        XCTAssertEqual(t.incoming.scenePlaybackTime.ticks, 0)        // hold-first: still zero at B
+        XCTAssertEqual(t.outgoing.mediaPlaybackTime.ticks, 720_000)  // continues past nominal end
+        XCTAssertEqual(t.incoming.mediaPlaybackTime.ticks, 0)        // hold-first: still zero at B
     }
 
     func testFrame91AfterBoundaryIncomingAdvances() throws {
@@ -50,8 +50,8 @@ final class AnimatedTransitionTests: XCTestCase {
         let plan = try EvaluationHarness.evaluate(try workedExampleDocument(), atTick: 728_000)
         guard case .transition(let t) = plan.body else { return XCTFail("expected transition") }
         XCTAssertEqual(t.progressNumerator, 128_000)
-        XCTAssertEqual(t.outgoing.scenePlaybackTime.ticks, 728_000)
-        XCTAssertEqual(t.incoming.scenePlaybackTime.ticks, 8_000)
+        XCTAssertEqual(t.outgoing.mediaPlaybackTime.ticks, 728_000)
+        XCTAssertEqual(t.incoming.mediaPlaybackTime.ticks, 8_000)
     }
 
     func testFrame104NearWindowEnd() throws {
@@ -59,8 +59,8 @@ final class AnimatedTransitionTests: XCTestCase {
         let plan = try EvaluationHarness.evaluate(try workedExampleDocument(), atTick: 832_000)
         guard case .transition(let t) = plan.body else { return XCTFail("expected transition") }
         XCTAssertEqual(t.progressNumerator, 232_000)
-        XCTAssertEqual(t.outgoing.scenePlaybackTime.ticks, 832_000)
-        XCTAssertEqual(t.incoming.scenePlaybackTime.ticks, 112_000)
+        XCTAssertEqual(t.outgoing.mediaPlaybackTime.ticks, 832_000)
+        XCTAssertEqual(t.incoming.mediaPlaybackTime.ticks, 112_000)
     }
 
     func testFrame105IsSoleBNoProgressOne() throws {
@@ -68,7 +68,7 @@ final class AnimatedTransitionTests: XCTestCase {
         let plan = try EvaluationHarness.evaluate(try workedExampleDocument(), atTick: 840_000)
         guard case .single(let subplan) = plan.body else { return XCTFail("expected single B") }
         XCTAssertEqual(subplan.sceneID.raw, "B")
-        XCTAssertEqual(subplan.scenePlaybackTime.ticks, 120_000)
+        XCTAssertEqual(subplan.mediaPlaybackTime.ticks, 120_000)
     }
 
     func testIncomingVideoTargetsMatchWorkedExample() throws {
@@ -95,8 +95,8 @@ final class AnimatedTransitionTests: XCTestCase {
         guard case .transition(let a) = t1.body, case .transition(let b) = t2.body else {
             return XCTFail("expected transitions")
         }
-        XCTAssertLessThan(a.outgoing.scenePlaybackTime.ticks, b.outgoing.scenePlaybackTime.ticks)
-        XCTAssertEqual(b.outgoing.scenePlaybackTime.ticks, 728_000)  // > nominal end 720000
+        XCTAssertLessThan(a.outgoing.mediaPlaybackTime.ticks, b.outgoing.mediaPlaybackTime.ticks)
+        XCTAssertEqual(b.outgoing.mediaPlaybackTime.ticks, 728_000)  // > nominal end 720000
     }
 
     func testEasingPreservedIntoTransitionPlan() throws {
@@ -124,7 +124,7 @@ final class AnimatedTransitionTests: XCTestCase {
             return XCTFail("expected transition then single")
         }
         // 839000 → B time 119000; 840000 → B time 120000. Difference is exactly 1000, no jump.
-        XCTAssertEqual(t.incoming.scenePlaybackTime.ticks, 119_000)
-        XCTAssertEqual(s.scenePlaybackTime.ticks, 120_000)
+        XCTAssertEqual(t.incoming.mediaPlaybackTime.ticks, 119_000)
+        XCTAssertEqual(s.mediaPlaybackTime.ticks, 120_000)
     }
 }

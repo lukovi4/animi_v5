@@ -213,20 +213,23 @@ final class Step17PromoteReferencesTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: src.path) else {
             throw XCTSkip("approved sealed run \(sourceRunID) not present at \(src.path)")
         }
+        // CP7.5: the approved candidate count is 84 (was 64; +20 newly-renderable matte rows).
+        // Env-overridable so a future count change is explicit, not silently edited.
+        let expectedCount = env["ANIMI_STEP17_EXPECTED_COUNT"].flatMap(Int.init) ?? 84
         let req = ReferencePromoter.Request(
             sourceRunURL: src, approvedRunID: expectedApprovedRunID, approvedReferenceRootURL: realRoot,
-            expectedCandidateCount: 64, groups: groups,
+            expectedCandidateCount: expectedCount, groups: groups,
             approvedAtISO8601: env["ANIMI_STEP17_APPROVED_AT"], approvedBy: env["ANIMI_STEP17_APPROVED_BY"],
             allowIdenticalOverwrite: env["ANIMI_STEP17_ALLOW_OVERWRITE"] == "1")
         let promoter = ReferencePromoter()
         if env["ANIMI_STEP17_PROMOTE"] == "1" {
             let o = try promoter.promote(req)
             print("STEP17-PROMOTE wrote=\(o.writtenCount) idempotentNoOp=\(o.idempotentNoOp) root=\(o.approvedReferenceRootPath) manifestSHA=\(o.approvalManifestSHA256)")
-            XCTAssertTrue(o.writtenCount == 64 || o.idempotentNoOp, "promotion wrote 64 or was an idempotent no-op")
+            XCTAssertTrue(o.writtenCount == expectedCount || o.idempotentNoOp, "promotion wrote \(expectedCount) or was an idempotent no-op")
         } else {
             let o = try promoter.dryRun(req)
             print("STEP17-DRYRUN validated=\(o.validatedCount) (set ANIMI_STEP17_PROMOTE=1 to write) root=\(o.approvedReferenceRootPath) manifestSHA=\(o.approvalManifestSHA256)")
-            XCTAssertEqual(o.validatedCount, 64)
+            XCTAssertEqual(o.validatedCount, expectedCount)
         }
     }
 

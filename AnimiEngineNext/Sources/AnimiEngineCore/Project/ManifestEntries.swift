@@ -5,21 +5,32 @@
 public struct SceneManifestEntry: Equatable, Sendable {
     public let id: SceneInstanceID
     public let payloadID: ScenePayloadID
+    /// The scene's NATIVE/template duration. Template animation + layer activeRange + animation
+    /// sampling are authored against this. Past it the VISUAL clock holds the last native frame.
     public let nominalDuration: TickDuration
     /// How far the scene can continue playing past its nominal end (post-roll capability), used to
     /// satisfy the outgoing side of an animated transition.
     public let postRollCapability: TickDuration
+    /// CP7.5 (schema v2): the scene's TIMELINE span on the project — `>= nominalDuration`. When the
+    /// scene is "stretched" (`timelineSpan > nominalDuration`) the MEDIA/video clock continues across
+    /// the full span while the VISUAL clock holds at `nominalDuration`. Project duration, scene
+    /// layout, and transition boundaries are computed from this span. Defaults to `nominalDuration`
+    /// (no stretch) so every existing non-stretched call site is unchanged. v1 documents decode with
+    /// `timelineSpan == nominalDuration`.
+    public let timelineSpan: TickDuration
 
     public init(
         id: SceneInstanceID,
         payloadID: ScenePayloadID,
         nominalDuration: TickDuration,
-        postRollCapability: TickDuration
+        postRollCapability: TickDuration,
+        timelineSpan: TickDuration? = nil
     ) {
         self.id = id
         self.payloadID = payloadID
         self.nominalDuration = nominalDuration
         self.postRollCapability = postRollCapability
+        self.timelineSpan = timelineSpan ?? nominalDuration
     }
 }
 

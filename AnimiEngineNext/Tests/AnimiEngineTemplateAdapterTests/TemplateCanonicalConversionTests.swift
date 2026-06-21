@@ -755,7 +755,7 @@ final class TemplateCanonicalConversionTests: XCTestCase {
         XCTAssertEqual(t.incoming.sceneID.raw, "sceneB")
         XCTAssertFalse(t.outgoing.layers.isEmpty, "outgoing layers non-empty in post-roll tail")
         // outgoing scene-local time equals nominal + postHalf - 1.
-        XCTAssertEqual(t.outgoing.scenePlaybackTime.ticks, nominalTicks + postHalf - 1)
+        XCTAssertEqual(t.outgoing.mediaPlaybackTime.ticks, nominalTicks + postHalf - 1)
         // Only block_01 (the extended layer) is active at this post-roll tick.
         XCTAssertEqual(t.outgoing.layers.map { $0.layerID.raw }, ["block_01"],
                        "early-ending block_02 must be absent in the post-roll tail")

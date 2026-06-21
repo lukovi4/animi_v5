@@ -73,7 +73,8 @@ final class PostPromotionMatrixRegressionTests: XCTestCase {
             engineConfiguration: engineConfig(),
             deviceInfo: DeviceInfo(model: "M2Pro", systemName: "macOS", systemVersion: "test"))
 
-        XCTAssertEqual(result.candidateCount, 64, "exactly 64 candidates rendered")
+        // CP7.5: 84 candidates (was 64; +20 newly-renderable matte rows promoted as approved refs).
+        XCTAssertEqual(result.candidateCount, 84, "exactly 84 candidates rendered")
 
         var exact = 0
         var nonExact: [String] = []
@@ -84,7 +85,7 @@ final class PostPromotionMatrixRegressionTests: XCTestCase {
             }
         }
         XCTAssertTrue(nonExact.isEmpty, "all candidates exactMatch; non-exact: \(nonExact)")
-        XCTAssertEqual(exact, 64, "64/64 exactMatch against approved ReferenceData")
-        print("POST-PROMOTION-MATRIX exactMatch=\(exact)/64")
+        XCTAssertEqual(exact, 84, "84/84 exactMatch against approved ReferenceData")
+        print("POST-PROMOTION-MATRIX exactMatch=\(exact)/84")
     }
 }

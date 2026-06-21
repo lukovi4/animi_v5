@@ -1,10 +1,15 @@
-/// A binary-search scene span index built from cumulative scene durations (Task-002 plan, §10.1).
+/// A binary-search scene span index built from cumulative scene TIMELINE SPANS (Task-002 plan §10.1;
+/// CP7.5: span, not nominal duration).
 ///
-/// `starts[i]` is the project-time tick where scene `i` begins; `ends[i]` is its nominal end. All
-/// prefix sums are overflow-checked at construction.
+/// `starts[i]` is the project-time tick where scene `i` begins; `ends[i]` is its TIMELINE-SPAN end
+/// (== next scene start == the boundary to the next scene). For an unstretched scene `timelineSpan ==
+/// nominalDuration`, so this is byte-identical to the old nominal layout. For a stretched scene the
+/// span end (and thus the next scene / transition boundary) sits at the STRETCHED end — matching the
+/// old TVECore `TimelineTransitionMath` boundary. The visual-vs-media clock split is applied later by
+/// the evaluator (per scene), NOT here. All prefix sums are overflow-checked at construction.
 public struct SceneSpanIndex: Equatable, Sendable {
     public let starts: [Int64]      // scene start ticks, ascending
-    public let ends: [Int64]        // scene nominal end ticks (== next start)
+    public let ends: [Int64]        // scene timeline-span end ticks (== next start)
 
     init(scenes: [SceneManifestEntry]) throws {
         var starts: [Int64] = []
@@ -12,7 +17,7 @@ public struct SceneSpanIndex: Equatable, Sendable {
         var cursor: Int64 = 0
         for scene in scenes {
             starts.append(cursor)
-            cursor = try CheckedInt64.add(cursor, scene.nominalDuration.ticks, "SceneSpanIndex.prefix")
+            cursor = try CheckedInt64.add(cursor, scene.timelineSpan.ticks, "SceneSpanIndex.prefix")
             ends.append(cursor)
         }
         self.starts = starts
@@ -184,7 +189,8 @@ public struct TimelineIndex: Equatable, Sendable {
                 payloadID: scenes[i].payloadID,
                 sceneStart: try ProjectTime(ticks: sceneIndex.starts[i]),
                 nominalDuration: scenes[i].nominalDuration,
-                postRollCapability: scenes[i].postRollCapability
+                postRollCapability: scenes[i].postRollCapability,
+                timelineSpan: scenes[i].timelineSpan
             )
         }
 

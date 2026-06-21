@@ -307,15 +307,23 @@ public enum RenderGraphCompiler {
         let field = "scene[\(frame.sceneID.raw)].layer[\(frame.layerID.raw)].comp[\(comp.id)].animLayer[\(layer.id)]"
         try requireTypeContentAlignment(layer, field: field)
         guard depth < 64 else { throw RenderGraphError.parentCycle(compID: comp.id, layerID: layer.id) }
-        if layer.isHidden {
-            // A hidden matte source still cannot satisfy its consumer's matte; fail closed.
-            if asMatteSource { throw RenderGraphError.unsupportedLayerMode(field: "\(field).matte.source", value: "matte source is hidden") }
-            return
-        }
-        guard let localFrame = try AnimationSampler.layerLocalFrame(layer.timing, compFrame: compFrame) else {
-            // A timing-inactive matte source cannot satisfy its consumer; an ordinary layer just skips.
-            if asMatteSource { throw RenderGraphError.unsupportedLayerMode(field: "\(field).matte.source", value: "matte source is timing-inactive") }
-            return
+
+        // CP7.5 (oracle parity): a MATTE SOURCE bypasses BOTH the hidden flag AND the timing-active
+        // [inPoint,outPoint) gate. TVECore renders a matte source via `emitLayerForMatteSource`, which
+        // calls `computeLayerWorld` WITHOUT any `isVisible`/`isHidden` check — so a source authored to
+        // a shorter range than its consumer still renders (its tracks clamp to the last keyframe =
+        // hold-last), keeping the consumer matted/visible. An ORDINARY layer keeps both gates: hidden
+        // or out-of-timing → it simply does not draw. The matte source samples at the non-gated
+        // transform frame (still the VISUAL clock), never a special per-source clamp.
+        let localFrame: RationalSourceTime
+        if asMatteSource {
+            localFrame = try AnimationSampler.layerTransformFrame(layer.timing, compFrame: compFrame)
+        } else {
+            if layer.isHidden { return }
+            guard let active = try AnimationSampler.layerLocalFrame(layer.timing, compFrame: compFrame) else {
+                return   // ordinary layer, out of its [inPoint,outPoint) range → no draw
+            }
+            localFrame = active
         }
         // world including the parent chain (corrective #2).
         let world = try worldWithinComp(layer, layersByID: layersByID, comp: comp, compFrame: compFrame, parentWorld: parentWorld)

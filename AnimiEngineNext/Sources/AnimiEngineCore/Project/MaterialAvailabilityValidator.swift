@@ -36,12 +36,16 @@ public enum MaterialAvailabilityValidator {
 
         for (index, scene) in manifest.scenes.enumerated() {
             guard let payload = sceneByPayloadID[scene.payloadID.raw] else { continue } // correspondence already checked
-            let evaluatedEnd = try CheckedInt64.add(
-                scene.nominalDuration.ticks, postHalfAfter[index], "material.evaluatedEnd"
+            // CP7.5 two-clock: VIDEO availability is checked across the MEDIA span (timelineSpan +
+            // transition post-roll); template ANIMATION availability only across the VISUAL span
+            // (nominalDuration) because the visual clock holds at nominal when stretched.
+            let mediaEnd = try CheckedInt64.add(
+                scene.timelineSpan.ticks, postHalfAfter[index], "material.mediaEnd"
             )
             try checkSceneLayers(
                 layers: payload.layers,
-                evaluatedInterval: (0, evaluatedEnd),
+                mediaInterval: (0, mediaEnd),
+                visualEnd: scene.nominalDuration.ticks,
                 bodyEnd: scene.nominalDuration.ticks
             )
         }
@@ -77,12 +81,14 @@ public enum MaterialAvailabilityValidator {
 
         for scene in scenes {
             let post = postHalfAfterSceneID[scene.span.sceneID.raw] ?? 0
-            let evaluatedEnd = try CheckedInt64.add(
-                scene.span.nominalDuration.ticks, post, "material.window.evaluatedEnd"
+            // CP7.5: media span = timelineSpan + post-roll; visual span = nominalDuration (see above).
+            let mediaEnd = try CheckedInt64.add(
+                scene.span.timelineSpan.ticks, post, "material.window.mediaEnd"
             )
             try checkSceneLayers(
                 layers: scene.payload.layers,
-                evaluatedInterval: (0, evaluatedEnd),
+                mediaInterval: (0, mediaEnd),
+                visualEnd: scene.span.nominalDuration.ticks,
                 bodyEnd: scene.span.nominalDuration.ticks
             )
         }
@@ -99,43 +105,58 @@ public enum MaterialAvailabilityValidator {
 
     // MARK: - Shared core routines
 
-    /// Checks every scene layer over the evaluated scene-time interval `[start, end)` (Task-002 §8.2–8.5).
+    /// Checks every scene layer (Task-002 §8.2–8.5; CP7.5 two-clock).
     ///
-    /// `bodyEnd` is the scene's nominal duration; a failing tick at or past it lies in the transition
-    /// post-roll tail and is labeled `"outgoing"`, otherwise `"sole"` (cosmetic role only).
+    /// VIDEO material is validated across the MEDIA interval `[0, mediaInterval.end)` (= timelineSpan
+    /// + transition post-roll) because the media clock continues across a stretched scene. Template
+    /// ANIMATION (`.becomeInactive` continuation) is validated only across the VISUAL interval
+    /// `[0, visualEnd)` (= nominalDuration), because the visual clock HOLDS at the last native tick
+    /// when stretched and never requests animation past nominal. For an unstretched scene
+    /// `mediaInterval.end == visualEnd + postHalf`, identical to the pre-CP7.5 behavior.
+    ///
+    /// `bodyEnd` (== nominalDuration) only labels the cosmetic video error role ("outgoing" vs "sole").
     static func checkSceneLayers(
         layers: [SceneLayer],
-        evaluatedInterval: (start: Int64, end: Int64),
+        mediaInterval: (start: Int64, end: Int64),
+        visualEnd: Int64,
         bodyEnd: Int64
     ) throws {
-        guard evaluatedInterval.end > evaluatedInterval.start else { return }
+        guard mediaInterval.end > mediaInterval.start else { return }
         for layer in layers {
-            // Intersect the evaluated interval with this layer's own active range.
-            let lo = Swift.max(evaluatedInterval.start, layer.activeRange.start.ticks)
-            let hi = Swift.min(evaluatedInterval.end, layer.activeRange.end.ticks)
-            guard hi > lo else { continue }                 // no non-empty intersection
-            let firstTick = lo                              // §8.2: first = start
-            let lastTick = hi - 1                           // §8.2: last = end - 1
-
-            switch layer.content {
-            case .image:
-                break                                       // §8.4: images need no temporal material
-            case .video(let binding):
-                let firstTarget = try binding.sourceMapping.target(for: ScenePlaybackTime(uncheckedTicks: firstTick))
-                let lastTarget = try binding.sourceMapping.target(for: ScenePlaybackTime(uncheckedTicks: lastTick))
-                // Positive playback rate ⇒ first/last are min/max targets (§8.3).
-                guard binding.sourceMapping.trimRange.contains(firstTarget),
-                      binding.sourceMapping.trimRange.contains(lastTarget) else {
-                    let role = lastTick >= bodyEnd ? "outgoing" : "sole"
-                    throw ProjectValidationError.insufficientVideoMaterial(role: role, layer: layer.id.raw)
+            // VIDEO availability over the MEDIA interval ∩ the layer's own active range.
+            let lo = Swift.max(mediaInterval.start, layer.activeRange.start.ticks)
+            let hi = Swift.min(mediaInterval.end, layer.activeRange.end.ticks)
+            if hi > lo {
+                let firstTick = lo                              // §8.2: first = start
+                let lastTick = hi - 1                           // §8.2: last = end - 1
+                switch layer.content {
+                case .image:
+                    break                                       // §8.4: images need no temporal material
+                case .video(let binding):
+                    let firstTarget = try binding.sourceMapping.target(for: ScenePlaybackTime(uncheckedTicks: firstTick))
+                    let lastTarget = try binding.sourceMapping.target(for: ScenePlaybackTime(uncheckedTicks: lastTick))
+                    // Positive playback rate ⇒ first/last are min/max targets (§8.3).
+                    guard binding.sourceMapping.trimRange.contains(firstTarget),
+                          binding.sourceMapping.trimRange.contains(lastTarget) else {
+                        let role = lastTick >= bodyEnd ? "outgoing" : "sole"
+                        throw ProjectValidationError.insufficientVideoMaterial(role: role, layer: layer.id.raw)
+                    }
                 }
             }
 
-            // §8.5: a `.becomeInactive` animation cannot cover an interval after its authored end
-            // while the layer is still required to be visible.
-            if let animation = layer.animation, animation.ifShorter == .becomeInactive,
-               lastTick >= animation.authoredDuration.ticks {
-                throw ProjectValidationError.unavailableAnimationContinuation(layer: layer.id.raw)
+            // §8.5 (CP7.5 VISUAL): a `.becomeInactive` animation must cover the layer's visible
+            // interval up to the VISUAL end (nominal). The last VISUAL tick the layer is shown at is
+            // `min(layer.activeRange.end, visualEnd) - 1` — the held tail past nominal never requests
+            // animation, so the stretched span imposes no extra animation requirement.
+            if let animation = layer.animation, animation.ifShorter == .becomeInactive {
+                let visualHi = Swift.min(visualEnd, layer.activeRange.end.ticks)
+                let visualLo = layer.activeRange.start.ticks
+                if visualHi > visualLo {
+                    let lastVisualTick = visualHi - 1
+                    if lastVisualTick >= animation.authoredDuration.ticks {
+                        throw ProjectValidationError.unavailableAnimationContinuation(layer: layer.id.raw)
+                    }
+                }
             }
         }
     }

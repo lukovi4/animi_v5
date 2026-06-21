@@ -31,7 +31,7 @@ enum RawProjectDecoder {
         let schemaVersion = try reader.intValue("schemaVersion")
         let output = try decodeOutput(try reader.object("output"))
         let scenes = try reader.array("scenes").enumerated().map { index, value in
-            try decodeSceneEntry(value, path: "manifest.scenes[\(index)]")
+            try decodeSceneEntry(value, path: "manifest.scenes[\(index)]", schemaVersion: schemaVersion)
         }
         let transitions = try reader.array("boundaryTransitions").enumerated().map { index, value in
             try decodeTransition(value, path: "manifest.boundaryTransitions[\(index)]")
@@ -40,8 +40,13 @@ enum RawProjectDecoder {
             try decodeOverlayEntry(value, path: "manifest.overlays[\(index)]")
         }
         try reader.finish()
+        // CP7.5: uplift on decode. A v1 document is read with `timelineSpan = nominalDuration` (above)
+        // and its in-memory manifest is normalized to the current schema version, so re-encoding it
+        // writes a consistent v2 document (with the `timelineSpan` key). The on-disk `schemaVersion`
+        // only drives the dual-path scene-entry read.
+        let normalizedVersion = max(schemaVersion, CanonicalProjectManifest.supportedSchemaVersion)
         return CanonicalProjectManifest(
-            schemaVersion: schemaVersion,
+            schemaVersion: normalizedVersion,
             output: output,
             scenes: scenes,
             boundaryTransitions: transitions,
@@ -65,15 +70,27 @@ enum RawProjectDecoder {
         return OutputContext(canvas: canvas, frameRate: rate)
     }
 
-    private static func decodeSceneEntry(_ value: StrictJSONValue, path: String) throws -> SceneManifestEntry {
+    private static func decodeSceneEntry(
+        _ value: StrictJSONValue, path: String, schemaVersion: Int
+    ) throws -> SceneManifestEntry {
         var reader = try StrictObjectReader(value, path: path)
         let id = try SceneInstanceID(try reader.string("id"))
         let payloadID = try ScenePayloadID(try reader.string("payloadID"))
         let nominal = try TickDuration(ticks: try reader.int("nominalDuration"))
         let postRoll = try TickDuration(ticks: try reader.int("postRollCapability"))
+        // CP7.5 dual-path: v2 carries an explicit `timelineSpan`; v1 has no such key and uplifts to
+        // `timelineSpan = nominalDuration`. `finish()` rejects unknown keys, so a v1 doc must NOT have
+        // `timelineSpan` and a v2 doc MUST have it (read it to mark consumed).
+        let timelineSpan: TickDuration
+        if schemaVersion >= 2 {
+            timelineSpan = try TickDuration(ticks: try reader.int("timelineSpan"))
+        } else {
+            timelineSpan = nominal
+        }
         try reader.finish()
         return SceneManifestEntry(
-            id: id, payloadID: payloadID, nominalDuration: nominal, postRollCapability: postRoll
+            id: id, payloadID: payloadID, nominalDuration: nominal,
+            postRollCapability: postRoll, timelineSpan: timelineSpan
         )
     }
 

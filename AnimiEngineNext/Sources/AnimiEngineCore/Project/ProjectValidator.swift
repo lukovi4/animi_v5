@@ -18,8 +18,8 @@ public enum ProjectValidator {
     /// (corrective plan C-5). `TimelineIndex.init` calls this so an index can never be built from an
     /// invalid manifest, while still not requiring payloads.
     public static func validateManifest(_ manifest: CanonicalProjectManifest) throws {
-        // 0. Supported schema version.
-        guard manifest.schemaVersion == CanonicalProjectManifest.supportedSchemaVersion else {
+        // 0. Supported schema version. CP7.5: accept v1 (uplifted on decode) and v2.
+        guard CanonicalProjectManifest.acceptedSchemaVersions.contains(manifest.schemaVersion) else {
             throw ProjectValidationError.unsupportedSchemaVersion(
                 found: manifest.schemaVersion,
                 supported: CanonicalProjectManifest.supportedSchemaVersion
@@ -29,10 +29,14 @@ public enum ProjectValidator {
         // 1. Empty project.
         guard !manifest.scenes.isEmpty else { throw ProjectValidationError.emptyProject }
 
-        // 2. Scene durations and post-roll capability.
+        // 2. Scene durations, post-roll capability, and timeline span.
         for scene in manifest.scenes {
             guard scene.nominalDuration.ticks > 0 else {
                 throw ProjectValidationError.invalidSceneDuration(scene: scene.id.raw)
+            }
+            // CP7.5: timelineSpan must be >= nominalDuration (a scene can be stretched, never shrunk).
+            guard scene.timelineSpan.ticks >= scene.nominalDuration.ticks else {
+                throw ProjectValidationError.invalidTimelineSpan(scene: scene.id.raw)
             }
             // postRollCapability is a TickDuration (>= 0 by construction); nothing further required.
         }

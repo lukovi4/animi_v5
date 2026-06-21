@@ -152,13 +152,10 @@ public enum RealTemplateMatrix {
         } catch let e as MatrixError {
             throw e
         } catch let e as RenderGraphError {
-            // Authored layer timing can make a matte source / layer inactive at a chosen frame time — a real
-            // authored outcome, deterministically classified as a SKIP (not a failure to force). Any other
-            // graph error is a genuine compile failure (STOP).
-            if case let .unsupportedLayerMode(_, value) = e,
-               value.contains("matte source is timing-inactive") || value.contains("matte source is hidden") {
-                return .skippedInactive(rowID: row.rowID, reason: value)
-            }
+            // CP7.5: a matte SOURCE no longer goes timing-inactive/hidden — it renders HELD at its last
+            // authored frame (oracle parity, see RenderGraphCompiler). The former "matte source is
+            // timing-inactive"/"hidden" SKIP path is therefore dead and removed: ANY RenderGraphError is
+            // now a genuine compile failure (STOP), so a regression cannot be silently skipped.
             throw MatrixError.rowCompileFailed(rowID: row.rowID, detail: "\(e)")
         } catch {
             throw MatrixError.rowCompileFailed(rowID: row.rowID, detail: "\(error)")

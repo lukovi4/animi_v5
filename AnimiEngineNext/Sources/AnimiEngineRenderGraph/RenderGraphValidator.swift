@@ -266,9 +266,17 @@ public enum RenderGraphValidator {
                 try requireWritten(sourceSurfaceID)
                 try requireWritten(consumerSurfaceID)
                 _ = try requireSurface(targetSurfaceID)
-                guard drawnInto.contains(sourceSurfaceID) else {
-                    throw RenderGraphError.validatorInvalidSurfaceDependency(detail: "matte source surface \(sourceSurfaceID) cleared but never drawn into")
+                // CP7.5: a matte source surface that was CLEARED in this scene (a declared matte
+                // isolation surface) but never drawn into is an EMPTY (non-drawing) matte source — e.g.
+                // a source whose content is fully clipped/zero-coverage at this frame. It is allowed
+                // (the matteLink composites an empty source). NOTE: a timing-inactive or hidden matte
+                // source is NOT this case — the compiler renders such a source HELD (oracle parity), so
+                // it IS drawn into. A source surface never even cleared as a matte target is still
+                // rejected (a genuine dependency bug).
+                guard drawnInto.contains(sourceSurfaceID) || matteTargetsInScene.contains(sourceSurfaceID) else {
+                    throw RenderGraphError.validatorInvalidSurfaceDependency(detail: "matte source surface \(sourceSurfaceID) is neither drawn into nor a cleared matte isolation surface")
                 }
+                // The consumer must always carry real content (it is the matted layer itself).
                 guard drawnInto.contains(consumerSurfaceID) else {
                     throw RenderGraphError.validatorInvalidSurfaceDependency(detail: "matte consumer surface \(consumerSurfaceID) cleared but never drawn into")
                 }
