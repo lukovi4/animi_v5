@@ -308,3 +308,26 @@ fragment float4 final_srgb_fragment(FullscreenOut in [[stage_in]],
     // RGBA-semantic return; .bgra8Unorm yields physical BGRA order (plan §5.3 item 5, no swizzle).
     return outc;
 }
+
+// ---- CP7.6a external-target copy ------------------------------------------------------------------
+//
+// Copies the already-final sRGB output surface (plain .bgra8Unorm, premultiplied sRGB, produced by
+// final_srgb_fragment) into an external caller-supplied .bgra8Unorm texture, with no colour change.
+// `forceOpaque != 0` forces alpha = 1.0 while keeping the premultiplied B/G/R — the GPU equivalent of
+// the export CPU `compositeOpaque` (premultiplied-over-transparent composited onto opaque black).
+// `forceOpaque == 0` is a straight passthrough, byte-identical to the source surface.
+//
+// The source is sampled with the same UVs/sampler as final_srgb_fragment; because src and target share
+// the exact canvas dimensions (validated in Swift), the bilinear sample at each pixel-center hits the
+// matching source texel 1:1 (no scaling). The values are already UNORM-quantized in the source, so the
+// passthrough store reproduces them exactly.
+fragment float4 external_copy_fragment(FullscreenOut in [[stage_in]],
+                                       texture2d<float> source [[texture(0)]],
+                                       sampler samp [[sampler(0)]],
+                                       constant uint &forceOpaque [[buffer(0)]]) {
+    float4 c = source.sample(samp, in.uv);
+    if (forceOpaque != 0u) {
+        c.a = 1.0f;
+    }
+    return c;
+}

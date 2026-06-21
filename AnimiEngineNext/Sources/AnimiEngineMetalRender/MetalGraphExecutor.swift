@@ -25,6 +25,53 @@ struct MetalGraphExecutor {
     var onCommandEncoded: ((Int, RenderCommandPayload, MetalResourceOwner, MTLCommandBuffer) -> Void)? = nil
 
     func execute(_ graph: RenderGraph) throws -> RenderedFrame {
+        // CP7.6a: the readback path is the shared encode + a final readback blit (the ReferenceData
+        // oracle). Byte-identical to the pre-CP7.6a behaviour.
+        guard let frame = try runShared(graph, finish: .readback) else {
+            throw MetalRenderError.incompleteFrame(detail: "readback path produced no frame")
+        }
+        return frame
+    }
+
+    /// CP7.6a — GPU-direct: run the shared encode and copy the final sRGB pixels straight into the
+    /// caller's external `target`, with NO CPU readback and NO `RenderedFrame`. Synchronous (commit+wait):
+    /// the GPU write to `target` is complete on return.
+    func render(_ graph: RenderGraph, into target: GPURenderTarget) throws {
+        // External-target validation (fail closed, no silent resize/reinterpret).
+        let canvasW = graph.configuration.output.canvas.width
+        let canvasH = graph.configuration.output.canvas.height
+        if target.texture.device !== device {
+            throw MetalRenderError.invalidRenderTarget(detail: "target texture device != session device")
+        }
+        guard target.texture.pixelFormat == .bgra8Unorm else {
+            throw MetalRenderError.invalidRenderTarget(
+                detail: "target pixelFormat \(target.texture.pixelFormat.rawValue) != bgra8Unorm")
+        }
+        guard target.texture.usage.contains(.renderTarget) else {
+            throw MetalRenderError.invalidRenderTarget(detail: "target texture usage lacks .renderTarget")
+        }
+        guard Int64(target.texture.width) == canvasW, Int64(target.texture.height) == canvasH else {
+            throw MetalRenderError.surfaceDimensionMismatch(
+                resourceID: "externalTarget",
+                expectedWidth: canvasW, expectedHeight: canvasH,
+                actualWidth: Int64(target.texture.width), actualHeight: Int64(target.texture.height))
+        }
+        _ = try runShared(graph, finish: .target(target))
+    }
+
+    /// How the shared encode terminates after the final sRGB conversion.
+    private enum Finish {
+        case readback                 // blit sRGBSurface → staging → RenderedFrame (the oracle path)
+        case target(GPURenderTarget)  // GPU copy sRGBSurface → external texture (CP7.6a)
+    }
+
+    /// The shared per-execution body (plan §8.6) up to and including the single commit+wait. Both the
+    /// readback path (`execute`) and the GPU-target path (`render(into:)`) run the IDENTICAL preflight,
+    /// allocation, upload, normalization, scene/transition encode, and final sRGB conversion; they
+    /// diverge ONLY in the trailing step (readback blit vs external-target copy). Returns a
+    /// `RenderedFrame` for `.readback` and nil for `.target`.
+    @discardableResult
+    private func runShared(_ graph: RenderGraph, finish: Finish) throws -> RenderedFrame? {
         let configuration = graph.configuration
 
         // ---- Step 1: whole-graph preflight (plan §4.1 + Issue-4) — no per-execution GPU objects yet. ----
@@ -80,10 +127,18 @@ struct MetalGraphExecutor {
             }
         }
 
-        // ---- Step 5: derive output dims from the final surface; allocate the readback buffer. ----
+        // ---- Step 5: derive output dims from the final surface; allocate the readback buffer
+        // (readback path only — the GPU-target path needs no staging buffer). ----
         let finalSurface = try owner.surface(for: RenderSurface.sRGBSurface)
-        let readbackPlan = try readback.makePlan(finalSurface: finalSurface)
-        owner.retain(stagingBuffer: readbackPlan.stagingBuffer)
+        let readbackPlan: MetalFrameReadback.Plan?
+        switch finish {
+        case .readback:
+            let plan = try readback.makePlan(finalSurface: finalSurface)
+            owner.retain(stagingBuffer: plan.stagingBuffer)
+            readbackPlan = plan
+        case .target:
+            readbackPlan = nil
+        }
 
         // ---- Step 6: one command buffer. ----
         let commandBuffer = try submitter.makeCommandBuffer()
@@ -126,9 +181,22 @@ struct MetalGraphExecutor {
                              transitionCompositor: transitionCompositor,
                              into: commandBuffer)
 
-        // ---- Step 7d: readback blit LAST. ----
-        try readback.encodeBlit(into: commandBuffer, plan: readbackPlan)
-        onExecutionEvent?(.readbackBlit)
+        // ---- Step 7d: finalize — readback blit LAST (oracle path) OR GPU copy into the external target. ----
+        switch finish {
+        case .readback:
+            guard let plan = readbackPlan else {
+                throw MetalRenderError.readbackFailed(detail: "missing readback plan")
+            }
+            try readback.encodeBlit(into: commandBuffer, plan: plan)
+            onExecutionEvent?(.readbackBlit)
+        case let .target(target):
+            // CP7.6a: GPU-only copy of the final sRGB surface into the caller's external texture.
+            let copier = MetalExternalTargetCopy(pipelines: pipelines)
+            try copier.encode(
+                into: commandBuffer, source: finalSurface, target: target.texture,
+                alphaMode: target.alphaMode)
+            onExecutionEvent?(.externalCopy)
+        }
 
         // ---- Step 8: commit + wait once. ----
         onExecutionEvent?(.commit)
@@ -142,8 +210,17 @@ struct MetalGraphExecutor {
             throw MetalRenderError.commandBufferFailed(status: status, detail: detail)
         }
 
-        // ---- Step 10: read staging memory, repack tight, build the frame. ----
-        return try readback.makeFrame(from: readbackPlan, colorContract: configuration.colorContract)
+        // ---- Step 10: read staging memory, repack tight, build the frame (readback path only). ----
+        switch finish {
+        case .readback:
+            guard let plan = readbackPlan else {
+                throw MetalRenderError.readbackFailed(detail: "missing readback plan")
+            }
+            return try readback.makeFrame(from: plan, colorContract: configuration.colorContract)
+        case .target:
+            // CP7.6a: the GPU write to the external target completed above; no RenderedFrame.
+            return nil
+        }
         // owner drops here (step 11): raw+normalized textures + staging buffers released after completion.
     }
 
@@ -552,6 +629,8 @@ enum ExecutionEvent: Equatable {
     case sceneRender
     case finalConversion
     case readbackBlit
+    /// CP7.6a — the GPU-only copy of the final sRGB surface into an external target (render(into:) path).
+    case externalCopy
     case commit
     case completion
 }

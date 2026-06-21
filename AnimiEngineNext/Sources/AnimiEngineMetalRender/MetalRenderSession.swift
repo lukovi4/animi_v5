@@ -16,6 +16,11 @@ public final class MetalRenderSession {
     private let pipelines: MetalPipelineLibrary
     private let submitter: CommandSubmitter
 
+    /// CP7.6a — the session's `MTLDevice`, exposed so a caller can build a `CVMetalTextureCache` /
+    /// external `GPURenderTarget` textures on the SAME device the engine renders with (a target on a
+    /// different device is rejected by `render(_:into:)`).
+    public var metalDevice: MTLDevice { device }
+
     /// R3 non-blocking guard: a try-locked flag. Only one `execute()` may hold it at a time.
     private let guardLock = NSLock()
     private var executing = false
@@ -78,5 +83,31 @@ public final class MetalRenderSession {
             onExecutionEvent: onExecutionEvent, onOwnerCreated: onOwnerCreated)
         executor.onCommandEncoded = onCommandEncoded
         return try executor.execute(graph)
+    }
+
+    /// CP7.6a — GPU-direct: run the graph and leave the final sRGB pixels in `target.texture`. No CPU
+    /// readback, no `RenderedFrame`. Same synchronous contract and non-blocking reentrancy guard (R3) as
+    /// `execute(_:)`; on return the GPU write to the target is complete. The existing `execute(_:)`
+    /// readback path (the ReferenceData oracle) is unaffected.
+    public func render(_ graph: RenderGraph, into target: GPURenderTarget) throws {
+        guardLock.lock()
+        if executing {
+            guardLock.unlock()
+            throw MetalRenderError.executionAlreadyInProgress
+        }
+        executing = true
+        guardLock.unlock()
+
+        defer {
+            guardLock.lock()
+            executing = false
+            guardLock.unlock()
+        }
+
+        var executor = MetalGraphExecutor(
+            device: device, pipelines: pipelines, submitter: submitter,
+            onExecutionEvent: onExecutionEvent, onOwnerCreated: onOwnerCreated)
+        executor.onCommandEncoded = onCommandEncoded
+        try executor.render(graph, into: target)
     }
 }

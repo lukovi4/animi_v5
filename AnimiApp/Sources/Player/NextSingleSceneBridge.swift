@@ -292,6 +292,9 @@ final class NextPreparedContext {
 final class NextSessionBox {
     let session: MetalRenderSession
     init(session: MetalRenderSession) { self.session = session }
+    /// CP7.6a — the engine `MTLDevice`, so the export runner can build a `CVMetalTextureCache` /
+    /// external render-target textures on the SAME device the session renders with.
+    var metalDevice: MTLDevice { session.metalDevice }
 }
 
 /// DEBUG-only bridge that produces frames via AnimiEngineNext. CP3 splits the work into a
@@ -553,6 +556,26 @@ enum NextSingleSceneBridge {
     }
 
     static func renderFrame(context ctx: NextPreparedContext, frameIndex: Int) throws -> RenderedFrame {
+        let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
+        do { return try ctx.session.execute(graph) }
+        catch { throw NextBridgeError.engine("execute: \(error)") }
+    }
+
+    /// CP7.6a — GPU-direct: render ONE frame index DIRECTLY into a caller-supplied external texture
+    /// (no CPU readback, no `RenderedFrame`/`Data`). Reuses the IDENTICAL evaluate→resolve→compile
+    /// business logic via `buildGraph`; only the final write differs (`render(into:)` vs `execute`).
+    static func renderFrame(
+        context ctx: NextPreparedContext, frameIndex: Int,
+        into target: MTLTexture, alphaMode: AlphaMode
+    ) throws {
+        let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
+        do { try ctx.session.render(graph, into: GPURenderTarget(texture: target, alphaMode: alphaMode)) }
+        catch { throw NextBridgeError.engine("render(into:): \(error)") }
+    }
+
+    /// The shared per-frame graph build (evaluate→resolve→compile). Used by BOTH the readback path
+    /// (`renderFrame`/`renderFrameBGRA`, preview + tests) and the GPU-direct path (export).
+    static func buildGraph(context ctx: NextPreparedContext, frameIndex: Int) throws -> RenderGraph {
         let plan = try evaluatePlan(window: ctx.window, frame: max(0, frameIndex))
         guard case let .single(subplan) = plan.body else {
             throw NextBridgeError.unsupportedFramePlan("expected single scene body")
@@ -567,11 +590,8 @@ enum NextSingleSceneBridge {
         do { base = try RenderInputResolver.resolve(framePlan: plan, materials: ctx.materials, fixtures: fixtures) }
         catch { throw NextBridgeError.engine("resolve: \(error)") }
         let resolved = try rebuildWithAssetEntries(subplan: subplan, base: base, assetEntries: ctx.assetEntries)
-        let graph: RenderGraph
-        do { graph = try RenderGraphCompiler.compile(plan: plan, input: resolved, configuration: ctx.configuration) }
+        do { return try RenderGraphCompiler.compile(plan: plan, input: resolved, configuration: ctx.configuration) }
         catch { throw NextBridgeError.engine("compile: \(error)") }
-        do { return try ctx.session.execute(graph) }
-        catch { throw NextBridgeError.engine("execute: \(error)") }
     }
 
     // MARK: - Shared frame helpers

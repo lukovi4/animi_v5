@@ -15,6 +15,8 @@ final class MetalPipelineLibrary {
     private let fullscreenVertex: MTLFunction
     private let finalFragment: MTLFunction
     private let normalizeFragment: MTLFunction
+    // CP7.6a — external-target copy (GPU-direct export).
+    private let externalCopyFragment: MTLFunction
     // Step-11 functions.
     private let coverageVertex: MTLFunction
     private let coverageFragment: MTLFunction
@@ -31,6 +33,8 @@ final class MetalPipelineLibrary {
     private var imagePipelines: [MTLPixelFormat: MTLRenderPipelineState] = [:]
     private var finalPipelineState: MTLRenderPipelineState?
     private var normalizePipelineState: MTLRenderPipelineState?
+    // CP7.6a — external-target copy pipeline (target .bgra8Unorm, .replace). Cached.
+    private var externalCopyPipelineState: MTLRenderPipelineState?
     // Step-11 caches.
     private var coveragePipelineState: MTLRenderPipelineState?
     private var maskCombinePipelineState: MTLRenderPipelineState?
@@ -60,6 +64,7 @@ final class MetalPipelineLibrary {
         self.fullscreenVertex = try Self.function("fullscreen_vertex", in: library)
         self.finalFragment = try Self.function("final_srgb_fragment", in: library)
         self.normalizeFragment = try Self.function("normalize_fragment", in: library)
+        self.externalCopyFragment = try Self.function("external_copy_fragment", in: library)
         // Step-11 functions (loaded eagerly; missing function is a typed failure, §8).
         self.coverageVertex = try Self.function("coverage_vertex", in: library)
         self.coverageFragment = try Self.function("coverage_fragment", in: library)
@@ -170,6 +175,22 @@ final class MetalPipelineLibrary {
         attachment.isBlendingEnabled = false
         let pso = try makePipeline(pd, detail: "finalLinearToSRGB")
         finalPipelineState = pso
+        return pso
+    }
+
+    /// CP7.6a — the external-target copy pipeline (full-surface triangle, target `.bgra8Unorm`,
+    /// blending disabled / `.replace`). Samples the final sRGB surface and writes it (with optional
+    /// force-opaque alpha in-shader) into a caller-supplied external texture. Cached.
+    func externalCopyPipeline() throws -> MTLRenderPipelineState {
+        if let cached = externalCopyPipelineState { return cached }
+        let pd = MTLRenderPipelineDescriptor()
+        pd.vertexFunction = fullscreenVertex
+        pd.fragmentFunction = externalCopyFragment
+        let attachment = try Self.attachment0(pd)
+        attachment.pixelFormat = .bgra8Unorm
+        attachment.isBlendingEnabled = false
+        let pso = try makePipeline(pd, detail: "externalCopy")
+        externalCopyPipelineState = pso
         return pso
     }
 

@@ -289,6 +289,25 @@ enum NextTimelineBridge {
     }
 
     static func renderFrame(context ctx: NextTimelinePreparedContext, frameIndex: Int) throws -> RenderedFrame {
+        let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
+        do { return try ctx.session.execute(graph) }
+        catch { throw NextBridgeError.engine("execute: \(error)") }
+    }
+
+    /// CP7.6a — GPU-direct: render ONE timeline frame DIRECTLY into a caller-supplied external texture
+    /// (no CPU readback). Reuses the IDENTICAL evaluate→resolve→compile logic via `buildGraph`.
+    static func renderFrame(
+        context ctx: NextTimelinePreparedContext, frameIndex: Int,
+        into target: MTLTexture, alphaMode: AlphaMode
+    ) throws {
+        let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
+        do { try ctx.session.render(graph, into: GPURenderTarget(texture: target, alphaMode: alphaMode)) }
+        catch { throw NextBridgeError.engine("render(into:): \(error)") }
+    }
+
+    /// The shared per-frame timeline graph build (evaluate→resolve→compile). Used by BOTH the readback
+    /// path (`renderFrame`/`renderFrameBGRA`, preview + tests) and the GPU-direct path (export).
+    static func buildGraph(context ctx: NextTimelinePreparedContext, frameIndex: Int) throws -> RenderGraph {
         let plan: FramePlan
         do { plan = try TimelineEvaluator.evaluate(ctx.window, atFrame: try FrameIndex(value: Int64(max(0, frameIndex)))) }
         catch { throw NextBridgeError.engine("evaluate: \(error)") }
@@ -326,11 +345,8 @@ enum NextTimelineBridge {
         // the frame input from every participating subplan's resolved scene layers + asset entries.
         let resolved = try rebuildWithAssetEntries(subplans: subplans, base: base, assetEntries: ctx.assetEntries)
 
-        let graph: RenderGraph
-        do { graph = try RenderGraphCompiler.compile(plan: plan, input: resolved, configuration: ctx.configuration) }
+        do { return try RenderGraphCompiler.compile(plan: plan, input: resolved, configuration: ctx.configuration) }
         catch { throw NextBridgeError.engine("compile: \(error)") }
-        do { return try ctx.session.execute(graph) }
-        catch { throw NextBridgeError.engine("execute: \(error)") }
     }
 
     // MARK: - Helpers

@@ -2,7 +2,9 @@
 import AVFoundation
 import CoreVideo
 import Foundation
+import Metal
 import TVECore
+import AnimiEngineMetalRender
 
 // MARK: - CP6: AnimiEngineNext video export runner (DEBUG only)
 //
@@ -11,14 +13,15 @@ import TVECore
 // lifecycle (`ExportSession` — cancel/cleanup/progress/finish) verbatim; audio stays the old path
 // (a pre-built `BuiltAudioPipeline` is passed straight into the writer's audio input).
 //
-// Frame source: `NextSingleSceneBridge.renderFrameBGRA` / `NextTimelineBridge.renderFrameBGRA` →
-// `NextBridgeBGRAFrame` (BGRA8 premultiplied sRGB on a TRANSPARENT background). The export encoder
-// expects an effectively OPAQUE frame, so each frame is composited over opaque black IN PREMULTIPLIED
-// space — which for premultiplied-over-transparent reduces to: keep B/G/R, force A = 255.
+// CP7.6a — GPU-direct: each output frame is rendered by AnimiEngineNext DIRECTLY into a
+// `CVPixelBuffer`-backed `MTLTexture` (via a `CVMetalTextureCache` on the engine's device), with NO
+// CPU readback and NO row-by-row `memcpy`. The engine's `render(_:into:)` with `AlphaMode.opaqueBlack`
+// composites premultiplied-over-transparent onto opaque black (keep B/G/R, force A = 255) entirely on
+// the GPU — the GPU equivalent of the previous CPU `compositeOpaque`.
 //
-// Differences from the TVECore runner: no CVMetalTextureCache round-trip and no video-slots
-// coordinator (photo-only). Frames are produced on the CPU as bytes and `memcpy`'d row-by-row into
-// the pooled `CVPixelBuffer`.
+// Frame source: `NextSingleSceneBridge.renderFrame(into:alphaMode:)` /
+// `NextTimelineBridge.renderFrame(into:alphaMode:)`. The video-slots coordinator is still unused
+// (photo-only). The pure `compositeOpaque` core is retained as a test oracle, not on the hot path.
 internal enum NextVideoExportRunner {
 
     // MARK: - Frame source
@@ -76,6 +79,18 @@ internal enum NextVideoExportRunner {
 
         session.setCleanup(onSuccess: {}, onFailure: {}, onCancel: {})
         if session.completeIfCancelled() { return }
+
+        // CP7.6a: one CVMetalTextureCache on the ENGINE's device, so each pooled CVPixelBuffer can be
+        // wrapped as a .bgra8Unorm MTLTexture the engine renders straight into (no readback).
+        var textureCacheOpt: CVMetalTextureCache?
+        let cacheStatus = CVMetalTextureCacheCreate(
+            kCFAllocatorDefault, nil, sessionBox.metalDevice, nil, &textureCacheOpt)
+        guard cacheStatus == kCVReturnSuccess, let textureCache = textureCacheOpt else {
+            session.complete(with: .failure(VideoExportError.renderError(
+                NextBridgeError.engine("CVMetalTextureCacheCreate failed: \(cacheStatus)"))))
+            return
+        }
+
         session.transitionToRendering()
 
         // 2. Frame loop. Synchronous render + CPU byte copy, gated by the same semaphore/group pattern.
@@ -104,26 +119,38 @@ internal enum NextVideoExportRunner {
                     videoGroup.leave(); semaphore.signal(); return
                 }
 
-                // Render the Next frame for this output frame.
-                let frame: NextBridgeBGRAFrame
+                // Dimensions must match the encoder's pixel buffer (no downscale in CP6/CP7.6a).
+                let pbWidth = CVPixelBufferGetWidth(pixelBuffer)
+                let pbHeight = CVPixelBufferGetHeight(pixelBuffer)
+                guard pbWidth == settings.sizePx.width, pbHeight == settings.sizePx.height else {
+                    pipeline.setError(VideoExportError.renderError(NextBridgeError.engine(
+                        "pixel buffer \(pbWidth)x\(pbHeight) != export \(settings.sizePx.width)x\(settings.sizePx.height)")))
+                    videoGroup.leave(); semaphore.signal(); return
+                }
+
+                // CP7.6a: wrap the pooled CVPixelBuffer as a .bgra8Unorm MTLTexture and render the Next
+                // frame straight into it (opaqueBlack), all on the GPU — no readback, no copyOpaque.
+                var cvTexOpt: CVMetalTexture?
+                let texStatus = CVMetalTextureCacheCreateTextureFromImage(
+                    kCFAllocatorDefault, textureCache, pixelBuffer, nil,
+                    .bgra8Unorm, pbWidth, pbHeight, 0, &cvTexOpt)
+                guard texStatus == kCVReturnSuccess, let cvTex = cvTexOpt,
+                      let targetTexture = CVMetalTextureGetTexture(cvTex) else {
+                    pipeline.setError(VideoExportError.renderError(NextBridgeError.engine(
+                        "CVMetalTextureCacheCreateTextureFromImage failed: \(texStatus)")))
+                    videoGroup.leave(); semaphore.signal(); return
+                }
+
                 do {
-                    frame = try renderFrame(source: source, compressedFrameIndex: frameIndex)
+                    try renderFrame(source: source, compressedFrameIndex: frameIndex,
+                                    into: targetTexture, alphaMode: .opaqueBlack)
                 } catch {
                     pipeline.setError(VideoExportError.renderError(error))
                     videoGroup.leave(); semaphore.signal(); return
                 }
-
-                // Dimensions must match the encoder's pixel buffer (no downscale in CP6).
-                guard frame.width == settings.sizePx.width, frame.height == settings.sizePx.height else {
-                    pipeline.setError(VideoExportError.renderError(NextBridgeError.engine(
-                        "frame size \(frame.width)x\(frame.height) != export \(settings.sizePx.width)x\(settings.sizePx.height)")))
-                    videoGroup.leave(); semaphore.signal(); return
-                }
-
-                if let copyError = Self.copyOpaque(frame: frame, into: pixelBuffer) {
-                    pipeline.setError(VideoExportError.renderError(copyError))
-                    videoGroup.leave(); semaphore.signal(); return
-                }
+                // The CVMetalTexture is retained until here; render(into:) committed+waited, so the GPU
+                // write to the pixel buffer is complete. Releasing cvTex now is safe.
+                _ = cvTex
 
                 guard !session.shouldStop else { videoGroup.leave(); semaphore.signal(); return }
 
@@ -148,55 +175,29 @@ internal enum NextVideoExportRunner {
 
     // MARK: - Render dispatch
 
-    private static func renderFrame(source: Source, compressedFrameIndex: Int) throws -> NextBridgeBGRAFrame {
+    private static func renderFrame(
+        source: Source, compressedFrameIndex: Int,
+        into target: MTLTexture, alphaMode: AlphaMode
+    ) throws {
         switch source {
         case .single(let ctx):
             // Single-scene: compressed == nominal == project frame (no transitions).
-            return try NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: compressedFrameIndex)
+            try NextSingleSceneBridge.renderFrame(
+                context: ctx, frameIndex: compressedFrameIndex, into: target, alphaMode: alphaMode)
         case .timeline(let ctx, let mapper):
             // Timeline: PTS/duration use the COMPRESSED index; the Next evaluator wants the NOMINAL
             // project frame, so map here. The mapper owns transition compression exactly like preview.
             let nominal = mapper.nominalFrame(forCompressedFrame: compressedFrameIndex)
-            return try NextTimelineBridge.renderFrameBGRA(context: ctx, frameIndex: nominal)
+            try NextTimelineBridge.renderFrame(
+                context: ctx, frameIndex: nominal, into: target, alphaMode: alphaMode)
         }
     }
 
-    // MARK: - Opaque BGRA copy
+    // MARK: - Opaque BGRA composite (test oracle)
 
-    /// Copies a premultiplied-over-transparent BGRA frame into the pooled pixel buffer, compositing
-    /// over opaque black: B/G/R are copied verbatim (already premultiplied = color·alpha over black),
-    /// and the alpha byte is forced to 255 so the encoded frame is opaque. Respects differing
-    /// source/destination `bytesPerRow`. Returns nil on success, or an error.
-    private static func copyOpaque(frame: NextBridgeBGRAFrame, into pixelBuffer: CVPixelBuffer) -> Error? {
-        let lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        guard lockStatus == kCVReturnSuccess else {
-            return NextBridgeError.engine("CVPixelBufferLockBaseAddress failed: \(lockStatus)")
-        }
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
-
-        guard let dstBase = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-            return NextBridgeError.engine("pixel buffer has no base address")
-        }
-        let dstBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        let dstWidth = CVPixelBufferGetWidth(pixelBuffer)
-        let dstHeight = CVPixelBufferGetHeight(pixelBuffer)
-
-        guard dstWidth == frame.width, dstHeight == frame.height else {
-            return NextBridgeError.engine("pixel buffer \(dstWidth)x\(dstHeight) != frame \(frame.width)x\(frame.height)")
-        }
-
-        let dst = dstBase.assumingMemoryBound(to: UInt8.self)
-        frame.bytes.withUnsafeBytes { (rawSrc: UnsafeRawBufferPointer) in
-            guard let srcBase = rawSrc.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-            compositeOpaque(
-                src: srcBase, srcBytesPerRow: frame.bytesPerRow,
-                dst: dst, dstBytesPerRow: dstBytesPerRow,
-                width: frame.width, height: frame.height)
-        }
-        return nil
-    }
-
-    /// Pure BGRA opaque-composite core (extracted for unit testing without Metal/CoreVideo). Copies
+    /// Pure BGRA opaque-composite core — the CPU reference for `AlphaMode.opaqueBlack`. NOT on the
+    /// CP7.6a hot path (the engine now composites opaque on the GPU); retained as the unit-test oracle
+    /// (`NextVideoExportRunnerTests`) and the byte-parity reference for the GPU path. Copies
     /// premultiplied B/G/R verbatim (premultiplied = color·alpha over black) and forces the alpha byte
     /// to 255, i.e. composites premultiplied-over-transparent onto opaque black. Respects differing
     /// source/destination strides.

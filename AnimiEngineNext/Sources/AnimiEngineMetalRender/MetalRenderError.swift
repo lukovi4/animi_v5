@@ -63,4 +63,8 @@ public enum MetalRenderError: Error, Equatable, Sendable {
     /// Step-11 (Rev-4 §6.4 / §7.2): the device cannot create the required MSAA sample-count pipeline for
     /// shape/mask coverage rasterization. Fail closed — no fallback to 1× or hard edges.
     case requiredSampleCountUnsupported(sampleCount: Int)
+    /// CP7.6a (`render(_:into:)`): the caller-supplied external `GPURenderTarget` texture failed
+    /// validation — wrong device, pixel format ≠ `.bgra8Unorm`, missing `.renderTarget` usage, or
+    /// dimensions ≠ the configuration canvas. Fail closed — never a silent resize/reinterpret.
+    case invalidRenderTarget(detail: String)
 }
