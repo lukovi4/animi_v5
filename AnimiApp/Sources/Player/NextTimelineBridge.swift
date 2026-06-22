@@ -59,8 +59,10 @@ final class NextTimelinePreparedContext {
     let window: EvaluationWindow
     /// STATIC per-scene photo pixels keyed by namespaced reference (video references are absent here).
     let mediaPixelsByReference: [String: ResolvedPixelInput]
-    /// CP7: per-frame video resolvers keyed by namespaced reference. Empty for photo-only timelines.
+    /// CP7: per-frame CPU video resolvers keyed by namespaced reference (parity oracle). Empty for photo-only.
     let videoResolversByReference: [String: NextVideoBlockResolver]
+    /// CP7.8: per-frame GPU texture-backed video resolvers keyed by namespaced reference. Empty for photo-only.
+    let videoTextureResolversByReference: [String: NextVideoTextureResolver]
     let assetEntries: [ResolvedAssetPixelEntry]
     let configuration: RenderConfiguration
     let session: MetalRenderSession
@@ -69,11 +71,13 @@ final class NextTimelinePreparedContext {
     init(materials: RenderMaterialTable, window: EvaluationWindow,
          mediaPixelsByReference: [String: ResolvedPixelInput],
          videoResolversByReference: [String: NextVideoBlockResolver] = [:],
+         videoTextureResolversByReference: [String: NextVideoTextureResolver] = [:],
          assetEntries: [ResolvedAssetPixelEntry],
          configuration: RenderConfiguration, session: MetalRenderSession, totalFrames: Int) {
         self.materials = materials; self.window = window
         self.mediaPixelsByReference = mediaPixelsByReference
         self.videoResolversByReference = videoResolversByReference
+        self.videoTextureResolversByReference = videoTextureResolversByReference
         self.assetEntries = assetEntries
         self.configuration = configuration; self.session = session; self.totalFrames = totalFrames
     }
@@ -161,6 +165,7 @@ enum NextTimelineBridge {
         var scenePayloads: [ResolvedScenePayload] = []
         var mediaPixelsByReference: [String: ResolvedPixelInput] = [:]
         var videoResolversByReference: [String: NextVideoBlockResolver] = [:]
+        var videoWindowsByReference: [String: NextVideoWindow] = [:]
         var assetByKey: [ResolvedAssetKey: ResolvedPixelInput] = [:]
         var materials = conversions[0].output.materials
 
@@ -184,6 +189,8 @@ enum NextTimelineBridge {
             for (ref, pix) in conv.mediaPixelsByReference { mediaPixelsByReference[ref] = pix }
             // CP7: merge per-scene video resolvers (namespaced references never collide).
             for (ref, resolver) in conv.videoResolversByReference { videoResolversByReference[ref] = resolver }
+            // CP7.8: merge per-scene video trim windows (for the GPU texture resolvers built below).
+            for (ref, win) in conv.videoWindowsByReference { videoWindowsByReference[ref] = win }
 
             // Merge authored-asset pixels. Keys are (materialID, assetID); shared programs ⇒ identical
             // asset, so coalescing is safe (dedup, do not duplicate).
@@ -207,9 +214,14 @@ enum NextTimelineBridge {
 
         let assetEntries = assetByKey.map { ResolvedAssetPixelEntry(key: $0.key, pixelInput: $0.value) }
 
+        // CP7.8: build GPU texture resolvers for every (namespaced) video reference from the session device.
+        let textureResolvers = try NextSingleSceneBridge.makeVideoTextureResolvers(
+            windowsByReference: videoWindowsByReference, sessionBox: sessionBox)
+
         return NextTimelinePreparedContext(
             materials: materials, window: window, mediaPixelsByReference: mediaPixelsByReference,
             videoResolversByReference: videoResolversByReference,
+            videoTextureResolversByReference: textureResolvers,
             assetEntries: assetEntries, configuration: configuration,
             session: sessionBox.session, totalFrames: totalFrames)
     }
@@ -293,31 +305,45 @@ enum NextTimelineBridge {
             height: frame.dimensions.height, bytesPerRow: frame.dimensions.bytesPerRow)
     }
 
+    /// READBACK path (oracle / tests / photo prerender). `execute(_:)` takes NO texture bindings — a
+    /// dynamic (video) timeline frame fails closed here; preview/export use the texture path below.
     static func renderFrame(context ctx: NextTimelinePreparedContext, frameIndex: Int) throws -> RenderedFrame {
-        let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
-        do { return try ctx.session.execute(graph) }
+        let built = try buildGraph(context: ctx, frameIndex: frameIndex)
+        guard built.textureBindings.isEmpty else {
+            throw NextBridgeError.engine("readback execute() path cannot render a dynamic-texture (video) timeline frame; use the texture-binding preview/export path")
+        }
+        do { return try ctx.session.execute(built.graph) }
         catch { throw NextBridgeError.engine("execute: \(error)") }
     }
 
-    /// CP7.6a — GPU-direct: render ONE timeline frame DIRECTLY into a caller-supplied external texture
-    /// (no CPU readback). Reuses the IDENTICAL evaluate→resolve→compile logic via `buildGraph`.
+    /// CP7.6a/CP7.8 — GPU-direct: render ONE timeline frame DIRECTLY into a caller-supplied external
+    /// texture (no CPU readback), binding any per-subplan video textures.
     static func renderFrame(
         context ctx: NextTimelinePreparedContext, frameIndex: Int,
         into target: MTLTexture, alphaMode: AlphaMode
     ) throws {
-        let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
-        do { try ctx.session.render(graph, into: GPURenderTarget(texture: target, alphaMode: alphaMode)) }
-        catch { throw NextBridgeError.engine("render(into:): \(error)") }
+        let built = try buildGraph(context: ctx, frameIndex: frameIndex)
+        do {
+            try ctx.session.render(
+                built.graph, into: GPURenderTarget(texture: target, alphaMode: alphaMode),
+                textureBindings: built.textureBindings)
+        } catch { throw NextBridgeError.engine("render(into:): \(error)") }
     }
 
-    /// CP7.7-next PREVIEW GPU-direct entry (timeline). Mirrors `NextSingleSceneBridge.renderFramePreview`.
-    static func renderFramePreview(context ctx: NextTimelinePreparedContext, frameIndex: Int, into target: MTLTexture) throws {
-        try renderFrame(context: ctx, frameIndex: frameIndex, into: target, alphaMode: .preserveAlpha)
+    /// CP7.7-next PREVIEW GPU-direct entry (timeline). CP7.8-CORR F1/F2: passes a `decodeBudget` (cold
+    /// decodes/tick) for bounded multi-video scrub. `.max` = exact. Export uses `renderFrame(into:)`.
+    static func renderFramePreview(context ctx: NextTimelinePreparedContext, frameIndex: Int, into target: MTLTexture, decodeBudget: Int = .max) throws {
+        let built = try buildGraph(context: ctx, frameIndex: frameIndex, decodeBudget: decodeBudget)
+        do {
+            try ctx.session.render(
+                built.graph, into: GPURenderTarget(texture: target, alphaMode: .preserveAlpha),
+                textureBindings: built.textureBindings)
+        } catch { throw NextBridgeError.engine("render(into:): \(error)") }
     }
 
     /// The shared per-frame timeline graph build (evaluate→resolve→compile). Used by BOTH the readback
     /// path (`renderFrame`/`renderFrameBGRA`, preview + tests) and the GPU-direct path (export).
-    static func buildGraph(context ctx: NextTimelinePreparedContext, frameIndex: Int) throws -> RenderGraph {
+    static func buildGraph(context ctx: NextTimelinePreparedContext, frameIndex: Int, decodeBudget: Int = .max) throws -> NextSingleSceneBridge.BuiltGraph {
         let plan: FramePlan
         do { plan = try TimelineEvaluator.evaluate(ctx.window, atFrame: try FrameIndex(value: Int64(max(0, frameIndex)))) }
         catch { throw NextBridgeError.engine("evaluate: \(error)") }
@@ -331,32 +357,48 @@ enum NextTimelineBridge {
             subplans = [(t.outgoing, .outgoing), (t.incoming, .incoming)]
         }
 
-        // CP7: resolve any video references PER participating subplan at THAT subplan's scene-local
-        // time. In a transition the outgoing and incoming scenes have DIFFERENT scene-local times, so
-        // each video frame must be sampled at its own subplan's time (not the shared project frame).
-        var mediaPixels = ctx.mediaPixelsByReference
-        if !ctx.videoResolversByReference.isEmpty {
+        // CP7.8: resolve any video references PER participating subplan at THAT subplan's scene-local
+        // media time → value descriptor + runtime texture handle. In a transition the outgoing/incoming
+        // scenes have DIFFERENT scene-local times, so each is sampled at its own subplan's time.
+        var dynamicFixtures: [RenderInputResolver.FixtureKey: ResolvedDynamicTextureInput] = [:]
+        var handles: [String: RuntimeTextureHandle] = [:]
+        if !ctx.videoTextureResolversByReference.isEmpty {
+            // CP7.8-CORR F1/F2: the decode budget is per-TICK (shared across a transition's two subplans),
+            // so a 6-video transition cannot spend 2×budget. Spend it down as each subplan resolves.
+            var remainingBudget = decodeBudget
             for (subplan, _) in subplans {
-                let perScene = try NextSingleSceneBridge.mergeVideoPixels(
-                    subplan: subplan, staticPixels: [:], videoResolvers: ctx.videoResolversByReference)
-                for (ref, pix) in perScene { mediaPixels[ref] = pix }
+                let (dyn, binds, spent) = try NextSingleSceneBridge.resolveVideoTexturesSpending(
+                    subplan: subplan, textureResolvers: ctx.videoTextureResolversByReference,
+                    decodeBudget: remainingBudget)
+                if remainingBudget != .max { remainingBudget = max(0, remainingBudget - spent) }
+                // Merge this subplan's fixtures + bindings. The binding map is keyed by the descriptor's
+                // resourceID (== sourceID with PTS, CP7.8-CORR F4); look each up by that id, NOT the layer ref.
+                for (k, d) in dyn {
+                    dynamicFixtures[k] = d
+                    if let h = binds.handle(for: d.id.rawValue) { handles[d.id.rawValue] = h }
+                }
             }
         }
+        let bindings = RenderRuntimeTextureBindings(handles)
+        let dynamicRefs = Set(ctx.videoTextureResolversByReference.keys)
 
-        // Build fixtures for EVERY participating scene reference (per-scene namespaced). Every bound
-        // media reference present in the plan must have pixels; every supplied fixture must be used.
-        let fixtures = try buildFixtures(subplans: subplans, mediaPixelsByReference: mediaPixels)
+        // Build BYTES fixtures for every participating non-video scene reference (per-scene namespaced).
+        let fixtures = try buildFixtures(
+            subplans: subplans, mediaPixelsByReference: ctx.mediaPixelsByReference, dynamicRefs: dynamicRefs)
 
         let base: ResolvedFrameInput
-        do { base = try RenderInputResolver.resolve(framePlan: plan, materials: ctx.materials, fixtures: fixtures) }
-        catch { throw NextBridgeError.engine("resolve: \(error)") }
+        do {
+            base = try RenderInputResolver.resolve(
+                framePlan: plan, materials: ctx.materials, fixtures: fixtures, dynamicFixtures: dynamicFixtures)
+        } catch { throw NextBridgeError.engine("resolve: \(error)") }
 
-        // Graft authored-asset pixels (RenderInputResolver.resolve carries no asset pixels). Rebuild
-        // the frame input from every participating subplan's resolved scene layers + asset entries.
+        // Graft authored-asset pixels. Rebuild from every participating subplan's resolved scene layers.
         let resolved = try rebuildWithAssetEntries(subplans: subplans, base: base, assetEntries: ctx.assetEntries)
 
-        do { return try RenderGraphCompiler.compile(plan: plan, input: resolved, configuration: ctx.configuration) }
+        let graph: RenderGraph
+        do { graph = try RenderGraphCompiler.compile(plan: plan, input: resolved, configuration: ctx.configuration) }
         catch { throw NextBridgeError.engine("compile: \(error)") }
+        return NextSingleSceneBridge.BuiltGraph(graph: graph, textureBindings: bindings)
     }
 
     // MARK: - Helpers
@@ -381,13 +423,16 @@ enum NextTimelineBridge {
     /// fixture (exactly-complete contract). Conversely, every `.image` reference present in the plan
     /// MUST have decoded pixels, or the bridge fails closed (never a silently missing photo).
     private static func buildFixtures(
-        subplans: [(SceneSubplan, ResolvedSceneRole)], mediaPixelsByReference: [String: ResolvedPixelInput]
+        subplans: [(SceneSubplan, ResolvedSceneRole)], mediaPixelsByReference: [String: ResolvedPixelInput],
+        dynamicRefs: Set<String> = []
     ) throws -> [RenderInputResolver.FixtureKey: ResolvedPixelInput] {
         var fixtures: [RenderInputResolver.FixtureKey: ResolvedPixelInput] = [:]
         var missing: [String] = []
         for (subplan, _) in subplans {
             for layer in subplan.layers {
                 guard case let .image(ref) = layer.content else { continue }
+                // CP7.8: a dynamic (video) reference is supplied via dynamicFixtures, not bytes — skip.
+                if dynamicRefs.contains(ref.raw) { continue }
                 guard let pixels = mediaPixelsByReference[ref.raw] else {
                     missing.append(ref.raw)
                     continue
@@ -415,13 +460,21 @@ enum NextTimelineBridge {
             for layer in subplan.layers {
                 let key = ResolvedLayerKey.sceneLayer(sceneID: subplan.sceneID, role: role, layerID: layer.layerID)
                 guard let program = base.program(for: key),
-                      let placement = base.mediaPlacement(for: key),
-                      let pixels = base.pixelInput(for: key) else {
+                      let placement = base.mediaPlacement(for: key) else {
                     dropped.append("\(subplan.sceneID.raw)/\(role.rawValue)/\(layer.layerID.raw)")
                     continue
                 }
-                sceneLayers.append(try ResolvedSceneLayerEntry(
-                    key: key, program: program, pixelInput: pixels, placement: placement))
+                // CP7.8: bytes-backed (photo) OR dynamic texture-backed (video).
+                if let pixels = base.pixelInput(for: key) {
+                    sceneLayers.append(try ResolvedSceneLayerEntry(
+                        key: key, program: program, pixelInput: pixels, placement: placement))
+                } else if let dyn = base.dynamicTexture(for: key) {
+                    sceneLayers.append(try ResolvedSceneLayerEntry(
+                        key: key, program: program, source: .dynamicTexture(dyn), placement: placement))
+                } else {
+                    dropped.append("\(subplan.sceneID.raw)/\(role.rawValue)/\(layer.layerID.raw)")
+                    continue
+                }
             }
         }
         guard dropped.isEmpty else {

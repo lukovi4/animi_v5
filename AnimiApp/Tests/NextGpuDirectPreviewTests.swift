@@ -4,6 +4,9 @@ import Foundation
 import Metal
 import AVFoundation
 import CoreVideo
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 @testable import AnimiApp
 import AnimiEngineMetalRender
 
@@ -31,10 +34,12 @@ final class NextGpuDirectPreviewTests: XCTestCase {
     func test_gpuDirectTexture_equalsReadbackFrame_deterministic() throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("no Metal device") }
         let folder = try sceneFolderURL("full_image")
-        let video = tempDir.appendingPathComponent("clip.mp4")
-        try runAsync { try await self.createRampVideo(at: video, frameCount: 30, fps: 30, width: 1080, height: 1920) }
+        // CP7.8: use a PHOTO — the GPU-direct == readback byte-parity invariant exists only for a bytes
+        // input. A video is texture-backed (no readback path); its orientation parity is proven at the
+        // engine layer (CP78TextureBindingTests.test_orientationParity_allQuarterTurns).
+        let photo = try tempPhoto("parity")
 
-        let inputs = videoInputs(folder: folder, video: video)
+        let inputs = photoInputs(folder: folder, photo: photo)
         let sessionBox = try NextSingleSceneBridge.makeSession(device: device)
         let decoded = try NextSingleSceneBridge.decodeMedia(inputs)
         let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
@@ -170,6 +175,34 @@ final class NextGpuDirectPreviewTests: XCTestCase {
                 placement: NextBridgePlacement(fitModeRaw: "cover", offsetX: 0, offsetY: 0, userScale: 1, rotationDegrees: 0),
                 video: NextBridgeVideo(winStart: 0, winEnd: 1.0))],
             frameIndex: 0)
+    }
+
+    /// CP7.8: the GPU-direct == readback BYTE-PARITY invariant holds only for a BYTES input (photo) — a
+    /// video is texture-backed and has no readback path. This test uses a photo to keep proving the
+    /// app-level wrapper matches `renderFrameBGRA`; video orientation parity is proven at the engine layer
+    /// (`CP78TextureBindingTests.test_orientationParity_allQuarterTurns`, bit-identical vs the CPU oracle).
+    private func photoInputs(folder: URL, photo: URL) -> NextBridgeInputs {
+        NextBridgeInputs(
+            sceneTypeId: "full_image", sceneFolderURL: folder, variantOverrides: [:],
+            blocks: [NextBridgeBlock(
+                blockID: "block_01", mediaURL: photo,
+                placement: NextBridgePlacement(fitModeRaw: "cover", offsetX: 0, offsetY: 0, userScale: 1, rotationDegrees: 0))],
+            frameIndex: 0)
+    }
+
+    private func tempPhoto(_ name: String, w: Int = 256, h: Int = 256) throws -> URL {
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        // A non-uniform pattern so the frame is a meaningful determinism fixture.
+        ctx.setFillColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.setFillColor(red: 0.9, green: 0.1, blue: 0.3, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w/2, height: h/2))
+        let image = try XCTUnwrap(ctx.makeImage())
+        let url = tempDir.appendingPathComponent("cp78gpu-\(name).png")
+        let dest = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(dest, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(dest))
+        return url
     }
 
     /// Blit a `.private` BGRA8 texture into a tight `.shared` buffer and read it back, row-unpadded.

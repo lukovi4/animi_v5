@@ -86,9 +86,31 @@ vertex FullscreenOut fullscreen_vertex(uint vid [[vertex_id]]) {
 // The executor sets the viewport to the full normalized size, so each fragment's pixel-center
 // `in.position.xy == (x+0.5, y+0.5)` truncates to exactly `uint2(x, y)` — a bijective 1:1 texel map
 // (§1.2a). `raw` and `normalized` share dimensions, so the read is always in bounds.
+// CP7.8 — orientation parameters (must match Swift `MetalSourceNormalizer.NormalizeParams`). For
+// `quarterTurns == 0` the source map is identity (`src == dst`), byte-identical to the pre-CP7.8 pass.
+struct NormalizeParams {
+    uint quarterTurns;   // 0/1/2/3 clockwise (raw → display)
+    uint rawWidth;
+    uint rawHeight;
+    uint pad;
+};
+
 fragment float4 normalize_fragment(FullscreenOut in [[stage_in]],
-                                   texture2d<float, access::read> raw [[texture(0)]]) {
-    uint2 p = uint2(in.position.xy);        // exact source texel index (pixel-center → floor)
+                                   texture2d<float, access::read> raw [[texture(0)]],
+                                   constant NormalizeParams &params [[buffer(0)]]) {
+    uint2 d = uint2(in.position.xy);        // destination (display/normalized) texel index
+    // Map the DISPLAY texel back to the RAW source texel by the INVERSE clockwise quarter-turn — the
+    // exact inverse of the CPU oracle `NextVideoBlockResolver.rotateBGRA` (top-first index remap), so the
+    // GPU-oriented output is bit-identical in layout to the CPU bake for 0/90/180/270. quarterTurns==0 is
+    // the identity map (every bytes input) — pixel-for-pixel the pre-CP7.8 pass.
+    uint w = params.rawWidth, h = params.rawHeight;
+    uint2 p;
+    switch (params.quarterTurns) {
+        case 1u: p = uint2(d.y, (h - 1u) - d.x); break;            // 90° CW : dst(dx,dy) ← src(dy, h-1-dx)
+        case 2u: p = uint2((w - 1u) - d.x, (h - 1u) - d.y); break; // 180°
+        case 3u: p = uint2((w - 1u) - d.y, d.x); break;            // 270° CW
+        default: p = d; break;                                      // 0° : identity (bytes path)
+    }
     float4 t = raw.read(p);                 // EXACT integer read; no sampler, no UV, no filtering
     float a = t.a;
     // alpha == 0 ⇒ zero RGBA (corrective §1.2 / plan §5.1 item 1/2).

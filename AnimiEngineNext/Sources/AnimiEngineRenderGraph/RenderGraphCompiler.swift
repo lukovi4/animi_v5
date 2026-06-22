@@ -49,6 +49,11 @@ public enum RenderGraphCompiler {
         for pixel in input.pixelInputs {
             ctx.declarePixelResource(pixel)
         }
+        // 3b) CP7.8: declare every DYNAMIC texture source (user video) as a value-only resource. The raw
+        //     GPU texture is bound at execution; here we emit only the deterministic descriptor.
+        for dyn in input.dynamicTextureInputs {
+            try ctx.declareDynamicTextureResource(dyn)
+        }
 
         // 4) Body.
         switch plan.body {

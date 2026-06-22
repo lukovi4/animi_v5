@@ -90,6 +90,18 @@ public final class MetalRenderSession {
     /// `execute(_:)`; on return the GPU write to the target is complete. The existing `execute(_:)`
     /// readback path (the ReferenceData oracle) is unaffected.
     public func render(_ graph: RenderGraph, into target: GPURenderTarget) throws {
+        try render(graph, into: target, textureBindings: .none)
+    }
+
+    /// CP7.8 — GPU-direct WITH dynamic texture bindings (user video). Identical contract to
+    /// `render(_:into:)` (synchronous commit+wait, R3 reentrancy guard); additionally binds each
+    /// `dynamicTexturePixelInput` resource to its runtime `MTLTexture` from `textureBindings`. The
+    /// readback `execute(_:)` path is NOT given bindings and is unaffected. A graph containing a dynamic
+    /// resource with no matching binding (or a binding that fails device/format/dims/usage validation)
+    /// fails closed with a typed error — never a silent fallback.
+    public func render(
+        _ graph: RenderGraph, into target: GPURenderTarget, textureBindings: RenderRuntimeTextureBindings
+    ) throws {
         guardLock.lock()
         if executing {
             guardLock.unlock()
@@ -108,6 +120,6 @@ public final class MetalRenderSession {
             device: device, pipelines: pipelines, submitter: submitter,
             onExecutionEvent: onExecutionEvent, onOwnerCreated: onOwnerCreated)
         executor.onCommandEncoded = onCommandEncoded
-        try executor.render(graph, into: target)
+        try executor.render(graph, into: target, textureBindings: textureBindings)
     }
 }

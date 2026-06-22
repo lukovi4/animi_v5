@@ -100,8 +100,9 @@ public enum RenderGraphValidator {
         }
         func requirePixel(_ id: String) throws {
             let d = try requireDeclared(id)
-            guard d.kind == .pixelInput else {
-                throw RenderGraphError.validatorUnsupportedMode(field: "reference.kind", value: "\(id) is not a pixelInput")
+            // CP7.8: a draw may reference EITHER a bytes pixel input OR a dynamic texture-backed input.
+            guard d.kind == .pixelInput || d.kind == .dynamicTexturePixelInput else {
+                throw RenderGraphError.validatorUnsupportedMode(field: "reference.kind", value: "\(id) is not a pixel/dynamic-texture input")
             }
         }
         func requireSurface(_ id: String) throws -> RenderResourceDescriptor {
@@ -165,12 +166,21 @@ public enum RenderGraphValidator {
         for command in graph.commands {
             switch command.payload {
             case .declareResource(let d):
-                guard d.kind == .pixelInput else { throw RenderGraphError.validatorUnsupportedMode(field: "declareResource.kind", value: d.kind.rawValue) }
-                guard let pixels = d.pixels, pixels.bytes.count == pixels.dimensions.requiredByteCount else {
-                    throw RenderGraphError.validatorInvalidDimensions(field: "pixel[\(d.resourceID)].bytes", width: d.width, height: d.height)
+                // CP7.8: a declared resource is EITHER a bytes pixel input OR a dynamic texture input.
+                guard d.kind == .pixelInput || d.kind == .dynamicTexturePixelInput else {
+                    throw RenderGraphError.validatorUnsupportedMode(field: "declareResource.kind", value: d.kind.rawValue)
                 }
-                // A pixel input MUST carry an input byte format; surface profile/storage MUST be absent
-                // (final micro-correction #1).
+                if d.kind == .pixelInput {
+                    guard let pixels = d.pixels, pixels.bytes.count == pixels.dimensions.requiredByteCount else {
+                        throw RenderGraphError.validatorInvalidDimensions(field: "pixel[\(d.resourceID)].bytes", width: d.width, height: d.height)
+                    }
+                } else {
+                    // Dynamic texture input: NO owned bytes; MUST carry a source id + quarter-turn metadata.
+                    guard d.pixels == nil else { throw RenderGraphError.validatorUnsupportedMode(field: "dynamic[\(d.resourceID)].pixels", value: "present") }
+                    guard d.dynamicTextureSourceID == d.resourceID else { throw RenderGraphError.validatorUnsupportedMode(field: "dynamic[\(d.resourceID)].sourceID", value: d.dynamicTextureSourceID ?? "nil") }
+                    guard let q = d.dynamicOrientationQuarterTurns, (0...3).contains(q) else { throw RenderGraphError.validatorUnsupportedMode(field: "dynamic[\(d.resourceID)].quarterTurns", value: "\(d.dynamicOrientationQuarterTurns ?? -1)") }
+                }
+                // Both kinds carry an input byte format; surface profile/storage MUST be absent.
                 guard d.pixelFormat != nil else { throw RenderGraphError.validatorUnsupportedMode(field: "pixel[\(d.resourceID)].pixelFormat", value: "nil") }
                 guard d.surfaceProfile == nil, d.surfaceStorage == nil else { throw RenderGraphError.validatorUnsupportedMode(field: "pixel[\(d.resourceID)].surfaceProfile", value: "present") }
                 guard declared[d.resourceID] == nil else { throw RenderGraphError.validatorDuplicateResource(resourceID: d.resourceID) }

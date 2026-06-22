@@ -26,8 +26,10 @@ struct MetalGraphExecutor {
 
     func execute(_ graph: RenderGraph) throws -> RenderedFrame {
         // CP7.6a: the readback path is the shared encode + a final readback blit (the ReferenceData
-        // oracle). Byte-identical to the pre-CP7.6a behaviour.
-        guard let frame = try runShared(graph, finish: .readback) else {
+        // oracle). Byte-identical to the pre-CP7.6a behaviour. NEVER receives texture bindings (CP7.8):
+        // the oracle path declares only bytes pixel inputs — a dynamic-texture resource here would fail
+        // the binding lookup, which is correct (the oracle never renders user video).
+        guard let frame = try runShared(graph, finish: .readback, textureBindings: .none) else {
             throw MetalRenderError.incompleteFrame(detail: "readback path produced no frame")
         }
         return frame
@@ -37,6 +39,12 @@ struct MetalGraphExecutor {
     /// caller's external `target`, with NO CPU readback and NO `RenderedFrame`. Synchronous (commit+wait):
     /// the GPU write to `target` is complete on return.
     func render(_ graph: RenderGraph, into target: GPURenderTarget) throws {
+        try render(graph, into: target, textureBindings: .none)
+    }
+
+    /// CP7.8 — GPU-direct with dynamic texture bindings (user video). Same external-target validation as
+    /// the no-binding path; the bindings are consumed in `runShared`'s declareResource step.
+    func render(_ graph: RenderGraph, into target: GPURenderTarget, textureBindings: RenderRuntimeTextureBindings) throws {
         // External-target validation (fail closed, no silent resize/reinterpret).
         let canvasW = graph.configuration.output.canvas.width
         let canvasH = graph.configuration.output.canvas.height
@@ -56,7 +64,38 @@ struct MetalGraphExecutor {
                 expectedWidth: canvasW, expectedHeight: canvasH,
                 actualWidth: Int64(target.texture.width), actualHeight: Int64(target.texture.height))
         }
-        _ = try runShared(graph, finish: .target(target))
+        _ = try runShared(graph, finish: .target(target), textureBindings: textureBindings)
+    }
+
+    /// CP7.8 — resolve + validate the runtime texture binding for a dynamic-texture descriptor. Fail
+    /// closed with a typed error on a missing binding or any device/format/usage mismatch. The dimension
+    /// check (display vs descriptor) is done by the caller, which knows the quarter-turn. Returns the
+    /// handle (texture + retained CV objects).
+    private func resolveDynamicBinding(
+        _ descriptor: RenderResourceDescriptor, bindings: RenderRuntimeTextureBindings
+    ) throws -> RuntimeTextureHandle {
+        guard let handle = bindings.handle(for: descriptor.resourceID) else {
+            throw MetalRenderError.missingTextureBinding(resourceID: descriptor.resourceID)
+        }
+        let tex = handle.texture
+        if tex.device !== device {
+            throw MetalRenderError.invalidTextureBinding(
+                resourceID: descriptor.resourceID, detail: "bound texture device != session device")
+        }
+        guard tex.pixelFormat == MetalTextureAllocator.pixelInputFormat else {
+            throw MetalRenderError.invalidTextureBinding(
+                resourceID: descriptor.resourceID,
+                detail: "bound pixelFormat \(tex.pixelFormat.rawValue) != bgra8Unorm")
+        }
+        guard tex.usage.contains(.shaderRead) else {
+            throw MetalRenderError.invalidTextureBinding(
+                resourceID: descriptor.resourceID, detail: "bound texture usage lacks .shaderRead")
+        }
+        guard tex.width > 0, tex.height > 0 else {
+            throw MetalRenderError.invalidTextureBinding(
+                resourceID: descriptor.resourceID, detail: "bound texture has non-positive dimensions")
+        }
+        return handle
     }
 
     /// How the shared encode terminates after the final sRGB conversion.
@@ -71,7 +110,9 @@ struct MetalGraphExecutor {
     /// diverge ONLY in the trailing step (readback blit vs external-target copy). Returns a
     /// `RenderedFrame` for `.readback` and nil for `.target`.
     @discardableResult
-    private func runShared(_ graph: RenderGraph, finish: Finish) throws -> RenderedFrame? {
+    private func runShared(
+        _ graph: RenderGraph, finish: Finish, textureBindings: RenderRuntimeTextureBindings
+    ) throws -> RenderedFrame? {
         let configuration = graph.configuration
 
         // ---- Step 1: whole-graph preflight (plan §4.1 + Issue-4) — no per-execution GPU objects yet. ----
@@ -85,6 +126,10 @@ struct MetalGraphExecutor {
         let owner = MetalResourceOwner()
         onOwnerCreated?(owner)
 
+        // CP7.8: per-resource quarter-turn for the normalization pass (0 for bytes inputs; the
+        // descriptor's value for a dynamic texture input). Keyed by resourceID.
+        var normalizeQuarterTurns: [String: Int] = [:]
+
         // ---- Step 3: allocate raw+normalized pixel textures; prepare host data / staging buffers. ----
         var stagedUploads: [MetalResourceUploader.StagedUpload] = []
         // The pixel resources in declaration order, for the normalization passes (step 7b).
@@ -93,6 +138,33 @@ struct MetalGraphExecutor {
         for command in graph.commands {
             switch command.payload {
             case .declareResource(let descriptor):
+                if descriptor.kind == .dynamicTexturePixelInput {
+                    // CP7.8: bind the externally supplied RAW texture (track-native orientation). NO CPU
+                    // upload. The normalized texture is allocated at the descriptor's DISPLAY (oriented)
+                    // dims; the normalization pass applies the quarter-turn (raw → display). Fail closed
+                    // on a missing/invalid binding — never a silent fallback.
+                    let raw = try resolveDynamicBinding(descriptor, bindings: textureBindings)
+                    owner.retainRuntimeBinding(raw.retain)   // hold CVPixelBuffer/CVMetalTexture to completion
+                    let turns = descriptor.dynamicOrientationQuarterTurns ?? 0
+                    // Display (oriented) dims: odd turns swap the raw texture's W/H. The descriptor's
+                    // declared dims MUST equal these (fail closed on any mismatch).
+                    let rawW = raw.texture.width, rawH = raw.texture.height
+                    let displayW = (turns % 2 == 0) ? rawW : rawH
+                    let displayH = (turns % 2 == 0) ? rawH : rawW
+                    guard Int64(displayW) == descriptor.width, Int64(displayH) == descriptor.height else {
+                        throw MetalRenderError.invalidTextureBinding(
+                            resourceID: descriptor.resourceID,
+                            detail: "bound texture \(rawW)x\(rawH) (turns \(turns) → display \(displayW)x\(displayH)) != descriptor \(descriptor.width)x\(descriptor.height)")
+                    }
+                    let normalizedTexture = try allocator.makeNormalizedTexture(
+                        width: displayW, height: displayH, resourceID: descriptor.resourceID)
+                    owner.registerPixelResource(
+                        MetalResourceOwner.PixelResourceTextures(raw: raw.texture, normalized: normalizedTexture),
+                        for: descriptor.resourceID)
+                    pixelResourceOrder.append(descriptor.resourceID)
+                    normalizeQuarterTurns[descriptor.resourceID] = turns
+                    break   // dynamic input fully set up; no staged/shared upload.
+                }
                 guard let pixels = descriptor.pixels else {
                     throw MetalRenderError.missingResource(resourceID: descriptor.resourceID)
                 }
@@ -111,6 +183,7 @@ struct MetalGraphExecutor {
                     MetalResourceOwner.PixelResourceTextures(raw: rawTexture, normalized: normalizedTexture),
                     for: descriptor.resourceID)
                 pixelResourceOrder.append(descriptor.resourceID)
+                normalizeQuarterTurns[descriptor.resourceID] = 0
                 if allocator.pixelInputNeedsStagedUpload {
                     let staged = try uploader.prepareStagedUpload(
                         pixels, into: rawTexture, resourceID: descriptor.resourceID)
@@ -166,8 +239,11 @@ struct MetalGraphExecutor {
             guard let entry = owner.pixelResources[resourceID] else {
                 throw MetalRenderError.missingResource(resourceID: resourceID)
             }
+            // CP7.8: a dynamic texture input carries a non-zero quarter-turn the pass applies (raw →
+            // display). Bytes inputs are quarter-turn 0 (byte-identical to the pre-CP7.8 pass).
             try normalizer.encodeNormalization(
-                into: commandBuffer, raw: entry.raw, normalized: entry.normalized, resourceID: resourceID)
+                into: commandBuffer, raw: entry.raw, normalized: entry.normalized,
+                quarterTurns: normalizeQuarterTurns[resourceID] ?? 0, resourceID: resourceID)
             onExecutionEvent?(.normalize(resourceID: resourceID))
         }
 
@@ -257,8 +333,17 @@ struct MetalGraphExecutor {
             }
             switch command.payload {
             case .declareResource(let d):
-                guard d.pixels != nil else {
-                    throw MetalRenderError.missingResource(resourceID: d.resourceID)
+                // CP7.8: a dynamic texture input carries NO bytes (the raw texture is bound at execution);
+                // a bytes pixel input MUST carry its owned pixels. Either is a valid declared pixel resource.
+                if d.kind == .dynamicTexturePixelInput {
+                    guard d.pixels == nil, d.dynamicTextureSourceID == d.resourceID,
+                          let q = d.dynamicOrientationQuarterTurns, (0...3).contains(q) else {
+                        throw MetalRenderError.missingResource(resourceID: d.resourceID)
+                    }
+                } else {
+                    guard d.pixels != nil else {
+                        throw MetalRenderError.missingResource(resourceID: d.resourceID)
+                    }
                 }
                 guard d.width > 0, d.height > 0 else {
                     throw MetalRenderError.invalidSurfaceDimensions(
@@ -298,7 +383,9 @@ struct MetalGraphExecutor {
                         actualWidth: Int64(pxW), actualHeight: Int64(pxH))
                 }
             case let .drawImage(resourceID, _, _, _), let .drawVideoFrame(resourceID, _, _, _):
-                guard declared[resourceID]?.kind == .pixelInput else {
+                // CP7.8: a draw may reference a bytes pixel input OR a dynamic texture-backed input.
+                let k = declared[resourceID]?.kind
+                guard k == .pixelInput || k == .dynamicTexturePixelInput else {
                     throw MetalRenderError.missingResource(resourceID: resourceID)
                 }
             case .endScene, .beginClip, .endClip, .finalLinearToSRGB, .finalOutput,

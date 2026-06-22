@@ -29,6 +29,9 @@ final class MetalResourceOwner {
     /// Step-11 (§7.7) transient GPU textures (MSAA coverage, resolved coverage, mask accumulators)
     /// owned per execution and released at completion.
     private(set) var transientTextures: [MTLTexture] = []
+    /// CP7.8 — opaque CoreVideo backing objects (`CVPixelBuffer`/`CVMetalTexture`) for dynamic texture
+    /// bindings, retained until command completion so their IOSurface stays valid for the GPU read (§9).
+    private(set) var runtimeBindingRetains: [Any] = []
 
     /// Package-internal lifecycle hook (C3, §7): set only by tests. Called from `deinit`.
     var onDeinit: (() -> Void)?
@@ -52,6 +55,13 @@ final class MetalResourceOwner {
     /// Retain a Step-11 transient texture until command completion (§7.7).
     func retainTransient(_ texture: MTLTexture) {
         transientTextures.append(texture)
+    }
+
+    /// CP7.8 — retain a dynamic texture binding's CoreVideo backing (`CVPixelBuffer`/`CVMetalTexture`)
+    /// until command completion, so the IOSurface behind the bound raw texture cannot be recycled while
+    /// the GPU reads it (§9 lifetime). The objects are held opaquely; the owner never inspects them.
+    func retainRuntimeBinding(_ objects: [Any]) {
+        runtimeBindingRetains.append(contentsOf: objects)
     }
 
     /// The **normalized** texture a scene draw must sample (correction #2: never the raw texture).

@@ -53,25 +53,92 @@ public enum ResolvedLayerKey: Hashable, Sendable, Comparable {
     }
 }
 
+/// CP7.8 — a dynamic texture-backed pixel source (value only). It is the canonical, `Sendable`,
+/// deterministic stand-in for a per-frame user-video frame: a stable `id` (also the runtime-binding key),
+/// the **display/oriented** dimensions (post quarter-turn — what downstream draw + placement see, matching
+/// the CPU bake output dims), the input byte format, the display orientation, and the raw→display clockwise
+/// quarter-turn the GPU normalization pass applies. It carries NO bytes, NO content hash, NO `MTLTexture`/
+/// `CVMetalTexture`/`CVPixelBuffer`. The actual raw GPU texture is supplied at execution time via
+/// `RenderRuntimeTextureBindings` (MetalRender), keyed by `id`.
+public struct ResolvedDynamicTextureInput: Hashable, Sendable {
+    public let id: PixelInputID
+    public let width: Int
+    public let height: Int
+    public let bytesFormat: PixelByteFormat
+    /// Display orientation AFTER the quarter-turn is applied (always `.up` in practice, but explicit).
+    public let orientation: PixelOrientation
+    /// Raw→display CLOCKWISE quarter-turns (0/1/2/3) the normalization pass applies on the GPU.
+    public let orientationQuarterTurns: Int
+
+    public init(id: PixelInputID, width: Int, height: Int, bytesFormat: PixelByteFormat,
+                orientation: PixelOrientation, orientationQuarterTurns: Int) throws {
+        guard width > 0, height > 0 else {
+            throw RenderModelError.malformedDimensions(
+                field: "ResolvedDynamicTextureInput", width: Int64(width), height: Int64(height))
+        }
+        guard (0...3).contains(orientationQuarterTurns) else {
+            throw RenderModelError.valueOutOfRange(
+                field: "ResolvedDynamicTextureInput.orientationQuarterTurns",
+                value: Int64(orientationQuarterTurns), lowerBound: 0, upperBound: 3)
+        }
+        self.id = id
+        self.width = width
+        self.height = height
+        self.bytesFormat = bytesFormat
+        self.orientation = orientation
+        self.orientationQuarterTurns = orientationQuarterTurns
+    }
+}
+
+/// The pixel source a scene layer draws (CP7.8): either owned bytes (photo / authored asset — unchanged
+/// path, carries content hash) OR a dynamic texture (user video — value-only, GPU-bound at execution).
+/// This is additive: the existing bytes path is preserved verbatim; only video uses `.dynamicTexture`.
+public enum ResolvedLayerSource: Hashable, Sendable {
+    case pixels(ResolvedPixelInput)
+    case dynamicTexture(ResolvedDynamicTextureInput)
+
+    /// The shared `PixelInputID` (both the binding key and, for a dynamic source, the runtime-binding key).
+    public var id: PixelInputID {
+        switch self {
+        case .pixels(let p): return p.id
+        case .dynamicTexture(let d): return d.id
+        }
+    }
+}
+
 /// One complete scene media layer (issue #8): its key, the selected material program (retained whole,
-/// issue #3), the pixel input it draws, and its resolved media placement — supplied together so a
-/// partial binding is unrepresentable.
+/// issue #3), the pixel SOURCE it draws (bytes or dynamic texture, CP7.8), and its resolved media
+/// placement — supplied together so a partial binding is unrepresentable.
 public struct ResolvedSceneLayerEntry: Hashable, Sendable {
     public let key: ResolvedLayerKey
     public let program: RenderMaterialProgram
-    public let pixelInput: ResolvedPixelInput
+    public let source: ResolvedLayerSource
     public let placement: ResolvedMediaPlacement
+
+    /// Convenience: the owned bytes if this is a bytes-backed layer; `nil` for a dynamic-texture layer.
+    public var pixelInput: ResolvedPixelInput? {
+        if case .pixels(let p) = source { return p }
+        return nil
+    }
+
+    /// Bytes-backed (photo / authored asset) — the existing path, unchanged signature.
     /// Key ownership (issue #6): a scene-layer entry accepts **only** a `.sceneLayer` key; an
     /// `.overlay` key is a typed failure, so a misclassified entry cannot be constructed.
     public init(key: ResolvedLayerKey, program: RenderMaterialProgram,
                 pixelInput: ResolvedPixelInput, placement: ResolvedMediaPlacement) throws {
+        try self.init(key: key, program: program, source: .pixels(pixelInput), placement: placement)
+    }
+
+    /// CP7.8 — bytes OR dynamic-texture source. Same `.sceneLayer` key requirement.
+    public init(key: ResolvedLayerKey, program: RenderMaterialProgram,
+                source: ResolvedLayerSource, placement: ResolvedMediaPlacement) throws {
         guard case .sceneLayer = key else {
             throw RenderModelError.unsupportedValue(
                 field: "ResolvedSceneLayerEntry.key", value: "expected .sceneLayer, got \(key.canonicalString)")
         }
         self.key = key
         self.program = program
-        self.pixelInput = pixelInput
+        self.source = source
         self.placement = placement
     }
 }
@@ -127,6 +194,10 @@ public struct ResolvedFrameInput: Hashable, Sendable {
     private let programBindingStorage: [ResolvedLayerKey: RenderMaterialID]
     /// Authored-asset pixels keyed by `(materialID, assetID)` (corrective #4).
     private let assetPixelStorage: [ResolvedAssetKey: PixelInputID]
+    /// CP7.8: dynamic texture-backed pixel sources (user video), keyed by id. Value-only; the runtime
+    /// GPU texture is bound out-of-band at execution. A given `PixelInputID` is EITHER in `pixelStorage`
+    /// (bytes) OR here (dynamic), never both.
+    private let dynamicTextureStorage: [PixelInputID: ResolvedDynamicTextureInput]
 
     /// Builds and validates a complete frame input from indivisible scene-layer entries and overlay
     /// entries (issue #8: structurally complete). It:
@@ -147,9 +218,13 @@ public struct ResolvedFrameInput: Hashable, Sendable {
         var programsByID: [RenderMaterialID: RenderMaterialProgram] = [:]
         var sceneBindings: [SceneMaterialBinding] = []
         var assetBindings: [ResolvedAssetKey: PixelInputID] = [:]
+        var dynamicTextures: [PixelInputID: ResolvedDynamicTextureInput] = [:]
 
         // Coalesce a pixel input by id; a same-id different-content pair is a typed conflict (issue #4).
         func addPixel(_ input: ResolvedPixelInput) throws {
+            guard dynamicTextures[input.id] == nil else {
+                throw RenderModelError.conflictingPixelInput(id: input.id.rawValue)   // id is both bytes & dynamic
+            }
             if let existing = pixels[input.id] {
                 guard existing == input else {
                     throw RenderModelError.conflictingPixelInput(id: input.id.rawValue)
@@ -159,13 +234,30 @@ public struct ResolvedFrameInput: Hashable, Sendable {
             }
         }
 
+        // CP7.8: coalesce a dynamic texture source by id; same-id different-value is a typed conflict.
+        func addDynamic(_ input: ResolvedDynamicTextureInput) throws {
+            guard pixels[input.id] == nil else {
+                throw RenderModelError.conflictingPixelInput(id: input.id.rawValue)   // id is both bytes & dynamic
+            }
+            if let existing = dynamicTextures[input.id] {
+                guard existing == input else {
+                    throw RenderModelError.conflictingPixelInput(id: input.id.rawValue)
+                }
+            } else {
+                dynamicTextures[input.id] = input
+            }
+        }
+
         for entry in sceneLayers {
             guard bindings[entry.key] == nil else {
                 throw RenderModelError.duplicateIdentity(
                     field: "ResolvedFrameInput.sceneLayers", value: entry.key.canonicalString)
             }
-            try addPixel(entry.pixelInput)
-            bindings[entry.key] = entry.pixelInput.id
+            switch entry.source {
+            case .pixels(let p): try addPixel(p)
+            case .dynamicTexture(let d): try addDynamic(d)
+            }
+            bindings[entry.key] = entry.source.id
             placements[entry.key] = entry.placement
             programBindings[entry.key] = entry.program.id
             // Program dedup (issue #5): coalesce only **value-identical** programs sharing an id; the
@@ -217,6 +309,7 @@ public struct ResolvedFrameInput: Hashable, Sendable {
         self.placementStorage = placements
         self.programBindingStorage = programBindings
         self.assetPixelStorage = assetBindings
+        self.dynamicTextureStorage = dynamicTextures
     }
 
     /// The authored-asset pixels for `(materialID, assetID)`, or `nil` if not supplied (corrective #4).
@@ -234,6 +327,14 @@ public struct ResolvedFrameInput: Hashable, Sendable {
         return pixelStorage[id]
     }
     public func pixelInputID(for key: ResolvedLayerKey) -> PixelInputID? { bindingStorage[key] }
+
+    /// CP7.8: the dynamic texture source bound to `id` / `key`, or `nil` if the binding is bytes-backed
+    /// (or absent). A layer binding resolves to EITHER `pixelInput(for:)` OR `dynamicTexture(for:)`.
+    public func dynamicTexture(_ id: PixelInputID) -> ResolvedDynamicTextureInput? { dynamicTextureStorage[id] }
+    public func dynamicTexture(for key: ResolvedLayerKey) -> ResolvedDynamicTextureInput? {
+        guard let id = bindingStorage[key] else { return nil }
+        return dynamicTextureStorage[id]
+    }
     public func mediaPlacement(for key: ResolvedLayerKey) -> ResolvedMediaPlacement? { placementStorage[key] }
     public func program(for key: ResolvedLayerKey) -> RenderMaterialProgram? {
         guard let id = programBindingStorage[key] else { return nil }
@@ -244,6 +345,10 @@ public struct ResolvedFrameInput: Hashable, Sendable {
 
     public var pixelInputs: [ResolvedPixelInput] { pixelStorage.values.sorted { $0.id < $1.id } }
     public var pixelInputCount: Int { pixelStorage.count }
+    /// CP7.8: dynamic texture sources in deterministic id order (the compiler declares one dynamic
+    /// resource per entry).
+    public var dynamicTextureInputs: [ResolvedDynamicTextureInput] { dynamicTextureStorage.values.sorted { $0.id < $1.id } }
+    public var dynamicTextureCount: Int { dynamicTextureStorage.count }
     public var layerKeys: [ResolvedLayerKey] { bindingStorage.keys.sorted() }
     public var bindingCount: Int { bindingStorage.count }
     public var mediaPlacementKeys: [ResolvedLayerKey] { placementStorage.keys.sorted() }
@@ -291,14 +396,32 @@ public struct ResolvedFrameInput: Hashable, Sendable {
                     ("pixelInputID", .string(pair.value.rawValue))
                 ])
             }
-        return try RenderCanonicalEncoding.object([
+        var fields: [(String, RenderCanonicalEncoding.Value)] = [
             ("assetPixels", .array(assetEntries)),
             ("layerBindings", .array(bindingEntries)),
             ("materials", try materials.canonicalValue()),
             ("mediaPlacements", .array(placementEntries)),
             ("pixelInputs", .array(pixelEntries)),
             ("programBindings", .array(programBindingEntries))
-        ])
+        ]
+        // CP7.8: dynamic texture sources are emitted ONLY when present, so a photo/asset-only frame's
+        // canonical value (and hash) is byte-identical to before — the ReferenceData oracle is unaffected.
+        if !dynamicTextureStorage.isEmpty {
+            let dynEntries = dynamicTextureInputs.map { d -> RenderCanonicalEncoding.Value in
+                .object([
+                    ("bytesFormat", .string(d.bytesFormat.rawValue)),
+                    ("height", .int(Int64(d.height))),
+                    ("id", .string(d.id.rawValue)),
+                    ("orientation", .string(d.orientation.rawValue)),
+                    ("orientationQuarterTurns", .int(Int64(d.orientationQuarterTurns))),
+                    ("width", .int(Int64(d.width)))
+                ])
+            }
+            fields.append(("dynamicTextureInputs", .array(dynEntries)))
+        }
+        // The canonical encoder sorts object keys itself, so omitting this key when empty yields a
+        // byte-identical value/hash to the pre-CP7.8 photo/asset-only frame.
+        return try RenderCanonicalEncoding.object(fields)
     }
 
     public func contentHash() throws -> String {

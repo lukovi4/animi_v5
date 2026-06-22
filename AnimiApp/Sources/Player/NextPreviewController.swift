@@ -2,6 +2,52 @@
 import Foundation
 import Metal
 
+// MARK: - CP7.8-CORR: media file-stat cache (main-thread fix B)
+//
+// `NextPreviewKey.init` previously called `FileManager.attributesOfItem` for EVERY bound media block on
+// EVERY `draw(in:)` — for 6 videos that was ~12 synchronous disk stats/frame ≈ 30ms on the MAIN thread
+// (device-measured), the dominant cause of the "ui тормозит" lag the render-queue probe could not see.
+//
+// A resolved media URL points at a file that only changes when the user (re)assigns media — never within
+// a playback/scrub frame stream. So the (size, mtime) identity is cached by path and reused every frame;
+// the editor calls `invalidate(path:)` when it (re)resolves a media URL, so a genuine file-identity change
+// still flows into `mediaKey` (which gates decode/context rebuild). Thread-safe (init can run off-main).
+final class NextMediaStatCache {
+    static let shared = NextMediaStatCache()
+    struct Stat: Equatable { let size: Int64; let mtime: Double }
+    private let lock = NSLock()
+    private var cache: [String: Stat] = [:]
+
+    /// The cached (size, mtime) for `path`, computing + caching it once on a miss. No per-frame disk IO
+    /// after the first stat for a given path.
+    func stat(path: String) -> Stat {
+        lock.lock()
+        if let hit = cache[path] { lock.unlock(); return hit }
+        lock.unlock()
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let s = Stat(
+            size: (attrs?[.size] as? NSNumber)?.int64Value ?? -1,
+            mtime: (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1)
+        lock.lock(); cache[path] = s; lock.unlock()
+        return s
+    }
+
+    /// MAIN-THREAD-SAFE lookup that NEVER touches disk: returns the cached (size, mtime) or a `-1` sentinel
+    /// on a miss. The draw path uses this so `makeNextBridgeInputs` / `NextPreviewKey` perform NO disk IO;
+    /// the real stat is warmed off-main by `stat(path:)` at URL resolution. A miss (sentinel) on the very
+    /// first frame after resolve is harmless: the identity converges once the warm completes, and a
+    /// sentinel→real transition changes `mediaKey` (a one-time rebuild), never a per-frame cost.
+    func cachedOnly(path: String) -> Stat {
+        lock.lock(); defer { lock.unlock() }
+        return cache[path] ?? Stat(size: -1, mtime: -1)
+    }
+
+    /// Drop the cached stat for `path` so the next `stat(path:)` re-reads from disk. Called by the editor
+    /// when a media URL is (re)resolved (the only moment the file identity can change).
+    func invalidate(path: String) { lock.lock(); cache[path] = nil; lock.unlock() }
+    func invalidateAll() { lock.lock(); cache.removeAll(); lock.unlock() }
+}
+
 // MARK: - CP3: DEBUG-only Next preview cache + scheduler
 //
 // Splits the CP2 per-draw pipeline into:
@@ -58,11 +104,16 @@ struct NextPreviewKey: Equatable {
         self.timelineDurationFrames = inputs.timelineDurationFrames
         let sorted = inputs.blocks.sorted { $0.blockID < $1.blockID }
         self.blockMedia = sorted.map { b in
-            let attrs = try? FileManager.default.attributesOfItem(atPath: b.mediaURL.path)
-            return BlockMedia(
+            // CP7.8-CORR (main-thread fix B): PURE / value-only — NO FileManager, NO disk IO here. The per-
+            // frame `attributesOfItem` previously cost ~30ms for 6 videos (12 stats/frame) on the MAIN
+            // thread → "ui тормозит". The (size, mtime) media identity is now computed OFF the main thread
+            // when the URL resolves and carried in `NextBridgeBlock.mediaSize/mediaMTime`; the key just
+            // reads those values. A real file-identity change still flows into `mediaKey` because the
+            // editor recomputes the stat (and bumps the carried values) on URL resolve / refresh.
+            BlockMedia(
                 blockID: b.blockID, mediaPath: b.mediaURL.path,
-                mediaSize: (attrs?[.size] as? NSNumber)?.int64Value ?? -1,
-                mediaMTime: (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1,
+                mediaSize: b.mediaSize,
+                mediaMTime: b.mediaMTime,
                 videoWindow: b.video.map { BlockMedia.VideoWindowKey(winStart: $0.winStart, winEnd: $0.winEnd) })
         }
         self.blockPlacements = sorted.map { b in
@@ -200,6 +251,24 @@ final class NextPreviewController {
     /// (gesture settled), so live gestures get the render queue to themselves.
     private var keyChangesSincePrerender: UInt64 = 0
     private var lastPrerenderKeyChanges: UInt64 = 0
+
+    /// CP7.8-CORR F1/F2: cold video decodes allowed per PREVIEW tick during an ACTIVE scrub/gesture. Caps
+    /// the per-frame decode work so a multi-video hard scrub never serializes N far decodes in one tick
+    /// (the 3.3 s 6-video stall). Over budget, a video reuses its last-good texture (soft-skip); it catches
+    /// up over subsequent ticks. When the gesture SETTLES the render uses `.max` (exact frame). Tunable.
+    private static let scrubColdDecodeBudget = 2
+
+    /// The decode budget for the request being dispatched. Bounded ONLY during an interactive SCRUB:
+    /// `!isPlaying` AND the key advanced since the last settle (a live gesture). During PLAYBACK
+    /// (`isPlaying`) it is UNBOUNDED so every video advances each tick (a cheap forward decode — bounding
+    /// playback starved videos: "рывками / не запускаются"). Settled (not playing, key stable) is also
+    /// unbounded → exact frame.
+    private func previewDecodeBudget(isPlaying: Bool) -> Int {
+        guard !isPlaying else { return .max }
+        return keyChangesSincePrerender != lastPrerenderKeyChanges ? Self.scrubColdDecodeBudget : .max
+    }
+    /// Last play/scrub mode the editor reported (so a trailing-coalesced re-fire uses the current mode).
+    private var lastIsPlaying = false
 
     private let renderQueue = DispatchQueue(label: "com.animi.next-preview.render", qos: .userInitiated)
     private(set) var stats = NextPreviewStats()
@@ -440,8 +509,9 @@ final class NextPreviewController {
     /// Mirrors `requestFrame`'s epoch / latest-wins / trailing-coalesce; there is NO per-index texture
     /// cache (the bounded pool holds only the in-flight set) — scrub already missed the frame cache, and
     /// static playback's win is the reused prepared context, not a cached output texture.
-    func requestTexture(_ inputs: NextBridgeInputs, completion: @escaping (TextureOutcome) -> Void) {
+    func requestTexture(_ inputs: NextBridgeInputs, isPlaying: Bool = false, completion: @escaping (TextureOutcome) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
+        lastIsPlaying = isPlaying
         guard let newKey = NextPreviewKey(inputs: inputs) else {
             completion(.failure(NextBridgeError.mediaResolveFailed("unresolved media file")))
             return
@@ -479,6 +549,7 @@ final class NextPreviewController {
         let mediaKey = newKey.mediaKey
         let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
         let existingContext = context
+        let decodeBudget = previewDecodeBudget(isPlaying: lastIsPlaying)   // CP7.8-CORR F1/F2: bounded only during interactive scrub
         inFlight = true
         if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
 
@@ -523,7 +594,7 @@ final class NextPreviewController {
                     }
                     let t1 = Self.nowMs()
                     do {
-                        try NextSingleSceneBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture)
+                        try NextSingleSceneBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture, decodeBudget: decodeBudget)
                     } catch {
                         // Render failed: return the never-presented (idle) handle so its slot is not leaked.
                         pool.releaseUnpresented(handle)
@@ -562,7 +633,7 @@ final class NextPreviewController {
                 }
                 if let pending = self.pendingTextureRequest {
                     self.pendingTextureRequest = nil
-                    self.requestTexture(pending.inputs, completion: pending.completion)
+                    self.requestTexture(pending.inputs, isPlaying: self.lastIsPlaying, completion: pending.completion)
                 }
             }
         }
@@ -693,8 +764,9 @@ final class NextPreviewController {
 
     /// CP7.7-next: timeline GPU-direct request. Mirrors `requestTexture` (single-scene) but uses the
     /// timeline key/context/bridge. Returns nil after scheduling an async render.
-    func requestTimelineTexture(_ inputs: NextBridgeTimelineInputs, completion: @escaping (TextureOutcome) -> Void) {
+    func requestTimelineTexture(_ inputs: NextBridgeTimelineInputs, isPlaying: Bool = false, completion: @escaping (TextureOutcome) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
+        lastIsPlaying = isPlaying
         guard let newKey = NextTimelineKey(inputs: inputs) else {
             completion(.failure(NextBridgeError.multiSceneUnsupported(sceneItemCount: inputs.scenes.count)))
             return
@@ -730,6 +802,7 @@ final class NextPreviewController {
         let captured = inputs
         let mediaKey = newKey.mediaKey
         let existingContext = timelineContext
+        let decodeBudget = previewDecodeBudget(isPlaying: lastIsPlaying)   // CP7.8-CORR F1/F2: bounded only during interactive scrub
         inFlight = true
         if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
 
@@ -773,7 +846,7 @@ final class NextPreviewController {
                     }
                     let t1 = Self.nowMs()
                     do {
-                        try NextTimelineBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture)
+                        try NextTimelineBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture, decodeBudget: decodeBudget)
                     } catch {
                         // Render failed: return the never-presented (idle) handle so its slot is not leaked.
                         pool.releaseUnpresented(handle)
@@ -808,7 +881,7 @@ final class NextPreviewController {
                 }
                 if let pending = self.pendingTimelineTextureRequest {
                     self.pendingTimelineTextureRequest = nil
-                    self.requestTimelineTexture(pending.inputs, completion: pending.completion)
+                    self.requestTimelineTexture(pending.inputs, isPlaying: self.lastIsPlaying, completion: pending.completion)
                 }
             }
         }

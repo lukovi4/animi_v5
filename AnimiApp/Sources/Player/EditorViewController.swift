@@ -839,9 +839,14 @@ extension EditorViewController: MTKViewDelegate {
         // checked back into the pool ONLY when the present command buffer completes (safe lifetime).
         //
         // CP5: a multi-scene timeline routes to the timeline path; a single scene to the single-scene path.
+        // CP7.8-CORR F1/F2: the decode budget is bounded ONLY during an interactive SCRUB (not playing).
+        // During playback every video must advance each tick (cheap forward decode), so pass isPlaying so
+        // the controller uses an UNBOUNDED budget then — bounding playback starved videos ("рывками / не
+        // запускаются"). Settled (not playing, not scrubbing) is also unbounded → exact.
+        let isPlaying = (runtime?.isPlaying ?? false)
         switch inputs {
         case .single(let single):
-            controller.requestTexture(single) { [weak self] outcome in
+            controller.requestTexture(single, isPlaying: isPlaying) { [weak self] outcome in
                 guard let self else { return }
                 switch outcome {
                 case .texture(let handle):
@@ -863,7 +868,7 @@ extension EditorViewController: MTKViewDelegate {
                 }
             }
         case .timeline(let timeline):
-            controller.requestTimelineTexture(timeline) { [weak self] outcome in
+            controller.requestTimelineTexture(timeline, isPlaying: isPlaying) { [weak self] outcome in
                 guard let self else { return }
                 switch outcome {
                 case .texture(let handle):
@@ -977,13 +982,18 @@ extension EditorViewController: MTKViewDelegate {
                 video = NextBridgeVideo(winStart: w.trimStart, winEnd: w.trimEnd)
             }
             let p = slot.placement
+            // CP7.8-CORR fix B: read the media (size, mtime) from the in-memory cache (warmed off-main at
+            // URL resolve). `cachedOnly` is a pure dictionary lookup — NEVER touches disk on the main thread.
+            let mediaStat = NextMediaStatCache.shared.cachedOnly(path: mediaURL.path)
             blocks.append(NextBridgeBlock(
                 blockID: blockID,
                 mediaURL: mediaURL,
                 placement: NextBridgePlacement(
                     fitModeRaw: p.fitMode.rawValue, offsetX: p.offsetX, offsetY: p.offsetY,
                     userScale: p.userScale, rotationDegrees: p.rotationDegrees),
-                video: video))
+                video: video,
+                mediaSize: mediaStat.size,
+                mediaMTime: mediaStat.mtime))
         }
 
         // CP7 stretch guard input: the scene's TIMELINE span in frames (app `durationUs` at the v1
@@ -1245,6 +1255,14 @@ extension EditorViewController: MTKViewDelegate {
         let locator = session.mediaLocator
         Task { [weak self] in
             let resolved = try? await locator.absoluteURL(for: mediaRef, registry: registry)
+            // CP7.8-CORR fix B: compute the media (size, mtime) OFF the main thread, right here at URL
+            // resolution (the only moment the file identity can change), and warm the cache. NextPreviewKey
+            // then reads the cached values with NO main-thread disk IO. `invalidate` first so a re-resolve
+            // of the SAME path picks up an edited file (preserves the stale-media-protection contract).
+            if let resolved {
+                NextMediaStatCache.shared.invalidate(path: resolved.path)
+                _ = NextMediaStatCache.shared.stat(path: resolved.path)   // warm off-main
+            }
             await MainActor.run {
                 guard let self else { return }
                 self.nextBridgeMediaResolveInFlight.remove(key)

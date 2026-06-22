@@ -41,6 +41,17 @@ struct CompileContext {
             pixelInputID: pixels.id.rawValue, pixels: pixels, colorContract: configuration.colorContract)))
     }
 
+    /// CP7.8: declares a DYNAMIC texture-backed pixel input once (idempotent by id). Value-only — the raw
+    /// GPU texture is bound at execution time via `RenderRuntimeTextureBindings`, keyed by this id. Shares
+    /// the `declaredPixelIDs` set with `declarePixelResource` so an id is declared exactly once either way.
+    mutating func declareDynamicTextureResource(_ dyn: ResolvedDynamicTextureInput) throws {
+        guard declaredPixelIDs.insert(dyn.id.rawValue).inserted else { return }
+        declarations.append(.declareResource(try RenderResourceDescriptor(
+            dynamicTextureSourceID: dyn.id.rawValue, width: Int64(dyn.width), height: Int64(dyn.height),
+            pixelFormat: dyn.bytesFormat, orientation: dyn.orientation,
+            orientationQuarterTurns: dyn.orientationQuarterTurns, colorContract: configuration.colorContract)))
+    }
+
     /// Declares an intermediate offscreen surface (linear canvas / scene / transition / matte) using the
     /// configuration's intermediate profile (corrective #6). Idempotent by id.
     mutating func declareIntermediateSurface(_ id: String, width: Int64, height: Int64, configuration: RenderConfiguration) {

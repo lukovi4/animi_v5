@@ -10,11 +10,25 @@ import Metal
 struct MetalSourceNormalizer {
     let pipelines: MetalPipelineLibrary
 
+    /// CP7.8 — the per-pass orientation parameters the normalize fragment uses to map a DISPLAY
+    /// (normalized) texel back to the RAW source texel. Layout MUST match `NormalizeParams` in the shader.
+    /// For `quarterTurns == 0` (every bytes input, and an identity-orientation video) the mapping is the
+    /// identity `src == dst`, byte-identical to the pre-CP7.8 pass.
+    struct NormalizeParams {
+        var quarterTurns: UInt32   // 0/1/2/3 clockwise (raw → display)
+        var rawWidth: UInt32
+        var rawHeight: UInt32
+        var pad: UInt32 = 0
+    }
+
     /// Encode one normalization pass: `raw` (read by integer coord) → `normalized` (rgba16Float).
+    /// `quarterTurns` rotates the raw source by N clockwise quarter-turns into the display-oriented
+    /// `normalized` texture (CP7.8); 0 means a direct 1:1 texel copy (the existing bytes behaviour).
     func encodeNormalization(
         into commandBuffer: MTLCommandBuffer,
         raw: MTLTexture,
         normalized: MTLTexture,
+        quarterTurns: Int = 0,
         resourceID: String
     ) throws {
         let rp = MTLRenderPassDescriptor()
@@ -32,6 +46,10 @@ struct MetalSourceNormalizer {
             znear: 0, zfar: 1))
         encoder.setRenderPipelineState(try pipelines.normalizePipeline())
         encoder.setFragmentTexture(raw, index: 0)
+        var params = NormalizeParams(
+            quarterTurns: UInt32(((quarterTurns % 4) + 4) % 4),
+            rawWidth: UInt32(raw.width), rawHeight: UInt32(raw.height))
+        encoder.setFragmentBytes(&params, length: MemoryLayout<NormalizeParams>.stride, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
     }

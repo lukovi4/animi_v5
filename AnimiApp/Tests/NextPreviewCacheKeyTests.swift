@@ -14,6 +14,17 @@ final class NextPreviewCacheKeyTests: XCTestCase {
         NextBridgePlacement(fitModeRaw: fit, offsetX: ox, offsetY: oy, userScale: scale, rotationDegrees: rot)
     }
 
+    /// CP7.8-CORR fix B: model the editor's OFF-MAIN identity computation — the block carries the
+    /// (size, mtime) the editor would have stat'd at URL resolve. Tests invalidate+refresh so an in-place
+    /// file edit is reflected (the editor's re-resolve path). `NextBridgeBlock`/`NextPreviewKey` themselves
+    /// do NO disk IO; this helper supplies the value identity.
+    private func block(_ id: String, _ url: URL, _ placement: NextBridgePlacement, video: NextBridgeVideo? = nil) -> NextBridgeBlock {
+        NextMediaStatCache.shared.invalidate(path: url.path)
+        let s = NextMediaStatCache.shared.stat(path: url.path)
+        return NextBridgeBlock(blockID: id, mediaURL: url, placement: placement, video: video,
+                               mediaSize: s.size, mediaMTime: s.mtime)
+    }
+
     /// Build single-block inputs against a real temp media file (so size/mtime are stable).
     private func makeInputs(scene: String = "full_image", variants: [String: String] = [:],
                             block: String = "block_01", mediaURL: URL,
@@ -22,7 +33,7 @@ final class NextPreviewCacheKeyTests: XCTestCase {
         NextBridgeInputs(
             sceneTypeId: scene, sceneFolderURL: URL(fileURLWithPath: "/tmp/scenes/\(scene)"),
             variantOverrides: variants,
-            blocks: [NextBridgeBlock(blockID: block, mediaURL: mediaURL, placement: placement)],
+            blocks: [self.block(block, mediaURL, placement)],
             frameIndex: frame,
             timelineDurationFrames: timelineDurationFrames)
     }
@@ -33,7 +44,7 @@ final class NextPreviewCacheKeyTests: XCTestCase {
         NextBridgeInputs(
             sceneTypeId: scene, sceneFolderURL: URL(fileURLWithPath: "/tmp/scenes/\(scene)"),
             variantOverrides: variants,
-            blocks: blocks.map { NextBridgeBlock(blockID: $0.0, mediaURL: $0.1, placement: $0.2) },
+            blocks: blocks.map { self.block($0.0, $0.1, $0.2) },
             frameIndex: frame)
     }
 
@@ -41,6 +52,70 @@ final class NextPreviewCacheKeyTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("cp3key-\(name)-\(UUID().uuidString)")
         try Data(repeating: 0xAB, count: bytes).write(to: url)
         return url
+    }
+
+    // MARK: - CP7.8-CORR fix B: media stat is cached (no per-frame disk read), but still tracks identity
+
+    func test_statCache_returnsCachedValue_andDoesNotRereadAfterFileChanges() throws {
+        let media = try tempFile("statcache", bytes: 16)
+        defer { try? FileManager.default.removeItem(at: media) }
+        NextMediaStatCache.shared.invalidate(path: media.path)
+
+        let first = NextMediaStatCache.shared.stat(path: media.path)
+        XCTAssertEqual(first.size, 16)
+
+        // Change the file ON DISK but do NOT invalidate — the cache must still return the OLD value,
+        // proving NextPreviewKey.init does NOT hit the disk every frame (the whole point of fix B).
+        try Data(repeating: 0xCD, count: 999).write(to: media)
+        let cached = NextMediaStatCache.shared.stat(path: media.path)
+        XCTAssertEqual(cached, first, "stat must be served from cache, not re-read from disk per call")
+
+        // After an explicit invalidate (editor (re)resolves the URL) the new identity flows through.
+        NextMediaStatCache.shared.invalidate(path: media.path)
+        let refreshed = NextMediaStatCache.shared.stat(path: media.path)
+        XCTAssertEqual(refreshed.size, 999, "after invalidate the new file identity must be read")
+    }
+
+    func test_nextPreviewKey_isValueOnly_noFileNeeded() {
+        // A non-existent path: NextPreviewKey.init must STILL build (pure value-only, no disk dependency).
+        // The block carries explicit value identity; the key reflects it without any FileManager call.
+        let url = URL(fileURLWithPath: "/does/not/exist/\(UUID().uuidString).mp4")
+        let blk = NextBridgeBlock(blockID: "b", mediaURL: url, placement: placement(),
+                                  video: nil, mediaSize: 12345, mediaMTime: 678.0)
+        let inputs = NextBridgeInputs(
+            sceneTypeId: "full_image", sceneFolderURL: URL(fileURLWithPath: "/tmp/scenes/x"),
+            variantOverrides: [:], blocks: [blk], frameIndex: 0, timelineDurationFrames: nil)
+        let k1 = NextPreviewKey(inputs: inputs)
+        XCTAssertNotNil(k1, "key must build from value identity alone (no file on disk)")
+        // Different carried identity → different key (the value flows through, no disk).
+        let blk2 = NextBridgeBlock(blockID: "b", mediaURL: url, placement: placement(),
+                                   video: nil, mediaSize: 999, mediaMTime: 678.0)
+        let inputs2 = NextBridgeInputs(
+            sceneTypeId: "full_image", sceneFolderURL: URL(fileURLWithPath: "/tmp/scenes/x"),
+            variantOverrides: [:], blocks: [blk2], frameIndex: 0, timelineDurationFrames: nil)
+        XCTAssertNotEqual(k1!.mediaKey, NextPreviewKey(inputs: inputs2)!.mediaKey)
+    }
+
+    func test_cachedOnly_neverReadsDisk_returnsSentinelOnMiss() {
+        // The draw-path accessor must NEVER touch disk: a path never stat'd returns the -1 sentinel.
+        let path = "/unwarmed/\(UUID().uuidString).mp4"
+        let s = NextMediaStatCache.shared.cachedOnly(path: path)
+        XCTAssertEqual(s.size, -1, "cachedOnly must return sentinel on miss, not stat the disk")
+        XCTAssertEqual(s.mtime, -1)
+    }
+
+    func test_mediaKey_changesWhenCachedFileIdentityChanges() throws {
+        let media = try tempFile("identity", bytes: 16)
+        defer { try? FileManager.default.removeItem(at: media) }
+        NextMediaStatCache.shared.invalidate(path: media.path)
+        let before = NextPreviewKey(inputs: makeInputs(mediaURL: media, placement: placement()))!.mediaKey
+
+        // Same path, changed file + invalidate (the editor's (re)resolve path) → mediaKey MUST differ
+        // (gates decode/context rebuild), so a real media change is never missed.
+        try Data(repeating: 0xCD, count: 999).write(to: media)
+        NextMediaStatCache.shared.invalidate(path: media.path)
+        let after = NextPreviewKey(inputs: makeInputs(mediaURL: media, placement: placement()))!.mediaKey
+        XCTAssertNotEqual(before, after, "a real file-identity change must still change mediaKey")
     }
 
     func test_sameTemplateMediaPlacement_reusesContext() throws {

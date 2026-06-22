@@ -67,4 +67,10 @@ public enum MetalRenderError: Error, Equatable, Sendable {
     /// validation — wrong device, pixel format ≠ `.bgra8Unorm`, missing `.renderTarget` usage, or
     /// dimensions ≠ the configuration canvas. Fail closed — never a silent resize/reinterpret.
     case invalidRenderTarget(detail: String)
+
+    /// CP7.8 — a `dynamicTexturePixelInput` resource had no runtime texture binding, or the bound
+    /// texture failed validation (wrong device / format / dimensions / usage). Fail closed: there is NO
+    /// silent fallback to a placeholder or the bytes path. `detail` names the resource and the reason.
+    case missingTextureBinding(resourceID: String)
+    case invalidTextureBinding(resourceID: String, detail: String)
 }

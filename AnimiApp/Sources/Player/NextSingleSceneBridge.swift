@@ -129,6 +129,12 @@ struct NextBridgeBlock {
     let placement: NextBridgePlacement
     /// Trim window if this block is a video; nil for a photo.
     var video: NextBridgeVideo? = nil
+    /// CP7.8-CORR (main-thread fix B): the media file's (size, mtime) carried as VALUES, computed OFF the
+    /// main thread when the URL is resolved (`NextMediaStatCache`). `NextPreviewKey.init` consumes these
+    /// instead of calling `FileManager.attributesOfItem` per `draw(in:)` (~30ms/frame for 6 videos). `-1`
+    /// means "not yet stat'd" — a value-only sentinel; the editor fills it on URL resolve before drawing.
+    var mediaSize: Int64 = -1
+    var mediaMTime: Double = -1
 }
 
 /// The canonical-namespace identity for ONE converted scene instance. CP2/CP4 single-scene used a
@@ -207,19 +213,26 @@ struct NextDecodedBlock {
     let mediaReference: String
     /// Decoded photo pixels (nil for a video block).
     let photoPixels: ResolvedPixelInput?
-    /// Per-frame video resolver (nil for a photo block). Owns one AVAssetReader; stateful across
-    /// frames. Held here so it survives in the cached `NextDecodedMedia` (one decode per media key).
+    /// Per-frame CPU video resolver (nil for a photo block). Owns one AVAssetReader; stateful across
+    /// frames. Retained as the PARITY ORACLE / fallback (CP7.8 keeps the CPU bake path for tests); the
+    /// shipping preview/export use the GPU texture resolver built from `videoWindow` at assemble time.
     let videoResolver: NextVideoBlockResolver?
+    /// CP7.8: the video block's trim window (nil for a photo). `assemble` builds a per-context
+    /// `NextVideoTextureResolver` from this + the session device for the GPU texture-backed path.
+    let videoWindow: NextVideoWindow?
 
     /// Photo block (CP4).
     init(blockID: String, chosenVariantID: String, mediaReference: String, photoPixels: ResolvedPixelInput) {
         self.blockID = blockID; self.chosenVariantID = chosenVariantID
-        self.mediaReference = mediaReference; self.photoPixels = photoPixels; self.videoResolver = nil
+        self.mediaReference = mediaReference; self.photoPixels = photoPixels
+        self.videoResolver = nil; self.videoWindow = nil
     }
-    /// Video block (CP7).
-    init(blockID: String, chosenVariantID: String, mediaReference: String, videoResolver: NextVideoBlockResolver) {
+    /// Video block (CP7 / CP7.8).
+    init(blockID: String, chosenVariantID: String, mediaReference: String,
+         videoResolver: NextVideoBlockResolver, videoWindow: NextVideoWindow) {
         self.blockID = blockID; self.chosenVariantID = chosenVariantID
-        self.mediaReference = mediaReference; self.photoPixels = nil; self.videoResolver = videoResolver
+        self.mediaReference = mediaReference; self.photoPixels = nil
+        self.videoResolver = videoResolver; self.videoWindow = videoWindow
     }
 }
 
@@ -265,9 +278,13 @@ final class NextPreparedContext {
     let window: EvaluationWindow
     /// STATIC per-block photo pixels keyed by binding reference (video references are absent here).
     let mediaPixelsByReference: [String: ResolvedPixelInput]
-    /// CP7: per-frame video resolvers keyed by binding reference. Empty for photo-only scenes. The
-    /// per-frame render resolves each one at the scene-local time and merges into the fixtures.
+    /// CP7: per-frame CPU video resolvers keyed by binding reference (parity oracle / fallback). Empty
+    /// for photo-only scenes. NOT used by the shipping GPU texture path below.
     let videoResolversByReference: [String: NextVideoBlockResolver]
+    /// CP7.8: per-frame GPU texture-backed video resolvers keyed by binding reference. Built once per
+    /// context from the session device. The shipping preview/export per-frame render resolves each at the
+    /// scene-local time → (dynamic descriptor, runtime texture binding). Empty for photo-only scenes.
+    let videoTextureResolversByReference: [String: NextVideoTextureResolver]
     let assetEntries: [ResolvedAssetPixelEntry]
     let configuration: RenderConfiguration
     let session: MetalRenderSession
@@ -276,11 +293,13 @@ final class NextPreparedContext {
     init(materials: RenderMaterialTable, window: EvaluationWindow,
          mediaPixelsByReference: [String: ResolvedPixelInput],
          videoResolversByReference: [String: NextVideoBlockResolver] = [:],
+         videoTextureResolversByReference: [String: NextVideoTextureResolver] = [:],
          assetEntries: [ResolvedAssetPixelEntry],
          configuration: RenderConfiguration, session: MetalRenderSession, totalFrames: Int) {
         self.materials = materials; self.window = window
         self.mediaPixelsByReference = mediaPixelsByReference
         self.videoResolversByReference = videoResolversByReference
+        self.videoTextureResolversByReference = videoTextureResolversByReference
         self.assetEntries = assetEntries
         self.configuration = configuration; self.session = session; self.totalFrames = totalFrames
     }
@@ -297,7 +316,13 @@ final class NextPreparedContext {
 /// the editor module). Created once via `NextSingleSceneBridge.makeSession`.
 final class NextSessionBox {
     let session: MetalRenderSession
-    init(session: MetalRenderSession) { self.session = session }
+    /// CP7.8 — a command queue on the session device, shared by the GPU video texture resolvers for
+    /// their CVPixelBuffer→texture blits. Built once; nil only if the device cannot make a queue.
+    let videoBlitQueue: MTLCommandQueue?
+    init(session: MetalRenderSession) {
+        self.session = session
+        self.videoBlitQueue = session.metalDevice.makeCommandQueue()
+    }
     /// CP7.6a — the engine `MTLDevice`, so the export runner can build a `CVMetalTextureCache` /
     /// external render-target textures on the SAME device the session renders with.
     var metalDevice: MTLDevice { session.metalDevice }
@@ -389,17 +414,19 @@ enum NextSingleSceneBridge {
         for b in inputs.blocks.sorted(by: { $0.blockID < $1.blockID }) {
             let ref = referenceByBlockID[b.blockID]!
             if let v = b.video {
+                let window = NextVideoWindow(url: b.mediaURL, winStart: v.winStart, winEnd: v.winEnd)
                 let resolver = NextVideoBlockResolver(
                     blockID: b.blockID, mediaReference: ref,
-                    window: NextVideoWindow(url: b.mediaURL, winStart: v.winStart, winEnd: v.winEnd),
-                    maxPixelSize: maxPixel)
-                // Frame-0 pixels (scene-local time 0) for the probe resolve / authored-asset walk.
+                    window: window, maxPixelSize: maxPixel)
+                // Frame-0 pixels (scene-local time 0) for the probe resolve / authored-asset walk. The
+                // CPU resolver realizes the probe frame; the shipping per-frame path uses the GPU texture
+                // resolver (built at assemble), so this probe bake happens ONCE per decode (not per frame).
                 let frame0: ResolvedPixelInput
                 do { frame0 = try resolver.resolve(scenePlaybackSeconds: 0) }
                 catch { throw NextBridgeError.engine("video decode(probe) block \(b.blockID): \(error)") }
                 decodedBlocks.append(NextDecodedBlock(
                     blockID: b.blockID, chosenVariantID: chosenVariantByBlockID[b.blockID]!,
-                    mediaReference: ref, videoResolver: resolver))
+                    mediaReference: ref, videoResolver: resolver, videoWindow: window))
                 fixtures[.image(reference: ref)] = frame0
             } else {
                 let pixels = try decodeImageToPixelInput(url: b.mediaURL, id: ref, maxPixelSize: maxPixel)
@@ -454,8 +481,11 @@ enum NextSingleSceneBridge {
         let output: CompiledTemplateConverter.Output
         /// STATIC photo pixels keyed by reference (video references are absent — resolved per frame).
         let mediaPixelsByReference: [String: ResolvedPixelInput]
-        /// CP7: per-frame video resolvers keyed by reference. Empty for photo-only scenes.
+        /// CP7: per-frame CPU video resolvers keyed by reference (parity oracle). Empty for photo-only.
         let videoResolversByReference: [String: NextVideoBlockResolver]
+        /// CP7.8: per-video trim windows keyed by reference, so the assembler can build the GPU texture
+        /// resolver from the session device. Empty for photo-only scenes.
+        let videoWindowsByReference: [String: NextVideoWindow]
         let assetEntries: [ResolvedAssetPixelEntry]
     }
 
@@ -468,6 +498,7 @@ enum NextSingleSceneBridge {
         var chosenVariantByBlockID: [String: String] = [:]
         var mediaPixelsByReference: [String: ResolvedPixelInput] = [:]
         var videoResolversByReference: [String: NextVideoBlockResolver] = [:]
+        var videoWindowsByReference: [String: NextVideoWindow] = [:]
         for blk in decoded.blocks {
             guard let p = placementByBlockID[blk.blockID] else {
                 throw NextBridgeError.noMediaBound(blockID: blk.blockID)
@@ -476,8 +507,9 @@ enum NextSingleSceneBridge {
             chosenVariantByBlockID[blk.blockID] = blk.chosenVariantID
             if let photo = blk.photoPixels {
                 mediaPixelsByReference[blk.mediaReference] = photo
-            } else if let resolver = blk.videoResolver {
+            } else if let resolver = blk.videoResolver, let window = blk.videoWindow {
                 videoResolversByReference[blk.mediaReference] = resolver
+                videoWindowsByReference[blk.mediaReference] = window
             } else {
                 throw NextBridgeError.engine("decoded block \(blk.blockID) has neither photo nor video")
             }
@@ -503,7 +535,8 @@ enum NextSingleSceneBridge {
         }
         return NextSceneConversion(
             output: out, mediaPixelsByReference: mediaPixelsByReference,
-            videoResolversByReference: videoResolversByReference, assetEntries: assetEntries)
+            videoResolversByReference: videoResolversByReference,
+            videoWindowsByReference: videoWindowsByReference, assetEntries: assetEntries)
     }
 
     /// Build a single-scene render context for given per-block placements, REUSING decoded media.
@@ -519,11 +552,34 @@ enum NextSingleSceneBridge {
                 output: conv.output.document.manifest.output, colorContract: .task003, intermediateProfile: .rgba16FloatLinear)
         } catch { throw NextBridgeError.engine("config: \(error)") }
 
+        // CP7.8: build a GPU texture resolver per video reference from the session device + shared queue.
+        let textureResolvers = try makeVideoTextureResolvers(
+            windowsByReference: conv.videoWindowsByReference, sessionBox: sessionBox)
+
         return NextPreparedContext(
             materials: conv.output.materials, window: window, mediaPixelsByReference: conv.mediaPixelsByReference,
             videoResolversByReference: conv.videoResolversByReference,
+            videoTextureResolversByReference: textureResolvers,
             assetEntries: conv.assetEntries, configuration: configuration,
             session: sessionBox.session, totalFrames: totalFrames)
+    }
+
+    /// CP7.8: build one `NextVideoTextureResolver` per video reference on the session device + shared
+    /// blit queue. Fail closed if the device cannot provide a command queue (no silent CPU fallback).
+    static func makeVideoTextureResolvers(
+        windowsByReference: [String: NextVideoWindow], sessionBox: NextSessionBox
+    ) throws -> [String: NextVideoTextureResolver] {
+        guard !windowsByReference.isEmpty else { return [:] }
+        guard let queue = sessionBox.videoBlitQueue else {
+            throw NextBridgeError.engine("CP7.8: session device produced no command queue for video texture resolver")
+        }
+        var resolvers: [String: NextVideoTextureResolver] = [:]
+        for (ref, window) in windowsByReference {
+            resolvers[ref] = NextVideoTextureResolver(
+                blockID: ref, mediaReference: ref, window: window,
+                device: sessionBox.metalDevice, commandQueue: queue)
+        }
+        return resolvers
     }
 
     /// Canonical NOMINAL frame count of a converted document (projectDuration → frames). Used by the
@@ -561,9 +617,15 @@ enum NextSingleSceneBridge {
             height: frame.dimensions.height, bytesPerRow: frame.dimensions.bytesPerRow)
     }
 
+    /// READBACK path (oracle / tests / photo prerender). Uses `execute(_:)` which takes NO texture
+    /// bindings — so a frame containing a dynamic (video) resource fails closed here (correct: the
+    /// readback oracle never renders user video; preview/export use the texture path below).
     static func renderFrame(context ctx: NextPreparedContext, frameIndex: Int) throws -> RenderedFrame {
-        let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
-        do { return try ctx.session.execute(graph) }
+        let built = try buildGraph(context: ctx, frameIndex: frameIndex)
+        guard built.textureBindings.isEmpty else {
+            throw NextBridgeError.engine("readback execute() path cannot render a dynamic-texture (video) frame; use the texture-binding preview/export path")
+        }
+        do { return try ctx.session.execute(built.graph) }
         catch { throw NextBridgeError.engine("execute: \(error)") }
     }
 
@@ -574,39 +636,129 @@ enum NextSingleSceneBridge {
         context ctx: NextPreparedContext, frameIndex: Int,
         into target: MTLTexture, alphaMode: AlphaMode
     ) throws {
-        let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
-        do { try ctx.session.render(graph, into: GPURenderTarget(texture: target, alphaMode: alphaMode)) }
-        catch { throw NextBridgeError.engine("render(into:): \(error)") }
+        let built = try buildGraph(context: ctx, frameIndex: frameIndex)
+        do {
+            try ctx.session.render(
+                built.graph, into: GPURenderTarget(texture: target, alphaMode: alphaMode),
+                textureBindings: built.textureBindings)
+        } catch { throw NextBridgeError.engine("render(into:): \(error)") }
     }
 
     /// CP7.7-next PREVIEW GPU-direct entry. Renders frame `frameIndex` straight into `target` with
     /// `.preserveAlpha` (preview composites onto a cleared drawable). Hides `AlphaMode`/`GPURenderTarget`
     /// from the editor module (which must not import `AnimiEngineMetalRender`). Replaces the readback
     /// (`renderFrameBGRA` → Data → srcTex.replace) preview hot path; `renderFrameBGRA` stays for oracle/tests.
-    static func renderFramePreview(context ctx: NextPreparedContext, frameIndex: Int, into target: MTLTexture) throws {
-        try renderFrame(context: ctx, frameIndex: frameIndex, into: target, alphaMode: .preserveAlpha)
+    /// CP7.8-CORR F1/F2: PREVIEW passes a `decodeBudget` (cold decodes/tick) so an active multi-video scrub
+    /// never serializes N far decodes. `.max` = exact (settled/pause). Export uses `renderFrame(into:)`
+    /// (unbounded/exact) — never this bounded preview entry.
+    static func renderFramePreview(context ctx: NextPreparedContext, frameIndex: Int, into target: MTLTexture, decodeBudget: Int = .max) throws {
+        let built = try buildGraph(context: ctx, frameIndex: frameIndex, decodeBudget: decodeBudget)
+        do {
+            try ctx.session.render(
+                built.graph, into: GPURenderTarget(texture: target, alphaMode: .preserveAlpha),
+                textureBindings: built.textureBindings)
+        } catch { throw NextBridgeError.engine("render(into:): \(error)") }
     }
 
     /// The shared per-frame graph build (evaluate→resolve→compile). Used by BOTH the readback path
     /// (`renderFrame`/`renderFrameBGRA`, preview + tests) and the GPU-direct path (export).
-    static func buildGraph(context ctx: NextPreparedContext, frameIndex: Int) throws -> RenderGraph {
+    /// The per-frame graph build result: the canonical graph + the runtime texture bindings for any
+    /// dynamic (user-video) resources in it. Photo-only frames return `.none` bindings.
+    struct BuiltGraph {
+        let graph: RenderGraph
+        let textureBindings: RenderRuntimeTextureBindings
+    }
+
+    /// `decodeBudget` (CP7.8-CORR F1/F2) caps the number of COLD video decodes this build performs; over
+    /// budget, a video reuses its last-good texture (preview scrub soft-skip). Default `.max` = unbounded
+    /// (export / settled / readback / tests — exact). Preview-active-scrub passes a small budget.
+    static func buildGraph(context ctx: NextPreparedContext, frameIndex: Int, decodeBudget: Int = .max) throws -> BuiltGraph {
         let plan = try evaluatePlan(window: ctx.window, frame: max(0, frameIndex))
         guard case let .single(subplan) = plan.body else {
             throw NextBridgeError.unsupportedFramePlan("expected single scene body")
         }
-        // CP7: resolve any video references at THIS frame's scene-local time, then merge with the
-        // static photo pixels. The merged map is the complete set of per-block media pixels.
-        // (mergeVideoPixels' video cost is already captured under video.* by the resolver itself.)
-        let mediaPixels = try mergeVideoPixels(
-            subplan: subplan, staticPixels: ctx.mediaPixelsByReference,
-            videoResolvers: ctx.videoResolversByReference)
-        let fixtures = try buildFixtures(subplan: subplan, mediaPixelsByReference: mediaPixels)
+        // CP7.8: resolve any video references at THIS frame's scene-local time on the GPU. Each produces
+        // a VALUE descriptor (for the canonical fixtures) + a runtime texture handle (for execution). The
+        // static photo pixels stay bytes-backed. No CPU bake / SHA-256 on the per-frame video path.
+        // CP7.8-CORR F1/F2: `decodeBudget` caps cold decodes this tick (preview scrub); over budget a video
+        // reuses its last-good texture (soft-skip) so the UI never blocks on N simultaneous far decodes.
+        let (dynamicFixtures, bindings) = try resolveVideoTextures(
+            subplan: subplan, textureResolvers: ctx.videoTextureResolversByReference,
+            decodeBudget: decodeBudget)
+        let fixtures = try buildFixtures(
+            subplan: subplan, mediaPixelsByReference: ctx.mediaPixelsByReference,
+            dynamicRefs: Set(ctx.videoTextureResolversByReference.keys))
         let base: ResolvedFrameInput
-        do { base = try RenderInputResolver.resolve(framePlan: plan, materials: ctx.materials, fixtures: fixtures) }
-        catch { throw NextBridgeError.engine("resolve: \(error)") }
+        do {
+            base = try RenderInputResolver.resolve(
+                framePlan: plan, materials: ctx.materials, fixtures: fixtures, dynamicFixtures: dynamicFixtures)
+        } catch { throw NextBridgeError.engine("resolve: \(error)") }
         let resolved = try rebuildWithAssetEntries(subplan: subplan, base: base, assetEntries: ctx.assetEntries)
-        do { return try RenderGraphCompiler.compile(plan: plan, input: resolved, configuration: ctx.configuration) }
+        let graph: RenderGraph
+        do { graph = try RenderGraphCompiler.compile(plan: plan, input: resolved, configuration: ctx.configuration) }
         catch { throw NextBridgeError.engine("compile: \(error)") }
+        return BuiltGraph(graph: graph, textureBindings: bindings)
+    }
+
+    /// CP7.8: resolve every GPU video texture resolver whose reference appears in THIS subplan, at the
+    /// subplan's scene-local media time. Returns the value descriptors keyed by the resolver's fixture
+    /// key (`.image(reference:)`) + the runtime binding map keyed by descriptor resourceID. A resolver not
+    /// in this subplan is skipped.
+    ///
+    /// CP7.8-CORR F1/F2 bounded hybrid: `decodeBudget` caps COLD decodes this tick. A video whose frame is
+    /// already cached (cheap) always resolves. A video that WOULD cold-decode (far advance / rebuild) spends
+    /// one budget unit; once budget is exhausted, it reuses its **last-good** frame (soft-skip) instead of
+    /// blocking — so the preview never serializes N simultaneous far decodes (the 3.3 s 6-video stall).
+    /// A video with neither a cheap frame nor any last-good (true first appearance) is decoded regardless
+    /// (unavoidable to render its first frame; bounded by #new-videos, not by scrub distance). Order is
+    /// deterministic (sorted refs) so the SAME videos win the budget across consecutive ticks (no flicker).
+    static func resolveVideoTextures(
+        subplan: SceneSubplan, textureResolvers: [String: NextVideoTextureResolver],
+        decodeBudget: Int = .max
+    ) throws -> (dynamicFixtures: [RenderInputResolver.FixtureKey: ResolvedDynamicTextureInput],
+                 bindings: RenderRuntimeTextureBindings) {
+        let (d, b, _) = try resolveVideoTexturesSpending(
+            subplan: subplan, textureResolvers: textureResolvers, decodeBudget: decodeBudget)
+        return (d, b)
+    }
+
+    /// As `resolveVideoTextures`, additionally returning the number of COLD decodes spent (so a timeline
+    /// transition can share ONE per-tick budget across its two subplans).
+    static func resolveVideoTexturesSpending(
+        subplan: SceneSubplan, textureResolvers: [String: NextVideoTextureResolver],
+        decodeBudget: Int
+    ) throws -> (dynamicFixtures: [RenderInputResolver.FixtureKey: ResolvedDynamicTextureInput],
+                 bindings: RenderRuntimeTextureBindings, spent: Int) {
+        guard !textureResolvers.isEmpty else { return ([:], .none, 0) }
+        var refsInPlan = Set<String>()
+        for layer in subplan.layers {
+            if case let .image(ref) = layer.content { refsInPlan.insert(ref.raw) }
+        }
+        let seconds = scenePlaybackSeconds(subplan)
+        var dynamicFixtures: [RenderInputResolver.FixtureKey: ResolvedDynamicTextureInput] = [:]
+        var handles: [String: RuntimeTextureHandle] = [:]
+        var coldSpent = 0
+        // Deterministic order so the same refs win the budget tick-to-tick (no flicker).
+        for ref in textureResolvers.keys.sorted() where refsInPlan.contains(ref) {
+            let resolver = textureResolvers[ref]!
+            let cold = resolver.wouldColdDecode(scenePlaybackSeconds: seconds)
+            let frame: NextVideoTextureResolver.Frame
+            if cold, coldSpent >= decodeBudget, let lastGood = resolver.lastCachedFrame {
+                // Over budget AND a far/new sample → soft-skip: present last-good, do not block this tick.
+                frame = lastGood
+            } else {
+                if cold { coldSpent += 1 }
+                do { frame = try resolver.resolve(scenePlaybackSeconds: seconds) }
+                catch { throw NextBridgeError.engine("video texture resolve '\(ref)' at \(seconds)s: \(error)") }
+            }
+            dynamicFixtures[.image(reference: ref)] = frame.descriptor
+            // CP7.8-CORR F4 FIX: the runtime binding map MUST be keyed by the descriptor's resourceID
+            // (== sourceID, which now includes PTS), NOT by the layer reference. The executor looks the
+            // binding up by `descriptor.resourceID`; keying by `ref` left it unfound → missingTextureBinding
+            // (red screen). The fixture key stays `.image(reference: ref)` so the layer still resolves.
+            handles[frame.descriptor.id.rawValue] = frame.handle
+        }
+        return (dynamicFixtures, RenderRuntimeTextureBindings(handles), coldSpent)
     }
 
     // MARK: - Shared frame helpers
@@ -618,8 +770,10 @@ enum NextSingleSceneBridge {
 
     /// Bind each block's user photo to its media reference (authored assets use assetPixels, not this).
     /// Every supplied reference MUST appear in the frame plan (fail closed otherwise).
-    private static func buildFixtures(subplan: SceneSubplan, mediaPixelsByReference: [String: ResolvedPixelInput])
-        throws -> [RenderInputResolver.FixtureKey: ResolvedPixelInput] {
+    private static func buildFixtures(
+        subplan: SceneSubplan, mediaPixelsByReference: [String: ResolvedPixelInput],
+        dynamicRefs: Set<String> = []
+    ) throws -> [RenderInputResolver.FixtureKey: ResolvedPixelInput] {
         var present = Set<String>()
         for layer in subplan.layers {
             if case let .image(ref) = layer.content, mediaPixelsByReference[ref.raw] != nil {
@@ -631,7 +785,10 @@ enum NextSingleSceneBridge {
             throw NextBridgeError.unsupportedFramePlan("bound media reference(s) not present in frame plan: \(missing.sorted())")
         }
         var fixtures: [RenderInputResolver.FixtureKey: ResolvedPixelInput] = [:]
-        for (ref, pixels) in mediaPixelsByReference { fixtures[.image(reference: ref)] = pixels }
+        // CP7.8: a dynamic (video) reference is supplied via dynamicFixtures, not bytes — skip it here.
+        for (ref, pixels) in mediaPixelsByReference where !dynamicRefs.contains(ref) {
+            fixtures[.image(reference: ref)] = pixels
+        }
         return fixtures
     }
 
@@ -784,16 +941,23 @@ enum NextSingleSceneBridge {
             let key = ResolvedLayerKey.sceneLayer(
                 sceneID: subplan.sceneID, role: .sole, layerID: layer.layerID)
             guard let program = base.program(for: key),
-                  let placement = base.mediaPlacement(for: key),
-                  let pixels = base.pixelInput(for: key) else {
-                // CP4 fail-closed: a media-bearing scene layer with no resolved program/placement/
-                // pixels would silently vanish (this is why example_4blocks showed only 1 of 4).
-                // Surface it instead of dropping.
+                  let placement = base.mediaPlacement(for: key) else {
                 dropped.append(layer.layerID.raw)
                 continue
             }
-            sceneEntries.append(try ResolvedSceneLayerEntry(
-                key: key, program: program, pixelInput: pixels, placement: placement))
+            // CP7.8: a layer is EITHER bytes-backed (photo/asset) OR dynamic texture-backed (video).
+            if let pixels = base.pixelInput(for: key) {
+                sceneEntries.append(try ResolvedSceneLayerEntry(
+                    key: key, program: program, pixelInput: pixels, placement: placement))
+            } else if let dyn = base.dynamicTexture(for: key) {
+                sceneEntries.append(try ResolvedSceneLayerEntry(
+                    key: key, program: program, source: .dynamicTexture(dyn), placement: placement))
+            } else {
+                // CP4 fail-closed: a media-bearing scene layer with no resolved program/placement/
+                // pixels would silently vanish (this is why example_4blocks showed only 1 of 4).
+                dropped.append(layer.layerID.raw)
+                continue
+            }
         }
         guard dropped.isEmpty else {
             throw NextBridgeError.unsupportedFramePlan(

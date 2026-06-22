@@ -41,6 +41,14 @@ public enum RenderResourceKind: String, Hashable, Sendable, CaseIterable {
     case pixelInput
     /// An offscreen surface (a scene/transition intermediate), allocated by the executor.
     case offscreen
+    /// CP7.8: a dynamic texture-backed pixel input (user video frame). It carries ONLY value metadata
+    /// (a stable source id, dimensions, input format, orientation/quarter-turn, colour contract) — NO
+    /// bytes, NO content hash, NO runtime GPU handle. The raw `MTLTexture` for this resource is supplied
+    /// out-of-band at execution time via `RenderRuntimeTextureBindings` (MetalRender), keyed by
+    /// `resourceID`. This keeps the canonical graph value-only/Sendable/deterministic while the per-frame
+    /// pixels live entirely on the GPU (no CPU bake / SHA-256). It is NEVER used on the `execute(_:)`
+    /// readback/ReferenceData path — only `render(_:into:textureBindings:)` binds it.
+    case dynamicTexturePixelInput
 }
 
 /// An immutable resource descriptor declared by a `declareResource`/`offscreenSurface` command.
@@ -108,6 +116,14 @@ public struct RenderResourceDescriptor: Hashable, Sendable {
     /// `nil` for a `pixelInput` resource.
     public let surfaceStorage: RenderSurfaceStorageFormat?
 
+    /// CP7.8: for a `dynamicTexturePixelInput`, the stable runtime-binding key + value metadata. The
+    /// `dynamicTextureSourceID` is BOTH the canonical identity and the `RenderRuntimeTextureBindings`
+    /// lookup key (== `resourceID`). `dynamicOrientationQuarterTurns` is the raw→display clockwise
+    /// quarter-turn the normalization pass applies on the GPU (0/1/2/3). `nil` for non-dynamic resources.
+    public let dynamicTextureSourceID: String?
+    public let dynamicOrientation: PixelOrientation?
+    public let dynamicOrientationQuarterTurns: Int?
+
     /// A pixel-input resource carrying its owned bytes (corrective #1). Its `pixelFormat` is the
     /// **input** byte format, kept separate from any render-surface profile (corrective #6).
     public init(pixelInputID: String, pixels: ResolvedPixelInput, colorContract: RenderColorContract) {
@@ -120,6 +136,9 @@ public struct RenderResourceDescriptor: Hashable, Sendable {
         self.pixels = pixels
         self.surfaceProfile = nil
         self.surfaceStorage = nil
+        self.dynamicTextureSourceID = nil
+        self.dynamicOrientation = nil
+        self.dynamicOrientationQuarterTurns = nil
     }
 
     /// An offscreen-surface resource (no bytes; the executor allocates it). It carries **only** an
@@ -136,6 +155,42 @@ public struct RenderResourceDescriptor: Hashable, Sendable {
         self.pixels = nil
         self.surfaceProfile = profile
         self.surfaceStorage = profile.storageFormat
+        self.dynamicTextureSourceID = nil
+        self.dynamicOrientation = nil
+        self.dynamicOrientationQuarterTurns = nil
+    }
+
+    /// CP7.8 — a dynamic texture-backed pixel input (value only). Carries the stable source id (also the
+    /// runtime-binding key), the **display/oriented** dimensions (post quarter-turn — what downstream draw
+    /// sees, matching the CPU bake output dims), the input pixel byte format, the display orientation, the
+    /// raw→display clockwise quarter-turn the normalization pass applies, and the colour contract. NO
+    /// bytes, NO content hash, NO GPU handle. Fail-closed: dims must be positive and the quarter-turn 0…3.
+    public init(
+        dynamicTextureSourceID: String, width: Int64, height: Int64,
+        pixelFormat: PixelByteFormat, orientation: PixelOrientation,
+        orientationQuarterTurns: Int, colorContract: RenderColorContract
+    ) throws {
+        guard width > 0, height > 0 else {
+            throw RenderModelError.malformedDimensions(
+                field: "RenderResourceDescriptor.dynamicTexture", width: width, height: height)
+        }
+        guard (0...3).contains(orientationQuarterTurns) else {
+            throw RenderModelError.valueOutOfRange(
+                field: "RenderResourceDescriptor.dynamicOrientationQuarterTurns",
+                value: Int64(orientationQuarterTurns), lowerBound: 0, upperBound: 3)
+        }
+        self.resourceID = dynamicTextureSourceID
+        self.kind = .dynamicTexturePixelInput
+        self.width = width
+        self.height = height
+        self.pixelFormat = pixelFormat
+        self.colorContract = colorContract
+        self.pixels = nil
+        self.surfaceProfile = nil
+        self.surfaceStorage = nil
+        self.dynamicTextureSourceID = dynamicTextureSourceID
+        self.dynamicOrientation = orientation
+        self.dynamicOrientationQuarterTurns = orientationQuarterTurns
     }
 
     /// The content-addressed hash of the bound pixels (`""` for an offscreen surface).
@@ -145,13 +200,17 @@ public struct RenderResourceDescriptor: Hashable, Sendable {
         // Identity by hash + dims + (input pixel format | surface profile/storage) + contract, not raw
         // bytes, so the graph hash is compact. An offscreen encodes `pixelFormat: "n/a"` — it carries no
         // byte format — while a pixel input encodes its actual input byte format (final micro-correction #1).
+        // A dynamic texture input encodes its source id + display orientation + quarter-turn instead of a
+        // byte hash; its `pixelContentHash` is "" (no bytes) and its identity is fully value-deterministic.
         try RenderCanonicalEncoding.object([
             ("alphaStorage", .string(colorContract.alphaStorage.rawValue)),
             ("colorSpace", .string(colorContract.colorSpace.rawValue)),
+            ("dynamicOrientationQuarterTurns", .int(Int64(dynamicOrientationQuarterTurns ?? -1))),
             ("dynamicRange", .string(colorContract.dynamicRange.rawValue)),
+            ("dynamicTextureSourceID", .string(dynamicTextureSourceID ?? "n/a")),
             ("height", .int(height)),
             ("kind", .string(kind.rawValue)),
-            ("orientation", .string(pixels?.dimensions.orientation.rawValue ?? "n/a")),
+            ("orientation", .string(pixels?.dimensions.orientation.rawValue ?? dynamicOrientation?.rawValue ?? "n/a")),
             ("outputFormat", .string(colorContract.outputFormat.rawValue)),
             ("pixelContentHash", .string(pixelContentHash)),
             ("pixelFormat", .string(pixelFormat?.rawValue ?? "n/a")),

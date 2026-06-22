@@ -37,9 +37,24 @@ public enum RenderInputResolver {
         materials: RenderMaterialTable,
         fixtures: [FixtureKey: ResolvedPixelInput]
     ) throws -> ResolvedFrameInput {
+        try resolve(framePlan: framePlan, materials: materials, fixtures: fixtures, dynamicFixtures: [:])
+    }
+
+    /// CP7.8 — resolve with BOTH bytes fixtures (photos/assets, unchanged path) AND dynamic texture
+    /// fixtures (user video, value-only). A layer whose fixture key is in `dynamicFixtures` becomes a
+    /// `.dynamicTexture` scene entry (no bytes); fit geometry uses the descriptor's DISPLAY dims. A key
+    /// present in both maps, or in neither, is a typed failure (fail closed). When `dynamicFixtures` is
+    /// empty this is byte-identical to the bytes-only path.
+    public static func resolve(
+        framePlan: FramePlan,
+        materials: RenderMaterialTable,
+        fixtures: [FixtureKey: ResolvedPixelInput],
+        dynamicFixtures: [FixtureKey: ResolvedDynamicTextureInput]
+    ) throws -> ResolvedFrameInput {
         var sceneEntries: [ResolvedSceneLayerEntry] = []
         var overlayEntries: [ResolvedOverlayEntry] = []
         var consumedFixtures = Set<FixtureKey>()
+        var consumedDynamic = Set<FixtureKey>()
 
         func resolveSceneLayer(
             _ layer: ActiveLayer, sceneID: SceneInstanceID, role: ResolvedSceneRole
@@ -55,6 +70,49 @@ public enum RenderInputResolver {
                     targetNumerator: sourceRequest.target.numerator,
                     targetDenominator: sourceRequest.target.denominator)
             }
+
+            // CP7.8: a dynamic texture-backed layer (user video). Build a `.dynamicTexture` entry — no
+            // bytes, no content hash. Fit geometry uses the descriptor's DISPLAY (oriented) dims.
+            if let dyn = dynamicFixtures[fixtureKey] {
+                guard fixtures[fixtureKey] == nil else {
+                    throw RenderGraphError.missingFixturePixels(reference: "\(fixtureKey.canonicalString) bound as BOTH bytes and dynamic")
+                }
+                guard dyn.orientation == .up else {
+                    throw RenderGraphError.unsupportedFixtureOrientation(
+                        reference: fixtureKey.canonicalString, orientation: dyn.orientation.rawValue)
+                }
+                consumedDynamic.insert(fixtureKey)
+                let bindingKey = SceneMaterialBindingKey(sceneID: sceneID, layerID: layer.layerID)
+                guard let program = materials.program(for: bindingKey) else {
+                    throw RenderGraphError.missingMaterialBinding(sceneID: sceneID.raw, layerID: layer.layerID.raw)
+                }
+                guard layer.placement.frame == program.mediaGeometry.blockRectCanvas else {
+                    throw RenderGraphError.placementFrameMismatch(sceneID: sceneID.raw, layerID: layer.layerID.raw)
+                }
+                if let animationReference = layer.animationReference {
+                    guard animationReference.animationRef == program.animationRef else {
+                        throw RenderGraphError.animationRefMismatch(
+                            sceneID: sceneID.raw, layerID: layer.layerID.raw,
+                            programRef: program.animationRef, layerRef: animationReference.animationRef)
+                    }
+                    guard animationReference.variantID == program.variantID else {
+                        throw RenderGraphError.animationVariantMismatch(
+                            sceneID: sceneID.raw, layerID: layer.layerID.raw,
+                            programVariant: program.variantID, layerVariant: animationReference.variantID)
+                    }
+                }
+                let placement = try MediaFitResolver.resolve(
+                    contentRect: program.mediaGeometry.contentRect,
+                    blockRectCanvas: program.mediaGeometry.blockRectCanvas,
+                    sourceWidthPixels: dyn.width,
+                    sourceHeightPixels: dyn.height,
+                    mediaPlacement: layer.mediaPlacement,
+                    containerClip: program.mediaGeometry.containerClip)
+                sceneEntries.append(try ResolvedSceneLayerEntry(
+                    key: key, program: program, source: .dynamicTexture(dyn), placement: placement))
+                return
+            }
+
             guard let pixels = fixtures[fixtureKey] else {
                 throw RenderGraphError.missingFixturePixels(reference: fixtureKey.canonicalString)
             }
@@ -145,6 +203,10 @@ public enum RenderInputResolver {
 
         // Exactly-complete: every supplied fixture must be consumed (no unused/approximate input, §6).
         for suppliedKey in fixtures.keys where !consumedFixtures.contains(suppliedKey) {
+            throw RenderGraphError.unusedFixture(reference: suppliedKey.canonicalString)
+        }
+        // CP7.8: dynamic texture fixtures are held to the same exactly-complete contract.
+        for suppliedKey in dynamicFixtures.keys where !consumedDynamic.contains(suppliedKey) {
             throw RenderGraphError.unusedFixture(reference: suppliedKey.canonicalString)
         }
 

@@ -62,17 +62,44 @@ final class NextVideoExportIntegrationTests: XCTestCase {
 
         let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
         let ctx = try NextSingleSceneBridge.assemble(decoded: decoded, placementByBlockID: placementByBlockID, sessionBox: sessionBox)
-        XCTAssertFalse(ctx.videoResolversByReference.isEmpty, "context must hold the video resolver")
+        XCTAssertFalse(ctx.videoTextureResolversByReference.isEmpty, "context must hold the GPU video texture resolver")
 
-        let f0 = try NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: 0)
-        let fLate = try NextSingleSceneBridge.renderFrameBGRA(context: ctx, frameIndex: min(45, ctx.totalFrames - 1))
-
-        // Canvas-sized output.
-        XCTAssertEqual(f0.width, 1080)
-        XCTAssertEqual(f0.height, 1920)
+        // CP7.8: a video frame is texture-backed and renders ONLY through the GPU texture path; the readback
+        // `renderFrameBGRA`/`execute` oracle path fails closed for a dynamic-texture frame by design. Render
+        // each frame into a canvas texture and read it back to assert content advances over time.
+        let (cw, ch) = ctx.canvasPixelSize
+        XCTAssertEqual(cw, 1080); XCTAssertEqual(ch, 1920)
+        let pool = CanvasTexturePool(device: sessionBox.metalDevice)
+        func renderBytes(_ frame: Int) throws -> [UInt8] {
+            let h = try XCTUnwrap(pool.checkout(width: cw, height: ch))
+            try NextSingleSceneBridge.renderFramePreview(context: ctx, frameIndex: frame, into: h.texture)
+            pool.markRendered(h)
+            let bytes = try readBackBGRA(h.texture, device: device)
+            pool.releaseUnpresented(h)
+            return bytes
+        }
+        let f0 = try renderBytes(0)
+        let fLate = try renderBytes(min(45, ctx.totalFrames - 1))
         // Distinct video content over time (the ramp clip changes per frame).
-        XCTAssertNotEqual(Array(f0.bytes.prefix(4096)), Array(fLate.bytes.prefix(4096)),
+        XCTAssertNotEqual(Array(f0.prefix(4096)), Array(fLate.prefix(4096)),
                           "video frames at distinct times must differ")
+    }
+
+    /// Read a canvas-sized `.private` `.bgra8Unorm` texture back to tight BGRA bytes via a blit-to-shared
+    /// buffer (CP7.8 video output is GPU-only; the pool texture is `.private` so `getBytes` is unavailable).
+    private func readBackBGRA(_ tex: MTLTexture, device: MTLDevice) throws -> [UInt8] {
+        let w = tex.width, h = tex.height, bpr = w * 4
+        let buf = try XCTUnwrap(device.makeBuffer(length: bpr * h, options: .storageModeShared))
+        let q = try XCTUnwrap(device.makeCommandQueue())
+        let cb = try XCTUnwrap(q.makeCommandBuffer())
+        let blit = try XCTUnwrap(cb.makeBlitCommandEncoder())
+        blit.copy(from: tex, sourceSlice: 0, sourceLevel: 0,
+                  sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                  sourceSize: MTLSize(width: w, height: h, depth: 1),
+                  to: buf, destinationOffset: 0,
+                  destinationBytesPerRow: bpr, destinationBytesPerImage: bpr * h)
+        blit.endEncoding(); cb.commit(); cb.waitUntilCompleted()
+        return [UInt8](Data(bytesNoCopy: buf.contents(), count: bpr * h, deallocator: .none))
     }
 
     // MARK: - 2. Full export through the runner: frame count + opaque A=255
