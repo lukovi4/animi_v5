@@ -151,6 +151,19 @@ final class NextPreviewController {
         case failure(Error)
     }
 
+    /// CP7.7-next GPU-direct result: a checked-out canvas texture (the editor presents it + checks it back
+    /// in on the presentation command buffer's completion handler), a soft skip (pool momentarily
+    /// exhausted — present the last good frame, NOT an error), or a hard failure (fail-closed).
+    enum TextureOutcome {
+        case texture(CanvasTextureHandle)
+        case skipped                 // pool exhausted this tick → keep last frame, do NOT show an error
+        case failure(Error)
+    }
+
+    /// CP7.7-next: internal sentinel — the texture pool was momentarily exhausted (all textures in
+    /// flight). NOT a real error: the caller presents the last good frame and waits for one to free up.
+    private struct PoolExhausted: Error {}
+
     private let device: MTLDevice
     private let maxCachedFrames: Int
 
@@ -164,8 +177,21 @@ final class NextPreviewController {
     /// the key settles — the stream of new placement keys otherwise outran the cache and the frame
     /// was rendered but never presented (preview only updated at gesture end). Main-thread only.
     private(set) var latestFrame: NextBridgeBGRAFrame?
+    /// CP7.7-next GPU-direct: the most recent successfully rendered canvas-texture handle (any key),
+    /// presented on a cache miss so a live gesture shows each just-rendered frame immediately — the
+    /// texture analogue of `latestFrame`. Main-thread only. The editor checks it IN after presentation.
+    private(set) var latestTextureHandle: CanvasTextureHandle?
+    /// CP7.7-next: bounded canvas-texture pool, created lazily on the render queue (needs the engine
+    /// device from the shared session). Its own methods are thread-safe (checkin fires from a GPU thread).
+    private var texturePool: CanvasTexturePool?
+    /// Trailing-coalesced latest GPU-direct request (single-scene + timeline share one, like inFlight).
+    private var pendingTextureRequest: (inputs: NextBridgeInputs, completion: (TextureOutcome) -> Void)?
+    private var pendingTimelineTextureRequest: (inputs: NextBridgeTimelineInputs, completion: (TextureOutcome) -> Void)?
     /// Bumped on every identity change. A completion carrying an old epoch is dropped.
     private var epoch: UInt64 = 0
+    /// CP7.7-next: the current preview epoch (bumped on every MEDIA identity change). The editor watches it
+    /// to drop its held GPU front buffer across a media change, so a stale texture is never re-presented.
+    var previewEpoch: UInt64 { epoch }
     /// True while a prepare/render is in flight for the current epoch (avoids piling up work).
     private var inFlight = false
     /// Trailing-coalesced latest request that arrived while a render was in flight. Fired on completion.
@@ -213,6 +239,51 @@ final class NextPreviewController {
         prerenderToken?.cancel(); prerenderToken = nil
         timelineKey = nil; timelineContext = nil
         timelineDecoded = nil; timelineDecodedKey = nil
+        // CP7.7-next: drop the latest GPU texture reference + pending texture requests. The pool drains
+        // its textures; any handle still being presented checks in (no-op) when its present completes.
+        latestTextureHandle = nil
+        pendingTextureRequest = nil; pendingTimelineTextureRequest = nil
+        texturePool?.clear()
+    }
+
+    /// CP7.7-next: free preview GPU resources under memory pressure (mirrors the Data path cleanup).
+    func releaseTextureResources() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        latestTextureHandle = nil
+        texturePool?.clearFront()
+        texturePool?.clear()
+    }
+
+    /// CP7.7-next: `handle` was just promoted to the displayed front buffer AND a present command buffer
+    /// sampling it was just committed — count one in-flight GPU read. Thread-safe; called from `draw(in:)`.
+    /// The matching `presentReadCompleted` MUST fire from that command buffer's completion handler.
+    func markTextureFrontAndPresenting(_ handle: CanvasTextureHandle) {
+        texturePool?.setFront(handle)
+        texturePool?.retainForPresent(handle)
+    }
+
+    /// CP7.7-next: a re-present of the SAME front buffer (no new render) committed another read — count it
+    /// (no front change). Thread-safe; called from `draw(in:)`.
+    func markTexturePresentingAgain(_ handle: CanvasTextureHandle) {
+        texturePool?.retainForPresent(handle)
+    }
+
+    /// CP7.7-next: a present command buffer sampling `handle` COMPLETED (GPU finished reading) — drop one
+    /// in-flight read. The texture becomes reuse-eligible only once it is no longer front AND reads hit 0.
+    /// Thread-safe — fires from the present command buffer completion handler on a GPU queue thread.
+    func presentReadCompleted(_ handle: CanvasTextureHandle) {
+        texturePool?.releaseAfterPresent(handle)
+    }
+
+    /// CP7.7-next: drop the front mark (e.g. teardown). The texture stays non-reusable until reads drain.
+    func clearTextureFront() {
+        texturePool?.clearFront()
+    }
+
+    /// CP7.7-next: return a checked-out texture that was rendered but NEVER presented (stale epoch, or a
+    /// pending handle the editor superseded before drawing it). It is idle → safe to reuse. Thread-safe.
+    func releaseUnpresentedTexture(_ handle: CanvasTextureHandle) {
+        texturePool?.releaseUnpresented(handle)
     }
 
     /// Request the frame for `inputs.frameIndex`. Returns a cached frame synchronously (fast scrub),
@@ -361,6 +432,142 @@ final class NextPreviewController {
         return nil
     }
 
+    // MARK: - CP7.7-next: GPU-direct (single-scene) — renders into a pooled canvas texture, no readback
+
+    /// Request the frame for `inputs.frameIndex` as a GPU-direct canvas texture (no CPU readback/Data).
+    /// Returns nil after scheduling an async render whose checked-out texture is delivered to `completion`
+    /// on main; the editor presents it and checks it back in on the present command buffer's completion.
+    /// Mirrors `requestFrame`'s epoch / latest-wins / trailing-coalesce; there is NO per-index texture
+    /// cache (the bounded pool holds only the in-flight set) — scrub already missed the frame cache, and
+    /// static playback's win is the reused prepared context, not a cached output texture.
+    func requestTexture(_ inputs: NextBridgeInputs, completion: @escaping (TextureOutcome) -> Void) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let newKey = NextPreviewKey(inputs: inputs) else {
+            completion(.failure(NextBridgeError.mediaResolveFailed("unresolved media file")))
+            return
+        }
+
+        if newKey != key {
+            let mediaChanged = (newKey.mediaKey != key?.mediaKey)
+            key = newKey
+            context = nil
+            frameCache.removeAll(); lruOrder.removeAll()
+            pendingRequest = nil; pendingTextureRequest = nil
+            prerenderToken?.cancel(); prerenderToken = nil
+            keyChangesSincePrerender &+= 1
+            if mediaChanged {
+                latestFrame = nil
+                latestTextureHandle = nil   // stale GPU frame: do not present across a media change
+                epoch &+= 1
+                inFlight = false
+            }
+        }
+
+        let frameIndex = max(0, inputs.frameIndex)
+
+        // Trailing-coalesce while a render is in flight (no synchronous texture cache to hit).
+        if inFlight {
+            stats.frameMisses += 1
+            pendingTextureRequest = (inputs, completion)
+            return
+        }
+
+        stats.frameMisses += 1
+        let renderEpoch = epoch
+        let renderKey = newKey
+        let captured = inputs
+        let mediaKey = newKey.mediaKey
+        let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
+        let existingContext = context
+        inFlight = true
+        if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
+
+        renderQueue.async { [weak self, device] in
+            guard let self else { return }
+            typealias RenderOK = (handle: CanvasTextureHandle, ctx: NextPreparedContext?, prepMs: Double, renderMs: Double)
+            let result: Result<RenderOK, Error> = autoreleasepool {
+                do {
+                    let box: NextSessionBox
+                    if let existing = self.sessionBox { box = existing }
+                    else { box = try NextSingleSceneBridge.makeSession(device: device); self.sessionBox = box }
+
+                    var preparedNow: NextPreparedContext? = nil
+                    var prepMs = 0.0
+                    let ctx: NextPreparedContext
+                    if let existingContext {
+                        ctx = existingContext
+                    } else {
+                        let t0 = Self.nowMs()
+                        let decoded: NextDecodedMedia
+                        if let cached = self.decodedMedia, self.decodedMediaKey == mediaKey {
+                            decoded = cached
+                        } else {
+                            decoded = try NextSingleSceneBridge.decodeMedia(captured)
+                            self.decodedMedia = decoded
+                            self.decodedMediaKey = mediaKey
+                        }
+                        let prepared = try NextSingleSceneBridge.assemble(decoded: decoded, placementByBlockID: placementByBlockID, sessionBox: box)
+                        prepMs = Self.nowMs() - t0
+                        preparedNow = prepared
+                        ctx = prepared
+                    }
+                    // Lazily build the pool on the engine device (same device the session renders with).
+                    let pool: CanvasTexturePool
+                    if let existing = self.texturePool { pool = existing }
+                    else { let p = CanvasTexturePool(device: box.metalDevice); self.texturePool = p; pool = p }
+                    let (cw, ch) = ctx.canvasPixelSize
+                    guard let handle = pool.checkout(width: cw, height: ch) else {
+                        // Pool exhausted: all textures in flight. SOFT skip — present the last good frame,
+                        // never allocate past the bound, never block, never show an error.
+                        throw PoolExhausted()
+                    }
+                    let t1 = Self.nowMs()
+                    do {
+                        try NextSingleSceneBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture)
+                    } catch {
+                        // Render failed: return the never-presented (idle) handle so its slot is not leaked.
+                        pool.releaseUnpresented(handle)
+                        throw error
+                    }
+                    pool.markRendered(handle)
+                    return .success((handle, preparedNow, prepMs, Self.nowMs() - t1))
+                } catch {
+                    return .failure(error)
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.inFlight = false
+                let epochStale = (renderEpoch != self.epoch)
+                if epochStale { self.stats.staleDropped += 1 }
+                if !epochStale {
+                    switch result {
+                    case .success(let r):
+                        let keyCurrent = (self.key == renderKey)
+                        if keyCurrent, let prepared = r.ctx { self.context = prepared; self.stats.lastPrepareMs = r.prepMs }
+                        self.stats.lastRenderMs = r.renderMs
+                        // Replace latest: the OLD latest handle has either already been presented + checked
+                        // in, or will be when its present completes — we never check it in here (that would
+                        // race with an in-flight present). We just stop referencing it.
+                        self.latestTextureHandle = r.handle
+                        completion(.texture(r.handle))
+                    case .failure(let error):
+                        if error is PoolExhausted { completion(.skipped) }   // soft: keep last frame
+                        else { completion(.failure(error)) }
+                    }
+                } else {
+                    // Stale epoch: the rendered handle is not adopted. It was never presented (idle) but is
+                    // still checked out — explicitly return it so its pool slot is not leaked.
+                    if case .success(let r) = result { self.texturePool?.releaseUnpresented(r.handle) }
+                }
+                if let pending = self.pendingTextureRequest {
+                    self.pendingTextureRequest = nil
+                    self.requestTexture(pending.inputs, completion: pending.completion)
+                }
+            }
+        }
+    }
+
     /// Trailing-coalesced latest TIMELINE request (separate from the single-scene `pendingRequest`).
     private var pendingTimelineRequest: (inputs: NextBridgeTimelineInputs, completion: (Outcome) -> Void)?
 
@@ -480,6 +687,131 @@ final class NextPreviewController {
             }
         }
         return nil
+    }
+
+    // MARK: - CP7.7-next: GPU-direct (timeline) — renders into a pooled canvas texture, no readback
+
+    /// CP7.7-next: timeline GPU-direct request. Mirrors `requestTexture` (single-scene) but uses the
+    /// timeline key/context/bridge. Returns nil after scheduling an async render.
+    func requestTimelineTexture(_ inputs: NextBridgeTimelineInputs, completion: @escaping (TextureOutcome) -> Void) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let newKey = NextTimelineKey(inputs: inputs) else {
+            completion(.failure(NextBridgeError.multiSceneUnsupported(sceneItemCount: inputs.scenes.count)))
+            return
+        }
+
+        if newKey != timelineKey {
+            let mediaChanged = (newKey.mediaKey != timelineKey?.mediaKey)
+            timelineKey = newKey
+            timelineContext = nil
+            frameCache.removeAll(); lruOrder.removeAll()
+            pendingTimelineRequest = nil; pendingTimelineTextureRequest = nil
+            prerenderToken?.cancel(); prerenderToken = nil
+            keyChangesSincePrerender &+= 1
+            if mediaChanged {
+                latestFrame = nil
+                latestTextureHandle = nil
+                epoch &+= 1
+                inFlight = false
+            }
+        }
+
+        let frameIndex = max(0, inputs.nominalFrameIndex)
+
+        if inFlight {
+            stats.frameMisses += 1
+            pendingTimelineTextureRequest = (inputs, completion)
+            return
+        }
+
+        stats.frameMisses += 1
+        let renderEpoch = epoch
+        let renderKey = newKey
+        let captured = inputs
+        let mediaKey = newKey.mediaKey
+        let existingContext = timelineContext
+        inFlight = true
+        if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
+
+        renderQueue.async { [weak self, device] in
+            guard let self else { return }
+            typealias RenderOK = (handle: CanvasTextureHandle, ctx: NextTimelinePreparedContext?, prepMs: Double, renderMs: Double)
+            let result: Result<RenderOK, Error> = autoreleasepool {
+                do {
+                    let box: NextSessionBox
+                    if let existing = self.sessionBox { box = existing }
+                    else { box = try NextSingleSceneBridge.makeSession(device: device); self.sessionBox = box }
+
+                    var preparedNow: NextTimelinePreparedContext? = nil
+                    var prepMs = 0.0
+                    let ctx: NextTimelinePreparedContext
+                    if let existingContext {
+                        ctx = existingContext
+                    } else {
+                        let t0 = Self.nowMs()
+                        let decoded: [NextDecodedMedia]
+                        if let cached = self.timelineDecoded, self.timelineDecodedKey == mediaKey {
+                            decoded = cached
+                        } else {
+                            decoded = try NextTimelineBridge.decodeTimeline(captured)
+                            self.timelineDecoded = decoded
+                            self.timelineDecodedKey = mediaKey
+                        }
+                        let prepared = try NextTimelineBridge.assembleTimeline(decoded: decoded, inputs: captured, sessionBox: box)
+                        prepMs = Self.nowMs() - t0
+                        preparedNow = prepared
+                        ctx = prepared
+                    }
+                    let pool: CanvasTexturePool
+                    if let existing = self.texturePool { pool = existing }
+                    else { let p = CanvasTexturePool(device: box.metalDevice); self.texturePool = p; pool = p }
+                    let (cw, ch) = ctx.canvasPixelSize
+                    guard let handle = pool.checkout(width: cw, height: ch) else {
+                        // Pool exhausted: SOFT skip (keep last frame), matching the single-scene path —
+                        // NOT a visible render failure. The `.failure(PoolExhausted)` is mapped to `.skipped`.
+                        throw PoolExhausted()
+                    }
+                    let t1 = Self.nowMs()
+                    do {
+                        try NextTimelineBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture)
+                    } catch {
+                        // Render failed: return the never-presented (idle) handle so its slot is not leaked.
+                        pool.releaseUnpresented(handle)
+                        throw error
+                    }
+                    pool.markRendered(handle)
+                    return .success((handle, preparedNow, prepMs, Self.nowMs() - t1))
+                } catch {
+                    return .failure(error)
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.inFlight = false
+                let epochStale = (renderEpoch != self.epoch)
+                if epochStale { self.stats.staleDropped += 1 }
+                if !epochStale {
+                    switch result {
+                    case .success(let r):
+                        let keyCurrent = (self.timelineKey == renderKey)
+                        if keyCurrent, let prepared = r.ctx { self.timelineContext = prepared; self.stats.lastPrepareMs = r.prepMs }
+                        self.stats.lastRenderMs = r.renderMs
+                        self.latestTextureHandle = r.handle
+                        completion(.texture(r.handle))
+                    case .failure(let error):
+                        if error is PoolExhausted { completion(.skipped) }   // soft: keep last frame
+                        else { completion(.failure(error)) }
+                    }
+                } else {
+                    // Stale epoch: explicitly return the unadopted (idle) handle so its slot is not leaked.
+                    if case .success(let r) = result { self.texturePool?.releaseUnpresented(r.handle) }
+                }
+                if let pending = self.pendingTimelineTextureRequest {
+                    self.pendingTimelineTextureRequest = nil
+                    self.requestTimelineTexture(pending.inputs, completion: pending.completion)
+                }
+            }
+        }
     }
 
     /// Atomic cancellation token shared with the running prerender batch (off-main safe).

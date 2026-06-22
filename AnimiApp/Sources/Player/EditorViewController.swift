@@ -92,6 +92,12 @@ final class EditorViewController: UIViewController {
         mtkView.device = MTLCreateSystemDefaultDevice()
         mtkView.clearColor = MTLClearColor(red: 0.1, green: 0.1, blue: 0.15, alpha: 1.0)
         mtkView.colorPixelFormat = .bgra8Unorm
+        // `MPSImageBilinearScale.encode` writes the destination drawable texture via a COMPUTE kernel, so the
+        // drawable MUST allow `.shaderWrite`. MTKView defaults `framebufferOnly = true`, which gives the
+        // drawable only `.renderTarget` usage; using such a framebuffer-only texture as an MPS write target is
+        // a drawable usage violation (undefined drawable contents). Setting `framebufferOnly = false` makes
+        // the drawable `.shaderWrite`-capable so the MPS compute write is valid.
+        mtkView.framebufferOnly = false
         mtkView.layer.cornerRadius = 8
         mtkView.clipsToBounds = true
         mtkView.delegate = self
@@ -114,6 +120,17 @@ final class EditorViewController: UIViewController {
     var nextPreviewController: NextPreviewController?
     /// CP3: an async render failure to surface inside the next valid `draw(in:)` cycle.
     var pendingNextBridgeError: Error?
+    /// CP7.7-next: a freshly-rendered GPU-direct canvas texture awaiting presentation inside the next
+    /// valid `draw(in:)`. Adopted as the new front buffer when presented. Main-thread only.
+    var pendingPresentTextureHandle: CanvasTextureHandle?
+    /// CP7.7-next: the currently-displayed front-buffer texture (held, NOT in the pool's available set).
+    /// A redundant draw (pause/layout, no new render) re-presents THIS so the drawable always shows the
+    /// last good frame. Released (checked in) only when a newer frame replaces it. Main-thread only.
+    var displayedTextureHandle: CanvasTextureHandle?
+    /// CP7.7-next: the preview epoch this editor last synced to. When the controller bumps its epoch (a media
+    /// identity change), the held GPU front/pending textures belong to the OLD media and must NOT be
+    /// re-presented — they are released and cleared so the next frame is a fresh render of the new media.
+    var lastSeenPreviewEpoch: UInt64 = 0
     /// assetId.rawValue -> resolved absolute file URL (async-populated cache).
     var nextBridgeMediaURLCache: [String: URL] = [:]
     var nextBridgeMediaResolveInFlight: Set<String> = []
@@ -797,20 +814,48 @@ extension EditorViewController: MTKViewDelegate {
         }
         guard let controller = nextPreviewController else { return }
 
+        // CP7.7-next: on a MEDIA identity change (controller bumped its epoch), the held GPU front + any
+        // pending texture belong to the OLD media — release them and stop re-presenting them, so we never
+        // show a stale GPU frame across a media change. The next request renders the new media fresh.
+        if controller.previewEpoch != lastSeenPreviewEpoch {
+            lastSeenPreviewEpoch = controller.previewEpoch
+            if let pending = pendingPresentTextureHandle {
+                controller.releaseUnpresentedTexture(pending)
+                pendingPresentTextureHandle = nil
+            }
+            if displayedTextureHandle != nil {
+                // Demote the old front so the pool can reclaim it once its in-flight present reads drain.
+                controller.clearTextureFront()
+                displayedTextureHandle = nil
+            }
+        }
+
         // CRITICAL: `currentDrawable` is ONLY valid inside this `draw(in:)` call. So presentation
-        // happens here and nowhere else. The async completion must NOT present — it only caches the
-        // frame and requests another draw, which re-enters here and presents from the cache.
+        // happens here and nowhere else. The async completion must NOT present — it stashes the rendered
+        // GPU texture and requests another draw, which re-enters here and presents it.
         //
-        // CP5: a multi-scene timeline routes to the timeline path (cut/fade/slide via Next); a single
-        // scene stays on the CP4 single-scene path verbatim.
-        let cached: NextBridgeBGRAFrame?
+        // CP7.7-next: GPU-direct. The Next bridge renders straight into a pooled canvas-sized MTLTexture
+        // (no CPU readback / Data); here we MPS-scale that texture into the drawable. The texture is
+        // checked back into the pool ONLY when the present command buffer completes (safe lifetime).
+        //
+        // CP5: a multi-scene timeline routes to the timeline path; a single scene to the single-scene path.
         switch inputs {
         case .single(let single):
-            cached = controller.requestFrame(single) { [weak self] outcome in
+            controller.requestTexture(single) { [weak self] outcome in
                 guard let self else { return }
                 switch outcome {
-                case .frame:
-                    self.nextPreviewController?.prerenderSequence(from: single.frameIndex + 1, count: 5)
+                case .texture(let handle):
+                    // GPU-direct presents the just-rendered texture; the Data frame cache + its prerender are
+                    // NOT used on this path. If a previous pending handle was never drawn (a newer render
+                    // landed first), return it — it was rendered but never presented (idle), so releasing it
+                    // frees its pool slot without any in-flight read.
+                    if let superseded = self.pendingPresentTextureHandle {
+                        self.nextPreviewController?.releaseUnpresentedTexture(superseded)
+                    }
+                    self.pendingPresentTextureHandle = handle
+                    self.requestRender()
+                case .skipped:
+                    // Pool momentarily exhausted: keep the last presented frame, retry next tick. NOT an error.
                     self.requestRender()
                 case .failure(let error):
                     self.pendingNextBridgeError = error
@@ -818,13 +863,16 @@ extension EditorViewController: MTKViewDelegate {
                 }
             }
         case .timeline(let timeline):
-            cached = controller.requestTimelineFrame(timeline) { [weak self] outcome in
+            controller.requestTimelineTexture(timeline) { [weak self] outcome in
                 guard let self else { return }
                 switch outcome {
-                case .frame:
-                    // CP7.5: warm the timeline frame cache ahead of the playhead (mirrors the
-                    // single-scene prerender) so scrub/playback is not a cold render every frame.
-                    self.nextPreviewController?.prerenderTimelineSequence(from: timeline.nominalFrameIndex + 1, count: 5)
+                case .texture(let handle):
+                    if let superseded = self.pendingPresentTextureHandle {
+                        self.nextPreviewController?.releaseUnpresentedTexture(superseded)
+                    }
+                    self.pendingPresentTextureHandle = handle
+                    self.requestRender()
+                case .skipped:
                     self.requestRender()
                 case .failure(let error):
                     self.pendingNextBridgeError = error
@@ -832,22 +880,24 @@ extension EditorViewController: MTKViewDelegate {
                 }
             }
         }
-        if let cached {
-            presentNextFrame(cached, in: view)
+
+        if let handle = pendingPresentTextureHandle {
+            // A fresh frame: present it and adopt it as the new front buffer.
+            pendingPresentTextureHandle = nil
+            presentNextTexture(handle, in: view, isNewFrame: true)
             clearNextBridgeError()
         } else if let err = pendingNextBridgeError {
             // An async render failed earlier; surface it inside the valid draw cycle.
             pendingNextBridgeError = nil
             presentNextBridgeError(err, in: view)
-        } else if let latest = controller.latestFrame {
-            // Cache MISS (e.g. a live gesture where each tick is a new placement key): present the
-            // most recent rendered frame NOW. Without this the frame was rendered but never shown
-            // until the gesture stopped, because the next key arrived before draw caught the cache.
-            presentNextFrame(latest, in: view)
+        } else if let front = displayedTextureHandle {
+            // PRESENT-ON-MISS: a redundant draw with no new frame (pause/layout/a draw between renders).
+            // Re-present the held front buffer so the drawable always shows the last good frame instead of a
+            // recycled drawable holding garbage. Safe: front stays non-reusable until its reads drain.
+            presentNextTexture(front, in: view, isNewFrame: false)
             clearNextBridgeError()
         }
-        // First-ever frame (no latest yet): leave the drawable as-is; the async completion triggers
-        // another draw once the first frame is ready.
+        // First-ever frame (no front yet): leave the drawable; the first render completes and triggers a draw.
     }
 
     /// Either a single-scene CP4 input or a multi-scene CP5 timeline input.
@@ -1002,6 +1052,73 @@ extension EditorViewController: MTKViewDelegate {
         return NextBridgeTransition(
             typeRaw: typeRaw, direction: direction,
             durationFrames: t.durationFrames, easingRaw: t.easingPreset.rawValue)
+    }
+
+    /// CP7.7-next: aspect-fit a GPU-direct canvas texture into the drawable and present — NO CPU readback,
+    /// NO `srcTex.replace` re-upload (the texture is already on the GPU, rendered by `render(into:)`).
+    /// MUST be called only from inside `draw(in:)`. The texture is checked back into the pool ONLY when
+    /// this present command buffer COMPLETES (the GPU has finished reading it) — the safe-lifetime fix
+    /// that the reverted CP7.6b lacked.
+    /// `isNewFrame == true` when `handle` is a freshly-rendered texture being adopted as the front buffer;
+    /// `false` when re-presenting the SAME existing front buffer (a redundant draw with no new render).
+    private func presentNextTexture(_ handle: CanvasTextureHandle, in view: MTKView, isNewFrame: Bool) {
+        // If presentation cannot be encoded this cycle, a FRESH handle (`isNewFrame`) was already removed
+        // from `pendingPresentTextureHandle` and is still checked out (released=false) → it MUST be returned
+        // to the pool or its slot leaks. A re-present of the existing front (`!isNewFrame`) is left as-is:
+        // the front is held separately (`displayedTextureHandle`) and must keep showing the last good frame.
+        func bailWithoutPresenting() {
+            if isNewFrame { nextPreviewController?.releaseUnpresentedTexture(handle) }
+        }
+        guard let drawable = view.currentDrawable,
+              let cmdQueue = commandQueue,
+              let device = metalView.device,
+              let cmdBuf = cmdQueue.makeCommandBuffer() else {
+            bailWithoutPresenting()
+            return
+        }
+        let srcTex = handle.texture
+        let w = srcTex.width, h = srcTex.height
+        let target = drawable.texture
+        guard w > 0, h > 0 else { bailWithoutPresenting(); return }
+
+        // Clear the drawable first (letterbox background), then scale the canvas texture into it.
+        if let pass = view.currentRenderPassDescriptor {
+            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            pass.colorAttachments[0].loadAction = .clear
+            pass.colorAttachments[0].storeAction = .store
+            cmdBuf.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+        }
+
+        let scale = min(Double(target.width) / Double(w), Double(target.height) / Double(h))
+        let scaledW = Double(w) * scale
+        let scaledH = Double(h) * scale
+        let tx = (Double(target.width) - scaledW) / 2.0
+        let ty = (Double(target.height) - scaledH) / 2.0
+        var transform = MPSScaleTransform(scaleX: scale, scaleY: scale, translateX: tx, translateY: ty)
+        withUnsafePointer(to: &transform) { ptr in
+            let scaler = MPSImageBilinearScale(device: device)
+            scaler.scaleTransform = ptr
+            scaler.encode(commandBuffer: cmdBuf, sourceTexture: srcTex, destinationTexture: target)
+        }
+
+        // SAFE LIFETIME: this MPS command buffer is now SAMPLING `handle`. Count it as one in-flight read
+        // BEFORE commit; drop it ONLY in the completion handler (GPU finished reading). The texture becomes
+        // reuse-eligible ONLY when it is no longer the front buffer AND its in-flight reads reach 0 — so the
+        // pool can never hand it to a renderer while a present is still sampling it (render-vs-present reuse
+        // hazard). New frames are promoted to front here; the previous front is demoted (but stays
+        // non-reusable until ITS reads drain).
+        if isNewFrame {
+            nextPreviewController?.markTextureFrontAndPresenting(handle)  // setFront + retainForPresent
+            displayedTextureHandle = handle
+        } else {
+            nextPreviewController?.markTexturePresentingAgain(handle)     // re-present same front: retain only
+        }
+        cmdBuf.addCompletedHandler { [weak self] _ in
+            // GPU finished reading `handle`; thread-safe release on a GPU queue thread.
+            self?.nextPreviewController?.presentReadCompleted(handle)
+        }
+        cmdBuf.present(drawable)
+        cmdBuf.commit()
     }
 
     /// Aspect-fit the BGRA8 frame into the drawable and present. Deterministic Metal path:

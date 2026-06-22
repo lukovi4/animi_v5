@@ -77,6 +77,11 @@ final class NextTimelinePreparedContext {
         self.assetEntries = assetEntries
         self.configuration = configuration; self.session = session; self.totalFrames = totalFrames
     }
+
+    /// CP7.7-next: output canvas pixel size for the GPU-direct preview render target.
+    var canvasPixelSize: (width: Int, height: Int) {
+        (Int(configuration.output.canvas.width), Int(configuration.output.canvas.height))
+    }
 }
 
 enum NextTimelineBridge {
@@ -303,6 +308,11 @@ enum NextTimelineBridge {
         let graph = try buildGraph(context: ctx, frameIndex: frameIndex)
         do { try ctx.session.render(graph, into: GPURenderTarget(texture: target, alphaMode: alphaMode)) }
         catch { throw NextBridgeError.engine("render(into:): \(error)") }
+    }
+
+    /// CP7.7-next PREVIEW GPU-direct entry (timeline). Mirrors `NextSingleSceneBridge.renderFramePreview`.
+    static func renderFramePreview(context ctx: NextTimelinePreparedContext, frameIndex: Int, into target: MTLTexture) throws {
+        try renderFrame(context: ctx, frameIndex: frameIndex, into: target, alphaMode: .preserveAlpha)
     }
 
     /// The shared per-frame timeline graph build (evaluate→resolve→compile). Used by BOTH the readback

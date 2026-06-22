@@ -284,6 +284,12 @@ final class NextPreparedContext {
         self.assetEntries = assetEntries
         self.configuration = configuration; self.session = session; self.totalFrames = totalFrames
     }
+
+    /// CP7.7-next: the output canvas pixel size, so the GPU-direct preview can allocate a canvas-sized
+    /// render target for `MetalRenderSession.render(_:into:)` (which requires target dims == canvas).
+    var canvasPixelSize: (width: Int, height: Int) {
+        (Int(configuration.output.canvas.width), Int(configuration.output.canvas.height))
+    }
 }
 
 /// Opaque holder for the shared `MetalRenderSession` so `NextPreviewController` can own/reuse one
@@ -573,6 +579,14 @@ enum NextSingleSceneBridge {
         catch { throw NextBridgeError.engine("render(into:): \(error)") }
     }
 
+    /// CP7.7-next PREVIEW GPU-direct entry. Renders frame `frameIndex` straight into `target` with
+    /// `.preserveAlpha` (preview composites onto a cleared drawable). Hides `AlphaMode`/`GPURenderTarget`
+    /// from the editor module (which must not import `AnimiEngineMetalRender`). Replaces the readback
+    /// (`renderFrameBGRA` → Data → srcTex.replace) preview hot path; `renderFrameBGRA` stays for oracle/tests.
+    static func renderFramePreview(context ctx: NextPreparedContext, frameIndex: Int, into target: MTLTexture) throws {
+        try renderFrame(context: ctx, frameIndex: frameIndex, into: target, alphaMode: .preserveAlpha)
+    }
+
     /// The shared per-frame graph build (evaluate→resolve→compile). Used by BOTH the readback path
     /// (`renderFrame`/`renderFrameBGRA`, preview + tests) and the GPU-direct path (export).
     static func buildGraph(context ctx: NextPreparedContext, frameIndex: Int) throws -> RenderGraph {
@@ -582,6 +596,7 @@ enum NextSingleSceneBridge {
         }
         // CP7: resolve any video references at THIS frame's scene-local time, then merge with the
         // static photo pixels. The merged map is the complete set of per-block media pixels.
+        // (mergeVideoPixels' video cost is already captured under video.* by the resolver itself.)
         let mediaPixels = try mergeVideoPixels(
             subplan: subplan, staticPixels: ctx.mediaPixelsByReference,
             videoResolvers: ctx.videoResolversByReference)

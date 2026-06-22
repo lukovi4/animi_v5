@@ -305,6 +305,7 @@ final class NextVideoBlockResolver {
             let dims = try PixelDimensions(
                 width: baked.width, height: baked.height, bytesPerRow: baked.bytesPerRow,
                 format: .bgra8, orientation: .up)
+            // so the hash cost is visible separately from the bake (VT decode + rotate/downsample) above.
             return try ResolvedPixelInput(id: try PixelInputID(mediaReference), dimensions: dims, bytes: Data(baked.bytes))
         } catch {
             throw NextVideoFrameResolverError.pixelInput("\(error)")
@@ -334,7 +335,14 @@ final class NextVideoBlockResolver {
 
         let bytesPerRow = outW * 4
         var bytes = [UInt8](repeating: 0, count: bytesPerRow * outH)
-        let bmp = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+        // OPAQUE VIDEO-ALPHA CONTRACT: user H.264 video carries NO authored alpha — it is opaque. The
+        // decoder's BGRA alpha byte is not guaranteed 255, so a `premultipliedFirst` context would keep a
+        // non-opaque alpha (A<255), making the baked frame translucent — invalid for an opaque video. Draw
+        // into a `noneSkipFirst` (BGRX, alpha IGNORED) context so the source alpha cannot make the frame
+        // translucent, then force A=255 below, giving valid premultiplied opaque pixels (B,G,R ≤ A=255).
+        // Correctness contract only (pinned by NextVideoBakeAlphaContractTests); orientation/downsample/
+        // timing are unchanged.
+        let bmp = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
         guard let ctx = CGContext(
             data: &bytes, width: outW, height: outH, bitsPerComponent: 8,
             bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: bmp
@@ -350,6 +358,15 @@ final class NextVideoBlockResolver {
             : CGRect(x: 0, y: 0, width: outH, height: outW)
         Self.configureRotateDraw(ctx: ctx, quarter: turns, outW: outW, outH: outH)
         ctx.draw(cgImage, in: drawRect)
+        // Force the alpha byte to 255 (opaque) on every pixel: `noneSkipFirst` skips the alpha lane during
+        // draw, so the buffer's alpha bytes are still the zero-init value — set them to 255. The colour lanes
+        // hold the opaque video RGB (no premultiply by a bogus alpha), so each pixel is valid premultiplied
+        // with A=255 (rgb ≤ 255 = A). This is the only change; downstream normalize/scene/transition are
+        // untouched and now receive a valid-premultiplied opaque frame.
+        let alphaOffset = 3   // byteOrder32Little + first-alpha → physical byte order is B,G,R,A → A at +3
+        var i = alphaOffset
+        let count = bytes.count
+        while i < count { bytes[i] = 255; i += 4 }
         return (bytes, outW, outH, bytesPerRow)
     }
 
