@@ -316,12 +316,8 @@ final class NextPreparedContext {
 /// the editor module). Created once via `NextSingleSceneBridge.makeSession`.
 final class NextSessionBox {
     let session: MetalRenderSession
-    /// CP7.8 — a command queue on the session device, shared by the GPU video texture resolvers for
-    /// their CVPixelBuffer→texture blits. Built once; nil only if the device cannot make a queue.
-    let videoBlitQueue: MTLCommandQueue?
     init(session: MetalRenderSession) {
         self.session = session
-        self.videoBlitQueue = session.metalDevice.makeCommandQueue()
     }
     /// CP7.6a — the engine `MTLDevice`, so the export runner can build a `CVMetalTextureCache` /
     /// external render-target textures on the SAME device the session renders with.
@@ -564,20 +560,17 @@ enum NextSingleSceneBridge {
             session: sessionBox.session, totalFrames: totalFrames)
     }
 
-    /// CP7.8: build one `NextVideoTextureResolver` per video reference on the session device + shared
-    /// blit queue. Fail closed if the device cannot provide a command queue (no silent CPU fallback).
+    /// CP7.8/CP7.9: build one `NextVideoTextureResolver` per video reference on the session device. The
+    /// resolver realizes frames via a `CVMetalTextureCache` direct bind (no command queue / no blit since
+    /// CP7.8-CORR F3).
     static func makeVideoTextureResolvers(
         windowsByReference: [String: NextVideoWindow], sessionBox: NextSessionBox
     ) throws -> [String: NextVideoTextureResolver] {
         guard !windowsByReference.isEmpty else { return [:] }
-        guard let queue = sessionBox.videoBlitQueue else {
-            throw NextBridgeError.engine("CP7.8: session device produced no command queue for video texture resolver")
-        }
         var resolvers: [String: NextVideoTextureResolver] = [:]
         for (ref, window) in windowsByReference {
             resolvers[ref] = NextVideoTextureResolver(
-                blockID: ref, mediaReference: ref, window: window,
-                device: sessionBox.metalDevice, commandQueue: queue)
+                blockID: ref, mediaReference: ref, window: window, device: sessionBox.metalDevice)
         }
         return resolvers
     }

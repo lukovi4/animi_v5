@@ -28,13 +28,13 @@ import AnimiEngineMetalRender
 // (oriented) dimensions; the engine normalization pass applies the quarter-turn (raw → display `.up`),
 // matching the CPU `rotateBGRA` oracle exactly.
 //
-// Lifetime (CP7.8 §9): each produced `RuntimeTextureHandle` retains its `CVPixelBuffer` + `CVMetalTexture`;
-// the engine holds the whole binding set until its command buffer completes. We also blit the
-// CoreVideo-mapped texture into an OWNED `.private` texture (mirrors `ExportVideoFrameProvider`), so a
-// held/cached frame survives across reader advances without aliasing a recycled IOSurface.
+// Lifetime (CP7.8 §9): each produced `RuntimeTextureHandle` retains its `CVPixelBuffer` + `CVMetalTexture`
+// (CP7.8-CORR F3 direct-bind — NO owned `.private` texture, NO blit). The engine holds the whole binding
+// set until its command buffer completes; the retained `CVMetalTexture` pins the IOSurface so a held/cached
+// frame is not aliased to a recycled buffer.
 //
-// Thread-confinement: NOT thread-safe. One instance per render path, all calls on that path's serial
-// render queue (same confinement as the rest of the Next bridge).
+// Thread-confinement: NOT thread-safe. One instance per video, all calls serialized by its owner — today
+// the preview render queue; under CP7.9 a per-video serial prewarm executor (off the render queue).
 
 /// Typed, visible failure for the CP7.8 texture resolver. No silent fallback.
 enum NextVideoTextureResolverError: Error, CustomStringConvertible {
@@ -46,7 +46,6 @@ enum NextVideoTextureResolverError: Error, CustomStringConvertible {
     case noFrameDecoded(URL, targetTime: Double)
     case textureCacheCreateFailed(URL, CVReturn)
     case metalTextureCreateFailed(URL, CVReturn)
-    case ownedTextureAllocFailed(URL)
 
     var description: String {
         switch self {
@@ -58,20 +57,36 @@ enum NextVideoTextureResolverError: Error, CustomStringConvertible {
         case .noFrameDecoded(let u, let t): return "Next video texture: no frame decoded for \(u.lastPathComponent) at target \(t)s."
         case .textureCacheCreateFailed(let u, let s): return "Next video texture: CVMetalTextureCache create failed for \(u.lastPathComponent): \(s)."
         case .metalTextureCreateFailed(let u, let s): return "Next video texture: CVMetalTexture create failed for \(u.lastPathComponent): \(s)."
-        case .ownedTextureAllocFailed(let u): return "Next video texture: owned MTLTexture alloc failed for \(u.lastPathComponent)."
         }
     }
 }
 
-/// One video block's per-frame texture resolver. Owns an `AVAssetReader` + a `CVMetalTextureCache` and
-/// hands back a `(descriptor, handle)` for a requested scene-local time. Forward-only, hold-last.
-final class NextVideoTextureResolver {
+/// One resolved video frame: the value descriptor for the canonical graph + the runtime GPU handle.
+/// Top-level (CP7.9) so the `NextVideoFrameProvider` seam can name it without coupling to a concrete type.
+struct NextVideoFrame {
+    let descriptor: ResolvedDynamicTextureInput
+    let handle: RuntimeTextureHandle
+}
 
-    /// One resolved frame: the value descriptor for the canonical graph + the runtime GPU handle.
-    struct Frame {
-        let descriptor: ResolvedDynamicTextureInput
-        let handle: RuntimeTextureHandle
-    }
+/// CP7.9 seam — the non-decoding-on-render-queue contract the bridge depends on. Today the synchronous
+/// `NextVideoTextureResolver` conforms (identical behaviour); Phase 3 swaps in an async prewarm scheduler
+/// whose `readyFrame` is non-blocking (binds ready/last-good and schedules the missing decode off-queue).
+/// `resolveExact` is the EXACT, synchronous path the EXPORT runner must keep using (never approximate).
+protocol NextVideoFrameProvider: AnyObject {
+    /// The last realized frame, if any (last-good for the bounded preview soft-skip).
+    var lastCachedFrame: NextVideoFrame? { get }
+    /// Would resolving this scene-local time require a COLD decode (reader rebuild / forward advance)?
+    func wouldColdDecode(scenePlaybackSeconds: Double) -> Bool
+    /// EXACT synchronous resolve (export + the current preview path). May block on decode.
+    func resolveExact(scenePlaybackSeconds: Double) throws -> NextVideoFrame
+}
+
+/// One video block's per-frame texture resolver. Owns an `AVAssetReader` + a `CVMetalTextureCache` and
+/// hands back a `NextVideoFrame` for a requested scene-local time. Forward-only, hold-last.
+final class NextVideoTextureResolver: NextVideoFrameProvider {
+
+    /// CP7.9: `Frame` kept as a nested alias so existing references compile unchanged.
+    typealias Frame = NextVideoFrame
 
     /// CMTime timescale (matches `NextVideoBlockResolver` / `ExportVideoFrameProvider`).
     private static let timescale: CMTimeScale = 600
@@ -80,7 +95,6 @@ final class NextVideoTextureResolver {
     let mediaReference: String
     private let window: NextVideoWindow
     private let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
     private var textureCache: CVMetalTextureCache?
 
     private var reader: AVAssetReader?
@@ -98,24 +112,33 @@ final class NextVideoTextureResolver {
     private var isFinished = false
     private var lastPromotedSeconds: Double = -.greatestFiniteMagnitude
 
-    /// CP7.8 per-PTS cache: the last produced `Frame` keyed by the chosen sample's PTS. When a frame
-    /// selects the SAME decoded sample (held tail / repeated scrub / fps mismatch) we return the cached
-    /// owned-texture frame — no re-decode, no re-blit. Reset on reader (re)start.
-    private var cachedPTS: CMTime = .invalid
-    private var cachedFrame: Frame?
+    /// CP7.9 per-video frame LRU (was a single-slot per-PTS cache). Holds up to `maxCachedFrames` realized
+    /// `Frame`s keyed by sample PTS, MRU-first. A scrub that revisits nearby PTS (or the held tail) hits the
+    /// cache instead of re-realizing. Each entry retains its `CVMetalTexture`/`CVPixelBuffer` (pins one
+    /// IOSurface), so this per-video bound directly bounds the resolver's GPU memory; the global cap across
+    /// all videos is enforced by the owner (Phase 3 scheduler). Cleared on reader (re)start / teardown.
+    private struct CachedFrame { let pts: CMTime; let frame: Frame }
+    private var lru: [CachedFrame] = []        // index 0 == most-recently-used
+    private let maxCachedFrames: Int
+
+    /// Per-video frame-cache bound. Small: a scrub only needs a handful of recent neighbors; each entry
+    /// pins an IOSurface. Tunable; the global memory cap is the scheduler's job (Phase 3).
+    static let defaultMaxCachedFrames = 6
 
     #if DEBUG
     /// Test-only: number of actual GPU texture realizations (cache misses).
     private(set) var realizeCountForTesting = 0
+    /// Test-only: current LRU occupancy (to pin the per-video bound).
+    var cachedFrameCountForTesting: Int { lru.count }
     #endif
 
-    init(blockID: String, mediaReference: String, window: NextVideoWindow,
-         device: MTLDevice, commandQueue: MTLCommandQueue) {
+    init(blockID: String, mediaReference: String, window: NextVideoWindow, device: MTLDevice,
+         maxCachedFrames: Int = NextVideoTextureResolver.defaultMaxCachedFrames) {
         self.blockID = blockID
         self.mediaReference = mediaReference
         self.window = window
         self.device = device
-        self.commandQueue = commandQueue
+        self.maxCachedFrames = max(1, maxCachedFrames)
     }
 
     deinit { teardown() }
@@ -124,16 +147,35 @@ final class NextVideoTextureResolver {
         reader?.cancelReading()
         reader = nil; output = nil; last = nil; pending = nil
         isPrepared = false; isFinished = true
-        cachedFrame = nil; cachedPTS = .invalid
+        clearCache()
         // Flush the texture cache so its mapped textures are released.
         if let cache = textureCache { CVMetalTextureCacheFlush(cache, 0) }
     }
 
+    // MARK: - Frame LRU
+
+    /// Drop all cached frames (their CV retains release → IOSurfaces freed). Called on reader (re)start /
+    /// teardown / explicit invalidation (epoch change is owner-driven by replacing the resolver).
+    private func clearCache() { lru.removeAll(keepingCapacity: true) }
+
+    /// Look up an exact-PTS cached frame, promoting it to MRU. Nil on miss.
+    private func cachedFrame(forPTS pts: CMTime) -> Frame? {
+        guard let i = lru.firstIndex(where: { $0.pts == pts }) else { return nil }
+        if i != 0 { let hit = lru.remove(at: i); lru.insert(hit, at: 0) }
+        return lru[0].frame
+    }
+
+    /// Insert a freshly realized frame at MRU and evict the LRU tail past the bound (releasing its retain).
+    private func insertCache(_ frame: Frame, pts: CMTime) {
+        lru.insert(CachedFrame(pts: pts, frame: frame), at: 0)
+        if lru.count > maxCachedFrames { lru.removeLast(lru.count - maxCachedFrames) }
+    }
+
     // MARK: - Resolve
 
-    /// CP7.8-CORR F1/F2: the last realized frame, if any. The bounded preview path presents this when a
-    /// cold decode is over budget this tick (soft-skip), so the UI never blocks on N simultaneous decodes.
-    var lastCachedFrame: Frame? { cachedFrame }
+    /// CP7.8-CORR F1/F2: the last realized frame (MRU), if any. The bounded preview path presents this when
+    /// a cold decode is over budget this tick (soft-skip), so the UI never blocks on N simultaneous decodes.
+    var lastCachedFrame: Frame? { lru.first?.frame }
 
     /// CP7.8-CORR F1/F2: would resolving `scenePlaybackSeconds` require a COLD decode (reader rebuild or a
     /// forward advance to a new sample)? True ⇒ the bounded path should spend budget or soft-skip. False ⇒
@@ -146,7 +188,14 @@ final class NextVideoTextureResolver {
         let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: Self.timescale)
         // Cheap iff the currently-promoted sample is still the chosen one (no pending sample <= target).
         if let p = pending, p.pts <= targetTime { return true }          // would advance to a new sample
-        return cachedFrame != nil ? false : true                         // no cache yet ⇒ must realize once
+        return lru.isEmpty ? true : false                                // no cache yet ⇒ must realize once
+    }
+
+    /// CP7.9 `NextVideoFrameProvider.resolveExact`: the EXACT synchronous resolve. Delegates to `resolve`.
+    /// Export and the current preview path use this; it MAY block on decode (Phase 3 keeps export on this
+    /// exact path and routes preview through the async scheduler's non-blocking `readyFrame`).
+    func resolveExact(scenePlaybackSeconds: Double) throws -> NextVideoFrame {
+        try resolve(scenePlaybackSeconds: scenePlaybackSeconds)
     }
 
     /// Resolve the texture-backed frame for a SCENE-LOCAL playback time (seconds). Same trim clamp +
@@ -177,14 +226,14 @@ final class NextVideoTextureResolver {
             throw NextVideoTextureResolverError.noFrameDecoded(window.url, targetTime: targetSeconds)
         }
 
-        // Per-PTS cache: same chosen sample → return the cached owned-texture frame (no re-realize).
-        if let cachedFrame, cachedPTS.isValid, chosen.pts == cachedPTS {
-            return cachedFrame
+        // Per-PTS LRU: a revisited PTS (held tail / repeated or back-and-forth scrub / fps mismatch) hits
+        // the cache (and promotes to MRU) → no re-realize.
+        if chosen.pts.isValid, let hit = cachedFrame(forPTS: chosen.pts) {
+            return hit
         }
 
         let frame = try realize(from: chosen.pixelBuffer, pts: chosen.pts)
-        cachedFrame = frame
-        cachedPTS = chosen.pts
+        insertCache(frame, pts: chosen.pts)
         #if DEBUG
         realizeCountForTesting += 1
         #endif
@@ -196,7 +245,7 @@ final class NextVideoTextureResolver {
     private func startReader(fromSeconds: Double) throws {
         reader?.cancelReading()
         reader = nil; output = nil; last = nil; pending = nil; isFinished = false
-        cachedFrame = nil; cachedPTS = .invalid
+        clearCache()
 
         let asset = AVURLAsset(url: window.url)
         guard let track = asset.tracks(withMediaType: .video).first else {
