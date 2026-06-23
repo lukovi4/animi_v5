@@ -131,6 +131,14 @@ final class EditorViewController: UIViewController {
     /// identity change), the held GPU front/pending textures belong to the OLD media and must NOT be
     /// re-presented — they are released and cleared so the next frame is a fresh render of the new media.
     var lastSeenPreviewEpoch: UInt64 = 0
+    /// CP7.9 Phase 3D.3: the scrub-interaction state seen on the LAST Next bridge draw. A `true → false`
+    /// transition (while not playing) is a SETTLE — the editor passes `didSettle` so the controller requests
+    /// the EXACT current target (upgrading any approximate/last-good scrub frame) and schedules one deferred
+    /// follow-up redraw so the exact frame is drawn once its async decode lands. Read from `EditorRuntime`'s
+    /// existing `isScrubInteractionActive` (no new gesture pipeline). Main-thread only.
+    var lastScrubInteractionActive = false
+    /// CP7.9 Phase 3D.3: a settle follow-up redraw is already scheduled (avoids stacking many).
+    var settleFollowupRedrawScheduled = false
     /// assetId.rawValue -> resolved absolute file URL (async-populated cache).
     var nextBridgeMediaURLCache: [String: URL] = [:]
     var nextBridgeMediaResolveInFlight: Set<String> = []
@@ -744,6 +752,30 @@ final class EditorViewController: UIViewController {
         #endif
         metalView.setNeedsDisplay()
     }
+
+    /// CP7.9 Phase 3D.3: PURE settle-transition decision (unit-testable, no UIKit/runtime state). A scrub
+    /// "settles" only on the `active true → false` edge while NOT playing. `false → false` (no scrub) and an
+    /// active scrub never settle; playback never produces a scrub-settle (it has its own path).
+    static func didScrubSettle(previousActive: Bool, currentActive: Bool, isPlaying: Bool) -> Bool {
+        previousActive && !currentActive && !isPlaying
+    }
+
+    /// CP7.9 Phase 3D.3: after a scrub settle, the exact target's decode is scheduled off-queue and may land
+    /// AFTER the normal `.texture → requestRender` redraw loop has already terminated (a last-good frame is a
+    /// successful outcome, so nothing re-renders once it is shown). Schedule ONE deferred redraw so the next
+    /// `draw(in:)` re-requests and picks up the exact frame once the decode completes. Coalesced (`scheduled`
+    /// flag) so repeated settles don't stack redraws. Small delay covers a typical cold decode; if the frame
+    /// is still not ready, that redraw's own `.texture(lastGood)`/`.skipped → requestRender` keeps the loop
+    /// alive until exact lands. Main-thread only, DEBUG-only Next path.
+    private func scheduleSettleFollowupRedraw() {
+        guard !settleFollowupRedrawScheduled else { return }
+        settleFollowupRedrawScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else { return }
+            self.settleFollowupRedrawScheduled = false
+            self.requestRender()
+        }
+    }
     func setMetalViewPaused(_ paused: Bool) { metalView.isPaused = paused }
 
     #if DEBUG
@@ -844,9 +876,19 @@ extension EditorViewController: MTKViewDelegate {
         // the controller uses an UNBOUNDED budget then — bounding playback starved videos ("рывками / не
         // запускаются"). Settled (not playing, not scrubbing) is also unbounded → exact.
         let isPlaying = (runtime?.isPlaying ?? false)
+        // CP7.9 Phase 3D.3: derive the SETTLE signal from EditorRuntime's existing scrub-interaction state
+        // (no new gesture pipeline). A `true → false` transition while not playing means the scrub just
+        // ended → request the EXACT current target this tick and schedule one deferred follow-up redraw so
+        // the exact frame is drawn once its async decode completes (a last-good frame would otherwise never
+        // upgrade if the redraw loop happens to terminate before the decode lands).
+        let scrubActive = (runtime?.isScrubInteractionActive ?? false)
+        let didSettle = Self.didScrubSettle(previousActive: lastScrubInteractionActive,
+                                            currentActive: scrubActive, isPlaying: isPlaying)
+        lastScrubInteractionActive = scrubActive
+        if didSettle { scheduleSettleFollowupRedraw() }
         switch inputs {
         case .single(let single):
-            controller.requestTexture(single, isPlaying: isPlaying) { [weak self] outcome in
+            controller.requestTexture(single, isPlaying: isPlaying, didSettle: didSettle) { [weak self] outcome in
                 guard let self else { return }
                 switch outcome {
                 case .texture(let handle):
@@ -868,7 +910,7 @@ extension EditorViewController: MTKViewDelegate {
                 }
             }
         case .timeline(let timeline):
-            controller.requestTimelineTexture(timeline, isPlaying: isPlaying) { [weak self] outcome in
+            controller.requestTimelineTexture(timeline, isPlaying: isPlaying, didSettle: didSettle) { [weak self] outcome in
                 guard let self else { return }
                 switch outcome {
                 case .texture(let handle):

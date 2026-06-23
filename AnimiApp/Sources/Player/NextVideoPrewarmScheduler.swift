@@ -32,7 +32,7 @@ enum NextVideoFrameAvailability {
 
 /// Preview scheduling mode (set by the controller from play/scrub/settle state). Phase 3A stores it for
 /// priority/lookahead decisions; integration that acts on it is Phase 3D.
-enum NextVideoPrewarmMode {
+enum NextVideoPrewarmMode: Equatable {
     case scrub      // active gesture: last-good acceptable, exact scheduled in background
     case settled    // gesture stopped: exact required ASAP for visible refs
     case playback   // exact + near-future lookahead prewarm

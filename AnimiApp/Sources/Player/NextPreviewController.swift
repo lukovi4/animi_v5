@@ -236,8 +236,12 @@ final class NextPreviewController {
     /// device from the shared session). Its own methods are thread-safe (checkin fires from a GPU thread).
     private var texturePool: CanvasTexturePool?
     /// Trailing-coalesced latest GPU-direct request (single-scene + timeline share one, like inFlight).
-    private var pendingTextureRequest: (inputs: NextBridgeInputs, completion: (TextureOutcome) -> Void)?
-    private var pendingTimelineTextureRequest: (inputs: NextBridgeTimelineInputs, completion: (TextureOutcome) -> Void)?
+    /// CP7.9 Phase 3D.3-CORR: the pending request also carries `isPlaying` + `didSettle`. The pending slot
+    /// stores the LATEST inputs/isPlaying, while `didSettle` is sticky-OR within the coalescing window so a
+    /// settle EDGE is not lost — a settle that arrives mid-render survives a later non-settle request
+    /// coalescing on top, and the re-fire still requests the `.settled` exact target.
+    private var pendingTextureRequest: (inputs: NextBridgeInputs, isPlaying: Bool, didSettle: Bool, completion: (TextureOutcome) -> Void)?
+    private var pendingTimelineTextureRequest: (inputs: NextBridgeTimelineInputs, isPlaying: Bool, didSettle: Bool, completion: (TextureOutcome) -> Void)?
     /// Bumped on every identity change. A completion carrying an old epoch is dropped.
     private var epoch: UInt64 = 0
     /// CP7.7-next: the current preview epoch (bumped on every MEDIA identity change). The editor watches it
@@ -277,7 +281,8 @@ final class NextPreviewController {
     /// empty resolver set returns `.exact`. A freshly built scheduler starts at `renderEpoch` via
     /// `initialEpoch` — no post-init async `invalidate` (which would race the first `readyFrame`).
     private func previewVideoStrategy(
-        resolvers: [String: NextVideoTextureResolver], renderEpoch: UInt64, isPlaying: Bool
+        resolvers: [String: NextVideoTextureResolver], renderEpoch: UInt64, isPlaying: Bool,
+        didSettle: Bool = false
     ) -> VideoTextureResolveStrategy {
         // 1. Identity of THIS resolver set: ref → resolver-instance identity.
         let identity = resolvers.mapValues { ObjectIdentifier($0) }
@@ -303,10 +308,34 @@ final class NextPreviewController {
             previewVideoSchedulerEpoch = renderEpoch
             previewVideoSchedulerIdentity = identity
         }
-        // Phase 3B: no lookahead / settled-catch-up loop yet (that is Phase 3C/3D). `playback`/`scrub` only.
-        let mode: NextVideoPrewarmMode = isPlaying ? .playback : .scrub
+        // CP7.9 Phase 3D.3: `.settled` (scrub just ended, not playing) requests the EXACT current target —
+        // `readyFrame(mode:.settled)` schedules it at `.currentPlayhead` so an approximate/last-good scrub
+        // frame gets upgraded to exact once the decode lands. `.scrub` (active gesture) tolerates last-good;
+        // `.playback` is the playing case. NO playback lookahead yet (that is Phase 3D.1).
+        let mode = Self.previewMode(isPlaying: isPlaying, didSettle: didSettle)
+        #if DEBUG
+        lastResolvedPreviewModeForTesting = mode
+        #endif
         return .preview(previewVideoScheduler!, epoch: renderEpoch, mode: mode)
     }
+
+    /// CP7.9 Phase 3D.3: pure mode mapping (testable). Playing → `.playback`; otherwise a just-settled scrub
+    /// → `.settled` (exact catch-up), else an active scrub → `.scrub` (last-good tolerated).
+    static func previewMode(isPlaying: Bool, didSettle: Bool) -> NextVideoPrewarmMode {
+        isPlaying ? .playback : (didSettle ? .settled : .scrub)
+    }
+
+    /// CP7.9 Phase 3D.3-CORR: sticky-OR coalescing for a pending request's `didSettle`. A settle seen while
+    /// a render is in flight stays "pending settled" even if a later non-settle request coalesces on top,
+    /// so the eventual re-fire still requests the EXACT target. Pure + testable.
+    static func coalesceDidSettle(newDidSettle: Bool, pendingDidSettle: Bool?) -> Bool {
+        newDidSettle || (pendingDidSettle ?? false)
+    }
+
+    #if DEBUG
+    /// The mode `previewVideoStrategy` last resolved (test seam for the settle re-fire path).
+    private(set) var lastResolvedPreviewModeForTesting: NextVideoPrewarmMode?
+    #endif
 
     /// A render error that should be shown as a SOFT skip (keep the current displayed frame) rather than a
     /// visible failure: pool exhaustion (all textures in flight) or a not-yet-realized async preview video
@@ -574,7 +603,8 @@ final class NextPreviewController {
     /// Mirrors `requestFrame`'s epoch / latest-wins / trailing-coalesce; there is NO per-index texture
     /// cache (the bounded pool holds only the in-flight set) — scrub already missed the frame cache, and
     /// static playback's win is the reused prepared context, not a cached output texture.
-    func requestTexture(_ inputs: NextBridgeInputs, isPlaying: Bool = false, completion: @escaping (TextureOutcome) -> Void) {
+    func requestTexture(_ inputs: NextBridgeInputs, isPlaying: Bool = false, didSettle: Bool = false,
+                        completion: @escaping (TextureOutcome) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         lastIsPlaying = isPlaying
         guard let newKey = NextPreviewKey(inputs: inputs) else {
@@ -603,7 +633,10 @@ final class NextPreviewController {
         // Trailing-coalesce while a render is in flight (no synchronous texture cache to hit).
         if inFlight {
             stats.frameMisses += 1
-            pendingTextureRequest = (inputs, completion)
+            // Coalesce, but STICKY-OR didSettle so a settle that arrived during the in-flight render is not
+            // dropped if a later non-settle request lands before the re-fire.
+            let coalescedSettle = Self.coalesceDidSettle(newDidSettle: didSettle, pendingDidSettle: pendingTextureRequest?.didSettle)
+            pendingTextureRequest = (inputs, isPlaying, coalescedSettle, completion)
             return
         }
 
@@ -616,6 +649,7 @@ final class NextPreviewController {
         let existingContext = context
         let decodeBudget = previewDecodeBudget(isPlaying: lastIsPlaying)   // CP7.8-CORR F1/F2: bounded only during interactive scrub
         let capturedIsPlaying = lastIsPlaying                              // CP7.9 Phase 3B: scheduler mode (playback vs scrub)
+        let capturedDidSettle = didSettle                                 // CP7.9 Phase 3D.3: scrub just ended → exact
         inFlight = true
         if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
 
@@ -663,7 +697,8 @@ final class NextPreviewController {
                     // video resolvers this is `.exact` (unchanged photo/static path). decodeBudget applies
                     // only to `.exact`; `.preview` ignores it (the scheduler bounds decoding off-queue).
                     let strategy = self.previewVideoStrategy(
-                        resolvers: ctx.videoTextureResolversByReference, renderEpoch: renderEpoch, isPlaying: capturedIsPlaying)
+                        resolvers: ctx.videoTextureResolversByReference, renderEpoch: renderEpoch,
+                        isPlaying: capturedIsPlaying, didSettle: capturedDidSettle)
                     do {
                         try NextSingleSceneBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture, decodeBudget: decodeBudget, strategy: strategy)
                     } catch {
@@ -704,7 +739,7 @@ final class NextPreviewController {
                 }
                 if let pending = self.pendingTextureRequest {
                     self.pendingTextureRequest = nil
-                    self.requestTexture(pending.inputs, isPlaying: self.lastIsPlaying, completion: pending.completion)
+                    self.requestTexture(pending.inputs, isPlaying: pending.isPlaying, didSettle: pending.didSettle, completion: pending.completion)
                 }
             }
         }
@@ -835,7 +870,8 @@ final class NextPreviewController {
 
     /// CP7.7-next: timeline GPU-direct request. Mirrors `requestTexture` (single-scene) but uses the
     /// timeline key/context/bridge. Returns nil after scheduling an async render.
-    func requestTimelineTexture(_ inputs: NextBridgeTimelineInputs, isPlaying: Bool = false, completion: @escaping (TextureOutcome) -> Void) {
+    func requestTimelineTexture(_ inputs: NextBridgeTimelineInputs, isPlaying: Bool = false, didSettle: Bool = false,
+                               completion: @escaping (TextureOutcome) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         lastIsPlaying = isPlaying
         guard let newKey = NextTimelineKey(inputs: inputs) else {
@@ -863,7 +899,8 @@ final class NextPreviewController {
 
         if inFlight {
             stats.frameMisses += 1
-            pendingTimelineTextureRequest = (inputs, completion)
+            let coalescedSettle = Self.coalesceDidSettle(newDidSettle: didSettle, pendingDidSettle: pendingTimelineTextureRequest?.didSettle)
+            pendingTimelineTextureRequest = (inputs, isPlaying, coalescedSettle, completion)
             return
         }
 
@@ -875,6 +912,7 @@ final class NextPreviewController {
         let existingContext = timelineContext
         let decodeBudget = previewDecodeBudget(isPlaying: lastIsPlaying)   // CP7.8-CORR F1/F2: bounded only during interactive scrub
         let capturedIsPlaying = lastIsPlaying                              // CP7.9 Phase 3B: scheduler mode (playback vs scrub)
+        let capturedDidSettle = didSettle                                 // CP7.9 Phase 3D.3: scrub just ended → exact
         inFlight = true
         if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
 
@@ -921,7 +959,8 @@ final class NextPreviewController {
                     // single-scene and timeline ticks of ONE media session share this scheduler (same epoch +
                     // same texture resolvers exposed under `videoTextureResolversByReference`).
                     let strategy = self.previewVideoStrategy(
-                        resolvers: ctx.videoTextureResolversByReference, renderEpoch: renderEpoch, isPlaying: capturedIsPlaying)
+                        resolvers: ctx.videoTextureResolversByReference, renderEpoch: renderEpoch,
+                        isPlaying: capturedIsPlaying, didSettle: capturedDidSettle)
                     do {
                         try NextTimelineBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture, decodeBudget: decodeBudget, strategy: strategy)
                     } catch {
@@ -958,7 +997,7 @@ final class NextPreviewController {
                 }
                 if let pending = self.pendingTimelineTextureRequest {
                     self.pendingTimelineTextureRequest = nil
-                    self.requestTimelineTexture(pending.inputs, isPlaying: self.lastIsPlaying, completion: pending.completion)
+                    self.requestTimelineTexture(pending.inputs, isPlaying: pending.isPlaying, didSettle: pending.didSettle, completion: pending.completion)
                 }
             }
         }

@@ -814,6 +814,22 @@ enum NextSingleSceneBridge {
         catch { throw NextBridgeError.engine("evaluate: \(error)") }
     }
 
+    #if DEBUG
+    /// Test seam (CP7.9 Phase 3D.3-CORR): the EXACT video-frame descriptor id a `ref` resolves to at
+    /// `frameIndex`, reusing the SAME evaluate → scene-local-seconds → `resolveExact` path the bridge uses
+    /// (no duplicated logic). Lets a test assert a settled build binds the exact-target id (not just non-empty).
+    static func exactVideoDescriptorIDForTesting(context ctx: NextPreparedContext, ref: String, frameIndex: Int) throws -> String {
+        let plan = try evaluatePlan(window: ctx.window, frame: max(0, frameIndex))
+        guard case let .single(subplan) = plan.body else { throw NextBridgeError.unsupportedFramePlan("expected single") }
+        let resolver = try { () throws -> NextVideoTextureResolver in
+            guard let r = ctx.videoTextureResolversByReference[ref] else { throw NextBridgeError.mediaResolveFailed("no resolver for \(ref)") }
+            return r
+        }()
+        let seconds = scenePlaybackSeconds(subplan)
+        return try resolver.resolveExact(scenePlaybackSeconds: seconds).descriptor.id.rawValue
+    }
+    #endif
+
     /// Bind each block's user photo to its media reference (authored assets use assetPixels, not this).
     /// Every supplied reference MUST appear in the frame plan (fail closed otherwise).
     private static func buildFixtures(

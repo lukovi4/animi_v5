@@ -180,6 +180,59 @@ final class NextPreviewPrewarmStrategyTests: XCTestCase {
         scheduler.drainForTesting()
     }
 
+    // MARK: - 3D.3: `.settled` mode upgrades an approximate target to exact after the decode lands
+
+    func test_settledMode_missingTargetBecomesExactAfterDrain() throws {
+        // Scrub shows last-good for a not-yet-ready target; on settle the `.settled` build schedules the exact
+        // target (currentPlayhead) and, after the decode drains, the SAME target builds with an exact binding.
+        let (ctx, _, ref) = try makeVideoContext()
+        let counting = CountingResolver(ctx.videoTextureResolversByReference[ref]!)
+        let scheduler = NextVideoPrewarmScheduler(providers: [ref: counting], maxConcurrentDecodes: 1)
+
+        // First settle build: frame 0 is a true first appearance → soft-skip (videoFrameNotReady) but the
+        // exact target is now SCHEDULED off-queue at currentPlayhead (mode .settled).
+        XCTAssertThrowsError(
+            try NextSingleSceneBridge.buildGraph(context: ctx, frameIndex: 0, strategy: .preview(scheduler, epoch: 0, mode: .settled))
+        ) { error in
+            guard case NextBridgeError.videoFrameNotReady = error else { return XCTFail("expected soft skip, got \(error)") }
+        }
+        // After the off-queue decode drains, the SAME settled target must build with an exact binding (upgrade).
+        scheduler.drainForTesting()
+        let built = try NextSingleSceneBridge.buildGraph(context: ctx, frameIndex: 0, strategy: .preview(scheduler, epoch: 0, mode: .settled))
+        XCTAssertFalse(built.textureBindings.isEmpty, "after drain, the settled target must bind the exact frame")
+        XCTAssertNotEqual(counting.resolveExactOnThread, Thread.current, "decode ran off the build thread")
+        scheduler.drainForTesting()
+    }
+
+    func test_settledMode_lastGoodTargetUpgradesToExact() throws {
+        // Realize one target (last-good), request a DIFFERENT settled target → last-good first, exact after
+        // drain. STRENGTHENED: assert the final binding's descriptor/resource id is the EXACT target's id
+        // (the sourceID includes the chosen PTS), not merely that the bindings are non-empty.
+        let (ctx, _, ref) = try makeVideoContext()
+        let counting = CountingResolver(ctx.videoTextureResolversByReference[ref]!)
+        let scheduler = NextVideoPrewarmScheduler(providers: [ref: counting], maxConcurrentDecodes: 1)
+        _ = scheduler.readyFrame(ref: ref, target: 0.0, epoch: 0, mode: .scrub); scheduler.drainForTesting()
+
+        // ORACLE: the exact descriptor id for frame 30 on an INDEPENDENT ctx (same video) — reuses the
+        // bridge's own evaluate → scene-local-seconds → resolveExact path, so no logic is duplicated and the
+        // test ctx's forward-only resolver is left untouched. frame 30 ≠ frame 0 (the realized last-good).
+        let (oracleCtx, _, oracleRef) = try makeVideoContext()
+        let exactID = try NextSingleSceneBridge.exactVideoDescriptorIDForTesting(context: oracleCtx, ref: oracleRef, frameIndex: 30)
+
+        // First settled build before drain: binds something (last-good 0.0), NOT the exact frame-30 id.
+        let built = try NextSingleSceneBridge.buildGraph(context: ctx, frameIndex: 30, strategy: .preview(scheduler, epoch: 0, mode: .settled))
+        XCTAssertFalse(built.textureBindings.isEmpty, "settled build must bind a frame (last-good or exact)")
+        XCTAssertNil(built.textureBindings.handle(for: exactID),
+                     "before drain the exact frame-30 id must NOT yet be bound (last-good shown)")
+
+        // After drain: the SAME settled target build must bind the EXACT frame-30 descriptor id.
+        scheduler.drainForTesting()
+        let built2 = try NextSingleSceneBridge.buildGraph(context: ctx, frameIndex: 30, strategy: .preview(scheduler, epoch: 0, mode: .settled))
+        XCTAssertNotNil(built2.textureBindings.handle(for: exactID),
+                        "after drain the settled target must bind the EXACT frame-30 descriptor id \(exactID)")
+        scheduler.drainForTesting()
+    }
+
     // MARK: - 7.3 Preview `.missing` → soft videoFrameNotReady (not a visible engine error)
 
     func test_previewStrategy_missing_throwsSoftVideoFrameNotReady() throws {
