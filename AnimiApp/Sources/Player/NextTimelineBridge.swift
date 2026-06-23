@@ -330,10 +330,12 @@ enum NextTimelineBridge {
         } catch { throw NextBridgeError.engine("render(into:): \(error)") }
     }
 
-    /// CP7.7-next PREVIEW GPU-direct entry (timeline). CP7.8-CORR F1/F2: passes a `decodeBudget` (cold
-    /// decodes/tick) for bounded multi-video scrub. `.max` = exact. Export uses `renderFrame(into:)`.
-    static func renderFramePreview(context ctx: NextTimelinePreparedContext, frameIndex: Int, into target: MTLTexture, decodeBudget: Int = .max) throws {
-        let built = try buildGraph(context: ctx, frameIndex: frameIndex, decodeBudget: decodeBudget)
+    /// CP7.7-next PREVIEW GPU-direct entry (timeline). CP7.9 Phase 3B: PREVIEW passes
+    /// `strategy: .preview(scheduler,…)` (non-blocking, off-queue decode); EXPORT keeps `.exact`.
+    static func renderFramePreview(context ctx: NextTimelinePreparedContext, frameIndex: Int, into target: MTLTexture,
+                                   decodeBudget: Int = .max,
+                                   strategy: VideoTextureResolveStrategy = .exact) throws {
+        let built = try buildGraph(context: ctx, frameIndex: frameIndex, decodeBudget: decodeBudget, strategy: strategy)
         do {
             try ctx.session.render(
                 built.graph, into: GPURenderTarget(texture: target, alphaMode: .preserveAlpha),
@@ -343,7 +345,8 @@ enum NextTimelineBridge {
 
     /// The shared per-frame timeline graph build (evaluate→resolve→compile). Used by BOTH the readback
     /// path (`renderFrame`/`renderFrameBGRA`, preview + tests) and the GPU-direct path (export).
-    static func buildGraph(context ctx: NextTimelinePreparedContext, frameIndex: Int, decodeBudget: Int = .max) throws -> NextSingleSceneBridge.BuiltGraph {
+    static func buildGraph(context ctx: NextTimelinePreparedContext, frameIndex: Int, decodeBudget: Int = .max,
+                           strategy: VideoTextureResolveStrategy = .exact) throws -> NextSingleSceneBridge.BuiltGraph {
         let plan: FramePlan
         do { plan = try TimelineEvaluator.evaluate(ctx.window, atFrame: try FrameIndex(value: Int64(max(0, frameIndex)))) }
         catch { throw NextBridgeError.engine("evaluate: \(error)") }
@@ -366,18 +369,38 @@ enum NextTimelineBridge {
             // CP7.8-CORR F1/F2: the decode budget is per-TICK (shared across a transition's two subplans),
             // so a 6-video transition cannot spend 2×budget. Spend it down as each subplan resolves.
             var remainingBudget = decodeBudget
+            // CP7.9-CORR3B-2 fix 2: in `.preview`, a `videoFrameNotReady` from the OUTGOING subplan must not
+            // stop us from scheduling the INCOMING subplan's video refs this same tick (else a transition's
+            // two scenes would cold-start one-after-another across retries). Defer the soft-skip: process
+            // BOTH subplans (each already schedules all its own refs before throwing), then rethrow once.
+            // `.exact` (export) keeps the original fail-fast behaviour — it never throws videoFrameNotReady.
+            var deferredNotReady: Error?
             for (subplan, _) in subplans {
-                let (dyn, binds, spent) = try NextSingleSceneBridge.resolveVideoTexturesSpending(
-                    subplan: subplan, textureResolvers: ctx.videoTextureResolversByReference,
-                    decodeBudget: remainingBudget)
-                if remainingBudget != .max { remainingBudget = max(0, remainingBudget - spent) }
+                let result: (dynamicFixtures: [RenderInputResolver.FixtureKey: ResolvedDynamicTextureInput],
+                             bindings: RenderRuntimeTextureBindings, spent: Int)
+                do {
+                    result = try NextSingleSceneBridge.resolveVideoTexturesSpending(
+                        subplan: subplan, textureResolvers: ctx.videoTextureResolversByReference,
+                        decodeBudget: remainingBudget, strategy: strategy)
+                } catch let e as NextBridgeError {
+                    if case .videoFrameNotReady = e {
+                        // This subplan scheduled its refs already (inside resolveVideoTexturesSpending) and
+                        // soft-skipped. Remember the FIRST such error, keep going so the next subplan schedules.
+                        if deferredNotReady == nil { deferredNotReady = e }
+                        continue
+                    }
+                    throw e   // a real engine error still fails fast.
+                }
+                if remainingBudget != .max { remainingBudget = max(0, remainingBudget - result.spent) }
                 // Merge this subplan's fixtures + bindings. The binding map is keyed by the descriptor's
                 // resourceID (== sourceID with PTS, CP7.8-CORR F4); look each up by that id, NOT the layer ref.
-                for (k, d) in dyn {
+                for (k, d) in result.dynamicFixtures {
                     dynamicFixtures[k] = d
-                    if let h = binds.handle(for: d.id.rawValue) { handles[d.id.rawValue] = h }
+                    if let h = result.bindings.handle(for: d.id.rawValue) { handles[d.id.rawValue] = h }
                 }
             }
+            // Both subplans visited (all refs scheduled). If either was missing, soft-skip now.
+            if let deferredNotReady { throw deferredNotReady }
         }
         let bindings = RenderRuntimeTextureBindings(handles)
         let dynamicRefs = Set(ctx.videoTextureResolversByReference.keys)

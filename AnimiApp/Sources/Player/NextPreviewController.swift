@@ -270,6 +270,54 @@ final class NextPreviewController {
     /// Last play/scrub mode the editor reported (so a trailing-coalesced re-fire uses the current mode).
     private var lastIsPlaying = false
 
+    /// MUST run on `renderQueue`. Return the preview video-resolve strategy for `resolvers` at `renderEpoch`.
+    /// CP7.9 Phase 3B (+ corrective): rebuild the scheduler when EITHER the media epoch OR the provider
+    /// identity (ref set + resolver instances) changes. Invalidation/identity handling runs FIRST (so a
+    /// photo-only context after video drops the stale scheduler and its retained video handles), THEN an
+    /// empty resolver set returns `.exact`. A freshly built scheduler starts at `renderEpoch` via
+    /// `initialEpoch` — no post-init async `invalidate` (which would race the first `readyFrame`).
+    private func previewVideoStrategy(
+        resolvers: [String: NextVideoTextureResolver], renderEpoch: UInt64, isPlaying: Bool
+    ) -> VideoTextureResolveStrategy {
+        // 1. Identity of THIS resolver set: ref → resolver-instance identity.
+        let identity = resolvers.mapValues { ObjectIdentifier($0) }
+
+        // 2. Drop the live scheduler if it no longer matches (epoch OR provider identity changed). Done
+        //    BEFORE the empty-set check so photo-only media after video releases the old video handles.
+        if previewVideoScheduler != nil,
+           previewVideoSchedulerEpoch != renderEpoch || previewVideoSchedulerIdentity != identity {
+            previewVideoScheduler = nil
+            previewVideoSchedulerIdentity = nil
+            previewVideoSchedulerEpoch = .max
+        }
+
+        // 3. No video → nothing async to schedule. The stale scheduler (if any) was just cleared above.
+        guard !resolvers.isEmpty else { return .exact }
+
+        // 4. Build lazily for this epoch + identity. `initialEpoch: renderEpoch` (no post-init invalidate).
+        if previewVideoScheduler == nil {
+            let providers = resolvers.mapValues { $0 as NextVideoFrameProvider }
+            previewVideoScheduler = NextVideoPrewarmScheduler(
+                providers: providers, maxConcurrentDecodes: Self.previewSchedulerMaxConcurrentDecodes,
+                initialEpoch: renderEpoch)
+            previewVideoSchedulerEpoch = renderEpoch
+            previewVideoSchedulerIdentity = identity
+        }
+        // Phase 3B: no lookahead / settled-catch-up loop yet (that is Phase 3C/3D). `playback`/`scrub` only.
+        let mode: NextVideoPrewarmMode = isPlaying ? .playback : .scrub
+        return .preview(previewVideoScheduler!, epoch: renderEpoch, mode: mode)
+    }
+
+    /// A render error that should be shown as a SOFT skip (keep the current displayed frame) rather than a
+    /// visible failure: pool exhaustion (all textures in flight) or a not-yet-realized async preview video
+    /// frame (CP7.9 Phase 3B — `videoFrameNotReady`, decode in flight off the render queue). Never a real
+    /// engine/compile error, which must still surface as `.failure`.
+    private static func isSoftSkip(_ error: Error) -> Bool {
+        if error is PoolExhausted { return true }
+        if case NextBridgeError.videoFrameNotReady = error { return true }
+        return false
+    }
+
     private let renderQueue = DispatchQueue(label: "com.animi.next-preview.render", qos: .userInitiated)
     private(set) var stats = NextPreviewStats()
 
@@ -279,6 +327,23 @@ final class NextPreviewController {
     /// Reused across placement changes so dragging media does NOT re-decode the photo.
     private var decodedMedia: NextDecodedMedia?
     private var decodedMediaKey: NextPreviewKey.MediaKey?
+
+    // --- CP7.9 Phase 3B: async video prewarm scheduler (render-queue-only) ---
+    /// Built lazily from a prepared context's per-ref video texture resolvers; routes preview video frames
+    /// through the scheduler's NON-BLOCKING `readyFrame` so cold AVAssetReader decode never runs on the
+    /// render queue. Keyed to BOTH the media `epoch` AND the provider identity it was built for (see
+    /// `previewVideoSchedulerIdentity`); rebuilt when either changes, dropped when the resolver set becomes
+    /// empty (photo-only). Shared across single-scene and timeline ticks within ONE media session (same
+    /// resolver instances). Touched ONLY on `renderQueue`.
+    private var previewVideoScheduler: NextVideoPrewarmScheduler?
+    private var previewVideoSchedulerEpoch: UInt64 = .max
+    /// CP7.9-CORR3B fix 2: the provider IDENTITY the live scheduler was built for — the ref set plus the
+    /// `ObjectIdentifier` of each resolver instance. The scheduler is rebuilt when EITHER the epoch OR this
+    /// identity changes (a new prepared context can bring a different resolver instance for the same ref
+    /// without the epoch advancing). `nil` ⇒ no scheduler. Render-queue-only.
+    private var previewVideoSchedulerIdentity: [String: ObjectIdentifier]?
+    /// Global cold-decode concurrency cap for the preview scheduler (bounds N-video reader rebuilds).
+    private static let previewSchedulerMaxConcurrentDecodes = 2
 
     // --- CP5 timeline-mode state (main-thread only, mirrors the single-scene fields) ---
     private var timelineKey: NextTimelineKey?
@@ -550,6 +615,7 @@ final class NextPreviewController {
         let placementByBlockID = Dictionary(uniqueKeysWithValues: inputs.blocks.map { ($0.blockID, $0.placement) })
         let existingContext = context
         let decodeBudget = previewDecodeBudget(isPlaying: lastIsPlaying)   // CP7.8-CORR F1/F2: bounded only during interactive scrub
+        let capturedIsPlaying = lastIsPlaying                              // CP7.9 Phase 3B: scheduler mode (playback vs scrub)
         inFlight = true
         if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
 
@@ -593,8 +659,13 @@ final class NextPreviewController {
                         throw PoolExhausted()
                     }
                     let t1 = Self.nowMs()
+                    // CP7.9 Phase 3B: route preview video through the async scheduler (non-blocking). With no
+                    // video resolvers this is `.exact` (unchanged photo/static path). decodeBudget applies
+                    // only to `.exact`; `.preview` ignores it (the scheduler bounds decoding off-queue).
+                    let strategy = self.previewVideoStrategy(
+                        resolvers: ctx.videoTextureResolversByReference, renderEpoch: renderEpoch, isPlaying: capturedIsPlaying)
                     do {
-                        try NextSingleSceneBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture, decodeBudget: decodeBudget)
+                        try NextSingleSceneBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture, decodeBudget: decodeBudget, strategy: strategy)
                     } catch {
                         // Render failed: return the never-presented (idle) handle so its slot is not leaked.
                         pool.releaseUnpresented(handle)
@@ -623,7 +694,7 @@ final class NextPreviewController {
                         self.latestTextureHandle = r.handle
                         completion(.texture(r.handle))
                     case .failure(let error):
-                        if error is PoolExhausted { completion(.skipped) }   // soft: keep last frame
+                        if Self.isSoftSkip(error) { completion(.skipped) }   // soft: keep last frame
                         else { completion(.failure(error)) }
                     }
                 } else {
@@ -803,6 +874,7 @@ final class NextPreviewController {
         let mediaKey = newKey.mediaKey
         let existingContext = timelineContext
         let decodeBudget = previewDecodeBudget(isPlaying: lastIsPlaying)   // CP7.8-CORR F1/F2: bounded only during interactive scrub
+        let capturedIsPlaying = lastIsPlaying                              // CP7.9 Phase 3B: scheduler mode (playback vs scrub)
         inFlight = true
         if existingContext == nil { stats.prepareMisses += 1 } else { stats.prepareHits += 1 }
 
@@ -845,8 +917,13 @@ final class NextPreviewController {
                         throw PoolExhausted()
                     }
                     let t1 = Self.nowMs()
+                    // CP7.9 Phase 3B: timeline preview video also routes through the async scheduler. Both the
+                    // single-scene and timeline ticks of ONE media session share this scheduler (same epoch +
+                    // same texture resolvers exposed under `videoTextureResolversByReference`).
+                    let strategy = self.previewVideoStrategy(
+                        resolvers: ctx.videoTextureResolversByReference, renderEpoch: renderEpoch, isPlaying: capturedIsPlaying)
                     do {
-                        try NextTimelineBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture, decodeBudget: decodeBudget)
+                        try NextTimelineBridge.renderFramePreview(context: ctx, frameIndex: frameIndex, into: handle.texture, decodeBudget: decodeBudget, strategy: strategy)
                     } catch {
                         // Render failed: return the never-presented (idle) handle so its slot is not leaked.
                         pool.releaseUnpresented(handle)
@@ -872,7 +949,7 @@ final class NextPreviewController {
                         self.latestTextureHandle = r.handle
                         completion(.texture(r.handle))
                     case .failure(let error):
-                        if error is PoolExhausted { completion(.skipped) }   // soft: keep last frame
+                        if Self.isSoftSkip(error) { completion(.skipped) }   // soft: keep last frame
                         else { completion(.failure(error)) }
                     }
                 } else {

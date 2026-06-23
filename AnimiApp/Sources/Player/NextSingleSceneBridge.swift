@@ -49,6 +49,11 @@ enum NextBridgeError: Error, CustomStringConvertible, LocalizedError {
     case authoredAssetDuplicate(pixelID: String)
     case unsupportedFramePlan(String)
     case engine(String)
+    /// CP7.9 Phase 3B: a PREVIEW frame needs a video texture that the async prewarm scheduler has not
+    /// realized yet AND there is no last-good frame to substitute (true first appearance, decode in flight
+    /// off the render queue). This is a SOFT, expected condition — the controller maps it to `.skipped`
+    /// (keep the current displayed frame, no red error). It NEVER occurs on the exact/export path.
+    case videoFrameNotReady(ref: String)
 
     var description: String {
         switch self {
@@ -88,6 +93,8 @@ enum NextBridgeError: Error, CustomStringConvertible, LocalizedError {
             return "Next bridge: unsupported frame plan: \(m). (CP2 = single scene only)"
         case .engine(let m):
             return "Next bridge engine error: \(m)."
+        case .videoFrameNotReady(let ref):
+            return "Next bridge: video '\(ref)' not yet realized for preview (async decode in flight)."
         }
     }
 
@@ -96,6 +103,21 @@ enum NextBridgeError: Error, CustomStringConvertible, LocalizedError {
     /// the useless `"AnimiApp.NextBridgeError error <code>"` — so every fail-closed reason (stretched
     /// scene, unsupported media, etc.) was invisible to the user until this was added.
     var errorDescription: String? { description }
+}
+
+/// CP7.9 Phase 3B — how `buildGraph`/`resolveVideoTextures*` obtain each video ref's frame for a tick.
+/// This is the ONLY behavioural fork; the rest of the per-frame build (fixtures → resolve → compile) is
+/// identical for both, so there is no duplicated compiler logic.
+///   * `.exact`   — EXPORT + readback/tests ONLY: synchronous `provider.resolveExact` (may block). This is
+///                  the unchanged, byte-exact path the export runner depends on. (Preview NEVER uses this —
+///                  even when settled: a settled preview still routes through the scheduler below.)
+///   * `.preview` — ALL interactive preview (scrub, settled, playback): the async prewarm scheduler's
+///                  NON-BLOCKING `readyFrame`. No `resolveExact`/AVAssetReader ever runs on the render
+///                  queue. A `.missing` first frame with no last-good is a SOFT skip (`videoFrameNotReady`),
+///                  not a render error.
+enum VideoTextureResolveStrategy {
+    case exact
+    case preview(NextVideoPrewarmScheduler, epoch: UInt64, mode: NextVideoPrewarmMode)
 }
 
 /// App media-placement values, passed as primitives so this struct stays free of any
@@ -641,11 +663,14 @@ enum NextSingleSceneBridge {
     /// `.preserveAlpha` (preview composites onto a cleared drawable). Hides `AlphaMode`/`GPURenderTarget`
     /// from the editor module (which must not import `AnimiEngineMetalRender`). Replaces the readback
     /// (`renderFrameBGRA` → Data → srcTex.replace) preview hot path; `renderFrameBGRA` stays for oracle/tests.
-    /// CP7.8-CORR F1/F2: PREVIEW passes a `decodeBudget` (cold decodes/tick) so an active multi-video scrub
-    /// never serializes N far decodes. `.max` = exact (settled/pause). Export uses `renderFrame(into:)`
-    /// (unbounded/exact) — never this bounded preview entry.
-    static func renderFramePreview(context ctx: NextPreparedContext, frameIndex: Int, into target: MTLTexture, decodeBudget: Int = .max) throws {
-        let built = try buildGraph(context: ctx, frameIndex: frameIndex, decodeBudget: decodeBudget)
+    /// CP7.9 Phase 3B: PREVIEW passes `strategy: .preview(scheduler,…)` so video frames come from the async
+    /// prewarm scheduler (non-blocking, NO `resolveExact`/AVAssetReader on the render queue). EXPORT keeps
+    /// the default `.exact` strategy via `renderFrame(into:)`. The legacy `decodeBudget` only applies to the
+    /// `.exact` strategy (export/readback/tests); `.preview` ignores it (the scheduler bounds decoding).
+    static func renderFramePreview(context ctx: NextPreparedContext, frameIndex: Int, into target: MTLTexture,
+                                   decodeBudget: Int = .max,
+                                   strategy: VideoTextureResolveStrategy = .exact) throws {
+        let built = try buildGraph(context: ctx, frameIndex: frameIndex, decodeBudget: decodeBudget, strategy: strategy)
         do {
             try ctx.session.render(
                 built.graph, into: GPURenderTarget(texture: target, alphaMode: .preserveAlpha),
@@ -662,10 +687,11 @@ enum NextSingleSceneBridge {
         let textureBindings: RenderRuntimeTextureBindings
     }
 
-    /// `decodeBudget` (CP7.8-CORR F1/F2) caps the number of COLD video decodes this build performs; over
-    /// budget, a video reuses its last-good texture (preview scrub soft-skip). Default `.max` = unbounded
-    /// (export / settled / readback / tests — exact). Preview-active-scrub passes a small budget.
-    static func buildGraph(context ctx: NextPreparedContext, frameIndex: Int, decodeBudget: Int = .max) throws -> BuiltGraph {
+    /// CP7.9 Phase 3B: `strategy` chooses exact (export/readback/tests) vs preview (async scheduler). The
+    /// legacy `decodeBudget` (CP7.8-CORR F1/F2) applies ONLY to `.exact`: over budget a cold video reuses
+    /// its last-good texture. `.preview` ignores `decodeBudget` entirely (the scheduler bounds decoding).
+    static func buildGraph(context ctx: NextPreparedContext, frameIndex: Int, decodeBudget: Int = .max,
+                           strategy: VideoTextureResolveStrategy = .exact) throws -> BuiltGraph {
         let plan = try evaluatePlan(window: ctx.window, frame: max(0, frameIndex))
         guard case let .single(subplan) = plan.body else {
             throw NextBridgeError.unsupportedFramePlan("expected single scene body")
@@ -673,11 +699,11 @@ enum NextSingleSceneBridge {
         // CP7.8: resolve any video references at THIS frame's scene-local time on the GPU. Each produces
         // a VALUE descriptor (for the canonical fixtures) + a runtime texture handle (for execution). The
         // static photo pixels stay bytes-backed. No CPU bake / SHA-256 on the per-frame video path.
-        // CP7.8-CORR F1/F2: `decodeBudget` caps cold decodes this tick (preview scrub); over budget a video
-        // reuses its last-good texture (soft-skip) so the UI never blocks on N simultaneous far decodes.
+        // CP7.9 Phase 3B: `strategy` chooses exact (export, blocking) vs preview (scheduler, non-blocking).
+        // The legacy `decodeBudget` only applies to `.exact` (over budget → reuse last-good soft-skip).
         let (dynamicFixtures, bindings) = try resolveVideoTextures(
             subplan: subplan, textureResolvers: ctx.videoTextureResolversByReference,
-            decodeBudget: decodeBudget)
+            decodeBudget: decodeBudget, strategy: strategy)
         let fixtures = try buildFixtures(
             subplan: subplan, mediaPixelsByReference: ctx.mediaPixelsByReference,
             dynamicRefs: Set(ctx.videoTextureResolversByReference.keys))
@@ -707,11 +733,11 @@ enum NextSingleSceneBridge {
     /// deterministic (sorted refs) so the SAME videos win the budget across consecutive ticks (no flicker).
     static func resolveVideoTextures(
         subplan: SceneSubplan, textureResolvers: [String: NextVideoTextureResolver],
-        decodeBudget: Int = .max
+        decodeBudget: Int = .max, strategy: VideoTextureResolveStrategy = .exact
     ) throws -> (dynamicFixtures: [RenderInputResolver.FixtureKey: ResolvedDynamicTextureInput],
                  bindings: RenderRuntimeTextureBindings) {
         let (d, b, _) = try resolveVideoTexturesSpending(
-            subplan: subplan, textureResolvers: textureResolvers, decodeBudget: decodeBudget)
+            subplan: subplan, textureResolvers: textureResolvers, decodeBudget: decodeBudget, strategy: strategy)
         return (d, b)
     }
 
@@ -719,7 +745,7 @@ enum NextSingleSceneBridge {
     /// transition can share ONE per-tick budget across its two subplans).
     static func resolveVideoTexturesSpending(
         subplan: SceneSubplan, textureResolvers: [String: NextVideoTextureResolver],
-        decodeBudget: Int
+        decodeBudget: Int, strategy: VideoTextureResolveStrategy = .exact
     ) throws -> (dynamicFixtures: [RenderInputResolver.FixtureKey: ResolvedDynamicTextureInput],
                  bindings: RenderRuntimeTextureBindings, spent: Int) {
         guard !textureResolvers.isEmpty else { return ([:], .none, 0) }
@@ -731,18 +757,39 @@ enum NextSingleSceneBridge {
         var dynamicFixtures: [RenderInputResolver.FixtureKey: ResolvedDynamicTextureInput] = [:]
         var handles: [String: RuntimeTextureHandle] = [:]
         var coldSpent = 0
+        // CP7.9-CORR3B-2 fix 1: in `.preview`, a `.missing` ref must NOT short-circuit the loop — every
+        // participating ref must call `readyFrame` (which SCHEDULES its off-queue decode) BEFORE we soft-skip,
+        // else N missing videos would prewarm one-at-a-time across N retry ticks (serialized cold start). We
+        // visit all refs, collect the missing ones, and throw ONCE after the loop.
+        var missingRefs: [String] = []
         // Deterministic order so the same refs win the budget tick-to-tick (no flicker).
         for ref in textureResolvers.keys.sorted() where refsInPlan.contains(ref) {
             let resolver = textureResolvers[ref]!
-            let cold = resolver.wouldColdDecode(scenePlaybackSeconds: seconds)
-            let frame: NextVideoTextureResolver.Frame
-            if cold, coldSpent >= decodeBudget, let lastGood = resolver.lastCachedFrame {
-                // Over budget AND a far/new sample → soft-skip: present last-good, do not block this tick.
-                frame = lastGood
-            } else {
-                if cold { coldSpent += 1 }
-                do { frame = try resolver.resolve(scenePlaybackSeconds: seconds) }
-                catch { throw NextBridgeError.engine("video texture resolve '\(ref)' at \(seconds)s: \(error)") }
+            let frame: NextVideoFrame
+            switch strategy {
+            case .exact:
+                // EXPORT / readback / tests: synchronous exact resolve, bounded by the legacy decodeBudget.
+                let cold = resolver.wouldColdDecode(scenePlaybackSeconds: seconds)
+                if cold, coldSpent >= decodeBudget, let lastGood = resolver.lastCachedFrame {
+                    frame = lastGood   // over budget AND far/new → soft-skip: present last-good, don't block.
+                } else {
+                    if cold { coldSpent += 1 }
+                    do { frame = try resolver.resolveExact(scenePlaybackSeconds: seconds) }
+                    catch { throw NextBridgeError.engine("video texture resolve '\(ref)' at \(seconds)s: \(error)") }
+                }
+            case let .preview(scheduler, epoch, mode):
+                // PREVIEW: NON-BLOCKING. Never calls resolveExact here; the scheduler decodes off-queue and
+                // (re)schedules the exact target on a miss/last-good. `decodeBudget` does not apply.
+                switch scheduler.readyFrame(ref: ref, target: seconds, epoch: epoch, mode: mode) {
+                case .exact(let f):    frame = f
+                case .lastGood(let f): frame = f                       // approximate; exact already scheduled
+                case .missing:
+                    // No realized frame yet for this ref (true first appearance, decode now scheduled
+                    // off-queue). Record it and CONTINUE so the remaining refs are also scheduled this tick;
+                    // we throw the soft skip once, after all refs have been visited.
+                    missingRefs.append(ref)
+                    continue
+                }
             }
             dynamicFixtures[.image(reference: ref)] = frame.descriptor
             // CP7.8-CORR F4 FIX: the runtime binding map MUST be keyed by the descriptor's resourceID
@@ -750,6 +797,12 @@ enum NextSingleSceneBridge {
             // binding up by `descriptor.resourceID`; keying by `ref` left it unfound → missingTextureBinding
             // (red screen). The fixture key stays `.image(reference: ref)` so the layer still resolves.
             handles[frame.descriptor.id.rawValue] = frame.handle
+        }
+        // CP7.9-CORR3B-2 fix 1: all refs have now been visited (and any missing ones scheduled). If any was
+        // missing, soft-skip this tick — the controller maps `videoFrameNotReady` to `.skipped` (keep the
+        // current frame; next tick retries by which point the scheduled decodes have likely landed).
+        if let firstMissing = missingRefs.sorted().first {
+            throw NextBridgeError.videoFrameNotReady(ref: firstMissing)
         }
         return (dynamicFixtures, RenderRuntimeTextureBindings(handles), coldSpent)
     }

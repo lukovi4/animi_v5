@@ -187,6 +187,33 @@ final class NextVideoPrewarmSchedulerTests: XCTestCase {
         s.drainForTesting()
     }
 
+    // MARK: - CP7.9-CORR3B fix 1: initialEpoch (no post-init invalidate race)
+
+    func test_corr3b_initialEpoch_acceptsThatEpochImmediately_producesExact() throws {
+        // A scheduler built for an already-advanced media epoch (7) must accept epoch-7 requests directly —
+        // no post-init `invalidate` needed (which would race the first readyFrame). readyFrame/schedule at
+        // epoch 7 must reach exact; a request at the DEFAULT epoch 0 must be dropped as epoch-stale.
+        let p = FakeProvider(ref: "v", device: device)
+        let s = NextVideoPrewarmScheduler(providers: ["v": p], maxConcurrentDecodes: 1, initialEpoch: 7)
+        _ = s.readyFrame(ref: "v", target: 0.0, epoch: 7, mode: .settled)
+        s.drainForTesting()
+        XCTAssertTrue(isExact(s.readyFrame(ref: "v", target: 0.0, epoch: 7, mode: .settled)),
+                      "initialEpoch-7 scheduler must produce exact for epoch-7 requests")
+        // A stale (default-0) request must NOT be served as exact under epoch 7.
+        XCTAssertFalse(isExact(s.readyFrame(ref: "v", target: 0.0, epoch: 0, mode: .settled)),
+                       "epoch-0 request must be epoch-stale for an initialEpoch-7 scheduler")
+        s.drainForTesting()
+    }
+
+    func test_corr3b_initialEpoch_defaultsToZero() throws {
+        let p = FakeProvider(ref: "v", device: device)
+        let s = NextVideoPrewarmScheduler(providers: ["v": p], maxConcurrentDecodes: 1)   // default initialEpoch 0
+        _ = s.readyFrame(ref: "v", target: 0.0, epoch: 0, mode: .settled)
+        s.drainForTesting()
+        XCTAssertTrue(isExact(s.readyFrame(ref: "v", target: 0.0, epoch: 0, mode: .settled)))
+        s.drainForTesting()
+    }
+
     // MARK: - CP7.9-CORR fix 2: completion queued around invalidate must NOT publish under the new epoch
 
     func test_corr_completionAfterInvalidate_notVisibleInNewEpoch() throws {

@@ -115,7 +115,10 @@ final class NextVideoPrewarmScheduler {
     private var snapshot: [String: RefSnapshot] = [:]   // guarded by snapshotLock
 
     // MARK: - Control-queue-only bookkeeping
-    private var epoch: UInt64 = 0
+    /// Current media epoch. Set at init (CP7.9-CORR3B fix 1: `initialEpoch`, so a scheduler built for an
+    /// already-advanced media epoch accepts that epoch's requests WITHOUT a post-init async `invalidate`,
+    /// which would race the first `readyFrame`). Advanced only by `invalidate(newEpoch:)`.
+    private var epoch: UInt64
     /// Latest desired target per ref WITH its priority (CP7.9-CORR fix 3): a lower-priority nearFuture must
     /// not supersede a currentPlayhead/settled target; currentPlayhead may supersede nearFuture.
     private struct Desired { let key: NextVideoTargetKey; let seconds: Double; let priority: NextVideoPrewarmPriority }
@@ -132,10 +135,12 @@ final class NextVideoPrewarmScheduler {
     #endif
 
     init(providers: [String: NextVideoFrameProvider], maxConcurrentDecodes: Int = 2,
-         maxSnapshotFramesPerRef: Int = NextVideoTextureResolver.defaultMaxCachedFrames) {
+         maxSnapshotFramesPerRef: Int = NextVideoTextureResolver.defaultMaxCachedFrames,
+         initialEpoch: UInt64 = 0) {
         self.providers = providers
         self.maxConcurrentDecodes = max(1, maxConcurrentDecodes)
         self.maxSnapshotFramesPerRef = max(1, maxSnapshotFramesPerRef)
+        self.epoch = initialEpoch
     }
 
     // MARK: - Public API
