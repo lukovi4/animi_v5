@@ -37,6 +37,44 @@ public enum ProjectValidationError: Error, Equatable, Sendable {
     case insufficientOutgoingDuration(boundaryIndex: Int)
     case adjacentTransitionsRequireThreeScenes(middleSceneIndex: Int)
     case invalidEvaluationWindowCoverage
+    /// Slice 001 Stage B value-model: ``AudioGain`` raw value is outside the integer linear scale
+    /// `0 ... 1_000_000`. Never clamped — out of range is a typed failure.
+    case invalidAudioGain(value: Int64)
+
+    // MARK: - Slice 001 Stage D: semantic audio validation (plan §7)
+
+    /// Two audio source/track/clip entries share an id (`scope` names the table).
+    case duplicateAudioID(scope: String, id: String)
+    /// A clip references a `sourceID`/`trackID` that no entry defines (`kind` names which).
+    case danglingAudioReference(kind: String, id: String)
+    /// An audio source is defined but referenced by no clip.
+    case orphanAudioSource(id: String)
+    /// An audio track is defined but referenced by no clip.
+    case orphanAudioTrack(id: String)
+    /// A clip's role and `videoLayer` presence disagree (`.videoLayer`⇒present; global⇒absent).
+    case audioRoleLayerMismatch(clip: String)
+    /// A clip's role and asset kind disagree (`.videoLayer`⇒`.videoLayerMedia`; global⇒`.globalAudio`).
+    case audioRoleAssetMismatch(clip: String)
+    /// A video-layer clip's `videoLayer.sceneID` is not a scene in the manifest.
+    case unknownAudioScene(clip: String)
+    /// A clip's `destination` is not fully inside the project duration.
+    case audioDestinationOutsideProject(clip: String)
+    /// A video-layer clip's referenced `layerID` does not exist in the resolved scene payload.
+    case audioLayerNotFound(clip: String)
+    /// A video-layer clip references a layer whose content is not `.video` (e.g. an image).
+    case audioLayerNotVideo(clip: String)
+    /// A video-layer clip's `.videoLayerMedia` differs from the layer's `VideoBinding.media`.
+    case audioMediaMismatch(clip: String)
+    /// A video-layer clip's `sourceTrim` is not contained in the video's `sourceMapping.trimRange`.
+    case audioTrimNotContained(clip: String)
+    /// Two video-layer clips reference the same `SceneLayerReference`.
+    case duplicateVideoAudioClip(layer: String)
+    /// An incoming-side video clip's `destination.start` precedes its scene start (pre-boundary audio
+    /// is forbidden — the incoming media clock is held at 0 while `T < B`).
+    case incomingAudioBeforeBoundary(clip: String)
+    /// A video-layer clip's `destination` extends outside the scene's media-active domain.
+    case audioDestinationOutsideMediaActiveDomain(clip: String)
+
     case timeError(TimeError)
 }
 

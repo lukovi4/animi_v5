@@ -18,4 +18,8 @@ public enum ProjectDecodingError: Error, Equatable, Sendable {
     case malformedInteger(path: String)
     /// An enum tag string was not one of the schema's pinned tags.
     case unknownEnumTag(path: String, tag: String)
+    /// Slice 001 (schema v3): a field whose absence has exactly one canonical representation (the key
+    /// omitted) carried an explicit JSON `null`. Used for the audio clip `videoLayer` field, which is
+    /// either present as an object or absent — never `null`.
+    case explicitNull(path: String)
 }

@@ -74,6 +74,9 @@ public enum ProjectValidator {
 
         // 8. Static transition availability: post-roll, incoming/outgoing duration, adjacency.
         try validateTransitionAvailability(manifest)
+
+        // 9. Slice 001 Stage D: manifest-level audio semantics (no payloads required).
+        try validateAudioManifest(manifest)
     }
 
     /// Full-document validation: manifest invariants, per-payload structure, manifest↔payload
@@ -93,6 +96,9 @@ public enum ProjectValidator {
         // 10. Complete scene + overlay material availability (corrective plan C-1, full-document site).
         let sceneSpanIndex = try SceneSpanIndex(scenes: manifest.scenes)
         try MaterialAvailabilityValidator.validateDocument(document, sceneSpanIndex: sceneSpanIndex)
+
+        // 11. Slice 001 Stage D: payload-dependent audio semantics (scene-layer resolution).
+        try validateAudioDocument(document)
     }
 
     // MARK: - Scene payloads
@@ -209,7 +215,201 @@ public enum ProjectValidator {
         }
     }
 
+    // MARK: - Slice 001 Stage D: audio validation (manifest-level)
+
+    /// Manifest-only audio invariants (plan §7). No payloads required; the `.empty` manifest passes
+    /// every check vacuously. Table order is non-semantic — every check iterates sets/maps, never
+    /// positions.
+    private static func validateAudioManifest(_ manifest: CanonicalProjectManifest) throws {
+        let audio = manifest.audio
+        if audio.isEmpty { return }   // empty manifest is consistent by construction
+
+        // Unique ids per table.
+        try requireUniqueAudio(audio.sources.map(\.id.raw), scope: "audio.source")
+        try requireUniqueAudio(audio.tracks.map(\.id.raw), scope: "audio.track")
+        try requireUniqueAudio(audio.clips.map(\.id.raw), scope: "audio.clip")
+
+        // Lookup maps for dangling/role/asset resolution.
+        let sourceByID = Dictionary(uniqueKeysWithValues: audio.sources.map { ($0.id, $0) })
+        let trackByID = Dictionary(uniqueKeysWithValues: audio.tracks.map { ($0.id, $0) })
+        let sceneIDs = Set(manifest.scenes.map(\.id))
+        let projectDuration = try manifest.projectDuration()
+        let projectEnd = try ProjectTime.zero.adding(projectDuration)
+
+        // Referenced source/track ids (for orphan detection); built while resolving clips.
+        var referencedSources = Set<AudioSourceID>()
+        var referencedTracks = Set<AudioTrackID>()
+
+        for clip in audio.clips {
+            // Dangling references.
+            guard let source = sourceByID[clip.sourceID] else {
+                throw ProjectValidationError.danglingAudioReference(kind: "source", id: clip.sourceID.raw)
+            }
+            guard let track = trackByID[clip.trackID] else {
+                throw ProjectValidationError.danglingAudioReference(kind: "track", id: clip.trackID.raw)
+            }
+            referencedSources.insert(clip.sourceID)
+            referencedTracks.insert(clip.trackID)
+
+            // Role drives both `videoLayer` presence and asset kind.
+            let role = track.role
+            let isVideoLayerRole = (role == .videoLayer)
+
+            // role ↔ videoLayer presence.
+            if isVideoLayerRole {
+                guard clip.videoLayer != nil else {
+                    throw ProjectValidationError.audioRoleLayerMismatch(clip: clip.id.raw)
+                }
+            } else {
+                guard clip.videoLayer == nil else {
+                    throw ProjectValidationError.audioRoleLayerMismatch(clip: clip.id.raw)
+                }
+            }
+
+            // role ↔ asset kind.
+            switch (isVideoLayerRole, source.asset) {
+            case (true, .videoLayerMedia), (false, .globalAudio):
+                break
+            default:
+                throw ProjectValidationError.audioRoleAssetMismatch(clip: clip.id.raw)
+            }
+
+            // destination ⊆ project duration.
+            guard clip.destination.start >= ProjectTime.zero,
+                  clip.destination.end <= projectEnd else {
+                throw ProjectValidationError.audioDestinationOutsideProject(clip: clip.id.raw)
+            }
+
+            // Video-layer clips: scene exists + destination inside the scene media-active domain.
+            if let ref = clip.videoLayer {
+                guard sceneIDs.contains(ref.sceneID) else {
+                    throw ProjectValidationError.unknownAudioScene(clip: clip.id.raw)
+                }
+                let domain = try mediaActiveDomain(forScene: ref.sceneID, manifest: manifest)
+                // Pre-boundary audio forbidden: destination begins before the scene start.
+                guard clip.destination.start >= domain.start else {
+                    throw ProjectValidationError.incomingAudioBeforeBoundary(clip: clip.id.raw)
+                }
+                // Entire destination must lie inside the media-active domain (outgoing post-roll
+                // allowed; visual activeRange/opacity never gate audio).
+                guard clip.destination.end <= domain.end else {
+                    throw ProjectValidationError.audioDestinationOutsideMediaActiveDomain(clip: clip.id.raw)
+                }
+            }
+
+            // Defense-in-depth re-asserts (value invariants already hold by construction).
+            guard clip.gain.raw >= 0, clip.gain.raw <= AudioGain.unityRaw else {
+                throw ProjectValidationError.invalidAudioGain(value: clip.gain.raw)
+            }
+        }
+
+        // Orphan sources/tracks: every defined entry must be referenced by >= 1 clip.
+        for source in audio.sources where !referencedSources.contains(source.id) {
+            throw ProjectValidationError.orphanAudioSource(id: source.id.raw)
+        }
+        for track in audio.tracks where !referencedTracks.contains(track.id) {
+            throw ProjectValidationError.orphanAudioTrack(id: track.id.raw)
+        }
+    }
+
+    /// The half-open media-active domain `[start, end)` of a scene on the project timeline (plan §7,
+    /// ADR-012 §1.0b). A pure manifest-level derivation (no payloads):
+    /// - `start` = sum of preceding scenes' `timelineSpan` (the same basis as `projectDuration`);
+    /// - `end`   = `start + scene.timelineSpan + outgoing post-half of the boundary after this scene`
+    ///   (a `cut` post-half is 0; an animated boundary extends the domain into the outgoing post-roll).
+    /// The final scene has no following boundary, so its domain ends at `start + timelineSpan`.
+    private static func mediaActiveDomain(
+        forScene sceneID: SceneInstanceID, manifest: CanonicalProjectManifest
+    ) throws -> (start: ProjectTime, end: ProjectTime) {
+        let scenes = manifest.scenes
+        guard let index = scenes.firstIndex(where: { $0.id == sceneID }) else {
+            // Caller already verified existence; treat as unknown defensively.
+            throw ProjectValidationError.unknownAudioScene(clip: sceneID.raw)
+        }
+        var startTicks: Int64 = 0
+        for i in 0..<index {
+            startTicks = try CheckedInt64.add(startTicks, scenes[i].timelineSpan.ticks, "mediaDomain.start")
+        }
+        var endTicks = try CheckedInt64.add(startTicks, scenes[index].timelineSpan.ticks, "mediaDomain.end")
+        // Outgoing post-half of the boundary that FOLLOWS this scene (boundary index == scene index).
+        if index < manifest.boundaryTransitions.count {
+            let transition = manifest.boundaryTransitions[index]
+            let postHalf: Int64
+            switch transition.kind {
+            case .cut:
+                postHalf = 0
+            case .animated:
+                postHalf = TransitionHalves(duration: transition.duration).postHalf
+            }
+            endTicks = try CheckedInt64.add(endTicks, postHalf, "mediaDomain.postRoll")
+        }
+        return (try ProjectTime(ticks: startTicks), try ProjectTime(ticks: endTicks))
+    }
+
+    // MARK: - Slice 001 Stage D: audio validation (document-level)
+
+    /// Payload-dependent audio invariants (plan §7). Resolves each video-layer clip's
+    /// `SceneLayerReference` through `sceneID → payloadID → ResolvedScenePayload`, then the layer,
+    /// then the video binding. A video layer WITHOUT an audio clip is legitimate silence — only clips
+    /// that exist are validated. One source may back many clips.
+    private static func validateAudioDocument(_ document: CanonicalProjectDocument) throws {
+        let manifest = document.manifest
+        let audio = manifest.audio
+        if audio.isEmpty { return }
+
+        // sceneID → payloadID (manifest), payloadID → payload (document).
+        let payloadIDByScene = Dictionary(uniqueKeysWithValues: manifest.scenes.map { ($0.id, $0.payloadID) })
+        let payloadByID = Dictionary(uniqueKeysWithValues: document.scenePayloads.map { ($0.payloadID, $0) })
+        let sourceByID = Dictionary(uniqueKeysWithValues: audio.sources.map { ($0.id, $0) })
+
+        var seenLayerRefs = Set<SceneLayerReference>()
+
+        for clip in audio.clips {
+            guard let ref = clip.videoLayer else { continue }   // global clips: no payload resolution
+
+            // No two video-audio clips for the same scene-layer reference.
+            guard seenLayerRefs.insert(ref).inserted else {
+                throw ProjectValidationError.duplicateVideoAudioClip(layer: "\(ref.sceneID.raw)/\(ref.layerID.raw)")
+            }
+
+            // Resolve sceneID → payloadID → payload. (Same LayerID in two scenes resolves distinctly
+            // because resolution is keyed by sceneID first.)
+            guard let payloadID = payloadIDByScene[ref.sceneID], let payload = payloadByID[payloadID] else {
+                throw ProjectValidationError.unknownAudioScene(clip: clip.id.raw)
+            }
+            // Layer exists in that scene payload.
+            guard let layer = payload.layers.first(where: { $0.id == ref.layerID }) else {
+                throw ProjectValidationError.audioLayerNotFound(clip: clip.id.raw)
+            }
+            // Layer content must be video (image rejected).
+            guard case .video(let binding) = layer.content else {
+                throw ProjectValidationError.audioLayerNotVideo(clip: clip.id.raw)
+            }
+            // Asset media must equal the layer's video media.
+            guard let source = sourceByID[clip.sourceID],
+                  case .videoLayerMedia(let media) = source.asset else {
+                // Role/asset agreement is a manifest check; a mismatch here is an asset disagreement.
+                throw ProjectValidationError.audioRoleAssetMismatch(clip: clip.id.raw)
+            }
+            guard media == binding.media else {
+                throw ProjectValidationError.audioMediaMismatch(clip: clip.id.raw)
+            }
+            // sourceTrim ⊆ binding.sourceMapping.trimRange (half-open endpoint containment).
+            let trim = binding.sourceMapping.trimRange
+            guard clip.sourceTrim.start >= trim.start, clip.sourceTrim.end <= trim.end else {
+                throw ProjectValidationError.audioTrimNotContained(clip: clip.id.raw)
+            }
+        }
+    }
+
     // MARK: - Helpers
+
+    private static func requireUniqueAudio(_ values: [String], scope: String) throws {
+        var seen = Set<String>()
+        for value in values where !seen.insert(value).inserted {
+            throw ProjectValidationError.duplicateAudioID(scope: scope, id: value)
+        }
+    }
 
     private static func requireUnique(_ values: [String], scope: String) throws {
         var seen = Set<String>()

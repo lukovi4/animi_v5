@@ -95,7 +95,94 @@ enum CanonicalProjectValueBuilder {
             ("output", output(manifest.output)),
             ("scenes", .array(manifest.scenes.map(sceneEntry))),
             ("boundaryTransitions", .array(manifest.boundaryTransitions.map(transition))),
-            ("overlays", .array(manifest.overlays.map(overlayEntry)))
+            ("overlays", .array(manifest.overlays.map(overlayEntry))),
+            ("audio", audio(manifest.audio))
+        ])
+    }
+
+    /// Slice 001 (schema v3): the canonical encoder always writes an explicit `"audio"` object with
+    /// the three required tables. **Stage C** emits the populated tables in deterministic order
+    /// (input array order is non-semantic):
+    /// - `sources` by `AudioSourceID`;
+    /// - `tracks` by `AudioTrackID`;
+    /// - `clips` by `(trackID, destination.start.ticks, AudioClipID)`.
+    /// Object keys within each entry are sorted by the canonical writer.
+    private static func audio(_ audio: AudioManifest) -> CanonicalValue {
+        let sortedSources = audio.sources.sorted { $0.id < $1.id }
+        let sortedTracks = audio.tracks.sorted { $0.id < $1.id }
+        let sortedClips = audio.clips.sorted { lhs, rhs in
+            if lhs.trackID != rhs.trackID { return lhs.trackID < rhs.trackID }
+            if lhs.destination.start.ticks != rhs.destination.start.ticks {
+                return lhs.destination.start.ticks < rhs.destination.start.ticks
+            }
+            return lhs.id < rhs.id
+        }
+        return .object([
+            ("sources", .array(sortedSources.map(audioSource))),
+            ("tracks", .array(sortedTracks.map(audioTrack))),
+            ("clips", .array(sortedClips.map(audioClip)))
+        ])
+    }
+
+    private static func audioSource(_ entry: AudioSourceEntry) -> CanonicalValue {
+        .object([
+            ("id", .string(entry.id.raw)),
+            ("asset", audioAsset(entry.asset))
+        ])
+    }
+
+    private static func audioAsset(_ asset: AudioAssetReference) -> CanonicalValue {
+        switch asset {
+        case .videoLayerMedia(let media):
+            return .object([
+                ("kind", .string("videoLayerMedia")),
+                ("media", .string(media.raw))
+            ])
+        case .globalAudio(let assetID):
+            return .object([
+                ("kind", .string("globalAudio")),
+                ("id", .string(assetID.raw))
+            ])
+        }
+    }
+
+    private static func audioTrack(_ entry: AudioTrackEntry) -> CanonicalValue {
+        .object([
+            ("id", .string(entry.id.raw)),
+            ("role", .string(entry.role.rawValue))
+        ])
+    }
+
+    private static func audioClip(_ entry: AudioClipEntry) -> CanonicalValue {
+        var pairs: [(String, CanonicalValue)] = [
+            ("id", .string(entry.id.raw)),
+            ("trackID", .string(entry.trackID.raw)),
+            ("sourceID", .string(entry.sourceID.raw)),
+            ("destination", projectTimeRange(entry.destination)),
+            ("sourceTrim", rationalSourceRange(entry.sourceTrim)),
+            ("gain", .int(entry.gain.raw)),
+            ("isMuted", .bool(entry.isMuted)),
+            ("playbackPolicy", .string(entry.playbackPolicy.rawValue))
+        ]
+        // `videoLayer` is emitted ONLY when present; absence has exactly one canonical representation
+        // (the key is simply omitted — never `"videoLayer":null`).
+        if let videoLayer = entry.videoLayer {
+            pairs.append(("videoLayer", sceneLayerReference(videoLayer)))
+        }
+        return .object(pairs)
+    }
+
+    private static func sceneLayerReference(_ ref: SceneLayerReference) -> CanonicalValue {
+        .object([
+            ("sceneID", .string(ref.sceneID.raw)),
+            ("layerID", .string(ref.layerID.raw))
+        ])
+    }
+
+    private static func rationalSourceRange(_ range: RationalSourceRange) -> CanonicalValue {
+        .object([
+            ("start", rationalSourceTime(range.start)),
+            ("end", rationalSourceTime(range.end))
         ])
     }
 

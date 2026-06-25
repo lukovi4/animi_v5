@@ -39,19 +39,127 @@ enum RawProjectDecoder {
         let overlays = try reader.array("overlays").enumerated().map { index, value in
             try decodeOverlayEntry(value, path: "manifest.overlays[\(index)]")
         }
+        // Slice 001 (schema v3) dual-path: v3 carries an explicit `"audio"` object (all three tables
+        // required); v1/v2 have no such key and uplift to `audio = .empty`. Because `reader.finish()`
+        // (below) rejects unknown keys, a v1/v2 document that DOES carry `"audio"` is automatically
+        // rejected as an unknown field — v1/v2 must not contain audio.
+        let audio: AudioManifest
+        if schemaVersion >= 3 {
+            audio = try decodeAudio(try reader.object("audio"))
+        } else {
+            audio = .empty
+        }
         try reader.finish()
         // CP7.5: uplift on decode. A v1 document is read with `timelineSpan = nominalDuration` (above)
         // and its in-memory manifest is normalized to the current schema version, so re-encoding it
-        // writes a consistent v2 document (with the `timelineSpan` key). The on-disk `schemaVersion`
-        // only drives the dual-path scene-entry read.
+        // writes a consistent v2/v3 document (with the `timelineSpan` and `audio` keys). The on-disk
+        // `schemaVersion` only drives the dual-path scene-entry and audio reads.
         let normalizedVersion = max(schemaVersion, CanonicalProjectManifest.supportedSchemaVersion)
         return CanonicalProjectManifest(
             schemaVersion: normalizedVersion,
             output: output,
             scenes: scenes,
             boundaryTransitions: transitions,
-            overlays: overlays
+            overlays: overlays,
+            audio: audio
         )
+    }
+
+    /// Slice 001 (schema v3): decodes the required `"audio"` object. **Stage C** reads the populated
+    /// tables. All three tables MUST be present (a missing one is a typed `missingField`); each entry
+    /// is strictly decoded (unknown fields/enum tags rejected). This is a pure SHAPE decode — semantic
+    /// validation (uniqueness, dangling refs, role agreement, trim containment) is Stage D and is NOT
+    /// performed here. `finish()` rejects unknown audio keys.
+    private static func decodeAudio(_ readerIn: StrictObjectReader) throws -> AudioManifest {
+        var reader = readerIn
+        let sources = try reader.array("sources").enumerated().map { index, value in
+            try decodeAudioSource(value, path: "manifest.audio.sources[\(index)]")
+        }
+        let tracks = try reader.array("tracks").enumerated().map { index, value in
+            try decodeAudioTrack(value, path: "manifest.audio.tracks[\(index)]")
+        }
+        let clips = try reader.array("clips").enumerated().map { index, value in
+            try decodeAudioClip(value, path: "manifest.audio.clips[\(index)]")
+        }
+        try reader.finish()
+        return AudioManifest(sources: sources, tracks: tracks, clips: clips)
+    }
+
+    private static func decodeAudioSource(_ value: StrictJSONValue, path: String) throws -> AudioSourceEntry {
+        var reader = try StrictObjectReader(value, path: path)
+        let id = try AudioSourceID(try reader.string("id"))
+        let asset = try decodeAudioAsset(try reader.object("asset"), path: "\(path).asset")
+        try reader.finish()
+        return AudioSourceEntry(id: id, asset: asset)
+    }
+
+    private static func decodeAudioAsset(_ readerIn: StrictObjectReader, path: String) throws -> AudioAssetReference {
+        var reader = readerIn
+        let kind = try reader.string("kind")
+        let asset: AudioAssetReference
+        switch kind {
+        case "videoLayerMedia":
+            asset = .videoLayerMedia(try MediaReference(try reader.string("media")))
+        case "globalAudio":
+            asset = .globalAudio(try GlobalAudioAssetID(try reader.string("id")))
+        default:
+            throw ProjectDecodingError.unknownEnumTag(path: "\(path).kind", tag: kind)
+        }
+        try reader.finish()
+        return asset
+    }
+
+    private static func decodeAudioTrack(_ value: StrictJSONValue, path: String) throws -> AudioTrackEntry {
+        var reader = try StrictObjectReader(value, path: path)
+        let id = try AudioTrackID(try reader.string("id"))
+        let roleRaw = try reader.string("role")
+        guard let role = AudioSourceRole(rawValue: roleRaw) else {
+            throw ProjectDecodingError.unknownEnumTag(path: "\(path).role", tag: roleRaw)
+        }
+        try reader.finish()
+        return AudioTrackEntry(id: id, role: role)
+    }
+
+    private static func decodeAudioClip(_ value: StrictJSONValue, path: String) throws -> AudioClipEntry {
+        var reader = try StrictObjectReader(value, path: path)
+        let id = try AudioClipID(try reader.string("id"))
+        let trackID = try AudioTrackID(try reader.string("trackID"))
+        let sourceID = try AudioSourceID(try reader.string("sourceID"))
+        let destination = try decodeProjectTimeRange(try reader.object("destination"))
+        let sourceTrim = try decodeRationalSourceRange(try reader.object("sourceTrim"), path: "\(path).sourceTrim")
+        let gain = try AudioGain(raw: try reader.int("gain"))
+        let isMuted = try reader.bool("isMuted")
+        let policyRaw = try reader.string("playbackPolicy")
+        guard let policy = AudioPlaybackPolicy(rawValue: policyRaw) else {
+            throw ProjectDecodingError.unknownEnumTag(path: "\(path).playbackPolicy", tag: policyRaw)
+        }
+        // `videoLayer` absence has exactly one canonical representation: the key is omitted. An
+        // explicit `"videoLayer":null` is REJECTED (typed `explicitNull`), not treated as absent.
+        let videoLayer = try decodeOptionalSceneLayerReference(
+            try reader.optionalObjectRejectingNull("videoLayer")
+        )
+        try reader.finish()
+        return AudioClipEntry(
+            id: id, trackID: trackID, sourceID: sourceID, videoLayer: videoLayer,
+            destination: destination, sourceTrim: sourceTrim, gain: gain,
+            isMuted: isMuted, playbackPolicy: policy
+        )
+    }
+
+    private static func decodeOptionalSceneLayerReference(_ readerIn: StrictObjectReader?) throws -> SceneLayerReference? {
+        guard var reader = readerIn else { return nil }
+        let sceneID = try SceneInstanceID(try reader.string("sceneID"))
+        let layerID = try LayerID(try reader.string("layerID"))
+        try reader.finish()
+        return SceneLayerReference(sceneID: sceneID, layerID: layerID)
+    }
+
+    private static func decodeRationalSourceRange(_ readerIn: StrictObjectReader, path: String) throws -> RationalSourceRange {
+        var reader = readerIn
+        let start = try decodeRationalSourceTime(try reader.object("start"))
+        let end = try decodeRationalSourceTime(try reader.object("end"))
+        try reader.finish()
+        return try RationalSourceRange(start: start, end: end)
     }
 
     private static func decodeOutput(_ readerIn: StrictObjectReader) throws -> OutputContext {

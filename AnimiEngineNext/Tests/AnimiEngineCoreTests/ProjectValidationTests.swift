@@ -139,17 +139,17 @@ final class ProjectValidationTests: XCTestCase {
     func testUnsupportedSchemaVersionRejected() throws {
         let a = try scene("a", "pa")
         let manifest = CanonicalProjectManifest(
-            schemaVersion: 3, output: try CanonicalProjectFixtures.output(),
+            schemaVersion: 4, output: try CanonicalProjectFixtures.output(),
             scenes: [SceneManifestEntry(id: a.sceneID, payloadID: a.payloadID, nominalDuration: try TickDuration(ticks: 240_000), postRollCapability: .zero)],
             boundaryTransitions: [], overlays: []
         )
         let doc = CanonicalProjectDocument(manifest: manifest, scenePayloads: [a], overlayPayloads: [])
         XCTAssertThrowsError(try ProjectValidator.validate(doc)) {
-            XCTAssertEqual($0 as? ProjectValidationError, .unsupportedSchemaVersion(found: 3, supported: 2))
+            XCTAssertEqual($0 as? ProjectValidationError, .unsupportedSchemaVersion(found: 4, supported: 3))
         }
         // TimelineIndex must also reject the invalid manifest.
         XCTAssertThrowsError(try TimelineIndex(manifest: manifest)) {
-            XCTAssertEqual($0 as? ProjectValidationError, .unsupportedSchemaVersion(found: 3, supported: 2))
+            XCTAssertEqual($0 as? ProjectValidationError, .unsupportedSchemaVersion(found: 4, supported: 3))
         }
     }
 

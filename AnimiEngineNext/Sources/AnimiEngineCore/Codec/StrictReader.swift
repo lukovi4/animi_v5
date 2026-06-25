@@ -80,6 +80,18 @@ struct StrictObjectReader {
         return try StrictObjectReader(value, path: childPath(key))
     }
 
+    /// Distinguishes ABSENT (returns nil) from explicit JSON `null` (throws). For fields whose absence
+    /// has exactly ONE canonical representation — the key omitted (Slice 001: audio clip `videoLayer`).
+    /// Unlike ``optionalObject``, an explicit `"key":null` is REJECTED, not treated as absent.
+    mutating func optionalObjectRejectingNull(_ key: String) throws -> StrictObjectReader? {
+        consumed.insert(key)
+        guard let value = raw(key) else { return nil }              // absent → nil
+        if value == .null {
+            throw ProjectDecodingError.explicitNull(path: childPath(key))   // explicit null → reject
+        }
+        return try StrictObjectReader(value, path: childPath(key))
+    }
+
     mutating func array(_ key: String) throws -> [StrictJSONValue] {
         let value = try value(key)
         guard case .array(let elements) = value else {

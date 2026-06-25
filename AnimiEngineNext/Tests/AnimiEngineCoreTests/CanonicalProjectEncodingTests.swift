@@ -123,7 +123,7 @@ final class CanonicalProjectEncodingTests: XCTestCase {
     func testMalformedIntegerRejected() throws {
         let bytes = try CanonicalProjectEncoding.encode(try sampleDocument())
         var text = String(decoding: bytes, as: UTF8.self)
-        text = text.replacingOccurrences(of: "\"schemaVersion\":2", with: "\"schemaVersion\":2.5")
+        text = text.replacingOccurrences(of: "\"schemaVersion\":3", with: "\"schemaVersion\":3.5")
         XCTAssertThrowsError(try CanonicalProjectEncoding.decodeValidated(Data(text.utf8))) { error in
             guard case .decoding(let d) = error as? ProjectLoadError, case .malformedInteger = d else {
                 return XCTFail("expected malformedInteger, got \(error)")
@@ -159,41 +159,44 @@ final class CanonicalProjectEncodingTests: XCTestCase {
     }
 
     func testUnsupportedSchemaVersionRejectedOnEncodeAndDecode() throws {
-        // CP7.5: v2 is now the supported/written version; v1 is accepted (uplifted). An UNSUPPORTED
-        // version (3) must still be rejected on both encode (validate) and decode.
+        // Slice 001: v3 is now the supported/written version; v1/v2 are accepted (uplifted). An
+        // UNSUPPORTED version (4) must still be rejected on both encode (validate) and decode.
         let scene = try CanonicalProjectFixtures.scene(withVideoLayers: 1, sceneID: "s", payloadID: "p", durationTicks: 240_000)
         let manifest = CanonicalProjectManifest(
-            schemaVersion: 3, output: try CanonicalProjectFixtures.output(),
+            schemaVersion: 4, output: try CanonicalProjectFixtures.output(),
             scenes: [SceneManifestEntry(id: scene.sceneID, payloadID: scene.payloadID, nominalDuration: try TickDuration(ticks: 240_000), postRollCapability: .zero)],
             boundaryTransitions: [], overlays: []
         )
         let doc = CanonicalProjectDocument(manifest: manifest, scenePayloads: [scene], overlayPayloads: [])
         XCTAssertThrowsError(try CanonicalProjectEncoding.encode(doc)) {
-            XCTAssertEqual($0 as? ProjectValidationError, .unsupportedSchemaVersion(found: 3, supported: 2))
+            XCTAssertEqual($0 as? ProjectValidationError, .unsupportedSchemaVersion(found: 4, supported: 3))
         }
-        // For decode: take a valid v2 document's bytes and bump the schema number to 3.
+        // For decode: take a valid v3 document's bytes and bump the schema number to 4.
         let validDoc = try CanonicalProjectFixtures.singleSceneDocument(payload: scene, nominalDurationTicks: 240_000)
         let bytes = try CanonicalProjectEncoding.encode(validDoc)
-        let text = String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "\"schemaVersion\":2", with: "\"schemaVersion\":3")
+        let text = String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "\"schemaVersion\":3", with: "\"schemaVersion\":4")
         XCTAssertThrowsError(try CanonicalProjectEncoding.decodeValidated(Data(text.utf8))) { error in
-            guard case .validation(let v) = error as? ProjectLoadError, v == .unsupportedSchemaVersion(found: 3, supported: 2) else {
+            guard case .validation(let v) = error as? ProjectLoadError, v == .unsupportedSchemaVersion(found: 4, supported: 3) else {
                 return XCTFail("expected validation unsupportedSchemaVersion, got \(error)")
             }
         }
     }
 
-    // CP7.5: a v1 document (no `timelineSpan` key) decodes with timelineSpan == nominalDuration.
+    // CP7.5 / Slice 001: a v1 document (no `timelineSpan`, no `audio` key) decodes with
+    // timelineSpan == nominalDuration and audio == .empty, normalized in memory to v3.
     func testV1DocumentDecodesWithTimelineSpanEqualNominal() throws {
         let scene = try CanonicalProjectFixtures.scene(withVideoLayers: 1, sceneID: "s", payloadID: "p", durationTicks: 240_000)
         let validDoc = try CanonicalProjectFixtures.singleSceneDocument(payload: scene, nominalDurationTicks: 240_000)
-        // Synthesize a v1 on-disk document: drop the timelineSpan key + set schemaVersion:1.
-        let v2text = String(decoding: try CanonicalProjectEncoding.encode(validDoc), as: UTF8.self)
-        let v1text = v2text
-            .replacingOccurrences(of: "\"schemaVersion\":2", with: "\"schemaVersion\":1")
+        // Synthesize a v1 on-disk document: drop the timelineSpan + audio keys + set schemaVersion:1.
+        let v3text = String(decoding: try CanonicalProjectEncoding.encode(validDoc), as: UTF8.self)
+        let v1text = v3text
+            .replacingOccurrences(of: "\"schemaVersion\":3", with: "\"schemaVersion\":1")
             .replacingOccurrences(of: ",\"timelineSpan\":240000", with: "")
+            .replacingOccurrences(of: "\"audio\":{\"clips\":[],\"sources\":[],\"tracks\":[]},", with: "")
         let decoded = try CanonicalProjectEncoding.decodeValidated(Data(v1text.utf8))
         XCTAssertEqual(decoded.manifest.scenes[0].timelineSpan, try TickDuration(ticks: 240_000),
                        "v1 uplift: timelineSpan defaults to nominalDuration")
-        XCTAssertEqual(decoded.manifest.schemaVersion, 2, "decode normalizes to v2 in memory")
+        XCTAssertEqual(decoded.manifest.audio, .empty, "v1 uplift: audio defaults to .empty")
+        XCTAssertEqual(decoded.manifest.schemaVersion, 3, "decode normalizes to v3 in memory")
     }
 }
