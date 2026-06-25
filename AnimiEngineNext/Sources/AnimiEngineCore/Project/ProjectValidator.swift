@@ -313,37 +313,21 @@ public enum ProjectValidator {
     }
 
     /// The half-open media-active domain `[start, end)` of a scene on the project timeline (plan §7,
-    /// ADR-012 §1.0b). A pure manifest-level derivation (no payloads):
-    /// - `start` = sum of preceding scenes' `timelineSpan` (the same basis as `projectDuration`);
-    /// - `end`   = `start + scene.timelineSpan + outgoing post-half of the boundary after this scene`
-    ///   (a `cut` post-half is 0; an animated boundary extends the domain into the outgoing post-roll).
-    /// The final scene has no following boundary, so its domain ends at `start + timelineSpan`.
+    /// ADR-012 §1.0b). Resolves the scene index, then delegates the derivation to the single shared
+    /// `SceneMediaClock.mediaActiveDomain` (Slice-002 Stage A) so validation and the evaluator share
+    /// one definition and cannot drift.
     private static func mediaActiveDomain(
         forScene sceneID: SceneInstanceID, manifest: CanonicalProjectManifest
     ) throws -> (start: ProjectTime, end: ProjectTime) {
-        let scenes = manifest.scenes
-        guard let index = scenes.firstIndex(where: { $0.id == sceneID }) else {
+        guard let index = manifest.scenes.firstIndex(where: { $0.id == sceneID }) else {
             // Caller already verified existence; treat as unknown defensively.
             throw ProjectValidationError.unknownAudioScene(clip: sceneID.raw)
         }
-        var startTicks: Int64 = 0
-        for i in 0..<index {
-            startTicks = try CheckedInt64.add(startTicks, scenes[i].timelineSpan.ticks, "mediaDomain.start")
-        }
-        var endTicks = try CheckedInt64.add(startTicks, scenes[index].timelineSpan.ticks, "mediaDomain.end")
-        // Outgoing post-half of the boundary that FOLLOWS this scene (boundary index == scene index).
-        if index < manifest.boundaryTransitions.count {
-            let transition = manifest.boundaryTransitions[index]
-            let postHalf: Int64
-            switch transition.kind {
-            case .cut:
-                postHalf = 0
-            case .animated:
-                postHalf = TransitionHalves(duration: transition.duration).postHalf
-            }
-            endTicks = try CheckedInt64.add(endTicks, postHalf, "mediaDomain.postRoll")
-        }
-        return (try ProjectTime(ticks: startTicks), try ProjectTime(ticks: endTicks))
+        return try SceneMediaClock.mediaActiveDomain(
+            sceneIndex: index,
+            scenes: manifest.scenes,
+            boundaryTransitions: manifest.boundaryTransitions
+        )
     }
 
     // MARK: - Slice 001 Stage D: audio validation (document-level)

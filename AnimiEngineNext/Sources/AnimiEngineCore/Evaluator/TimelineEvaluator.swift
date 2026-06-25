@@ -25,9 +25,11 @@ public enum TimelineEvaluator {
 
         // 4. Normal playback / cut: one .sole scene subplan.
         let scene = try soleScene(in: window, at: time)
-        let sceneTime = try scene.span.sceneStart.distance(to: time)
         // CP7.5 two-clock: media continues to span; visual holds at nominal-1tick when stretched.
-        let mediaTime = ScenePlaybackTime(uncheckedTicks: sceneTime.ticks)
+        // Slice-002 Stage A: the MEDIA clock is the single shared `SceneMediaClock.sceneMediaTime`.
+        let mediaTime = try SceneMediaClock.sceneMediaTime(
+            role: .sole, at: time, sceneStart: scene.span.sceneStart, boundary: nil
+        )
         let visualTime = Self.clampVisual(mediaTime, nominalDuration: scene.span.nominalDuration, timelineSpan: scene.span.timelineSpan)
         let subplan = try buildSceneSubplan(
             scene: scene,
@@ -119,12 +121,15 @@ public enum TimelineEvaluator {
 
         // Outgoing MEDIA time: T - outgoingSceneStart, continuing past nominal end (unchanged
         // approved postRoll behavior). VISUAL time holds at nominal-1tick (D3).
-        let outgoingMediaTime = try TransitionMath.outgoingSceneTime(
-            at: time, outgoingSceneStart: outgoingScene.span.sceneStart
+        // Slice-002 Stage A: both media clocks come from the single shared `SceneMediaClock`.
+        let outgoingMediaTime = try SceneMediaClock.sceneMediaTime(
+            role: .outgoing, at: time, sceneStart: outgoingScene.span.sceneStart, boundary: nil
         )
         let outgoingVisualTime = Self.clampVisual(outgoingMediaTime, nominalDuration: outgoingScene.span.nominalDuration, timelineSpan: outgoingScene.span.timelineSpan)
         // Hold-first incoming MEDIA time; VISUAL clamps too (no-op unless incoming is itself stretched).
-        let incomingMediaTime = try TransitionMath.incomingSceneTime(at: time, boundary: boundary.boundary)
+        let incomingMediaTime = try SceneMediaClock.sceneMediaTime(
+            role: .incoming, at: time, sceneStart: incomingScene.span.sceneStart, boundary: boundary.boundary
+        )
         let incomingVisualTime = Self.clampVisual(incomingMediaTime, nominalDuration: incomingScene.span.nominalDuration, timelineSpan: incomingScene.span.timelineSpan)
         let relative = TransitionMath.transitionRelativeTime(at: time, boundary: boundary.boundary)
 
