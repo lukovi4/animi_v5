@@ -3,7 +3,8 @@
 Status values:
 
 - **APPROVED** - explicitly confirmed by the product owner.
-- **PENDING OWNER APPROVAL** - proposed technical choice; no implementation yet.
+- **ACCEPTED** - canonical technical decision accepted under owner authorization.
+- **PENDING OWNER APPROVAL** - proposed technical choice; no implementation may rely on it.
 - **BENCHMARK DECISION** - alternatives must be implemented and measured first.
 - **OPEN PRODUCT QUESTION** - only when research and existing requirements do
   not define the visible product behavior.
@@ -29,23 +30,32 @@ Status values:
 | D-015 | Stale, mixed and partial published frames are forbidden. | APPROVED BY SPEC |
 | D-016 | Transitions do not change total project duration. | APPROVED |
 | D-017 | Both scenes continue their animation inside the centered transition window. | APPROVED |
+| D-018 | Active timeline scrubbing is silent. | APPROVED |
+| D-019 | All simultaneously active, unmuted audio sources are mixed, including scene overlap during a visual transition. | APPROVED |
+| D-020 | Every active video contributes audio by default; user volume and mute control it independently of visual visibility. | APPROVED |
+| D-021 | Project music plays once and never loops automatically. | APPROVED |
+| D-022 | Interruption or relevant route change pauses playback; only an explicit user play action resumes it. | APPROVED |
 
-## Pending architecture approvals
+## Architecture decisions
 
 | ID | Proposal | Recommendation | Status |
 |---|---|---|---|
 | D-101 | Package boundary | Independent Swift package plus minimal iOS benchmark host. | APPROVED |
 | D-102 | Dependency rule | New engine must not import `AnimiApp` or current playback/export modules. | APPROVED |
 | D-103 | Existing template format | Initially load current compiled `.tve` through an isolated adapter. | APPROVED |
-| D-104 | Project adapter | Keep current `ProjectDraft` conversion outside the new engine. | PENDING OWNER APPROVAL |
+| D-104 | Project adapter | Keep current `ProjectDraft` conversion outside the new engine. | ACCEPTED 2026-06-25 |
 | D-105 | Evaluation model | Pure evaluator creates immutable complete frame plans. | APPROVED |
 | D-106 | Realtime authority | One scheduler owns clock, deadlines, grants, cancellation and degradation. | APPROVED |
 | D-107 | Publication | Only the composed-frame publisher may update visible output. | APPROVED |
-| D-108 | Identity model | Separate project revision, playback epoch, request, cache and export identities. | PENDING OWNER APPROVAL |
+| D-108 | Identity model | Separate project revision, playback epoch, request, cache and export identities, as defined by ADR-005. | ACCEPTED 2026-06-25 |
 | D-109 | Configuration | Versioned typed configuration with a stored hash in every run. | APPROVED |
 | D-110 | Evidence storage | Store immutable run manifests, structured events and per-frame metrics. | APPROVED |
-| D-111 | Concurrency boundary | Serialized scheduler ownership plus bounded decode/cache/render workers. | PENDING OWNER APPROVAL |
-| D-112 | Development gates | No next subsystem until the previous gate has stored passing evidence. | PENDING OWNER APPROVAL |
+| D-111 | Concurrency boundary | Serialized scheduler ownership plus bounded decode/cache/render/audio workers, as defined by ADR-006. | ACCEPTED 2026-06-25 |
+| D-112 | Development gates | No next subsystem until the previous gate has stored passing evidence. | ACCEPTED 2026-06-25 |
+| D-113 | Master clock | Audio render clock is master for an audio-bearing playback epoch; otherwise use an injected monotonic clock. Never switch clocks inside an epoch. | ACCEPTED 2026-06-25 |
+| D-114 | Canonical audio model | Immutable manifest audio data and pure `AudioPlan` are the single timing/mix source for preview and export, as defined by ADR-012. | ACCEPTED 2026-06-25 |
+| D-115 | Audio execution | Streaming `AVAudioEngine` for preview and isolated manual offline rendering for export on a canonical 48 kHz Float32 stereo mix grid. | ACCEPTED 2026-06-25 |
+| D-116 | Canonical audio schema | Project schema v3 requires normalized `sources`/`tracks`/`clips`, strict v1/v2 uplift, typed scene-layer references, role/asset validation, and encoder-owned deterministic ordering. | ACCEPTED 2026-06-25 |
 
 ## Benchmark decisions
 
@@ -63,25 +73,30 @@ Status values:
 | D-210 | Preview thresholds | Resolution/proxy/cache changes and 30/24/15 fps thresholds. | BENCHMARK DECISION |
 | D-211 | Device tiers | Supported iPhone floor and guarantees per tier. | BENCHMARK DECISION |
 | D-212 | Export concurrency | Decoder/render concurrency and retry settings. | BENCHMARK DECISION |
+| D-213 | Audio overload/output stage | Compare explicit deterministic hard saturation against a fixed safety limiter; require preview/export equivalence and device evidence. | ACCEPTED OFFLINE-PROVEN (2026-06-26) — selected: Candidate A explicit deterministic hard saturation `clamp(x,-1,+1)`; fallback: Candidate B fixed stateless safety limiter; preview/export equivalence + determinism proven offline (`d-213-audio-output-stage-benchmark.md`); device audible-quality confirmation pending in Slice 004. |
 
-## ADRs required before implementation
+## ADR status by subsystem
+
+Only ADRs required by the active roadmap slice must be accepted before that
+slice begins. A future `NOT DRAFTED` ADR gates its own subsystem; it does not
+block authorized earlier slices.
 
 | ADR | Subject | Status |
 |---|---|---|
 | ADR-001 | Package and dependency boundaries | Accepted (Task 001) |
-| ADR-002 | Project and template compatibility | DRAFTED (Task 002) |
-| ADR-003 | Canonical rational time | DRAFTED (Task 002) |
-| ADR-004 | Transition duration and source-handle semantics | DRAFTED (Task 002) |
-| ADR-005 | Identity, cancellation and frame publication | — |
-| ADR-006 | Scheduler and concurrency ownership |
-| ADR-007 | Decode backend interface |
-| ADR-008 | Proxy system |
-| ADR-009 | Render cache |
-| ADR-010 | Render and color contract |
-| ADR-011 | Text contract |
-| ADR-012 | Audio clock and mixing |
-| ADR-013 | Export contract |
-| ADR-014 | Diagnostics, evidence and comparison |
+| ADR-002 | Project and template compatibility | Accepted; realized in Task 002 |
+| ADR-003 | Canonical rational time | Accepted; realized in Task 002 |
+| ADR-004 | Transition and material semantics | Accepted; realized in Task 002 + CP7.5 |
+| ADR-005 | Identity, cancellation and frame publication | Accepted 2026-06-25 |
+| ADR-006 | Scheduler and master-clock ownership | Accepted 2026-06-25 |
+| ADR-007 | Decode backend interface | NOT DRAFTED |
+| ADR-008 | Proxy system | NOT DRAFTED |
+| ADR-009 | Render cache | NOT DRAFTED |
+| ADR-010 | Render and color contract | NOT DRAFTED |
+| ADR-011 | Text contract | NOT DRAFTED |
+| ADR-012 | Canonical audio architecture | Accepted 2026-06-25 |
+| ADR-013 | Export contract | NOT DRAFTED |
+| ADR-014 | Diagnostics, evidence and comparison | Accepted foundation/reference subset; runtime extensions pending |
 
 ## Approved deviations
 
