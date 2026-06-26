@@ -25,9 +25,11 @@
 ///
 /// ## What it deliberately does not do
 ///
-///   * No `AnimiApp` integration, no device tests, no route/interruption/new-device auto-resume (a
-///     later slice). A discontinuity mints a new epoch upstream and a fresh session; this type never
-///     resumes itself.
+///   * No `AnimiApp` integration and no device tests. Interruption / route change / new device /
+///     output-format change are handled (Stage G) as **pause-only** discontinuities — they invalidate
+///     the session and refuse further scheduling; there is **no auto-resume** and **no legacy
+///     reprepare+restart**. A discontinuity mints a new epoch upstream and a fresh session; this type
+///     never resumes itself.
 ///   * **No scrub audio.** The scrub/settle entrypoint advances readiness/diagnostics only and is
 ///     statically incapable of scheduling audio (it never touches the graph mix).
 ///   * No async, no actor, no realtime thread, no unbounded queue. Every bound/timeout is injected
@@ -58,6 +60,21 @@ public enum AudioMasterPreviewSessionError: Error, Equatable, Sendable {
     case initialPrerollRejected(RejectionReason)
     /// A scrub/settle entrypoint was asked to start audible playback — scrub must never start audio.
     case scrubMustNotStartAudio
+
+    // MARK: Stage G — interruption / route-change pause-only
+
+    /// An audio-session interruption invalidated this session. It is paused; audible playback requires an
+    /// explicit user play of a NEW epoch/session — this one never resumes.
+    case sessionInterrupted(reason: RealtimeAudioSessionEvent)
+    /// A route / output-format / new-device change invalidated this session. The next audible playback
+    /// requires an explicit play of a NEW epoch/session (and an output re-query); no auto-resume.
+    case routeChangedRequiresExplicitPlay(reason: RealtimeRouteChangeReason)
+    /// A configure/schedule/start operation was attempted after the session was invalidated by a session
+    /// event — fail closed, nothing is scheduled and the old session cannot be revived.
+    case schedulingAfterSessionInvalidated
+    /// Reading the injected master clock to capture the last confirmed project time during a pause event
+    /// failed — fail closed (the session is still paused/invalidated; the clock read is reported).
+    case clockReadFailedDuringPause(underlying: String)
 }
 
 // MARK: - The chosen master clock for an epoch
@@ -123,6 +140,15 @@ public final class AudioMasterPreviewSession {
     private var firstFrameReady = false
     private var scheduledInitialPreroll = false
 
+    /// Stage G: once a session event invalidates this session it is permanently paused. No further
+    /// configure/schedule/start is accepted, and it never auto-resumes — the sole writer is the session.
+    public private(set) var isInvalidated = false
+    /// The immutable paused record produced by the invalidating event, or `nil` while still live.
+    public private(set) var pausedState: PausedPreviewState?
+    /// Whether an audio-session interruption is currently in effect (cleared by `interruptionEnded`,
+    /// which still does NOT resume playback).
+    public private(set) var isInterrupted = false
+
     /// Build a session for one epoch. `clockKind` is the value `MasterClockSelector.select` already
     /// produced for this epoch (carried in, never re-decided). The barrier's audio-bearing flag is
     /// derived from it, and the chosen clock must agree with it (fail closed otherwise).
@@ -153,11 +179,20 @@ public final class AudioMasterPreviewSession {
     /// Whether this epoch is audio-bearing (audio-sample master clock).
     public var isAudioBearing: Bool { selectedClock.kind == .audioSample }
 
+    /// Fail closed if the session was invalidated by a Stage-G session event: no configure/schedule/start
+    /// may proceed on a paused, never-resuming session.
+    private func requireNotInvalidated() throws {
+        guard !isInvalidated else {
+            throw AudioMasterPreviewSessionError.schedulingAfterSessionInvalidated
+        }
+    }
+
     // MARK: Readiness signals (each advances the barrier; none can start audio on its own)
 
     /// Configure the graph output from the actual session route/format and mark the gate. Identity is
     /// the session's own epoch/revision.
     public func configureOutput() throws {
+        try requireNotInvalidated()
         try graph.configureOutput()
         barrier = try barrier.markingOutputConfigured(revision: revision, epoch: epoch)
     }
@@ -175,6 +210,7 @@ public final class AudioMasterPreviewSession {
     ///   3. `graph.configureAnchor(anchor)`;
     ///   4. mark `anchorConfigured`.
     public func configureAnchor(_ anchor: PreviewAudioScheduleAnchor) throws {
+        try requireNotInvalidated()
         guard anchor.revision == revision, anchor.epoch == epoch else {
             throw AudioMasterPreviewSessionError.anchorIdentityMismatch(
                 anchorRevision: anchor.revision, anchorEpoch: anchor.epoch,
@@ -187,6 +223,7 @@ public final class AudioMasterPreviewSession {
     /// Signal that the first composed video frame for this epoch is ready. Audible playback may never
     /// begin before this (enforced by the barrier's required set and by the audio-scheduling guard).
     public func markFirstFrameReady() throws {
+        try requireNotInvalidated()
         barrier = try barrier.markingFirstFrameReady(revision: revision, epoch: epoch)
         firstFrameReady = true
     }
@@ -209,6 +246,7 @@ public final class AudioMasterPreviewSession {
         _ preroll: InitialAudioPreroll,
         against snapshot: SchedulerSnapshot
     ) throws -> Bool {
+        try requireNotInvalidated()
         guard isAudioBearing else { return false }
         guard firstFrameReady else {
             throw AudioMasterPreviewSessionError.audioScheduledBeforeFirstFrame
@@ -245,6 +283,23 @@ public final class AudioMasterPreviewSession {
     /// gates) unless every required gate is satisfied. Returns the master clock that now governs the
     /// epoch; for an audio epoch the graph already holds the bounded initial preroll.
     public func start() throws -> StartedPreviewSession {
+        // An invalidated (paused) session never resumes — explicit play must mint a NEW epoch/session.
+        // Surface the specific pause cause so the caller knows WHY a fresh epoch is required.
+        if isInvalidated, let paused = pausedState {
+            switch paused.event {
+            case .interruptionBegan, .interruptionEnded:
+                throw AudioMasterPreviewSessionError.sessionInterrupted(reason: paused.event)
+            case .routeChanged(let reason):
+                throw AudioMasterPreviewSessionError.routeChangedRequiresExplicitPlay(reason: reason)
+            case .newDeviceAvailable:
+                throw AudioMasterPreviewSessionError.routeChangedRequiresExplicitPlay(
+                    reason: .newDeviceAvailable)
+            case .outputFormatOrRouteChanged:
+                throw AudioMasterPreviewSessionError.routeChangedRequiresExplicitPlay(
+                    reason: .routeConfigurationChange)
+            }
+        }
+        try requireNotInvalidated()
         guard barrier.isReady else {
             throw AudioMasterPreviewSessionError.notReadyToStart(missing: barrier.missingGates)
         }
@@ -264,6 +319,90 @@ public final class AudioMasterPreviewSession {
             throw AudioMasterPreviewSessionError.scrubMustNotStartAudio
         }
         // No audio scheduling here by construction — scrub never reaches `graph.scheduleMix`.
+    }
+
+    // MARK: Stage G — interruption / route-change pause-only
+
+    /// Handle one injected realtime audio-session event as a **pause-only** discontinuity (ADR-005 §4,
+    /// ADR-006 §3, ADR-012 §7).
+    ///
+    /// Canonical semantics, identical for interruption / route change / new device / output-format
+    /// change:
+    ///   1. capture the last confirmed project time from the injected master clock (fail closed via
+    ///      `clockReadFailedDuringPause` if the read throws);
+    ///   2. **invalidate** this session — further configure/schedule/start is refused and audible audio
+    ///      can no longer be scheduled (the session is the sole scheduling caller, so this flushes the
+    ///      preview's ability to enqueue more audio);
+    ///   3. leave the session **paused / not playing**;
+    ///   4. record an immutable `PausedPreviewState`.
+    ///
+    /// There is NO auto-resume and NO legacy reprepare+restart: `interruptionEnded` only clears the
+    /// interruption flag (and does not even invalidate on its own), and `newDeviceAvailable` pauses
+    /// exactly like the others. Audible playback resumes ONLY when the caller mints a new epoch+session
+    /// and the user explicitly plays it.
+    ///
+    /// Returns the paused state when the event invalidated the session, or `nil` for a bare
+    /// `interruptionEnded` on a live session (which only clears the flag). Throwing leaves the session
+    /// paused/invalidated (it is invalidated before the clock read, so a failed read cannot leave a
+    /// half-live session).
+    @discardableResult
+    public func handleSessionEvent(_ event: RealtimeAudioSessionEvent) throws -> PausedPreviewState? {
+        // `interruptionEnded` is the one event that does not invalidate: it clears the interruption flag
+        // WITHOUT resuming. If the session was already invalidated by a prior event it stays invalidated.
+        guard event.invalidatesAudiblePlayback else {
+            isInterrupted = false
+            return nil
+        }
+
+        if event == .interruptionBegan { isInterrupted = true }
+
+        // Invalidate FIRST so no concurrent path can schedule while we read the clock; a failed clock
+        // read then cannot revive the session.
+        isInvalidated = true
+
+        // 1. Capture last confirmed time from the injected clock, fail closed on a read error.
+        let lastConfirmed: ProjectTime?
+        do {
+            lastConfirmed = try selectedClock.clock.currentProjectTime()
+        } catch {
+            // Still paused/invalidated; report the read failure typed.
+            throw AudioMasterPreviewSessionError.clockReadFailedDuringPause(
+                underlying: String(describing: error))
+        }
+
+        let requiresRequery = Self.requiresOutputRequery(for: event)
+        let paused = PausedPreviewState(
+            invalidatedEpoch: epoch,
+            invalidatedRevision: revision,
+            event: event,
+            lastConfirmedProjectTime: lastConfirmed,
+            requiresOutputRequeryBeforeNextPlay: requiresRequery)
+        pausedState = paused
+        return paused
+    }
+
+    /// Whether the event requires re-querying the actual output format/route before the next explicit
+    /// play. Route / new-device / output-format events do; a bare interruption does not.
+    private static func requiresOutputRequery(for event: RealtimeAudioSessionEvent) -> Bool {
+        switch event {
+        case .interruptionBegan, .interruptionEnded:
+            return false
+        case .routeChanged, .newDeviceAvailable, .outputFormatOrRouteChanged:
+            return true
+        }
+    }
+
+    /// Re-query the actual output format/route as **preparation only** for the next explicit play
+    /// (ADR-012 §7 step 4). This does NOT start audio, does NOT resume the invalidated session, and does
+    /// NOT clear invalidation — it simply returns the freshly queried output the caller will hand to a
+    /// brand-new session/epoch. Permitted on an invalidated session precisely because it is the prep for
+    /// minting the next one; it never schedules.
+    @discardableResult
+    public func requeryOutputForNextPlay(
+        adapter: AudioSessionAdapter
+    ) throws -> AudioOutputQuery {
+        // Querying touches no graph mix and schedules nothing; it is pure preparation.
+        return try adapter.queryActualOutput()
     }
 }
 
