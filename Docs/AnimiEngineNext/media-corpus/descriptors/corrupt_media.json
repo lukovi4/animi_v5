@@ -1,0 +1,1 @@
+{"blobFile":"corrupt_media.bin","encodedArtifact":"committedInvalidBlob","expectedBehavior":"Required media that is present but undecodable: produces a typed error with source identity and stage (ADR-012 \u00a79). Preview pauses/fails per ADR-006; export fails atomically. Never silently substituted.","kind":"corrupt","role":"corruptMedia"}

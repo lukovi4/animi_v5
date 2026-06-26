@@ -1,0 +1,1 @@
+{"encodedArtifact":"intentionallyAbsent","expectedBehavior":"Required media reference that resolves to no file at all: typed unresolved/missing failure (ADR-012 \u00a79, \u00a71.0b). A legitimately silent video is the ABSENCE of an audio clip, never a failed resolution.","kind":"missing","role":"missingMedia"}
