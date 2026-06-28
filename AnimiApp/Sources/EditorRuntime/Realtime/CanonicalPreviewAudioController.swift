@@ -50,6 +50,11 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
         var makeAudioClock: (_ anchorProjectTime: ProjectTime) -> any MasterClock
         /// Injected bounded runtime config.
         var maxChunkSamples: Int64
+        /// Stage-8 fix A: the bounded INITIAL preroll size (frames). Smaller than `maxChunkSamples` so the
+        /// FIRST buffer decodes + schedules faster (Play→audible latency). Continuous chunks still use
+        /// `maxChunkSamples`. Defaults to `maxChunkSamples` (no-op) so callers/tests that don't set it keep the
+        /// pre-fix behavior; production sets it to `initialPrerollSamples` in the factory.
+        var initialPrerollSamples: Int64? = nil
         var startTimeoutTicks: Int64
         /// Whether the project actually HAS audio the legacy path could play (imported/bundled music or
         /// video-original audio). Used ONLY by the silent-epoch guard: if the canonical evaluator returns
@@ -169,6 +174,27 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
         self.deps = dependencies
     }
 
+    #if DEBUG
+    /// Stage-8 latency audit (DEBUG-only). Monotonic wall-clock anchor for ONE play epoch, set at
+    /// `startPlayback.call`. All `…ms` deltas are measured from this. Uses `DispatchTime` (monotonic,
+    /// resume-safe) — no `Date`/`UUID`/random. Reset each `startPlayback`.
+    private var s8StartNanos: UInt64 = 0
+    private var s8PrerollBeginNanos: UInt64 = 0
+    private static func s8Now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+    private func s8Ms(since nanos: UInt64) -> String {
+        guard nanos != 0 else { return "n/a" }
+        let now = Self.s8Now()
+        let delta = now >= nanos ? now - nanos : 0
+        return String(format: "%.2f", Double(delta) / 1_000_000.0)
+    }
+    private func s8Emit(_ event: String, _ extra: String = "") {
+        guard MemoryDiagnostics.isEnabled else { return }
+        let sinceStart = s8Ms(since: s8StartNanos)
+        let suffix = extra.isEmpty ? "" : " \(extra)"
+        onDiagnostic?(event, "sinceStartMs=\(sinceStart)\(suffix)")
+    }
+    #endif
+
     // MARK: - Pipeline lifecycle (canonical controller does not use the legacy AVComposition pipeline)
 
     /// The legacy pipeline value is irrelevant to the canonical path — it evaluates its own plan. This
@@ -195,6 +221,11 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
     /// arrives (`signalFirstFrameReady`). Fail-closed: any canonical error drops the half-built session
     /// and reports failure (caller decides fallback/stop) — never a silent/partial audible state.
     func startPlayback(fromSeconds: Double, hostTime: CFTimeInterval) {
+        #if DEBUG
+        s8StartNanos = Self.s8Now()
+        s8PrerollBeginNanos = 0
+        s8Emit("preview.audio.stage8.startPlayback.call", "fromSeconds=\(fromSeconds)")
+        #endif
         do {
             try prepareCanonicalEpoch(fromSeconds: fromSeconds)
         } catch {
@@ -225,7 +256,13 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
 
         // Evaluate the canonical plan. No resolvable audio → silent epoch (no graph, nothing scheduled).
         // A NON-EMPTY plan must NOT silently become nil/[]; non-empty audio is honoured or fails closed.
+        #if DEBUG
+        let s8PlanBegin = Self.s8Now()
+        #endif
         let plan = try deps.evaluatePlan()
+        #if DEBUG
+        s8Emit("preview.audio.stage8.plan.eval", "elapsedMs=\(s8Ms(since: s8PlanBegin)) segments=\(plan?.segments.count ?? -1)")
+        #endif
         onDiagnostic?("preview.audio.canonical.plan",
                       "segments=\(plan?.segments.count ?? -1) fromSeconds=\(fromSeconds)")
         guard let plan, !plan.segments.isEmpty else {
@@ -268,6 +305,9 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
             revision: revision, epoch: epoch,
             projectSample: anchorProjectSample, outputSampleTime: 0)
         try session.configureAnchor(anchor)
+        #if DEBUG
+        s8Emit("preview.audio.stage8.setup.end", "graph+session+output+anchor done")
+        #endif
 
         // Compute the bounded preroll range now (pure, MainActor, no rendering). The actual PCM preroll must
         // come from the injected async renderer/cache — `startPlayback` must NOT synchronously render.
@@ -292,6 +332,12 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
         // LATE completion after pause/stop/new-epoch schedules NOTHING (cancellation + drop guard).
         onDiagnostic?("preview.audio.canonical.preroll.build.begin",
                       "planSegments=\(plan.segments.count) range=\(prerollRange.start)..<\(prerollRange.end) gen=\(generation)")
+        #if DEBUG
+        s8PrerollBeginNanos = Self.s8Now()
+        s8Emit("preview.audio.stage8.preroll.begin",
+               "range=\(prerollRange.start)..<\(prerollRange.end) sampleCount=\(prerollRange.sampleCount) "
+               + "initialPrerollSamples=\(effectiveInitialPrerollSamples) maxChunkSamples=\(deps.maxChunkSamples)")
+        #endif
         prerollTask = Task { [weak self] in
             await self?.runPrerollPrepare(
                 plan: plan, revision: revision, epoch: epoch,
@@ -317,6 +363,10 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
             }
             onDiagnostic?("preview.audio.canonical.preroll.build.end",
                           "sourceCount=\(sources.count) bufferCount=\(sources.count)")
+            #if DEBUG
+            s8Emit("preview.audio.stage8.preroll.end",
+                   "renderElapsedMs=\(s8Ms(since: s8PrerollBeginNanos)) sourceCount=\(sources.count)")
+            #endif
             // A NON-EMPTY plan must produce sources or fail closed (never silent).
             guard !sources.isEmpty else {
                 prerollPrepareFailed(AppRealtimeAudioIntegrationError.audioRenderPipelineUnavailable(
@@ -360,6 +410,11 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
     func signalFirstFrameReady() {
         guard pendingSession != nil else { return }
         pendingFirstFrameMarked = true
+        #if DEBUG
+        // Barrier-wait reason AT the moment the first frame arrives: was the preroll render already done?
+        let reason = (pendingPreparedSources != nil) ? "bothReady(prerollAlreadyDone)" : "firstFrameArrivedPrerollNotReady"
+        s8Emit("preview.audio.stage8.firstFrameSignal", "barrierReason=\(reason)")
+        #endif
         tryCrossBarrier()
     }
 
@@ -372,6 +427,11 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
               let session = pendingSession, let graph = pendingGraph,
               let preroll = pendingPreroll else { return }
         do {
+            #if DEBUG
+            // Both sides are now ready; this is the moment the barrier is crossed (the LATE arriver triggered it).
+            s8Emit("preview.audio.stage8.barrier.cross", "")
+            let s8SchedBegin = Self.s8Now()
+            #endif
             // Canonical order MUST be preserved: markFirstFrameReady BEFORE scheduleInitialAudioPreroll.
             try session.markFirstFrameReady()
             onDiagnostic?("preview.audio.canonical.graph.schedule.begin", "sources=\(sources.count)")
@@ -379,6 +439,10 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
                 InitialAudioPreroll(anchor: preroll.anchor, range: preroll.range, sources: sources),
                 against: preroll.snapshot)
             onDiagnostic?("preview.audio.canonical.graph.schedule.end", "scheduled=\(scheduled ? 1 : 0)")
+            #if DEBUG
+            s8Emit("preview.audio.stage8.graph.schedule.end", "scheduleMs=\(s8Ms(since: s8SchedBegin))")
+            let s8PlayBegin = Self.s8Now()
+            #endif
             #if DEBUG
             lastStartScheduledPreroll = scheduled
             #endif
@@ -390,6 +454,9 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
             _ = try session.start()
             onDiagnostic?("preview.audio.canonical.player.play.end", "")
             onDiagnostic?("preview.audio.canonical.engine.start.end", "")
+            #if DEBUG
+            s8Emit("preview.audio.stage8.player.play.end", "playStartMs=\(s8Ms(since: s8PlayBegin))")
+            #endif
             activeSession = session
             activeGraph = graph
             pendingSession = nil
@@ -403,6 +470,10 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
             #endif
             onDiagnostic?("preview.audio.canonical.scheduled",
                           "scheduled=\(scheduled ? 1 : 0) sources=\(sources.count) started=1")
+            #if DEBUG
+            // TOTAL audible-start latency: startPlayback.call → audio scheduled+started (this is THE number).
+            s8Emit("preview.audio.stage8.scheduled.total", "totalStartToScheduledMs=\(s8Ms(since: s8StartNanos))")
+            #endif
 
             // STAGE 6: begin continuous scheduling of the chunks AFTER the initial preroll, anchored to the
             // SAME anchor/snapshot. The initial preroll covered `preroll.range`; the cursor continues at its
@@ -504,10 +575,27 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
             }
             onDiagnostic?("preview.audio.canonical.nextChunk.render.end",
                           "range=\(range.start)..<\(range.end) sourceCount=\(sources.count)")
-            // A NON-EMPTY plan range must produce sources or fail closed (never silent).
-            guard !sources.isEmpty else {
+            // Empty sources for a chunk: distinguish "past the last audio segment" (clean audio end) from a
+            // real interior gap. The plan's `sampleInterval` can extend past the last segment's destination
+            // (e.g. a later scene with no video-original segments), so a chunk can be requested past ALL
+            // segment destinations while still inside `sampleInterval` — that is the AUDIO END, not a failure
+            // (Stage-7 S7). Only when the chunk starts at/after every segment's destination end do we end
+            // cleanly; an empty chunk that still has a later segment is a real gap → fail closed (never hidden).
+            if sources.isEmpty {
+                let lastSegmentEnd = ctx.plan.segments.map(\.destinationSamples.end).max() ?? ctx.plan.sampleInterval.start
+                if range.start >= lastSegmentEnd {
+                    // Past all audio segments → clean end. Stop continuous scheduling without alert/fallback;
+                    // already-scheduled audio keeps playing. Mirrors the natural end-of-plan branch.
+                    onDiagnostic?("preview.audio.canonical.nextChunk.endOfPlan",
+                                  "planEnd=\(lastSegmentEnd)")
+                    continuousReachedEnd = true
+                    finishContinuousTask(generation: generation)
+                    return
+                }
+                // Empty BUT a later segment still exists → a genuine interior gap; fail closed (never silent).
                 continuousFailed(AppRealtimeAudioIntegrationError.audioRenderPipelineUnavailable(
-                    reason: "continuous chunk \(range.start)..<\(range.end) produced no PreviewMixSource"))
+                    reason: "continuous chunk \(range.start)..<\(range.end) produced no PreviewMixSource "
+                          + "before last segment end \(lastSegmentEnd) (interior gap)"))
                 return
             }
             onDiagnostic?("preview.audio.canonical.nextChunk.schedule.begin",
@@ -631,15 +719,25 @@ final class CanonicalPreviewAudioController: PreviewAudioControlling {
         return ticks / AudioSampleGrid.ticksPerSample
     }
 
-    /// Bound the initial preroll to `maxChunkSamples`, anchored AT the playhead sample. Built via the only
-    /// public constructor `AudioSampleRange.from(projectTicks:)`. All multiplications are checked.
+    /// Stage-8 fix A: the effective initial-preroll cap. `initialPrerollSamples` when set positive, else
+    /// `maxChunkSamples` (no-op fallback for callers/tests that don't configure it).
+    private var effectiveInitialPrerollSamples: Int64 {
+        if let n = deps.initialPrerollSamples, n > 0 { return n }
+        return deps.maxChunkSamples
+    }
+
+    /// Bound the initial preroll to `initialPrerollSamples` (Stage-8 fix A — smaller than `maxChunkSamples`
+    /// for faster Play→audible), anchored AT the playhead sample. Built via the only public constructor
+    /// `AudioSampleRange.from(projectTicks:)`. All multiplications are checked.
     private func boundedPrerollRange(plan: AudioPlan, anchorSample: Int64) throws -> AudioSampleRange {
         // Clamp the anchor into the plan's covered sample interval (the plan defines what is audible).
         let planStart = plan.sampleInterval.start
         let planEnd = plan.sampleInterval.end
         let startSample = max(planStart, min(anchorSample, max(planStart, planEnd - 1)))
         let remaining = try CheckedInt64.subtract(planEnd, startSample, "preroll.remaining")
-        let count = max(1, min(remaining, deps.maxChunkSamples))
+        // Initial preroll is bounded by `initialPrerollSamples` (fix A); continuous chunks use maxChunkSamples.
+        // A non-positive / unset value falls back to `maxChunkSamples` (no-op).
+        let count = max(1, min(remaining, effectiveInitialPrerollSamples))
         let tps = AudioSampleGrid.ticksPerSample
         let startTicks: Int64
         let endTicks: Int64

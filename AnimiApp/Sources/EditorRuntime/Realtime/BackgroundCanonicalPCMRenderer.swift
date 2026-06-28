@@ -43,6 +43,12 @@ struct BackgroundCanonicalPCMRenderer: CanonicalPCMRenderer {
         // Deterministic per-render AudioRequestID sequence (metadata identity; not a wall-clock value).
         var requestIDs = MonotonicRequestIDAllocator()
 
+        #if DEBUG
+        // Stage-8 render timing (DEBUG-only, behind DebugMemoryDiagnostics). Total render elapsed + per-source
+        // decode elapsed; no per-sample logs. No behavior change. Marker: `preview.audio.stage8.render.*`.
+        let s8RenderBegin = DispatchTime.now().uptimeNanoseconds
+        #endif
+
         var sources: [PreviewMixSource] = []
         for segment in request.plan.segments {
             // 1. Intersect the segment destination with the requested bounded range (both half-open 48 kHz).
@@ -72,28 +78,52 @@ struct BackgroundCanonicalPCMRenderer: CanonicalPCMRenderer {
                     detail: "source \(segment.sourceID.raw): advance \(deltaFrames)/\(AudioSampleGrid.samplesPerSecond) overflowed")
             }
 
-            // 4. Decode EXACTLY frameCount mono 48 kHz Float32 frames (raw; pre-gain/mute).
+            // 3b. STAGE-8.1 S8 FIX — clamp the decode to the canonical source end. The plan's destination
+            //     intersection can map a chunk that extends PAST `segment.sourceEnd` (the source's audio
+            //     genuinely ended), which made the decoder hit end-of-track and short-read. The canonical
+            //     truth is `sourceEnd`: never ask for source frames beyond it. Available frames =
+            //     floor( (sourceEnd − sourceStartForChunk) seconds × 48000 ), exact integer/rational math.
+            let decodeFrameCount = try Self.framesAvailable(
+                from: sourceStartForChunk, to: segment.sourceEnd,
+                requested: frameCount, sourceIDRaw: segment.sourceID.raw)
+            // The source has ended at or before this chunk's start → it contributes nothing here.
+            guard decodeFrameCount > 0 else { continue }
+
+            // 4. Decode the AVAILABLE frames (≤ frameCount) mono 48 kHz Float32 (raw; pre-gain/mute).
             let decodeRequest = CanonicalPCMAssetDecodeRequest(
                 source: resolved,
                 sourceIDRaw: segment.sourceID.raw,
                 sourceStart: sourceStartForChunk,
-                frameCount: frameCount)
+                frameCount: decodeFrameCount)
+            #if DEBUG
+            let s8DecodeBegin = DispatchTime.now().uptimeNanoseconds
+            #endif
             let decoded = try await decoder.decodeMono48kFloat32(decodeRequest)
-            guard decoded.count == frameCount else {
+            #if DEBUG
+            if MemoryDiagnostics.isEnabled {
+                let ms = Double(DispatchTime.now().uptimeNanoseconds - s8DecodeBegin) / 1_000_000.0
+                MemoryDiagnostics.event("preview.audio.stage8.render.decode",
+                    "source=\(segment.sourceID.raw) sourceStart=\(sourceStartForChunk.numerator)/\(sourceStartForChunk.denominator) "
+                    + "frameCount=\(decodeFrameCount) intersectionFrames=\(frameCount) elapsedMs=\(String(format: "%.2f", ms))")
+            }
+            #endif
+            guard decoded.count == decodeFrameCount else {
                 throw AppRealtimeAudioIntegrationError.pcmRenderFailed(
-                    reason: "source \(segment.sourceID.raw): decoder returned \(decoded.count) frames, expected \(frameCount)")
+                    reason: "source \(segment.sourceID.raw): decoder returned \(decoded.count) frames, expected \(decodeFrameCount)")
             }
 
             // 5. Frame to the FULL bounded chunk range: zeros outside the intersection, decoded inside.
             //    (Structural framing to the bounded chunk so every source's chunkRange == key.range — NOT
             //    "non-empty plan → silence": the decoded region carries real samples; the source is genuinely
             //    silent over the part of the chunk it does not cover, and the graph SUMS sources.)
+            //    When `decodeFrameCount < frameCount` (the source ended inside this chunk), the available
+            //    prefix is written and the TAIL stays silence — only the part beyond `sourceEnd` is silent.
             var samples = [Float32](repeating: 0, count: chunkSampleCount)
-            guard let offset = Int(exactly: iStart - chunkStart), offset >= 0, offset + frameCount <= chunkSampleCount else {
+            guard let offset = Int(exactly: iStart - chunkStart), offset >= 0, offset + decodeFrameCount <= chunkSampleCount else {
                 throw AppRealtimeAudioIntegrationError.pcmRenderFailed(
                     reason: "source \(segment.sourceID.raw): intersection offset \(iStart - chunkStart) out of chunk bounds")
             }
-            for j in 0..<frameCount {
+            for j in 0..<decodeFrameCount {
                 samples[offset + j] = decoded[j]
             }
 
@@ -114,6 +144,55 @@ struct BackgroundCanonicalPCMRenderer: CanonicalPCMRenderer {
             sources.append(PreviewMixSource(buffer: buffer, samples: samples))
         }
 
+        #if DEBUG
+        if MemoryDiagnostics.isEnabled {
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - s8RenderBegin) / 1_000_000.0
+            MemoryDiagnostics.event("preview.audio.stage8.render.total",
+                "range=\(request.range.start)..<\(request.range.end) segments=\(request.plan.segments.count) "
+                + "sources=\(sources.count) elapsedMs=\(String(format: "%.2f", ms))")
+        }
+        #endif
+
         return try CanonicalPCMChunk(key: key, sources: sources)
+    }
+
+    /// STAGE-8.1 S8 FIX — the number of 48 kHz frames available from `sourceStart` up to the canonical
+    /// `sourceEnd`, clamped to `requested`. EXACT integer/rational math (no Double, no µs truncation):
+    ///
+    ///   available_seconds = sourceEnd − sourceStart      (RationalSourceTime, reduced, denom > 0)
+    ///   availableFrames    = floor( available.numerator × 48000 / available.denominator )
+    ///
+    /// Returns:
+    ///   - 0 if `sourceStart >= sourceEnd` (the source has already ended at/before this chunk → silence);
+    ///   - `min(requested, availableFrames)` otherwise (decode only what truly exists, never past sourceEnd).
+    /// Fail-closed (typed `pcmRenderFailed`) on any overflow / non-representable intermediate — never a
+    /// silent wrong count.
+    static func framesAvailable(
+        from sourceStart: RationalSourceTime, to sourceEnd: RationalSourceTime,
+        requested: Int, sourceIDRaw: String
+    ) throws -> Int {
+        // Source already ended at/before the chunk start → nothing to decode (not an error).
+        guard sourceStart < sourceEnd else { return 0 }
+        let available: RationalSourceTime
+        do {
+            available = try sourceEnd.subtracting(sourceStart)
+        } catch {
+            throw AppRealtimeAudioIntegrationError.pcmRenderFailed(
+                reason: "source \(sourceIDRaw): sourceEnd − sourceStart not representable")
+        }
+        // available > 0 here (sourceStart < sourceEnd) and denominator > 0 (reduced rational invariant).
+        // availableFrames = floor(numerator × 48000 / denominator); guard the multiply against Int64 overflow.
+        let scaled = available.numerator.multipliedReportingOverflow(by: AudioSampleGrid.samplesPerSecond)
+        guard !scaled.overflow else {
+            throw AppRealtimeAudioIntegrationError.pcmRenderFailed(
+                reason: "source \(sourceIDRaw): available-frames numerator overflow "
+                      + "(\(available.numerator)×\(AudioSampleGrid.samplesPerSecond))")
+        }
+        let availableFrames64 = scaled.partialValue / available.denominator   // floor for non-negative operands
+        guard let availableFrames = Int(exactly: availableFrames64) else {
+            throw AppRealtimeAudioIntegrationError.pcmRenderFailed(
+                reason: "source \(sourceIDRaw): available frames \(availableFrames64) not representable as Int")
+        }
+        return min(requested, availableFrames)
     }
 }

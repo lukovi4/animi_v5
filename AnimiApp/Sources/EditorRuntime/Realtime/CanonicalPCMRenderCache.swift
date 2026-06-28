@@ -81,14 +81,23 @@ actor CanonicalPCMRenderCache {
         // Hit: return and bump recency.
         if let cached = store[key] {
             touch(key)
+            #if DEBUG
+            Self.s8CacheEvent("hit", key)
+            #endif
             return cached
         }
         // Coalesce: join an in-flight render for the same key. Each coalesced caller independently verifies the
         // shared render output against ITS OWN requested key (fail-closed on a mismatched-identity chunk).
         if let existing = inFlight[key] {
+            #if DEBUG
+            Self.s8CacheEvent("coalesced", key)
+            #endif
             let chunk = try await existing.task.value
             return try Self.verifiedChunk(chunk, requestedKey: key)
         }
+        #if DEBUG
+        Self.s8CacheEvent("miss", key)
+        #endif
         // Miss: start a render task, record it (with a fresh token) for coalescing.
         inFlightCounter &+= 1
         let token = inFlightCounter
@@ -125,9 +134,26 @@ actor CanonicalPCMRenderCache {
             store[key] = verified
             touch(key)
             evictIfNeeded()
+            #if DEBUG
+            Self.s8CacheEvent("store", key)
+            #endif
         }
         return verified
     }
+
+    #if DEBUG
+    /// Stage-8 cache diagnostics (DEBUG-only, behind DebugMemoryDiagnostics). Reports hit/miss/coalesced/store
+    /// with the key's range + revision/epoch + a SHORT planIdentity hash (length only, not the full string) so
+    /// repeated-Play cache behavior is provable from the log. NO behavior change. Marker:
+    /// `preview.audio.stage8.cache.<kind>`.
+    private static func s8CacheEvent(_ kind: String, _ key: CanonicalPCMRenderKey) {
+        guard MemoryDiagnostics.isEnabled else { return }
+        MemoryDiagnostics.event("preview.audio.stage8.cache.\(kind)",
+            "range=\(key.range.start)..<\(key.range.end) "
+            + "revision=\(String(describing: key.revision)) epoch=\(String(describing: key.epoch)) "
+            + "planIdLen=\(key.planIdentity.utf8.count)")
+    }
+    #endif
 
     /// Fail-closed identity check: the rendered chunk MUST carry exactly the requested key. Returns the chunk
     /// on match; throws `.pcmRenderFailed` on any identity mismatch (revision/epoch/planIdentity/range).

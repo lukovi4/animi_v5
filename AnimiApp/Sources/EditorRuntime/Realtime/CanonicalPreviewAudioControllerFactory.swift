@@ -23,7 +23,12 @@ import AnimiEngineCore
 enum CanonicalPreviewAudioControllerFactory {
 
     /// Conservative bounded runtime config (OD-2 final values are a device-gate decision).
-    static let maxChunkSamples: Int64 = 48_000          // ≤ 1 s at 48 kHz
+    static let maxChunkSamples: Int64 = 48_000          // ≤ 1 s at 48 kHz (CONTINUOUS chunk size)
+    /// Stage-8 fix A: the INITIAL preroll is smaller than a continuous chunk so the first buffer decodes +
+    /// schedules faster (Play→audible latency). 9_600 frames = 200 ms @ 48 kHz. Continuous chunks stay
+    /// `maxChunkSamples` (the first continuous chunk begins exactly at the preroll's end, so coverage is
+    /// contiguous — no gap, no dropout as long as the next chunk schedules in time).
+    static let initialPrerollSamples: Int64 = 9_600     // 200 ms at 48 kHz
     static let startTimeoutTicks: Int64 = 240_000 * 5   // 5 s of project ticks
 
     /// Named bounded PCM render-cache capacity (number of cached bounded chunks). NOT an inline magic value.
@@ -122,6 +127,7 @@ enum CanonicalPreviewAudioControllerFactory {
                 AudioSampleMasterClock(anchorProjectTime: anchorProjectTime, currentSampleTime: { 0 })
             },
             maxChunkSamples: maxChunkSamples,
+            initialPrerollSamples: initialPrerollSamples,
             startTimeoutTicks: startTimeoutTicks,
             projectHasAudio: projectHasAudio)
         return CanonicalPreviewAudioController(dependencies: deps)

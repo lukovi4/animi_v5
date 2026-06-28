@@ -126,10 +126,98 @@ final class CanonicalContinuousPlaybackTests: XCTestCase {
         return CanonicalPreviewAudioController(dependencies: deps)
     }
 
+    /// Stage-8 fix A: a controller with a DISTINCT initial preroll size (smaller than the continuous chunk).
+    private func makeControllerFixA(
+        plan: AudioPlan?, spy: RenderSpy, sink: RecordingSink,
+        initialPrerollSamples: Int64, maxChunkSamples: Int64
+    ) throws -> CanonicalPreviewAudioController {
+        let deps = CanonicalPreviewAudioController.Dependencies(
+            evaluatePlan: { plan },
+            buildInitialPrerollAsync: { p, rev, ep, anchor, range, _ in
+                try await spy.build(plan: p, revision: rev, epoch: ep, anchor: anchor, range: range)
+            },
+            sessionAdapter: try FakeSession(query: query()),
+            sink: sink,
+            makeAudioClock: { AudioSampleMasterClock(anchorProjectTime: $0, currentSampleTime: { 0 }) },
+            maxChunkSamples: maxChunkSamples,
+            initialPrerollSamples: initialPrerollSamples,
+            startTimeoutTicks: 240_000 * 5,
+            projectHasAudio: { true })
+        return CanonicalPreviewAudioController(dependencies: deps)
+    }
+
     private func drainPreroll(_ c: CanonicalPreviewAudioController) async {
         for _ in 0..<400 { if !c.hasInFlightPrerollTask { break }; await Task.yield() }
     }
     private func settle() async { for _ in 0..<200 { await Task.yield() } }
+
+    // MARK: - Stage-8 fix A: small initial preroll, continuous chunks unchanged
+
+    /// Plan long enough for a small preroll + several full continuous chunks. Interval [0, 100).
+    private static func planFixA(samples: Int64 = 100) throws -> AudioPlan {
+        let r = try range(start: 0, end: samples)
+        let seg = AudioSegmentPlan(
+            clipID: try AudioClipID("c0"), sourceID: try AudioSourceID("s0"), trackID: try AudioTrackID("t0"),
+            role: .music, destinationSamples: r, sourceStart: .zero,
+            sourceEnd: try RationalSourceTime(numerator: 1, denominator: 1),
+            effectiveTrim: try RationalSourceRange(start: .zero, end: try RationalSourceTime(numerator: 1, denominator: 1)),
+            isMuted: false, gain: .unity, sourceSampleRate: 48_000, channelLayout: .mono,
+            streamIdentity: try AudioStreamIdentity("stream-0"), sceneID: nil)
+        return AudioPlan(sampleInterval: r, segments: [seg])
+    }
+
+    /// (1) initial preroll uses the SMALL initialPrerollSamples (8), not maxChunkSamples (20).
+    /// (3) the first continuous chunk starts EXACTLY at preroll.end.
+    /// (4) continuous chunks use maxChunkSamples (20).
+    func testFixA_smallPrerollThenFullContinuousChunks() async throws {
+        let spy = RenderSpy(); let sink = RecordingSink()
+        let controller = try makeControllerFixA(
+            plan: try Self.planFixA(samples: 100), spy: spy, sink: sink,
+            initialPrerollSamples: 8, maxChunkSamples: 20)
+        controller.startPlayback(fromSeconds: 0, hostTime: 0)
+        await drainPreroll(controller)
+        controller.signalFirstFrameReady()
+        await settle()
+        let ranges = sink.scheduled.map { [$0.range.start, $0.range.end] }
+        // preroll [0,8) (small), then continuous [8,28),[28,48),[48,68),[68,88),[88,100).
+        XCTAssertEqual(ranges.first, [0, 8], "initial preroll uses initialPrerollSamples=8, not maxChunkSamples=20")
+        XCTAssertEqual(ranges.count >= 2 ? ranges[1] : nil, [8, 28],
+                       "first continuous chunk starts at preroll.end (8) and is maxChunkSamples (20) wide")
+        // Every continuous chunk after the preroll is 20 wide (except the final clamp to plan end 100).
+        for (i, r) in ranges.enumerated() where i >= 1 && r[1] != 100 {
+            XCTAssertEqual(r[1] - r[0], 20, "continuous chunk \(i) must be maxChunkSamples (20) wide")
+        }
+        XCTAssertEqual(ranges.last, [88, 100], "final chunk clamps to plan end")
+    }
+
+    /// (2) when plan remaining is shorter than initialPrerollSamples, the preroll clamps to remaining.
+    func testFixA_prerollClampsToRemainingWhenPlanShorter() async throws {
+        let spy = RenderSpy(); let sink = RecordingSink()
+        // Plan only 5 long, initialPrerollSamples 8 → preroll clamps to [0,5).
+        let controller = try makeControllerFixA(
+            plan: try Self.planFixA(samples: 5), spy: spy, sink: sink,
+            initialPrerollSamples: 8, maxChunkSamples: 20)
+        controller.startPlayback(fromSeconds: 0, hostTime: 0)
+        await drainPreroll(controller)
+        controller.signalFirstFrameReady()
+        await settle()
+        XCTAssertEqual(sink.scheduled.map { [$0.range.start, $0.range.end] }, [[0, 5]],
+                       "preroll clamps to plan remaining (5) when shorter than initialPrerollSamples (8)")
+        XCTAssertNotNil(controller.activeSession, "short plan still starts cleanly (end-of-plan)")
+    }
+
+    /// Unset initialPrerollSamples (nil) → preroll falls back to maxChunkSamples (no behavior change).
+    func testFixA_defaultUnsetUsesMaxChunkSamples() async throws {
+        let spy = RenderSpy(); let sink = RecordingSink()
+        // makeController (the original) does NOT set initialPrerollSamples → preroll == maxChunkSamples (chunk=4).
+        let controller = try makeController(plan: try Self.plan(), spy: spy, sink: sink)
+        controller.startPlayback(fromSeconds: 0, hostTime: 0)
+        await drainPreroll(controller)
+        controller.signalFirstFrameReady()
+        await settle()
+        XCTAssertEqual(sink.scheduled.first.map { [$0.range.start, $0.range.end] }, [0, 4],
+                       "unset initialPrerollSamples → preroll uses maxChunkSamples (4), unchanged")
+    }
 
     // MARK: - 1+2+3. chunk0 then chunk1; chunk1 starts at chunk0.end; output sample time = anchor formula
 
@@ -269,6 +357,135 @@ final class CanonicalContinuousPlaybackTests: XCTestCase {
         let continuousStarts1 = spy.requestedRanges.map { $0.start }.filter { $0 >= 4 }.sorted()
         XCTAssertEqual(continuousStarts1, [4, 8], "next chunk requested only after the previous scheduled")
         XCTAssertEqual(sink.scheduled.map { [$0.range.start, $0.range.end] }, [[0, 4], [4, 8], [8, 12]])
+    }
+
+    // MARK: - S7 (Stage-7 fix): a chunk past the LAST segment's destination end is a clean audio end,
+    //         NOT `audioRenderPipelineUnavailable`. Plan sampleInterval extends past the last segment
+    //         (e.g. a later scene with no video-original segments) so the renderer returns zero sources.
+
+    /// Plan whose `sampleInterval` is WIDER than its single segment's destination: segment covers [0,4),
+    /// but the interval runs [0,12). Chunks [4,8) and [8,12) are past the segment → zero sources.
+    private static func planWithSegmentEndingBeforeInterval() throws -> AudioPlan {
+        let interval = try range(start: 0, end: planSamples)        // [0,12)
+        let segDest = try range(start: 0, end: chunk)               // [0,4) — only the first chunk has audio
+        let seg = AudioSegmentPlan(
+            clipID: try AudioClipID("c0"), sourceID: try AudioSourceID("s0"), trackID: try AudioTrackID("t0"),
+            role: .videoLayer, destinationSamples: segDest, sourceStart: .zero,
+            sourceEnd: try RationalSourceTime(numerator: 1, denominator: 1),
+            effectiveTrim: try RationalSourceRange(start: .zero, end: try RationalSourceTime(numerator: 1, denominator: 1)),
+            isMuted: false, gain: .unity, sourceSampleRate: 48_000, channelLayout: .mono,
+            streamIdentity: try AudioStreamIdentity("stream-0"), sceneID: nil)
+        return AudioPlan(sampleInterval: interval, segments: [seg])
+    }
+
+    /// A render spy that mirrors `BackgroundCanonicalPCMRenderer`: it returns ZERO sources for any chunk that
+    /// starts at/after the max segment destination end (no overlap), and one source otherwise.
+    private final class CoverageAwareRenderSpy: @unchecked Sendable {
+        let plan: AudioPlan
+        let lock = NSLock()
+        private(set) var requestedRanges: [AudioSampleRange] = []
+        init(plan: AudioPlan) { self.plan = plan }
+        func build(plan: AudioPlan, revision: ProjectRevision, epoch: PlaybackEpoch,
+                   anchor: PreviewAudioScheduleAnchor, range: AudioSampleRange) async throws -> [PreviewMixSource] {
+            lock.lock(); requestedRanges.append(range); lock.unlock()
+            let lastEnd = plan.segments.map(\.destinationSamples.end).max() ?? 0
+            if range.start >= lastEnd { return [] }     // past all segments → zero sources (renderer behaviour)
+            var reqAlloc = MonotonicRequestIDAllocator()
+            let buffer = try PreparedAudioBuffer(
+                revision: revision, epoch: epoch, request: reqAlloc.nextAudioRequest(),
+                sourceID: try AudioSourceID("s0"), chunkRange: range,
+                streamIdentity: try AudioStreamIdentity("stream-0"),
+                sourceSampleRate: 48_000, channelLayout: .mono, isMuted: false, gain: .unity,
+                payload: try PreparedAudioPayloadHandle(identifier: "cov:\(range.start)-\(range.end)"))
+            return [PreviewMixSource(buffer: buffer, samples: Array(repeating: 0.1, count: Int(range.sampleCount)))]
+        }
+    }
+
+    private func makeControllerCoverage(
+        plan: AudioPlan, spy: CoverageAwareRenderSpy, sink: RecordingSink
+    ) throws -> CanonicalPreviewAudioController {
+        let deps = CanonicalPreviewAudioController.Dependencies(
+            evaluatePlan: { plan },
+            buildInitialPrerollAsync: { p, rev, ep, anchor, range, _ in
+                try await spy.build(plan: p, revision: rev, epoch: ep, anchor: anchor, range: range)
+            },
+            sessionAdapter: try FakeSession(query: query()),
+            sink: sink,
+            makeAudioClock: { anchorProjectTime in
+                AudioSampleMasterClock(anchorProjectTime: anchorProjectTime, currentSampleTime: { 0 })
+            },
+            maxChunkSamples: Self.chunk,
+            startTimeoutTicks: 240_000 * 5,
+            projectHasAudio: { true })
+        return CanonicalPreviewAudioController(dependencies: deps)
+    }
+
+    func testChunkPastLastSegmentEndsCleanlyNotUnavailable() async throws {
+        let plan = try Self.planWithSegmentEndingBeforeInterval()   // segment [0,4), interval [0,12)
+        let spy = CoverageAwareRenderSpy(plan: plan); let sink = RecordingSink()
+        let controller = try makeControllerCoverage(plan: plan, spy: spy, sink: sink)
+        var unavailable: String?
+        var failure: PreviewAudioFailureReason?
+        controller.onCanonicalUnavailable = { unavailable = $0 }
+        controller.onFailure = { failure = $0 }
+
+        controller.startPlayback(fromSeconds: 0, hostTime: 0)
+        await drainPreroll(controller)
+        controller.signalFirstFrameReady()
+        await settle()
+
+        // Preroll [0,4) had audio and scheduled; the continuous chunk [4,8) is past the segment → clean end.
+        XCTAssertNil(unavailable, "a chunk past the last segment must NOT route to audioRenderPipelineUnavailable")
+        XCTAssertNil(failure, "no failure surfaced for a clean audio end")
+        XCTAssertNotNil(controller.activeSession, "clean end keeps the session (already-scheduled audio plays)")
+        XCTAssertEqual(sink.scheduled.map { $0.range.start }, [0], "only the segment-covered preroll scheduled")
+    }
+
+    func testInteriorGapStillFailsClosed() async throws {
+        // A plan whose segment covers [0,4) AND [8,12) but NOT [4,8): the middle chunk is an interior gap.
+        let interval = try Self.range(start: 0, end: 12)
+        let seg = AudioSegmentPlan(
+            clipID: try AudioClipID("c0"), sourceID: try AudioSourceID("s0"), trackID: try AudioTrackID("t0"),
+            role: .videoLayer, destinationSamples: try Self.range(start: 0, end: 12), sourceStart: .zero,
+            sourceEnd: try RationalSourceTime(numerator: 1, denominator: 1),
+            effectiveTrim: try RationalSourceRange(start: .zero, end: try RationalSourceTime(numerator: 1, denominator: 1)),
+            isMuted: false, gain: .unity, sourceSampleRate: 48_000, channelLayout: .mono,
+            streamIdentity: try AudioStreamIdentity("stream-0"), sceneID: nil)
+        let plan = AudioPlan(sampleInterval: interval, segments: [seg])
+        // Spy that returns zero for the MIDDLE chunk [4,8) only — an interior gap BEFORE the last segment end (12).
+        final class MiddleGapSpy: @unchecked Sendable {
+            func build(plan: AudioPlan, revision: ProjectRevision, epoch: PlaybackEpoch,
+                       anchor: PreviewAudioScheduleAnchor, range: AudioSampleRange) async throws -> [PreviewMixSource] {
+                if range.start == 4 { return [] }          // interior gap (last segment end is 12)
+                var reqAlloc = MonotonicRequestIDAllocator()
+                let buffer = try PreparedAudioBuffer(
+                    revision: revision, epoch: epoch, request: reqAlloc.nextAudioRequest(),
+                    sourceID: try AudioSourceID("s0"), chunkRange: range,
+                    streamIdentity: try AudioStreamIdentity("stream-0"),
+                    sourceSampleRate: 48_000, channelLayout: .mono, isMuted: false, gain: .unity,
+                    payload: try PreparedAudioPayloadHandle(identifier: "mid:\(range.start)-\(range.end)"))
+                return [PreviewMixSource(buffer: buffer, samples: Array(repeating: 0.1, count: Int(range.sampleCount)))]
+            }
+        }
+        let spy = MiddleGapSpy(); let sink = RecordingSink()
+        let deps = CanonicalPreviewAudioController.Dependencies(
+            evaluatePlan: { plan },
+            buildInitialPrerollAsync: { p, rev, ep, anchor, range, _ in
+                try await spy.build(plan: p, revision: rev, epoch: ep, anchor: anchor, range: range)
+            },
+            sessionAdapter: try FakeSession(query: query()), sink: sink,
+            makeAudioClock: { AudioSampleMasterClock(anchorProjectTime: $0, currentSampleTime: { 0 }) },
+            maxChunkSamples: Self.chunk, startTimeoutTicks: 240_000 * 5, projectHasAudio: { true })
+        let controller = CanonicalPreviewAudioController(dependencies: deps)
+        var unavailable: String?
+        controller.onCanonicalUnavailable = { unavailable = $0 }
+        controller.startPlayback(fromSeconds: 0, hostTime: 0)
+        await drainPreroll(controller)
+        controller.signalFirstFrameReady()
+        await settle()
+        // The interior gap (chunk [4,8) before last-segment-end 12) must fail closed, NOT be hidden as endOfPlan.
+        XCTAssertNotNil(unavailable, "an interior empty chunk before the last segment end must fail closed")
+        XCTAssertNil(controller.activeSession, "interior gap tears the epoch down (never silent partial)")
     }
 
     // MARK: - 10. Max in-flight is 1 (no parallel adjacent-chunk renders)

@@ -185,6 +185,60 @@ final class RuntimeCanonicalAudioPlanSourceTests: XCTestCase {
         }
         withExtendedLifetime(runtime) {}
     }
+
+    // MARK: - Stage-7 S6: cumulative scene destination ticks are CHECKED + fail-closed (no silent -1/0)
+
+    private func sceneItem(durationUs: Int64) -> TimelineItem {
+        TimelineItem(payloadId: UUID(), kind: .scene, durationUs: durationUs)
+    }
+
+    /// Normal case: spans accumulate with the `max(1, ceilTicks)` basis exactly like the media-active domain.
+    /// The known S6 repro: a non-tick-aligned scene-0 (8_766_667 µs) → ceil 2_104_001; scene-1 start == that.
+    func test_cumulativeSceneDestinationTicks_matchesCeilSumDomainBasis() throws {
+        let items = [sceneItem(durationUs: 8_766_667), sceneItem(durationUs: 5_000_000)]
+        let spans = try RuntimeCanonicalAudioPlanSource.cumulativeSceneDestinationTicks(items)
+        XCTAssertEqual(spans.count, 2)
+        // scene-0: [0, ceil(8_766_667)) = [0, 2_104_001)
+        XCTAssertEqual(spans[0].start, 0)
+        XCTAssertEqual(spans[0].end, 2_104_001)
+        // scene-1 start == Σ preceding ceil == 2_104_001 (the domain.start the validator compares against).
+        XCTAssertEqual(spans[1].start, 2_104_001, "scene-1 start == Σ ceilTicks(preceding), the domain basis")
+        XCTAssertEqual(spans[1].end, 2_104_001 + 1_200_000, "scene-1 end == start + ceil(5_000_000)")
+    }
+
+    /// A zero-duration scene still gets a `max(1, ...)` span (mirrors the manifest's `nominalDuration`); never 0.
+    func test_cumulativeSceneDestinationTicks_zeroDurationGetsMinimumOneTick() throws {
+        let spans = try RuntimeCanonicalAudioPlanSource.cumulativeSceneDestinationTicks([sceneItem(durationUs: 0)])
+        XCTAssertEqual(spans[0].start, 0)
+        XCTAssertEqual(spans[0].end, 1, "zero-duration scene → span clamped to 1 tick, not 0")
+    }
+
+    /// FAIL-CLOSED on overflow: a duration whose `ceilTicks` overflows must throw `.anchorArithmeticOverflow`,
+    /// NOT silently become -1/0 (the audit blocker). `Int64.max` µs overflows `us·6` in the projection.
+    func test_cumulativeSceneDestinationTicks_overflowFailsClosed() {
+        let items = [sceneItem(durationUs: Int64.max)]
+        XCTAssertThrowsError(try RuntimeCanonicalAudioPlanSource.cumulativeSceneDestinationTicks(items)) { error in
+            guard case .anchorArithmeticOverflow? = error as? AppRealtimeAudioIntegrationError else {
+                return XCTFail("expected .anchorArithmeticOverflow, got \(error)")
+            }
+        }
+    }
+
+    /// FAIL-CLOSED on a CUMULATIVE add overflow: many large (but individually projectable) scenes whose tick
+    /// sum overflows Int64 must throw at the `addingReportingOverflow`, never wrap. Each scene's tick span is
+    /// `~0.24·durationUs`; with `durationUs` near the per-scene projection ceiling, enough scenes overflow the
+    /// running total. This proves the cumulative add is checked (the audit's "acc += unchecked" concern).
+    func test_cumulativeSceneDestinationTicks_cumulativeAddOverflowFailsClosed() {
+        // Largest durationUs that still projects (us·6 must not overflow): Int64.max/6.
+        let maxProjectableUs = Int64.max / 6                 // ceilTicks(this) ≈ 0.24·that ≈ 3.69e17 ticks
+        // Three such spans (~1.1e18 ticks) stay under Int64.max individually, but ~25 of them overflow the sum.
+        let items = Array(repeating: sceneItem(durationUs: maxProjectableUs), count: 30)
+        XCTAssertThrowsError(try RuntimeCanonicalAudioPlanSource.cumulativeSceneDestinationTicks(items)) { error in
+            guard case .anchorArithmeticOverflow? = error as? AppRealtimeAudioIntegrationError else {
+                return XCTFail("expected .anchorArithmeticOverflow on cumulative add, got \(error)")
+            }
+        }
+    }
 }
 
 // MARK: - Local stubs

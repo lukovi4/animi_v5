@@ -509,7 +509,24 @@ actor AVFoundationPCMAssetDecoder: CanonicalPCMAssetDecoder {
             teardownSession()
             throw error
         }
-        let reconciled = try WatchdogPCMDecodeLoop.reconcileFrameCount(frames, frameCount: frameCount)
+        let reconciled: [Float32]
+        do {
+            reconciled = try WatchdogPCMDecodeLoop.reconcileFrameCount(frames, frameCount: frameCount)
+        } catch {
+            #if DEBUG
+            // Slice-005 Stage-7 S8 decoder-internal value-capture (DEBUG-only). Live-session (contiguous) path:
+            // log the session cursor + remaining window + actual decoded count so the short-read is recomputable
+            // with the actor-private values the renderer cannot see. No behavior change. Marker:
+            // `preview.audio.stage7.s8.shortReadProbe`.
+            MemoryDiagnostics.event("preview.audio.stage7.s8.shortReadProbe",
+                "path=serveContiguous source=\(request.sourceIDRaw) "
+                + "reqSourceStart=\(request.sourceStart.numerator)/\(request.sourceStart.denominator) "
+                + "requestedFrameCount=\(frameCount) decodedFrames=\(frames.count) "
+                + "sessionCursor=\(live.cursorSourceTime.numerator)/\(live.cursorSourceTime.denominator) "
+                + "framesRemainingInWindow=\(live.framesRemainingInWindow) error=\(error)")
+            #endif
+            throw error
+        }
         // Advance the cursor + shrink the bounded window. If exhausted/at end, close the session.
         live.cursorSourceTime = try Self.advance(live.cursorSourceTime, byFrames: frameCount)
         live.framesRemainingInWindow -= frameCount
@@ -585,7 +602,24 @@ actor AVFoundationPCMAssetDecoder: CanonicalPCMAssetDecoder {
                 reason: "source \(request.sourceIDRaw): decoded \(wide.count) < guard-band margin \(marginFrames)")
         }
         let body = Array(wide[marginFrames..<min(wide.count, marginFrames + request.frameCount)])
-        let reconciled = try WatchdogPCMDecodeLoop.reconcileFrameCount(body, frameCount: request.frameCount)
+        let reconciled: [Float32]
+        do {
+            reconciled = try WatchdogPCMDecodeLoop.reconcileFrameCount(body, frameCount: request.frameCount)
+        } catch {
+            #if DEBUG
+            // Slice-005 Stage-7 S8 decoder-internal value-capture (DEBUG-only). New-session (openSessionAndServe)
+            // path: log readStart, margin, bounded session window, wide/body decoded counts so the short-read is
+            // recomputable. No behavior change. Marker: `preview.audio.stage7.s8.shortReadProbe`.
+            MemoryDiagnostics.event("preview.audio.stage7.s8.shortReadProbe",
+                "path=openSessionAndServe source=\(request.sourceIDRaw) "
+                + "reqSourceStart=\(request.sourceStart.numerator)/\(request.sourceStart.denominator) "
+                + "readStart=\(window.readStart.numerator)/\(window.readStart.denominator) "
+                + "marginFrames=\(marginFrames) sessionReadFrames=\(sessionReadFrames) "
+                + "requestedFrameCount=\(request.frameCount) firstReadFrames=\(firstReadFrames) "
+                + "wideDecoded=\(wide.count) bodyDecoded=\(body.count) error=\(error)")
+            #endif
+            throw error
+        }
 
         // Keep the reader OPEN as the live session: cursor at the end of the served range, remaining window =
         // sessionReadFrames − (margin + frameCount). If nothing remains, close it now.

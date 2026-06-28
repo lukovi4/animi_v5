@@ -1,0 +1,608 @@
+12:07:26  Acquired tunnel connection to device.
+12:07:26  Enabling developer disk image services.
+12:07:26  Acquired usage assertion.
+Launched application with com.animi.app bundle identifier.
+Waiting for the application to terminate…
+[MEM-EVENT] audio.session.configureOnLaunch | ok=1
+[BackgroundPresets] Found index at: /private/var/containers/Bundle/Application/383A265C-17D6-45D3-8E21-237E9B51B9F5/AnimiApp.app/BackgroundPresets/presets_index.json
+[BackgroundPresets] Loaded preset: solid_fullscreen (1 regions)
+[BackgroundPresets] Loaded preset: horizontal_split (2 regions)
+[BackgroundPresets] Loaded preset: wave_split (2 regions)
+[BackgroundPresets] Loaded preset: diagonal_split (2 regions)
+[BackgroundPresets] Loaded 4 presets
+[AppCompositionRoot] Loaded 4 background presets
+[StickerLibrary] Loaded 6 stickers
+[AppCompositionRoot] Loaded 6 stickers
+[SceneLibrary] Found manifest at: /private/var/containers/Bundle/Application/383A265C-17D6-45D3-8E21-237E9B51B9F5/AnimiApp.app/Scenes/library.json
+[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=45055 read=0.000s validate=0.000s decode=0.007s total=0.007s assets=11
+[SceneLibrary] Resolved scene 'example_4blocks' -> /private/var/containers/Bundle/Application/383A265C-17D6-45D3-8E21-237E9B51B9F5/AnimiApp.app/Scenes/example_4blocks
+[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=14848 read=0.000s validate=0.000s decode=0.001s total=0.002s assets=6
+[SceneLibrary] Resolved scene 'polaroid_shared_demo' -> /private/var/containers/Bundle/Application/383A265C-17D6-45D3-8E21-237E9B51B9F5/AnimiApp.app/Scenes/polaroid_shared_demo
+[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=20562 read=0.000s validate=0.000s decode=0.001s total=0.002s assets=8
+[SceneLibrary] Resolved scene 'polaroid_2' -> /private/var/containers/Bundle/Application/383A265C-17D6-45D3-8E21-237E9B51B9F5/AnimiApp.app/Scenes/polaroid_2
+[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=10044 read=0.000s validate=0.000s decode=0.002s total=0.002s assets=4
+[SceneLibrary] Resolved scene 'full_image' -> /private/var/containers/Bundle/Application/383A265C-17D6-45D3-8E21-237E9B51B9F5/AnimiApp.app/Scenes/full_image
+[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=10044 read=0.001s validate=0.000s decode=0.001s total=0.002s assets=4
+[SceneLibrary] Resolved scene 'blank_starter' -> /private/var/containers/Bundle/Application/383A265C-17D6-45D3-8E21-237E9B51B9F5/AnimiApp.app/Scenes/blank_starter
+[Catalog] Found manifest at: /private/var/containers/Bundle/Application/383A265C-17D6-45D3-8E21-237E9B51B9F5/AnimiApp.app/Templates/Catalog/manifest.json
+[MEM-DIAG] editor.boot.before | footprint: 15MB | resident: 57MB | available: 3056MB | metal: n/aMB | 
+[MEM-EVENT] bootstrap.prepare.start | requestId=95484F38-DC29-4E95-9154-95933D5FE4A8 sceneTypeId=full_image obj=179877215948288060
+[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=10044 read=0.000s validate=0.000s decode=0.001s total=0.001s assets=4
+[MEM-EVENT] sceneTypeLoad.summary | id=full_image package=0.001s localIndex=0.000s sharedIndex=0.000s resolver=0.000s total=0.001s
+[MEM-EVENT] initialScene.load.summary | id=full_image pipeline=0.001s player=0.000s provider=0.000s preload=0.040s total=0.042s
+[MEM-EVENT] bootstrap.load.summary | sceneTypeId=full_image duration=0.04s
+[MEM-EVENT] bootstrap.prepare.loaded | requestId=95484F38-DC29-4E95-9154-95933D5FE4A8
+[MEM-EVENT] bootstrap.prepare.apply | requestId=95484F38-DC29-4E95-9154-95933D5FE4A8 obj=179877215948288060
+[PerfCounter] applySnapshot(scene): 1
+[PerfCounter] applySnapshot(scene): 2
+[PerfCounter] applySnapshot(scene): 3
+[MEM-EVENT] UserMediaService.init | obj=8393133238962054254
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Legacy
+[MEM-EVENT] preview.audio.engine.teardown
+[MEM-EVENT] preview.audio.canonical.selected | toggle=ON controller=CanonicalPreviewAudioController
+[MEM-EVENT] preview.audio.prepare | canonicalIdlePrepareSkipped=1
+[MEM-EVENT] bootstrap.boot.summary | duration=0.00s
+[MEM-DIAG] editor.boot.after | footprint: 49MB | resident: 89MB | available: 3022MB | metal: 11MB | UserMediaService: 1
+[MEM-EVENT] bootstrap.apply.summary | duration=0.00s
+[MEM-EVENT] bootstrap.prepare.summary | sceneTypeId=full_image duration=0.05s outcome=success
+[MEM-EVENT] Runtime.create.start | id=51A98FEA-723F-430C-9CE9-DCF1370F0170 sceneType=full_image
+[MEM-EVENT] SceneTypeCache.preload.start | id=full_image cached=0
+[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=10044 read=0.000s validate=0.000s decode=0.001s total=0.001s assets=4
+[MEM-EVENT] sceneTypeLoad.summary | id=full_image package=0.001s localIndex=0.000s sharedIndex=0.000s resolver=0.000s total=0.001s
+[MEM-EVENT] SceneTypeCache.preload.summary | id=full_image source=cold io=0.00s provider=0.00s textures=0.04s total=0.04s
+[MEM-EVENT] SceneTypeCache.preload.stored | id=full_image total=1 ids=full_image
+[MEM-EVENT] UserMediaService.init | obj=-2410129633917711940
+[MEM-EVENT] SceneInstanceRuntime.init | obj=-2592217480744324577 id=51A98FEA-723F-430C-9CE9-DCF1370F0170 type=full_image
+[MEM-EVENT] UMS.cleanupVideo | obj=-2410129633917711940 blockId=block_01
+[MEM-EVENT] CVTextureCache.create | owner=UserMediaTextureFactory
+[MEM-EVENT] VideoFrameProvider.init | obj=4902971047089524570
+[MediaRestoreCoordinator] Restored video for block_01: presentOnReady=true, success
+[MEM-EVENT] SceneInstanceRuntime.applyState | obj=-2592217480744324577 id=51A98FEA-723F-430C-9CE9-DCF1370F0170 restored=1
+[MEM-EVENT] Runtime.create.complete | id=51A98FEA-723F-430C-9CE9-DCF1370F0170 outcome=success total=1
+[MEM-EVENT] SceneInstanceRuntime.prepare | obj=-2592217480744324577 id=51A98FEA-723F-430C-9CE9-DCF1370F0170 frame=0
+[VideoFrameProvider] READY: 51A98FEA-723F-430C-9CE9-DCF1370F0170_block_01_00BC23B0-AEA1-4275-85BB-DF6D897DB7FB.mp4 | dur=13.70s | sceneFPS=30.0 | trackFPS=30.00 | size=720x1280 | transform=[1.0,0.0,0.0,1.0,0.0,0.0]
+[SceneInstanceRuntime] Ready for presentation at frame 0: 51A98FEA-723F-430C-9CE9-DCF1370F0170
+[DEBUG] compositeMaskedQuad params:
+  quadIndexCount: 6
+  quadIndexBuffer.length: 12
+  bbox: x=296, y=0, w=578, h=1017
+  content texture: 578x1017
+  mask texture: 578x1017
+[MEM-EVENT] audio.session.configure | ok=1
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] Runtime.create.start | id=8EB9A95F-2088-4724-830C-CBDA736CC86F sceneType=polaroid_2
+[MEM-EVENT] SceneTypeCache.preload.start | id=polaroid_2 cached=1
+[MEM-EVENT] compiledPackage.load.summary | file=compiled.tve bytes=20562 read=0.000s validate=0.000s decode=0.004s total=0.004s assets=8
+[MEM-EVENT] sceneTypeLoad.summary | id=polaroid_2 package=0.004s localIndex=0.000s sharedIndex=0.001s resolver=0.000s total=0.005s
+[MEM-EVENT] SceneTypeCache.preload.summary | id=polaroid_2 source=cold io=0.01s provider=0.00s textures=0.14s total=0.14s
+[MEM-EVENT] SceneTypeCache.preload.stored | id=polaroid_2 total=2 ids=polaroid_2,full_image
+[MEM-EVENT] UserMediaService.init | obj=2620433120097760280
+[MEM-EVENT] SceneInstanceRuntime.init | obj=1271174378649381600 id=8EB9A95F-2088-4724-830C-CBDA736CC86F type=polaroid_2
+[MEM-EVENT] UMS.cleanupVideo | obj=2620433120097760280 blockId=block_02
+[MEM-EVENT] CVTextureCache.create | owner=UserMediaTextureFactory
+[MEM-EVENT] VideoFrameProvider.init | obj=150877683754813260
+[MediaRestoreCoordinator] Restored video for block_02: presentOnReady=true, success
+[MEM-EVENT] UMS.cleanupVideo | obj=2620433120097760280 blockId=block_01
+[MEM-EVENT] CVTextureCache.create | owner=UserMediaTextureFactory
+[MEM-EVENT] VideoFrameProvider.init | obj=2675551995744247669
+[MediaRestoreCoordinator] Restored video for block_01: presentOnReady=true, success
+[MEM-EVENT] SceneInstanceRuntime.applyState | obj=1271174378649381600 id=8EB9A95F-2088-4724-830C-CBDA736CC86F restored=2
+[MEM-EVENT] Runtime.create.complete | id=8EB9A95F-2088-4724-830C-CBDA736CC86F outcome=success total=2
+[MEM-EVENT] SceneInstanceRuntime.prepare | obj=1271174378649381600 id=8EB9A95F-2088-4724-830C-CBDA736CC86F frame=0
+[VideoFrameProvider] READY: 8EB9A95F-2088-4724-830C-CBDA736CC86F_block_02_58C8B853-F288-451A-9D97-9D0793C140B3.mp4 | dur=15.13s | sceneFPS=30.0 | trackFPS=30.00 | size=352x640 | transform=[1.0,0.0,0.0,1.0,0.0,0.0]
+[VideoFrameProvider] READY: 8EB9A95F-2088-4724-830C-CBDA736CC86F_block_01_1C07081F-EF0A-49A2-BD67-0679E766E099.mp4 | dur=13.40s | sceneFPS=30.0 | trackFPS=30.00 | size=720x1280 | transform=[1.0,0.0,0.0,1.0,0.0,0.0]
+[SceneInstanceRuntime] Ready for presentation at frame 0: 8EB9A95F-2088-4724-830C-CBDA736CC86F
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=0 projectTimeUs=0 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] displayLink.create | obj=9116774527217159424
+[MEM-DIAG] playback.start | footprint: 121MB | resident: 95MB | available: 2951MB | metal: 79MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=0 hostTime=184158.7911159167
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=0 readiness=idle
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=0.0 hostTime=184158.7911159167
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=0.0
+[MEM-EVENT] preview.audio.canonical.plan | segments=4 fromSeconds=0.0
+[MEM-EVENT] preview.audio.canonical.preroll.build.begin | planSegments=4 range=0..<48000 gen=2
+[VideoFrameProvider] playback: 1 OK, 0 nil (0.0%) | itemTime=0.018s | lastExtracted=0.045s | active=true
+[MEM-EVENT] preview.audio.canonical.firstFrameSignal | delivered=1
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=0..<48000
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.preroll.build.end | sourceCount=2 bufferCount=2
+[MEM-EVENT] preview.audio.canonical.graph.schedule.begin | sources=2
+[MEM-EVENT] preview.audio.canonical.graph.schedule.end | scheduled=1
+[MEM-EVENT] preview.audio.canonical.engine.start.begin
+[MEM-EVENT] preview.audio.canonical.player.play.begin
+[MEM-EVENT] preview.audio.canonical.player.play.end
+[MEM-EVENT] preview.audio.canonical.engine.start.end
+[MEM-EVENT] preview.audio.canonical.scheduled | scheduled=1 sources=2 started=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=48000..<96000 gen=2 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=48000..<96000 gen=2
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=48000..<96000
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=48000..<96000 sourceCount=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=48000..<96000 sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=48000..<96000 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=96000..<144000 gen=2 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=96000..<144000 gen=2
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=96000..<144000
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=96000..<144000 sourceCount=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=96000..<144000 sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=96000..<144000 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=144000..<192000 gen=2 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=144000..<192000 gen=2
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=144000..<192000
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=144000..<192000 sourceCount=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=144000..<192000 sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=144000..<192000 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=192000..<240000 gen=2 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=192000..<240000 gen=2
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=192000..<240000
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=192000..<240000 sourceCount=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=192000..<240000 sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=192000..<240000 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=240000..<288000 gen=2 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=240000..<288000 gen=2
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=240000..<288000
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=240000..<288000 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=240000..<288000 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=240000..<288000 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=288000..<336000 gen=2 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=288000..<336000 gen=2
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=288000..<336000
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=288000..<336000 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=288000..<336000 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=288000..<336000 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=336000..<384000 gen=2 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=336000..<384000 gen=2
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=336000..<384000
+[PERF] FPS: 21.0 | CPU: 33.4% (1core), 5.6% (all) | MEM: 98MB res, 163MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] displayLink.invalidate | obj=9116774527217159424
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=4902971047089524570 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=false hasHoldTex=false
+[MEM-EVENT] playback.idleReclaim.skip | reason=scrubActive
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.dropped | gen=2 current=4 reason=staleOrStopped
+[SCRUB-DIAG] FINAL - scroll: 0.0/s | scrubChanged: 0.0/s | playhead: 0.0/s (elapsed: 0.78s)
+[PERF] FPS: 29.0 | CPU: 1.8% (1core), 0.3% (all) | MEM: 94MB res, 169MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=52 projectTimeUs=1733333 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] displayLink.create | obj=9116774527217159424
+[MEM-DIAG] playback.start | footprint: 169MB | resident: 94MB | available: 2902MB | metal: 131MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=1733333 hostTime=184162.16083245838
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=0 hasPipeline=1 readiness=primed
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=1.733333 hostTime=184162.16083245838
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=1.733333
+[MEM-EVENT] preview.audio.canonical.plan | segments=4 fromSeconds=1.733333
+[MEM-EVENT] preview.audio.canonical.preroll.build.begin | planSegments=4 range=83199..<131199 gen=5
+[VideoFrameProvider] playback: 40 OK, 0 nil (0.0%) | itemTime=1.406s | lastExtracted=1.405s | active=true
+[MEM-EVENT] preview.audio.canonical.firstFrameSignal | delivered=1
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=83199..<131199
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.preroll.build.end | sourceCount=2 bufferCount=2
+[MEM-EVENT] preview.audio.canonical.graph.schedule.begin | sources=2
+[MEM-EVENT] preview.audio.canonical.graph.schedule.end | scheduled=1
+[MEM-EVENT] preview.audio.canonical.engine.start.begin
+[MEM-EVENT] preview.audio.canonical.player.play.begin
+[MEM-EVENT] preview.audio.canonical.player.play.end
+[MEM-EVENT] preview.audio.canonical.engine.start.end
+[MEM-EVENT] preview.audio.canonical.scheduled | scheduled=1 sources=2 started=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=131199..<179199 gen=6 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=131199..<179199 gen=6
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=131199..<179199
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=131199..<179199 sourceCount=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=131199..<179199 sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=131199..<179199 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=179199..<227199 gen=6 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=179199..<227199 gen=6
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=179199..<227199
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=179199..<227199 sourceCount=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=179199..<227199 sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=179199..<227199 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=227199..<275199 gen=6 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=227199..<275199 gen=6
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=227199..<275199
+[MEM-EVENT] preview.audio.canonical.render.end | sources=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=227199..<275199 sourceCount=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=227199..<275199 sources=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=227199..<275199 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=275199..<323199 gen=6 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=275199..<323199 gen=6
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] displayLink.invalidate | obj=9116774527217159424
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=4902971047089524570 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] playback.idleReclaim.skip | reason=scrubActive
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=275199..<323199
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.dropped | gen=6 current=8 reason=staleOrStopped
+[SCRUB-DIAG] FINAL - scroll: 0.0/s | scrubChanged: 0.0/s | playhead: 0.0/s (elapsed: 1.85s)
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=203 projectTimeUs=6766666 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] displayLink.create | obj=9116774527217159424
+[MEM-DIAG] playback.start | footprint: 162MB | resident: 95MB | available: 2909MB | metal: 123MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=6766666 hostTime=184164.05479112503
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=0 hasPipeline=1 readiness=primed
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=6.766666 hostTime=184164.05479112503
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=6.766666
+[MEM-EVENT] preview.audio.canonical.plan | segments=4 fromSeconds=6.766666
+[MEM-EVENT] preview.audio.canonical.preroll.build.begin | planSegments=4 range=324799..<372799 gen=8
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=324799..<372799
+[VideoFrameProvider] playback: 1 OK, 0 nil (0.0%) | itemTime=0.000s | lastExtracted=0.000s | active=true
+[VideoFrameProvider] playback: 1 OK, 0 nil (0.0%) | itemTime=0.000s | lastExtracted=0.000s | active=true
+[MEM-EVENT] preview.audio.canonical.firstFrameSignal | delivered=1
+[PERF] FPS: 24.5 | CPU: 8.0% (1core), 1.3% (all) | MEM: 95MB res, 166MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.preroll.build.end | sourceCount=3 bufferCount=3
+[MEM-EVENT] preview.audio.canonical.graph.schedule.begin | sources=3
+[MEM-EVENT] preview.audio.canonical.graph.schedule.end | scheduled=1
+[MEM-EVENT] preview.audio.canonical.engine.start.begin
+[MEM-EVENT] preview.audio.canonical.player.play.begin
+[MEM-EVENT] preview.audio.canonical.player.play.end
+[MEM-EVENT] preview.audio.canonical.engine.start.end
+[MEM-EVENT] preview.audio.canonical.scheduled | scheduled=1 sources=3 started=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=372799..<420799 gen=10 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=372799..<420799 gen=10
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=372799..<420799
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=372799..<420799 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=372799..<420799 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=372799..<420799 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=420799..<468799 gen=10 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=420799..<468799 gen=10
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=420799..<468799
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] displayLink.invalidate | obj=9116774527217159424
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=150877683754813260 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=2675551995744247669 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] playback.idleReclaim.skip | reason=scrubActive
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.dropped | gen=10 current=12 reason=staleOrStopped
+[SCRUB-DIAG] FINAL - scroll: 0.0/s | scrubChanged: 0.0/s | playhead: 0.0/s (elapsed: 1.57s)
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=125 projectTimeUs=4166666 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] displayLink.create | obj=9116774527217159424
+[MEM-DIAG] playback.start | footprint: 207MB | resident: 95MB | available: 2865MB | metal: 167MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=4166666 hostTime=184165.86930275004
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=0 hasPipeline=1 readiness=primed
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=4.166666 hostTime=184165.86930275004
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=4.166666
+[MEM-EVENT] preview.audio.canonical.plan | segments=4 fromSeconds=4.166666
+[MEM-EVENT] preview.audio.canonical.preroll.build.begin | planSegments=4 range=199999..<247999 gen=11
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=199999..<247999
+[VideoFrameProvider] playback: 22 OK, 0 nil (0.0%) | itemTime=2.499s | lastExtracted=2.498s | active=true
+[MEM-EVENT] preview.audio.canonical.firstFrameSignal | delivered=1
+[PERF] FPS: 17.5 | CPU: 14.9% (1core), 2.5% (all) | MEM: 95MB res, 189MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-EVENT] preview.audio.canonical.render.end | sources=4
+[MEM-EVENT] preview.audio.canonical.preroll.build.end | sourceCount=4 bufferCount=4
+[MEM-EVENT] preview.audio.canonical.graph.schedule.begin | sources=4
+[MEM-EVENT] preview.audio.canonical.graph.schedule.end | scheduled=1
+[MEM-EVENT] preview.audio.canonical.engine.start.begin
+[MEM-EVENT] preview.audio.canonical.player.play.begin
+[MEM-EVENT] preview.audio.canonical.player.play.end
+[MEM-EVENT] preview.audio.canonical.engine.start.end
+[MEM-EVENT] preview.audio.canonical.scheduled | scheduled=1 sources=4 started=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=247999..<295999 gen=14 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=247999..<295999 gen=14
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=247999..<295999
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=247999..<295999 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=247999..<295999 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=247999..<295999 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=295999..<343999 gen=14 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=295999..<343999 gen=14
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=295999..<343999
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=295999..<343999 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=295999..<343999 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=295999..<343999 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=343999..<391999 gen=14 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=343999..<391999 gen=14
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=343999..<391999
+[VideoFrameProvider] playback: 16 OK, 0 nil (0.0%) | itemTime=2.430s | lastExtracted=2.430s | active=true
+[VideoFrameProvider] playback: 16 OK, 0 nil (0.0%) | itemTime=2.391s | lastExtracted=2.390s | active=true
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=4902971047089524570 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=343999..<391999 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=343999..<391999 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=343999..<391999 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=391999..<439999 gen=14 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=391999..<439999 gen=14
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=391999..<439999
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] displayLink.invalidate | obj=9116774527217159424
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=150877683754813260 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=2675551995744247669 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] playback.idleReclaim.skip | reason=scrubActive
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.dropped | gen=14 current=16 reason=staleOrStopped
+[SCRUB-DIAG] FINAL - scroll: 0.0/s | scrubChanged: 0.0/s | playhead: 0.0/s (elapsed: 2.33s)
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=205 projectTimeUs=6833333 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] displayLink.create | obj=9116774527217159424
+[MEM-DIAG] playback.start | footprint: 195MB | resident: 96MB | available: 2876MB | metal: 155MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=6833333 hostTime=184167.8440377917
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=0 hasPipeline=1 readiness=primed
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=6.833333 hostTime=184167.8440377917
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=6.833333
+[MEM-EVENT] preview.audio.canonical.plan | segments=4 fromSeconds=6.833333
+[MEM-EVENT] preview.audio.canonical.preroll.build.begin | planSegments=4 range=327999..<375999 gen=14
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=327999..<375999
+[MEM-EVENT] preview.audio.canonical.firstFrameSignal | delivered=1
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.preroll.build.end | sourceCount=3 bufferCount=3
+[MEM-EVENT] preview.audio.canonical.graph.schedule.begin | sources=3
+[MEM-EVENT] preview.audio.canonical.graph.schedule.end | scheduled=1
+[MEM-EVENT] preview.audio.canonical.engine.start.begin
+[MEM-EVENT] preview.audio.canonical.player.play.begin
+[MEM-EVENT] preview.audio.canonical.player.play.end
+[MEM-EVENT] preview.audio.canonical.engine.start.end
+[MEM-EVENT] preview.audio.canonical.scheduled | scheduled=1 sources=3 started=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=375999..<423999 gen=18 inFlight=1
+[PERF] FPS: 23.5 | CPU: 23.9% (1core), 4.0% (all) | MEM: 96MB res, 181MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=375999..<423999 gen=18
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=375999..<423999
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] displayLink.invalidate | obj=9116774527217159424
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=150877683754813260 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=2675551995744247669 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] playback.idleReclaim.skip | reason=scrubActive
+[SCRUB-DIAG] FINAL - scroll: 0.0/s | scrubChanged: 0.0/s | playhead: 0.0/s (elapsed: 1.14s)
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.dropped | gen=18 current=20 reason=staleOrStopped
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=119 projectTimeUs=3966666 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] displayLink.create | obj=9116774527217159424
+[MEM-DIAG] playback.start | footprint: 190MB | resident: 96MB | available: 2882MB | metal: 150MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=3966666 hostTime=184169.4211452917
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=0 hasPipeline=1 readiness=primed
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=3.966666 hostTime=184169.4211452917
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=3.966666
+[MEM-EVENT] preview.audio.canonical.plan | segments=4 fromSeconds=3.966666
+[MEM-EVENT] preview.audio.canonical.preroll.build.begin | planSegments=4 range=190399..<238399 gen=17
+[VideoFrameProvider] playback: 22 OK, 0 nil (0.0%) | itemTime=5.067s | lastExtracted=5.067s | active=true
+[MEM-EVENT] preview.audio.canonical.firstFrameSignal | delivered=1
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=190399..<238399
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.preroll.build.end | sourceCount=2 bufferCount=2
+[MEM-EVENT] preview.audio.canonical.graph.schedule.begin | sources=2
+[MEM-EVENT] preview.audio.canonical.graph.schedule.end | scheduled=1
+[MEM-EVENT] preview.audio.canonical.engine.start.begin
+[MEM-EVENT] preview.audio.canonical.player.play.begin
+[MEM-EVENT] preview.audio.canonical.player.play.end
+[MEM-EVENT] preview.audio.canonical.engine.start.end
+[MEM-EVENT] preview.audio.canonical.scheduled | scheduled=1 sources=2 started=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=238399..<286399 gen=22 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=238399..<286399 gen=22
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=238399..<286399
+[MEM-EVENT] preview.audio.canonical.render.end | sources=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=238399..<286399 sourceCount=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=238399..<286399 sources=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=238399..<286399 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=286399..<334399 gen=22 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=286399..<334399 gen=22
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=286399..<334399
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=286399..<334399 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=286399..<334399 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=286399..<334399 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=334399..<382399 gen=22 inFlight=1
+[PERF] FPS: 18.0 | CPU: 32.4% (1core), 5.4% (all) | MEM: 96MB res, 189MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=334399..<382399 gen=22
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=334399..<382399
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=334399..<382399 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=334399..<382399 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=334399..<382399 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=382399..<430399 gen=22 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=382399..<430399 gen=22
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=382399..<430399
+[VideoFrameProvider] playback: 18 OK, 0 nil (0.0%) | itemTime=2.227s | lastExtracted=2.227s | active=true
+[VideoFrameProvider] playback: 17 OK, 1 nil (5.6%) | itemTime=2.186s | lastExtracted=2.185s | active=true
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=4902971047089524570 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=382399..<430399 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=382399..<430399 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=382399..<430399 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=430399..<478399 gen=22 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=430399..<478399 gen=22
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=430399..<478399
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] displayLink.invalidate | obj=9116774527217159424
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=150877683754813260 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=2675551995744247669 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] playback.idleReclaim.skip | reason=scrubActive
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.dropped | gen=22 current=24 reason=staleOrStopped
+[SCRUB-DIAG] FINAL - scroll: 0.0/s | scrubChanged: 0.0/s | playhead: 0.0/s (elapsed: 2.59s)
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=66 projectTimeUs=2200000 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] displayLink.create | obj=9116774527217159424
+[MEM-DIAG] playback.start | footprint: 187MB | resident: 96MB | available: 2884MB | metal: 147MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=2200000 hostTime=184171.66429770837
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=0 hasPipeline=1 readiness=primed
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=2.2 hostTime=184171.66429770837
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=2.2
+[MEM-EVENT] preview.audio.canonical.plan | segments=4 fromSeconds=2.2
+[MEM-EVENT] preview.audio.canonical.preroll.build.begin | planSegments=4 range=105600..<153600 gen=20
+[VideoFrameProvider] playback: 29 OK, 0 nil (0.0%) | itemTime=5.047s | lastExtracted=5.047s | active=true
+[MEM-EVENT] preview.audio.canonical.firstFrameSignal | delivered=1
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=105600..<153600
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.preroll.build.end | sourceCount=2 bufferCount=2
+[MEM-EVENT] preview.audio.canonical.graph.schedule.begin | sources=2
+[MEM-EVENT] preview.audio.canonical.graph.schedule.end | scheduled=1
+[MEM-EVENT] preview.audio.canonical.engine.start.begin
+[MEM-EVENT] preview.audio.canonical.player.play.begin
+[MEM-EVENT] preview.audio.canonical.player.play.end
+[MEM-EVENT] preview.audio.canonical.engine.start.end
+[MEM-EVENT] preview.audio.canonical.scheduled | scheduled=1 sources=2 started=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=153600..<201600 gen=26 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=153600..<201600 gen=26
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=153600..<201600
+[MEM-EVENT] preview.audio.canonical.render.end | sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=153600..<201600 sourceCount=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=153600..<201600 sources=2
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=153600..<201600 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=201600..<249600 gen=26 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=201600..<249600 gen=26
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=201600..<249600
+[PERF] FPS: 24.5 | CPU: 20.7% (1core), 3.4% (all) | MEM: 96MB res, 179MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-EVENT] preview.audio.canonical.render.end | sources=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=201600..<249600 sourceCount=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=201600..<249600 sources=4
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=201600..<249600 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=249600..<297600 gen=26 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=249600..<297600 gen=26
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=249600..<297600
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=249600..<297600 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=249600..<297600 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=249600..<297600 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=297600..<345600 gen=26 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=297600..<345600 gen=26
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=297600..<345600
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=297600..<345600 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=297600..<345600 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=297600..<345600 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=345600..<393600 gen=26 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=345600..<393600 gen=26
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=345600..<393600
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=345600..<393600 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=345600..<393600 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=345600..<393600 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=393600..<441600 gen=26 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=393600..<441600 gen=26
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=393600..<441600
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=393600..<441600 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=393600..<441600 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=393600..<441600 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=441600..<480000 gen=26 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=441600..<480000 gen=26
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=441600..<480000
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] displayLink.invalidate | obj=9116774527217159424
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=4902971047089524570 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] playback.idleReclaim.skip | reason=scrubActive
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.dropped | gen=26 current=28 reason=staleOrStopped
+[SCRUB-DIAG] FINAL - scroll: 0.0/s | scrubChanged: 0.0/s | playhead: 0.0/s (elapsed: 2.51s)
+[PERF] FPS: 28.0 | CPU: 6.6% (1core), 1.1% (all) | MEM: 96MB res, 186MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=199 projectTimeUs=6633333 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] displayLink.create | obj=9116774527217159424
+[MEM-DIAG] playback.start | footprint: 186MB | resident: 96MB | available: 2885MB | metal: 146MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=6633333 hostTime=184174.12756820838
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=0 hasPipeline=1 readiness=primed
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=6.633333 hostTime=184174.12756820838
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=6.633333
+[MEM-EVENT] preview.audio.canonical.plan | segments=4 fromSeconds=6.633333
+[MEM-EVENT] preview.audio.canonical.preroll.build.begin | planSegments=4 range=318399..<366399 gen=23
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=318399..<366399
+[VideoFrameProvider] playback: 6 OK, 0 nil (0.0%) | itemTime=0.215s | lastExtracted=0.213s | active=true
+[VideoFrameProvider] playback: 2 OK, 4 nil (66.7%) | itemTime=0.172s | lastExtracted=nils | active=true
+[MEM-EVENT] preview.audio.canonical.firstFrameSignal | delivered=1
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.preroll.build.end | sourceCount=3 bufferCount=3
+[MEM-EVENT] preview.audio.canonical.graph.schedule.begin | sources=3
+[MEM-EVENT] preview.audio.canonical.graph.schedule.end | scheduled=1
+[MEM-EVENT] preview.audio.canonical.engine.start.begin
+[MEM-EVENT] preview.audio.canonical.player.play.begin
+[MEM-EVENT] preview.audio.canonical.player.play.end
+[MEM-EVENT] preview.audio.canonical.engine.start.end
+[MEM-EVENT] preview.audio.canonical.scheduled | scheduled=1 sources=3 started=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=366399..<414399 gen=30 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=366399..<414399 gen=30
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=366399..<414399
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=366399..<414399 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=366399..<414399 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=366399..<414399 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=414399..<462399 gen=30 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=414399..<462399 gen=30
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=414399..<462399
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=414399..<462399 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=414399..<462399 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=414399..<462399 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.requested | range=462399..<480000 gen=30 inFlight=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.begin | range=462399..<480000 gen=30
+[MEM-EVENT] preview.audio.canonical.render.begin | segments=4 range=462399..<480000
+[MEM-EVENT] preview.audio.canonical.render.end | sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.render.end | range=462399..<480000 sourceCount=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.begin | range=462399..<480000 sources=3
+[MEM-EVENT] preview.audio.canonical.nextChunk.schedule.end | range=462399..<480000 scheduled=1
+[MEM-EVENT] preview.audio.canonical.nextChunk.endOfPlan | planEnd=480000
+[PERF] FPS: 28.0 | CPU: 30.1% (1core), 5.0% (all) | MEM: 96MB res, 219MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[VideoFrameProvider] playback: 58 OK, 0 nil (0.0%) | itemTime=3.652s | lastExtracted=3.683s | active=true
+[VideoFrameProvider] playback: 56 OK, 2 nil (3.4%) | itemTime=3.653s | lastExtracted=3.683s | active=true
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] displayLink.invalidate | obj=9116774527217159424
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=150877683754813260 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=2675551995744247669 flush=false hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[PERF] FPS: 22.0 | CPU: 5.5% (1core), 0.9% (all) | MEM: 96MB res, 216MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 96MB res, 208MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 96MB res, 208MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-DIAG] playback.stop.cleanup | footprint: 208MB | resident: 96MB | available: 2864MB | metal: 176MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-DIAG]   pool | avail: 4 (0.8MB) | inUse: 0 (~0.0MB) | total: ~0.8MB
+[MEM-DIAG]   pool.owner | owner=mask.boolean.bbox created=32 MB=18.9
+[MEM-DIAG]   sceneTypeCache | cached: 2 [full_image,polaroid_2] loading: 0 | textures: 10 ~33.7MB
+[MEM-DIAG]   overlayCache | entries: 0 MB: 0.0
+[MEM-DIAG]   runtimes: 2
+[MEM-DIAG]   videoProviders: 3
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=150877683754813260 flush=true hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] CVTextureCache.flush | owner=UserMediaTextureFactory
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=2675551995744247669 flush=true hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] CVTextureCache.flush | owner=UserMediaTextureFactory
+[MEM-EVENT] VideoFrameProvider.stopPlayback | obj=4902971047089524570 flush=true hasPlaybackTex=true hasStillTex=true hasInteractiveTex=true hasHoldTex=false
+[MEM-EVENT] CVTextureCache.flush | owner=UserMediaTextureFactory
+[MEM-EVENT] playback.audio.sessionDeactivate.call
+[MEM-EVENT] audio.session.deactivate.begin
+[MEM-EVENT] audio.session.deactivate.end | ok=1
+[MEM-DIAG] playback.stop.after | footprint: 116MB | resident: 96MB | available: 2955MB | metal: 84MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-DIAG]   pool | avail: 4 (0.8MB) | inUse: 0 (~0.0MB) | total: ~0.8MB
+[MEM-DIAG]   pool.owner | owner=mask.boolean.bbox created=32 MB=18.9
+[MEM-DIAG]   sceneTypeCache | cached: 2 [full_image,polaroid_2] loading: 0 | textures: 10 ~33.7MB
+[MEM-DIAG]   overlayCache | entries: 0 MB: 0.0
+[MEM-DIAG]   runtimes: 2
+[MEM-DIAG]   videoProviders: 3
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[MEM-DIAG] playback.stop.after.2s | footprint: 116MB | resident: 95MB | available: 2955MB | metal: 84MB | SceneInstanceRuntime: 2 | UserMediaService: 3 | VideoFrameProvider: 3
+[MEM-DIAG]   pool | avail: 4 (0.8MB) | inUse: 0 (~0.0MB) | total: ~0.8MB
+[MEM-DIAG]   pool.owner | owner=mask.boolean.bbox created=32 MB=18.9
+[MEM-DIAG]   sceneTypeCache | cached: 2 [full_image,polaroid_2] loading: 0 | textures: 10 ~33.7MB
+[MEM-DIAG]   overlayCache | entries: 0 MB: 0.0
+[MEM-DIAG]   runtimes: 2
+[MEM-DIAG]   videoProviders: 3
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms
+[PERF] FPS: 0.0 | CPU: 0.0% (1core), 0.0% (all) | MEM: 95MB res, 116MB foot | GPU: n/a | DRAW: avg 0.00ms, p95 0.00ms, max 0.00ms

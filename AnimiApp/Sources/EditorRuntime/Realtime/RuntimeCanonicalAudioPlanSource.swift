@@ -143,6 +143,32 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
         let resolvedURL: URL
     }
 
+    /// Stage-7 S6: the per-scene canonical destination span `[start, end)` in ticks, accumulated with the
+    /// SAME basis as the minimal manifest (`buildMinimalVideoDocument`) and `SceneMediaClock.mediaActiveDomain`
+    /// — `span_i = max(1, ceilTicks(durationUs_i))`, `start_i = Σ_{k<i} span_k`, `end_i = start_i + span_i`.
+    /// FAIL-CLOSED (no silent `-1`/`0`): a non-projectable duration or an overflowing cumulative/end add throws
+    /// `.anchorArithmeticOverflow`, exactly like `buildMinimalVideoDocument`. Integer-only.
+    static func cumulativeSceneDestinationTicks(_ sceneItems: [TimelineItem]) throws -> [(start: Int64, end: Int64)] {
+        var spans: [(start: Int64, end: Int64)] = []
+        spans.reserveCapacity(sceneItems.count)
+        var acc: Int64 = 0
+        for item in sceneItems {
+            guard let ceil = Slice005TickProjection.ceilTicks(item.durationUs) else {
+                throw AppRealtimeAudioIntegrationError.anchorArithmeticOverflow(
+                    detail: "scene destination ticks: ceilTicks(\(item.durationUs)) not representable")
+            }
+            let span = max(1, ceil)   // mirrors the manifest's `nominalDuration = max(1, ceilTicks)`
+            let end = acc.addingReportingOverflow(span)
+            guard !end.overflow else {
+                throw AppRealtimeAudioIntegrationError.anchorArithmeticOverflow(
+                    detail: "scene destination ticks: cumulative end \(acc)+\(span) overflow")
+            }
+            spans.append((start: acc, end: end.partialValue))
+            acc = end.partialValue
+        }
+        return spans
+    }
+
     /// For each scene item with user video blocks, build the canonical video-original audio pieces. The
     /// scene id mirrors `buildMinimalVideoDocument` (`"scene-\(i)-\(item.id.uuidString)"`); the block's
     /// trim/volume/mute come from `mediaSlotsByBlockId[blockID].videoWindow`; destination = the scene's
@@ -152,6 +178,14 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
     ) throws -> [BuiltVideoOriginal] {
         var out: [BuiltVideoOriginal] = []
         let sceneItems = timeline.sceneItems
+        // Stage-7 S6 fix: cumulative CANONICAL scene destination ticks using the SAME per-scene
+        // `ceilTicks(durationUs)` accumulation as the minimal manifest (`buildMinimalVideoDocument`) and
+        // `SceneMediaClock.mediaActiveDomain`. `sceneStartTicks[i] = Σ_{k<i} span_k`, `sceneEndTicks[i] =
+        // start + span_i`, where `span_i = max(1, ceilTicks(durationUs_i))` (mirrors the manifest's
+        // `nominalDuration`). FAIL-CLOSED — exactly like `buildMinimalVideoDocument:304`: a non-projectable
+        // duration or an overflowing cumulative add throws `.anchorArithmeticOverflow`, never a silent
+        // `-1`/`0` substitution. Cuts ⇒ boundary postHalf 0, so this equals the media-active domain.
+        let sceneSpans: [(start: Int64, end: Int64)] = try Self.cumulativeSceneDestinationTicks(sceneItems)
         for (i, item) in sceneItems.enumerated() {
             // Scene instance state is keyed by the timeline item's INSTANCE id (`item.id`), NOT `payloadId`
             // (`ProjectDraft.sceneInstanceStates` doc: "Key: TimelineItem.id"). Same lookup the rest of the
@@ -181,6 +215,10 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
                 // block timing for user video is a documented follow-up (it would narrow this interval).
                 let blockStartUsInScene: Int64 = 0
                 let blockEndUsInScene: Int64 = sceneDurationUs
+                // S6 fix: canonical destination ticks == media-active domain for this scene (cuts).
+                // Checked, fail-closed (see `cumulativeSceneDestinationTicks`); `i` is a valid index here.
+                let sStartTicks = sceneSpans[i].start
+                let sEndTicks = sceneSpans[i].end
                 let built = try AppVideoOriginalAudioBridge.build(.init(
                     blockID: blockID,
                     sceneInstanceIDRaw: sceneInstanceIDRaw,
@@ -188,6 +226,7 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
                     winStart: win.trimStart, winEnd: win.trimEnd,
                     volume: win.volume, isMuted: win.isMuted,
                     sceneStartUs: sceneStartUs, sceneDurationUs: sceneDurationUs,
+                    sceneStartTicks: sStartTicks, sceneEndTicks: sEndTicks,
                     blockStartUsInScene: blockStartUsInScene, blockEndUsInScene: blockEndUsInScene))
                 out.append(BuiltVideoOriginal(built: built, sourceRaw: built.sourceRaw, resolvedURL: url))
             }

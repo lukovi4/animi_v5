@@ -48,6 +48,14 @@ enum AppVideoOriginalAudioBridge {
         /// Project-time span of this block's SCENE, microseconds `[sceneStartUs, sceneStartUs+sceneDurationUs)`.
         let sceneStartUs: Int64
         let sceneDurationUs: Int64
+        /// Stage-7 S6 fix: the scene's CANONICAL destination span in exact ticks, computed by the caller with
+        /// the SAME cumulative per-scene `ceilTicks(durationUs)` basis that `SceneMediaClock.mediaActiveDomain`
+        /// uses for `domain.start/end`. When set, the destination is built from these ticks EXACTLY (so a
+        /// scene-filling clip's `destination == domain`), instead of `floor(Σ µs)` which can land 1 tick below
+        /// `domain.start` for a non-tick-aligned preceding scene → spurious `incomingAudioBeforeBoundary`.
+        /// `nil` keeps the legacy µs-projection path (single-scene / callers that do not supply ticks).
+        var sceneStartTicks: Int64? = nil
+        var sceneEndTicks: Int64? = nil
         /// The block's ACTIVE interval WITHIN the scene, microseconds `[blockStartUs, blockEndUs)` relative
         /// to the scene start. THIS STAGE SUPPORTS ONLY A SCENE-FILLING BLOCK: `blockStartUs == 0` and
         /// `blockEndUs == sceneDurationUs`; any other value is FAIL-CLOSED (typed `mediaUnsupported`). Reason:
@@ -133,9 +141,18 @@ enum AppVideoOriginalAudioBridge {
         let track = AudioTrackEntry(id: trackID, role: .videoLayer)
 
         // Destination = the block's project-time active interval (scene-filling: the whole scene span).
-        let destStartUs = input.sceneStartUs + input.blockStartUsInScene
-        let destDurationUs = input.blockEndUsInScene - input.blockStartUsInScene
-        let destination = try makeDestination(startUs: destStartUs, durationUs: destDurationUs)
+        // Stage-7 S6 fix: when the caller supplies the scene's canonical destination ticks (computed with the
+        // SAME cumulative `ceilTicks` basis as the media-active domain), build the destination EXACTLY from
+        // those ticks so `destination == domain` for a scene-filling clip — no `floor(Σ µs)` 1-tick drift.
+        // Otherwise fall back to the legacy µs outward-projection (single-scene / no ticks supplied).
+        let destination: ProjectTimeRange
+        if let startTicks = input.sceneStartTicks, let endTicks = input.sceneEndTicks {
+            destination = try makeDestination(startTicks: startTicks, endTicks: endTicks)
+        } else {
+            let destStartUs = input.sceneStartUs + input.blockStartUsInScene
+            let destDurationUs = input.blockEndUsInScene - input.blockStartUsInScene
+            destination = try makeDestination(startUs: destStartUs, durationUs: destDurationUs)
+        }
         let gain = try makeGain(volume: input.volume)
         let clip = AudioClipEntry(
             id: try AudioClipID("app.audio.clip.videoLayer.\(scope)"),
@@ -211,6 +228,20 @@ enum AppVideoOriginalAudioBridge {
               let range = try? ProjectTimeRange(start: start, end: end) else {
             throw AppRealtimeAudioIntegrationError.invalidDestination(
                 itemIndex: 0, startUs: startUs, durationUs: durationUs)
+        }
+        return range
+    }
+
+    /// Stage-7 S6 fix: build the destination from EXACT canonical ticks (the caller computes the scene's
+    /// `[startTicks, endTicks)` with the same cumulative `ceilTicks(durationUs)` basis as
+    /// `SceneMediaClock.mediaActiveDomain`). Integer-only; fail-closed on a non-positive span.
+    private static func makeDestination(startTicks: Int64, endTicks: Int64) throws -> ProjectTimeRange {
+        guard startTicks >= 0, endTicks > startTicks,
+              let start = try? ProjectTime(ticks: startTicks),
+              let end = try? ProjectTime(ticks: endTicks),
+              let range = try? ProjectTimeRange(start: start, end: end) else {
+            throw AppRealtimeAudioIntegrationError.invalidDestination(
+                itemIndex: 0, startUs: startTicks, durationUs: endTicks - startTicks)
         }
         return range
     }

@@ -206,5 +206,57 @@ final class AppVideoOriginalAudioBridgeParityTests: XCTestCase {
         let trimEnd = Double(built.descriptor.sourceDuration.numerator) / Double(built.descriptor.sourceDuration.denominator)
         XCTAssertGreaterThanOrEqual(trimEnd, 8.0 - 1e-9, "trim end ≤ sourceDuration")
     }
+
+    // MARK: - Stage-7 S6: destination.start must equal the media-active domain.start (no floor(Σµs) drift)
+
+    /// Reproduces the confirmed S6 device blocker (`s6-boundary-probe.log:252`): a preceding scene duration of
+    /// `8766667 µs` is NOT tick-aligned. `8766667·6/25 = 2104000.08` → `floor=2104000`, `ceil=2104001`.
+    /// The media-active domain.start for scene-1 is `Σ ceilTicks(preceding) = 2104001`. The OLD path computed
+    /// destination.start = `floorTicks(Σ µs) = 2104000` — 1 tick BELOW domain.start → `incomingAudioBeforeBoundary`.
+    /// The NEW tick path (caller passes the cumulative-ceil scene start ticks) makes destination.start ==
+    /// domain.start, so validation passes. Integer tick math only.
+    func test_S6_destinationStart_equalsDomainStart_forNonTickAlignedPrecedingScene() throws {
+        // Domain basis: scene-0 span = ceilTicks(8766667), scene-1 start = that sum.
+        let scene0SpanTicks = Slice005TickProjection.ceilTicks(8_766_667)!
+        let scene1DomainStart = scene0SpanTicks                         // Σ ceilTicks(preceding) for index 1
+        let scene1Span = Slice005TickProjection.ceilTicks(5_000_000)!   // scene-1 duration 5s (tick-aligned)
+        let scene1DomainEnd = scene1DomainStart + scene1Span
+
+        // Confirm the arithmetic the probe captured.
+        XCTAssertEqual(Slice005TickProjection.floorTicks(8_766_667), 2_104_000, "old floor(Σµs) basis")
+        XCTAssertEqual(scene0SpanTicks, 2_104_001, "ceil basis (domain) is 1 tick higher")
+        XCTAssertEqual(scene1DomainStart, 2_104_001)
+
+        // NEW tick path: caller supplies the cumulative-ceil scene start/end ticks.
+        let built = try AppVideoOriginalAudioBridge.build(.init(
+            blockID: "block_01", sceneInstanceIDRaw: "scene-1-y", mediaReferenceRaw: "audio.videoLayer:1:block_01",
+            winStart: 0, winEnd: 5, volume: 1, isMuted: false,
+            sceneStartUs: 8_766_667, sceneDurationUs: 5_000_000,
+            sceneStartTicks: scene1DomainStart, sceneEndTicks: scene1DomainEnd,
+            blockStartUsInScene: 0, blockEndUsInScene: 5_000_000))
+
+        XCTAssertEqual(built.clip.destination.start.ticks, scene1DomainStart,
+                       "S6 fix: destination.start == domain.start (2104001), not floor(Σµs) 2104000")
+        XCTAssertEqual(built.clip.destination.end.ticks, scene1DomainEnd,
+                       "destination.end == domain.end for the scene-filling span")
+        // Prove the OLD path WOULD have failed: floor(Σµs) start is strictly below domain.start.
+        XCTAssertLessThan(Slice005TickProjection.floorTicks(8_766_667)!, scene1DomainStart,
+                          "old floor(Σµs) destination.start was 1 tick below domain.start → incomingAudioBeforeBoundary")
+    }
+
+    /// A tick-aligned preceding scene (5_000_000 µs) has floor == ceil, so the OLD path already validated;
+    /// the NEW path must agree (no regression for the previously-passing case).
+    func test_S6_tickAlignedPrecedingScene_unchanged() throws {
+        let scene0SpanTicks = Slice005TickProjection.ceilTicks(5_000_000)!
+        XCTAssertEqual(Slice005TickProjection.floorTicks(5_000_000), scene0SpanTicks, "tick-aligned: floor == ceil")
+        let built = try AppVideoOriginalAudioBridge.build(.init(
+            blockID: "block_01", sceneInstanceIDRaw: "scene-1-z", mediaReferenceRaw: "audio.videoLayer:1:block_01",
+            winStart: 0, winEnd: 5, volume: 1, isMuted: false,
+            sceneStartUs: 5_000_000, sceneDurationUs: 5_000_000,
+            sceneStartTicks: scene0SpanTicks, sceneEndTicks: scene0SpanTicks + Slice005TickProjection.ceilTicks(5_000_000)!,
+            blockStartUsInScene: 0, blockEndUsInScene: 5_000_000))
+        XCTAssertEqual(built.clip.destination.start.ticks, 1_200_000, "5s start, tick-aligned")
+        XCTAssertEqual(built.clip.destination.end.ticks, 2_400_000, "10s end")
+    }
 }
 #endif

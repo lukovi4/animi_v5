@@ -30,11 +30,14 @@ final class BackgroundCanonicalPCMRendererTests: XCTestCase {
         scene: String? = nil
     ) throws -> AudioSegmentPlan {
         let dest = try range(samples: destSamples, from: destStartSamples)
+        // sourceEnd is a LARGE bound (1000 s) so the Stage-8.1 source-end clamp never trips for the generic
+        // tests that don't exercise it (the source is far longer than any bounded chunk window). Tests that
+        // specifically exercise the clamp use `segmentWithSourceEnd` with an explicit short sourceEnd.
         return AudioSegmentPlan(
             clipID: try AudioClipID(clip), sourceID: try AudioSourceID(source), trackID: try AudioTrackID("t0"),
             role: role, destinationSamples: dest, sourceStart: sourceStart,
-            sourceEnd: try RationalSourceTime(numerator: 1, denominator: 1),
-            effectiveTrim: try RationalSourceRange(start: .zero, end: try RationalSourceTime(numerator: 1, denominator: 1)),
+            sourceEnd: try RationalSourceTime(numerator: 1000, denominator: 1),
+            effectiveTrim: try RationalSourceRange(start: .zero, end: try RationalSourceTime(numerator: 1000, denominator: 1)),
             isMuted: muted, gain: try AudioGain(raw: gainRaw), sourceSampleRate: 48_000, channelLayout: .mono,
             streamIdentity: try AudioStreamIdentity("stream-\(source)"),
             sceneID: scene.map { try! SceneInstanceID($0) })
@@ -276,5 +279,114 @@ final class BackgroundCanonicalPCMRendererTests: XCTestCase {
         let chunk = try await renderer.render(req)
         XCTAssertTrue(chunk.sources.isEmpty)
         XCTAssertEqual(chunk.key, try Self.pipelineKey(for: req))
+    }
+
+    // MARK: - Stage-8.1 S8 source-end clamp
+
+    /// A segment with an EXPLICIT `sourceEnd` (seconds = num/den) so we can place the source end inside a chunk.
+    private static func segmentWithSourceEnd(
+        source: String = "s0", destStartSamples: Int64 = 0, destSamples: Int64 = 48_000,
+        sourceStart: RationalSourceTime = .zero, sourceEndNum: Int64, sourceEndDen: Int64
+    ) throws -> AudioSegmentPlan {
+        let dest = try range(samples: destSamples, from: destStartSamples)
+        return AudioSegmentPlan(
+            clipID: try AudioClipID("c0"), sourceID: try AudioSourceID(source), trackID: try AudioTrackID("t0"),
+            role: .videoLayer, destinationSamples: dest, sourceStart: sourceStart,
+            sourceEnd: try RationalSourceTime(numerator: sourceEndNum, denominator: sourceEndDen),
+            effectiveTrim: try RationalSourceRange(start: .zero, end: try RationalSourceTime(numerator: sourceEndNum, denominator: sourceEndDen)),
+            isMuted: false, gain: .unity, sourceSampleRate: 48_000, channelLayout: .mono,
+            streamIdentity: try AudioStreamIdentity("stream-\(source)"), sceneID: nil)
+    }
+
+    /// (1) The renderer must NEVER request beyond `segment.sourceEnd`. Chunk [0,48000) (1 s) but sourceEnd =
+    /// 0.5 s → decode must be clamped to 24000 frames, not 48000.
+    func testS8_doesNotRequestBeyondSourceEnd() async throws {
+        let decoder = FixtureDecoder(mode: .ramp)   // ramp returns EXACTLY request.frameCount (no short-read)
+        let renderer = BackgroundCanonicalPCMRenderer(decoder: decoder)
+        let seg = try Self.segmentWithSourceEnd(destSamples: 48_000, sourceEndNum: 1, sourceEndDen: 2)  // 0.5 s
+        let r = try Self.range(samples: 48_000)
+        var map: [String: CanonicalResolvedAudioSource] = ["s0": Self.resolved("s0")]
+        let req = CanonicalAudioRenderRequest(
+            plan: AudioPlan(sampleInterval: r, segments: [seg]),
+            revision: Self.revision(1), epoch: Self.epoch(1),
+            anchor: PreviewAudioScheduleAnchor(revision: Self.revision(1), epoch: Self.epoch(1), projectSample: 0, outputSampleTime: 0),
+            range: r, resolvedSourcesByID: map)
+        _ = map
+        let chunk = try await renderer.render(req)
+        let asked = await decoder.requests
+        XCTAssertEqual(asked.count, 1)
+        XCTAssertEqual(asked.first?.frameCount, 24_000, "decode clamped to sourceEnd (0.5 s = 24000), not 48000")
+        // (2) the available prefix is written; the tail [24000,48000) stays silence.
+        let s = chunk.sources.first!
+        XCTAssertEqual(s.samples.count, 48_000, "framed to the full chunk range")
+        XCTAssertEqual(s.samples[0], 1, "decoded prefix present")
+        XCTAssertEqual(s.samples[23_999], 24_000, "last decoded frame (ramp value)")
+        XCTAssertEqual(s.samples[24_000], 0, "tail past sourceEnd is silence")
+        XCTAssertEqual(s.samples[47_999], 0, "tail past sourceEnd is silence")
+    }
+
+    /// (3) If `sourceStartForChunk >= segment.sourceEnd`, the decoder is NOT called for that segment.
+    func testS8_sourceAlreadyEndedSkipsDecode() async throws {
+        let decoder = FixtureDecoder(mode: .ramp)
+        let renderer = BackgroundCanonicalPCMRenderer(decoder: decoder)
+        // dest [0,48000), but sourceStart already at 1 s and sourceEnd 1 s → available 0.
+        let seg = try Self.segmentWithSourceEnd(
+            destSamples: 48_000, sourceStart: try RationalSourceTime(numerator: 1, denominator: 1),
+            sourceEndNum: 1, sourceEndDen: 1)
+        let r = try Self.range(samples: 48_000)
+        let req = CanonicalAudioRenderRequest(
+            plan: AudioPlan(sampleInterval: r, segments: [seg]),
+            revision: Self.revision(1), epoch: Self.epoch(1),
+            anchor: PreviewAudioScheduleAnchor(revision: Self.revision(1), epoch: Self.epoch(1), projectSample: 0, outputSampleTime: 0),
+            range: r, resolvedSourcesByID: ["s0": Self.resolved("s0")])
+        let chunk = try await renderer.render(req)
+        let asked = await decoder.requests
+        XCTAssertTrue(asked.isEmpty, "an already-ended source must not call the decoder")
+        XCTAssertTrue(chunk.sources.isEmpty, "no source contributes when its audio has ended")
+    }
+
+    /// (4) A second source that still overlaps renders normally even when the first has ended.
+    func testS8_otherSourceStillRendersWhenOneEnded() async throws {
+        let decoder = FixtureDecoder(mode: .ramp)
+        let renderer = BackgroundCanonicalPCMRenderer(decoder: decoder)
+        let ended = try Self.segmentWithSourceEnd(source: "ended", destSamples: 48_000,
+            sourceStart: try RationalSourceTime(numerator: 1, denominator: 1), sourceEndNum: 1, sourceEndDen: 1)
+        let live = try Self.segmentWithSourceEnd(source: "live", destSamples: 48_000, sourceEndNum: 1, sourceEndDen: 1)
+        let r = try Self.range(samples: 48_000)
+        let req = CanonicalAudioRenderRequest(
+            plan: AudioPlan(sampleInterval: r, segments: [ended, live]),
+            revision: Self.revision(1), epoch: Self.epoch(1),
+            anchor: PreviewAudioScheduleAnchor(revision: Self.revision(1), epoch: Self.epoch(1), projectSample: 0, outputSampleTime: 0),
+            range: r, resolvedSourcesByID: ["ended": Self.resolved("ended"), "live": Self.resolved("live")])
+        let chunk = try await renderer.render(req)
+        XCTAssertEqual(chunk.sources.count, 1, "only the live source contributes")
+        let asked = await decoder.requests
+        XCTAssertEqual(asked.map { $0.sourceIDRaw }, ["live"], "decoder called only for the live source")
+    }
+
+    /// (5) `framesAvailable` fails closed (typed) on a non-representable available-frames numerator overflow.
+    func testS8_framesAvailableOverflowFailsClosed() throws {
+        // available = (Int64.max/1) − 0 ; numerator × 48000 overflows Int64 → typed pcmRenderFailed.
+        let start = RationalSourceTime.zero
+        let end = try RationalSourceTime(numerator: Int64.max, denominator: 1)
+        XCTAssertThrowsError(try BackgroundCanonicalPCMRenderer.framesAvailable(
+            from: start, to: end, requested: 48_000, sourceIDRaw: "s0")) { error in
+            guard case .pcmRenderFailed? = error as? AppRealtimeAudioIntegrationError else {
+                return XCTFail("expected .pcmRenderFailed on overflow, got \(error)")
+            }
+        }
+    }
+
+    /// `framesAvailable` exact-math sanity: 0.5 s → 24000; ended → 0; longer-than-requested → requested.
+    func testS8_framesAvailableExactMath() throws {
+        let zero = RationalSourceTime.zero
+        XCTAssertEqual(try BackgroundCanonicalPCMRenderer.framesAvailable(
+            from: zero, to: try RationalSourceTime(numerator: 1, denominator: 2), requested: 48_000, sourceIDRaw: "s"), 24_000)
+        XCTAssertEqual(try BackgroundCanonicalPCMRenderer.framesAvailable(
+            from: try RationalSourceTime(numerator: 1, denominator: 1),
+            to: try RationalSourceTime(numerator: 1, denominator: 1), requested: 48_000, sourceIDRaw: "s"), 0)
+        XCTAssertEqual(try BackgroundCanonicalPCMRenderer.framesAvailable(
+            from: zero, to: try RationalSourceTime(numerator: 10, denominator: 1), requested: 48_000, sourceIDRaw: "s"),
+            48_000, "available (10 s) exceeds requested → clamped to requested")
     }
 }
