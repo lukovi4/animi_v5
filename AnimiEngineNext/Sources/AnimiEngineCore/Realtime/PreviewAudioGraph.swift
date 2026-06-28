@@ -70,6 +70,8 @@ public enum PreviewAudioGraphError: Error, Equatable, Sendable {
     case sampleCountMismatch(expected: Int64, got: Int)
     /// A non-positive injected bounded-max-chunk size.
     case invalidBoundedMax(Int64)
+    /// The real `AVAudioEngine` failed to start (so no audio could be made audible).
+    case engineStartFailed(String)
 }
 
 // MARK: - Schedule anchor (pure value, ADR-006 §3/§5)
@@ -148,6 +150,13 @@ public protocol PreviewAudioOutputSink: Sendable {
         samples: [Float32],
         at outputSampleTime: Int64
     ) throws
+    /// Stop audible output (stop the player/engine). Idempotent; the session/category is the app's to own.
+    func stop()
+}
+
+public extension PreviewAudioOutputSink {
+    /// Default no-op so existing/test sinks need not implement it; the real AV sink overrides.
+    func stop() {}
 }
 
 // MARK: - The preview graph (owns the bounded software mix; AV behind the sink)
@@ -209,6 +218,9 @@ public final class PreviewAudioGraph: @unchecked Sendable {
     public var actualOutputFormat: AudioOutputFormat? { configuredFormat }
     public var actualOutputRoute: AudioOutputRoute? { configuredRoute }
     public var scheduleAnchor: PreviewAudioScheduleAnchor? { anchor }
+
+    /// Stop the output sink's audible playback (pause/stop lifecycle). Idempotent; session-neutral.
+    public func stopOutputSink() { sink.stop() }
 
     /// The unity gain raw value reused for the gain multiplier (avoids a magic constant).
     private static let gainUnityRaw = AudioGain.unityRaw
@@ -329,6 +341,24 @@ public final class AVAudioEnginePreviewSink: PreviewAudioOutputSink, @unchecked 
         }
         monoFormat = fmt
         engine.connect(outputPlayer, to: engine.mainMixerNode, format: fmt)
+        // Prepare the graph so the first start is fast. Starting/playing is deferred to the first
+        // scheduled buffer (scheduling onto a stopped engine/player would be silent).
+        engine.prepare()
+    }
+
+    /// Start the engine + player on demand (idempotent). Scheduling onto a stopped engine or a
+    /// non-playing player produces NO sound, so this is the missing audible-output bring-up.
+    private func startIfNeeded() throws {
+        if !engine.isRunning {
+            do {
+                try engine.start()
+            } catch {
+                throw PreviewAudioGraphError.engineStartFailed(String(describing: error))
+            }
+        }
+        if !outputPlayer.isPlaying {
+            outputPlayer.play()
+        }
     }
 
     public func scheduleMixed(
@@ -351,10 +381,21 @@ public final class AVAudioEnginePreviewSink: PreviewAudioOutputSink, @unchecked 
                 channelData[0][frame] = samples[frame]
             }
         }
+        // Bring up audible output BEFORE scheduling — a buffer scheduled onto a stopped engine/player
+        // is silent. Idempotent: subsequent schedules reuse the running engine (no start/play churn).
+        try startIfNeeded()
         let when = AVAudioTime(
             sampleTime: AVAudioFramePosition(outputSampleTime),
             atRate: fmt.sampleRate)
+        // Explicit time only (never `at: nil`); post-mix OutputOverloadStage order is unchanged (applied
+        // upstream in `PreviewAudioGraph.scheduleMix` before these final mixed frames arrive here).
         outputPlayer.scheduleBuffer(pcm, at: when, options: [], completionHandler: nil)
+    }
+
+    /// Stop playback and tear down the engine (used by the controller's pause/stop lifecycle). Idempotent.
+    public func stop() {
+        if outputPlayer.isPlaying { outputPlayer.stop() }
+        if engine.isRunning { engine.stop() }
     }
 }
 

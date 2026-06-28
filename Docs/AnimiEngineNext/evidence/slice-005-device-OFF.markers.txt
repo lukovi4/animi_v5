@@ -1,0 +1,51 @@
+[MEM-EVENT] audio.session.configureOnLaunch | ok=1
+[MEM-EVENT] preview.audio.select | toggle=OFF controller=Legacy
+[MEM-EVENT] preview.audio.prepare | dirty=1 hasPipeline=0 readiness=idle
+[MEM-EVENT] preview.audio.engine.teardown
+[MEM-EVENT] audio.plan.begin | hasState=1 includeOriginal=1
+[MEM-EVENT] audio.plan.candidates | audioTracks=1 candidates=1
+[MEM-EVENT] audio.plan.end | items=1 includeOriginal=1
+[MEM-EVENT] preview.audio.build.plan | items=1
+[MEM-EVENT] preview.audio.build.sceneData | scenes=1
+[MEM-EVENT] audio.build.begin | mode=timeline scenes=1 planItems=1 includeOriginal=1 projectDuration=5.00
+[MEM-EVENT] audio.build.planInserted | count=1
+[MEM-EVENT] audio.build.videoSlot.insert | scene=0 blockId=block_01
+[MEM-EVENT] audio.build.end | mode=timeline planInserted=1 originalInserted=1 tracks=2 mixInputs=2 duration=5.00
+[MEM-EVENT] preview.audio.build.end | result=pipeline tracks=2 mixInputs=2
+[MEM-EVENT] preview.audio.engine.render.begin | generation=2 tracks=2 duration=5.0
+[MEM-EVENT] audio.session.configure | ok=1
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=0 projectTimeUs=0 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=0 hostTime=140901.27869012504
+[MEM-EVENT] preview.audio.select | toggle=OFF controller=Legacy
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=1 readiness=preparing
+[MEM-EVENT] preview.audio.start.awaitReady | generation=0 pipelineGen=Optional(0)
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] preview.audio.engine.pauseImmediate | warm=1
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=6 projectTimeUs=200000 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=200000 hostTime=140906.6792080417
+[MEM-EVENT] preview.audio.select | toggle=OFF controller=Legacy
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=1 readiness=preparing
+[MEM-EVENT] preview.audio.start.awaitReady | generation=0 pipelineGen=Optional(0)
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] preview.audio.engine.pauseImmediate | warm=1
+[MEM-EVENT] preview.audio.engine.pause | engineWasRunning=0
+[MEM-EVENT] playback.audio.sessionDeactivate.call
+[MEM-EVENT] audio.session.deactivate.begin
+[MEM-EVENT] audio.session.deactivate.end | ok=1
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=36 projectTimeUs=1200000 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=1200000 hostTime=140923.00925970837
+[MEM-EVENT] preview.audio.select | toggle=OFF controller=Legacy
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=1 readiness=preparing
+[MEM-EVENT] preview.audio.start.awaitReady | generation=0 pipelineGen=Optional(0)
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] preview.audio.engine.pauseImmediate | warm=1
+[MEM-EVENT] preview.audio.engine.pause | engineWasRunning=0
+[MEM-EVENT] playback.audio.sessionDeactivate.call
+[MEM-EVENT] audio.session.deactivate.begin
+[MEM-EVENT] audio.session.deactivate.end | ok=1

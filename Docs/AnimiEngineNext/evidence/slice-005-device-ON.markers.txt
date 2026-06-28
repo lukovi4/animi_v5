@@ -1,0 +1,89 @@
+[MEM-EVENT] audio.session.configureOnLaunch | ok=1
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Legacy
+[MEM-EVENT] preview.audio.engine.teardown
+[MEM-EVENT] preview.audio.canonical.selected | toggle=ON controller=CanonicalPreviewAudioController
+[MEM-EVENT] preview.audio.prepare | canonicalIdlePrepareSkipped=1
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] playback.audio.sessionDeactivate.call
+[MEM-EVENT] audio.session.deactivate.begin
+[MEM-EVENT] audio.session.deactivate.end | ok=1
+[MEM-EVENT] preview.audio.markDirty | generation=1 playing=0 state=sceneEdit(instanceId: 50BEF6EC-88B2-429F-85DF-A82AED5C9369)
+[MEM-EVENT] audio.session.configure | ok=1
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=0 projectTimeUs=0 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=0 hostTime=140721.5144347917
+[MEM-EVENT] preview.audio.select | toggle=ON controller=Canonical
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=0 readiness=idle
+[MEM-EVENT] preview.audio.canonical.legacyGateBypassed | seconds=0.0 hostTime=140721.5144347917
+[MEM-EVENT] preview.audio.canonical.startPlayback.call | seconds=0.0
+[MEM-EVENT] preview.audio.canonical.startFailed | error=videoLayerOriginalAudioUnsupportedInStageA
+[MEM-EVENT] preview.audio.canonical.fallbackToLegacy | reason=videoLayerOriginalAudioUnsupportedInStageA
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=0 readiness=idle
+[MEM-EVENT] preview.audio.engine.teardown
+[MEM-EVENT] audio.plan.begin | hasState=1 includeOriginal=1
+[MEM-EVENT] audio.plan.candidates | audioTracks=0 candidates=0
+[MEM-EVENT] audio.plan.end | items=0 includeOriginal=1
+[MEM-EVENT] preview.audio.build.plan | items=0
+[MEM-EVENT] preview.audio.canonical.firstFrameSkipped | reason=nonCanonicalController
+[MEM-EVENT] preview.audio.build.sceneData | scenes=1
+[MEM-EVENT] audio.build.begin | mode=timeline scenes=1 planItems=0 includeOriginal=1 projectDuration=5.00
+[MEM-EVENT] audio.build.planInserted | count=0
+[MEM-EVENT] audio.build.videoSlot.insert | scene=0 blockId=block_01
+[MEM-EVENT] audio.build.end | mode=timeline planInserted=0 originalInserted=1 tracks=1 mixInputs=1 duration=5.00
+[MEM-EVENT] preview.audio.build.end | result=pipeline tracks=1 mixInputs=1
+[MEM-EVENT] preview.audio.engine.render.begin | generation=2 tracks=1 duration=5.0
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] preview.audio.engine.pauseImmediate | warm=1
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=6 projectTimeUs=200000 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=200000 hostTime=140725.13604750004
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=1 readiness=preparing
+[MEM-EVENT] preview.audio.start.awaitReady | generation=1 pipelineGen=Optional(1)
+[MEM-EVENT] preview.audio.canonical.firstFrameSkipped | reason=nonCanonicalController
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] preview.audio.engine.pauseImmediate | warm=1
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=0 projectTimeUs=0 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=0 hostTime=140731.9837786667
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=1 readiness=preparing
+[MEM-EVENT] preview.audio.start.awaitReady | generation=1 pipelineGen=Optional(1)
+[MEM-EVENT] preview.audio.canonical.firstFrameSkipped | reason=nonCanonicalController
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] preview.audio.engine.pauseImmediate | warm=1
+[MEM-EVENT] preview.audio.engine.pause | engineWasRunning=0
+[MEM-EVENT] playback.audio.sessionDeactivate.call
+[MEM-EVENT] audio.session.deactivate.begin
+[MEM-EVENT] audio.session.deactivate.end | ok=1
+[MEM-EVENT] preview.audio.engine.render.failed | error=Reader failed: Operation Interrupted
+[MEM-EVENT] preview.audio.engine.failure | reason=renderFailed(error: Optional("Reader failed: Operation Interrupted"))
+[MEM-EVENT] preview.audio.controllerFailure | reason=renderFailed(error: Optional("Reader failed: Operation Interrupted")) generation=1 currentGen=1 stale=0
+[MEM-EVENT] preview.audio.markDirty | generation=2 playing=0 state=timelinePreview
+[MEM-EVENT] preview.audio.prepare | dirty=1 hasPipeline=0 readiness=failed
+[MEM-EVENT] preview.audio.engine.teardown
+[MEM-EVENT] audio.plan.begin | hasState=1 includeOriginal=1
+[MEM-EVENT] audio.plan.candidates | audioTracks=1 candidates=1
+[MEM-EVENT] audio.plan.end | items=1 includeOriginal=1
+[MEM-EVENT] preview.audio.build.plan | items=1
+[MEM-EVENT] preview.audio.build.sceneData | scenes=1
+[MEM-EVENT] audio.build.begin | mode=timeline scenes=1 planItems=1 includeOriginal=1 projectDuration=5.00
+[MEM-EVENT] audio.build.planInserted | count=1
+[MEM-EVENT] audio.build.videoSlot.insert | scene=0 blockId=block_01
+[MEM-EVENT] audio.build.end | mode=timeline planInserted=1 originalInserted=1 tracks=2 mixInputs=2 duration=5.00
+[MEM-EVENT] preview.audio.build.end | result=pipeline tracks=2 mixInputs=2
+[MEM-EVENT] preview.audio.engine.render.begin | generation=4 tracks=2 duration=5.0
+[MEM-EVENT] audio.session.activate.begin
+[MEM-EVENT] audio.session.activate.end | ok=1
+[MEM-EVENT] playback.audio.start.begin | compressedFrame=0 projectTimeUs=0 state=timelinePreview isPlayingBefore=0
+[MEM-EVENT] playback.audio.previewStart.call | projectTimeUs=0 hostTime=140789.09157212503
+[MEM-EVENT] preview.audio.start | dirty=1 hasPipeline=1 readiness=preparing
+[MEM-EVENT] preview.audio.start.awaitReady | generation=2 pipelineGen=Optional(2)
+[MEM-EVENT] preview.audio.canonical.firstFrameSkipped | reason=nonCanonicalController
+[MEM-EVENT] playback.audio.stop.begin
+[MEM-EVENT] preview.audio.engine.pauseImmediate | warm=1
+[MEM-EVENT] preview.audio.engine.pause | engineWasRunning=0
+[MEM-EVENT] playback.audio.sessionDeactivate.call
+[MEM-EVENT] audio.session.deactivate.begin
+[MEM-EVENT] audio.session.deactivate.end | ok=1

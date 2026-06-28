@@ -1,5 +1,6 @@
 import Foundation
 import TVECore
+import UIKit
 import os.log
 
 private let logger = Logger(subsystem: "com.animi.app", category: "EditorRuntimePreviewAudio")
@@ -11,7 +12,105 @@ internal final class EditorRuntimePreviewAudioCoordinator {
 
     // MARK: - Stored Properties
 
-    lazy var controller: PreviewAudioControlling = EnginePreviewAudioPlaybackController()
+    /// Preview-audio controller. Default = legacy `EnginePreviewAudioPlaybackController` (cheap; reads no
+    /// toggle). The desired controller for the CURRENT `DebugPreviewAudioWithNextEngine` toggle value is
+    /// selected deterministically at playback/prepare entry via `selectControllerForToggle()` — NOT lazily
+    /// at first access (which raced the launch-argument read and could cache the wrong controller forever).
+    /// EXPORT is never affected; the toggle gates preview only.
+    var controller: PreviewAudioControlling = EnginePreviewAudioPlaybackController()
+
+    #if DEBUG
+    /// Set when a test injects a controller via `setPreviewAudioController` — suppresses toggle-driven
+    /// reselection so mocks are never clobbered. Production never sets this.
+    private var controllerWasExplicitlyInjected = false
+
+    /// Mark the controller as test-injected (called from `EditorRuntime.setPreviewAudioController`).
+    func markControllerExplicitlyInjected() { controllerWasExplicitlyInjected = true }
+
+    /// Deterministically select the controller for the CURRENT toggle value at start/prepare time. Rebuilds
+    /// only when the desired TYPE differs from the installed one. Never runs after a test injection or after
+    /// the canonical error alert has fired (so a failed canonical epoch isn't silently rebuilt). Idempotent.
+    private func selectControllerForToggle() {
+        guard !controllerWasExplicitlyInjected else { return }
+        guard !didShowCanonicalErrorAlert else { return }
+        let wantCanonical = NextPreviewAudioEngineToggles.previewAudioWithNextEngine
+        let haveCanonical = controller is CanonicalPreviewAudioController
+        MemoryDiagnostics.event("preview.audio.select",
+            "toggle=\(wantCanonical ? "ON" : "OFF") controller=\(haveCanonical ? "Canonical" : "Legacy")")
+        guard wantCanonical != haveCanonical else { return }
+        controller.teardown()
+        controller = makeDefaultController()
+        dirty = true
+        installedPipelineGeneration = nil
+    }
+    #endif
+
+    func makeDefaultController() -> PreviewAudioControlling {
+        #if DEBUG
+        if NextPreviewAudioEngineToggles.previewAudioWithNextEngine {
+            MemoryDiagnostics.event("preview.audio.canonical.selected", "toggle=ON controller=CanonicalPreviewAudioController")
+            let canonical = CanonicalPreviewAudioControllerFactory.makeProductionController(
+                planSource: RuntimeCanonicalAudioPlanSource(runtime: runtime))
+            // Surface canonical audio start telemetry on device.
+            canonical.onDiagnostic = { event, detail in
+                MemoryDiagnostics.event(event, detail)
+            }
+            // NO LEGACY FALLBACK (debug): a canonical failure must SURFACE the real error in an alert, not be
+            // masked by legacy audio. This makes canonical-path defects visible on device instead of silently
+            // playing the old engine.
+            canonical.onCanonicalUnavailable = { [weak self] reason in
+                self?.presentCanonicalAudioErrorAlert(reason: reason)
+            }
+            return canonical
+        }
+        MemoryDiagnostics.event("preview.audio.canonical.selected", "toggle=OFF controller=EnginePreviewAudioPlaybackController")
+        #endif
+        return EnginePreviewAudioPlaybackController()
+    }
+
+    #if DEBUG
+    /// Whether the canonical error alert has already been shown (one-shot per coordinator, so a per-chunk
+    /// failure storm shows ONE alert, not dozens).
+    private var didShowCanonicalErrorAlert = false
+
+    /// Surface the REAL canonical-audio failure in an alert (no legacy fallback). Stops the canonical
+    /// controller so it isn't left half-running, logs the reason, and presents the error to the operator.
+    private func presentCanonicalAudioErrorAlert(reason: String) {
+        guard !didShowCanonicalErrorAlert else { return }
+        didShowCanonicalErrorAlert = true
+        MemoryDiagnostics.event("preview.audio.canonical.errorAlert", "reason=\(reason)")
+        controller.teardown()              // stop the failed canonical controller (no legacy swap)
+        let alert = UIAlertController(
+            title: "Canonical Audio Failed",
+            message: reason,
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        Self.topMostViewController()?.present(alert, animated: true)
+    }
+
+    /// Best-effort top-most presented view controller from the active foreground window scene (DEBUG alert).
+    private static func topMostViewController() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive } ?? UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let keyWindow = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+        var top = keyWindow?.rootViewController
+        while let presented = top?.presentedViewController { top = presented }
+        return top
+    }
+    #endif
+
+    /// Toggle-selection test seam: build the controller for an explicit toggle value without a runtime.
+    static func makeControllerForTesting(canonicalEnabled: Bool) -> PreviewAudioControlling {
+        #if DEBUG
+        if canonicalEnabled {
+            return CanonicalPreviewAudioControllerFactory.makeProductionController(
+                planSource: RuntimeCanonicalAudioPlanSource(runtime: nil))
+        }
+        #endif
+        return EnginePreviewAudioPlaybackController()
+    }
     var dirty: Bool = true
     var generation: UInt = 0
     var orchestrationTask: Task<Void, Never>?
@@ -120,7 +219,32 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         cancelScheduledPrepare()
 
         #if DEBUG
+        // Deterministically pick the controller for the current toggle BEFORE any start logic, so the
+        // launch-argument value (not a stale lazy cache) governs which path runs.
+        selectControllerForToggle()
+        #endif
+
+        #if DEBUG
         MemoryDiagnostics.event("preview.audio.start", "dirty=\(dirty ? 1 : 0) hasPipeline=\(controller.hasActivePipeline ? 1 : 0) readiness=\(String(describing: controller.readiness))")
+
+        // CANONICAL DIRECT START (Slice 005 cutover): when the toggle is ON and the canonical controller is
+        // installed, canonical OWNS preview audio. It evaluates its OWN AudioPlan (RuntimeCanonicalAudioPlanSource)
+        // and is driven straight from the playhead — the legacy build gate (buildPipeline /
+        // buildAudioExportPlan) is NOT executed on this path. This breaks the dependency where an empty
+        // legacy plan (`.noResolvableAudio`) silently cancelled the canonical start. Any canonical failure /
+        // silent-epoch-with-audio routes through `onCanonicalUnavailable` → `presentCanonicalAudioErrorAlert`
+        // (no legacy fallback). The first-frame barrier is still crossed by `signalFirstFrameReady`.
+        if NextPreviewAudioEngineToggles.previewAudioWithNextEngine,
+           controller is CanonicalPreviewAudioController {
+            let seconds = usToSeconds(runtime.playbackCurrentProjectTimeUs)
+            MemoryDiagnostics.event("preview.audio.canonical.legacyGateBypassed",
+                "seconds=\(seconds) hostTime=\(runtime.playbackCurrentHostTime)")
+            MemoryDiagnostics.event("preview.audio.canonical.startPlayback.call",
+                "seconds=\(seconds)")
+            dirty = false
+            controller.startPlayback(fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime)
+            return
+        }
         #endif
 
         if !dirty {
@@ -204,6 +328,15 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         guard dirty else { return }
         guard !runtime.isPlaying else { return }
         #if DEBUG
+        selectControllerForToggle()
+        // The canonical controller builds its plan synchronously on explicit play (no legacy AVComposition
+        // prebuild). Skip the legacy idle build entirely on the canonical path — its only effect would be to
+        // run buildPipeline/buildAudioExportPlan, which we deliberately keep off the canonical path.
+        if NextPreviewAudioEngineToggles.previewAudioWithNextEngine,
+           controller is CanonicalPreviewAudioController {
+            MemoryDiagnostics.event("preview.audio.prepare", "canonicalIdlePrepareSkipped=1")
+            return
+        }
         MemoryDiagnostics.event("preview.audio.prepare", "dirty=\(dirty ? 1 : 0) hasPipeline=\(controller.hasActivePipeline ? 1 : 0) readiness=\(String(describing: controller.readiness))")
         #endif
         startBuild(startWhenReady: false, isIdlePrepare: true)

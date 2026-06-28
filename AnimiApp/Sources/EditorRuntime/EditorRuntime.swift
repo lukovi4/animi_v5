@@ -199,6 +199,12 @@ final class EditorRuntime {
     var playbackCurrentHostTime: CFTimeInterval = 0
 
     #if DEBUG
+    /// Slice 005 Stage C — whether the canonical preview-audio first-frame signal has been delivered for
+    /// the current playback (reset on each play/stop). Gates the one-shot `signalFirstFrameReady`.
+    private var didSignalFirstPreviewAudioFrame = false
+    #endif
+
+    #if DEBUG
     /// Test-observable counter: incremented each time timeline presentation is resolved.
     private(set) var timelinePresentResolveCount: Int = 0
     #endif
@@ -282,6 +288,10 @@ final class EditorRuntime {
     /// Test seam: inject a mock preview audio controller.
     func setPreviewAudioController(_ controller: PreviewAudioControlling) {
         previewAudio.controller = controller
+        #if DEBUG
+        // Pin the injected controller so toggle-driven reselection never clobbers the test mock.
+        previewAudio.markControllerExplicitlyInjected()
+        #endif
     }
 
     var previewAudioDirty: Bool { previewAudio.dirty }
@@ -1185,6 +1195,7 @@ final class EditorRuntime {
 
             #if DEBUG
             MemoryDiagnostics.event("playback.audio.previewStart.call", "projectTimeUs=\(startProjectTimeUs) hostTime=\(hostTime)")
+            self.didSignalFirstPreviewAudioFrame = false   // Stage C: arm the first-frame gate for this play.
             #endif
             self.previewAudio.startForTimelinePlayback()
             self.playbackStartTask = nil
@@ -1402,7 +1413,14 @@ final class EditorRuntime {
                     "audio.session.routeChange.newDeviceAvailable.handleInRuntime",
                     "isPlaying=\(isPlaying ? 1 : 0)"
                 )
+                if NextPreviewAudioEngineToggles.previewAudioWithNextEngine {
+                    // Slice 005 Stage C — canonical path is PAUSE-ONLY on newDeviceAvailable: stop the
+                    // session, no reprepare+restart. The next explicit user play mints a new epoch.
+                    stopPlayback()
+                    break
+                }
                 #endif
+                // Legacy path (toggle OFF / release builds): unchanged reprepare + resume.
                 previewAudio.controller.reprepareForRouteChange()
                 previewAudio.startForTimelinePlayback()
             }
@@ -1462,6 +1480,24 @@ final class EditorRuntime {
             // Drive frame presentation directly from transport
             handleTimelineModePlayheadChanged(nextFrame)
             timelineCompositionEngine?.syncPlaybackTick(nextFrame, hostTime: hostTime)
+            #if DEBUG
+            // Slice 005 Stage C — the REAL first-frame-ready signal for the canonical preview-audio
+            // path (DEBUG-ONLY: the canonical first-frame barrier exists only under this toggle; Release
+            // builds always use the legacy controller, which has no first-frame gate). The first presented
+            // timeline frame of this playback crosses the audio start barrier; the canonical controller
+            // never assumes the first frame. The nil-cast is made OBSERVABLE: if the toggle is ON but the
+            // installed controller isn't canonical (e.g. after a safety fallback to legacy), we emit a
+            // diagnostic instead of silently skipping — legacy needs no signal, so this is benign but visible.
+            if NextPreviewAudioEngineToggles.previewAudioWithNextEngine, !didSignalFirstPreviewAudioFrame {
+                didSignalFirstPreviewAudioFrame = true
+                if let canonical = previewAudio.controller as? CanonicalPreviewAudioController {
+                    MemoryDiagnostics.event("preview.audio.canonical.firstFrameSignal", "delivered=1")
+                    canonical.signalFirstFrameReady()
+                } else {
+                    MemoryDiagnostics.event("preview.audio.canonical.firstFrameSkipped", "reason=nonCanonicalController")
+                }
+            }
+            #endif
         case .sceneEdit:
             let fps = editorState.templateFPS
             let globalFrameIndex = Int(sample.projectTimeUs * TimeUs(fps) / 1_000_000)

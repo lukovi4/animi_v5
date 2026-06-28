@@ -328,9 +328,17 @@ final class EnginePreviewAudioPlaybackController: PreviewAudioControlling {
         let wasRunning = engine?.isRunning == true
         playerNode?.stop()
         engine?.stop()
+        // Cancel any IN-FLIGHT render BEFORE the caller deactivates the shared AVAudioSession. This is the
+        // idle-reclaim teardown path (`EditorRuntime.performPlaybackCleanup` calls this immediately before
+        // `deactivateAfterPlayback()`); a still-reading `AVAssetReader` interrupted by session-deactivate
+        // throws "Reader failed: Operation Interrupted" (the regression that left preview audio silent).
+        // Cancelling here yields a clean `render.cancelled` instead. Warm pause/scrub
+        // (`pausePlaybackImmediately`) intentionally does NOT cancel — a quick pause may still finish.
+        renderTask?.cancel()
+        renderTask = nil
         #if DEBUG
         probeToken &+= 1
-        MemoryDiagnostics.event("preview.audio.engine.pause", "engineWasRunning=\(wasRunning ? 1 : 0)")
+        MemoryDiagnostics.event("preview.audio.engine.pause", "engineWasRunning=\(wasRunning ? 1 : 0) renderCancelled=1")
         #endif
         // graph/file/cache stay alive; readiness stays .primed
         // next startPlayback() will call engine.start() after session activation

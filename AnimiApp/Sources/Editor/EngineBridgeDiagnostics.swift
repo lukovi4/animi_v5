@@ -45,4 +45,25 @@ enum NextExportEngineToggles {
 
     static let defaultsKey = "DebugExportWithNextEngine"
 }
+
+// MARK: - Slice 005: AnimiEngineNext realtime PREVIEW AUDIO bridge (DEBUG only)
+//
+// Independent opt-in flag for routing PREVIEW AUDIO through the canonical AnimiEngineNext realtime
+// path (`CanonicalPreviewAudioController` → `PreviewAudioGraph`/`AudioMasterPreviewSession`) instead
+// of the legacy `EnginePreviewAudioPlaybackController` (AVAudioEngine host-time render-to-file).
+//
+// Default OFF: when OFF the legacy preview-audio path is used verbatim and is byte-for-byte
+// unchanged. EXPORT is never affected by this flag. Compiled only in DEBUG.
+enum NextPreviewAudioEngineToggles {
+    /// When true, `EditorRuntimePreviewAudioCoordinator` installs the canonical realtime preview-audio
+    /// controller for timeline preview. Default OFF.
+    ///
+    /// Launch argument: `-DebugPreviewAudioWithNextEngine YES`
+    /// Runtime toggle: `UserDefaults.standard.set(true, forKey: "DebugPreviewAudioWithNextEngine")`
+    static var previewAudioWithNextEngine: Bool {
+        UserDefaults.standard.bool(forKey: "DebugPreviewAudioWithNextEngine")
+    }
+
+    static let defaultsKey = "DebugPreviewAudioWithNextEngine"
+}
 #endif
