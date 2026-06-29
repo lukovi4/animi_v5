@@ -112,6 +112,11 @@ final class RuntimeCanonicalAudioPlanSourceTests: XCTestCase {
     /// Build a real `EditorRuntime` whose single scene carries one user video block under
     /// `sceneInstanceStates[item.id]` (the scene INSTANCE id, distinct from `payloadId`). The injected
     /// `resolveURL` returns a fixture URL so the synchronous path resolves without disk.
+    /// The asset id of the video registered by the most recent `makeRuntimeWithVideoBlock` (for warm seeding).
+    private var lastVideoAssetId = ProjectAssetID()
+    /// The URL the injected mediaLocator fake returns (the visual-path URL canonical audio must use).
+    private let mediaLocatorFixtureURL = URL(fileURLWithPath: "/tmp/medialocator-fixture.mov")
+
     private func makeRuntimeWithVideoBlock(
         visibility: Bool, blockID: String = "block_01",
         trimStart: Double = 0, trimEnd: Double = 3, volume: Float = 1, isMuted: Bool = false,
@@ -137,6 +142,7 @@ final class RuntimeCanonicalAudioPlanSourceTests: XCTestCase {
         let item = try XCTUnwrap(session.state?.canonicalTimeline.sceneItems.first, "bootstrap seeds one scene")
         XCTAssertNotEqual(item.id, item.payloadId, "precondition: scene item id != payloadId")
         let assetId = ProjectAssetID()
+        lastVideoAssetId = assetId
         session.registerAssetBookkeeping(ProjectAssetDescriptor(
             assetId: assetId, mediaKind: .video, storagePath: "video/\(blockID).mov"))
         let slot = SceneMediaSlot(
@@ -156,11 +162,28 @@ final class RuntimeCanonicalAudioPlanSourceTests: XCTestCase {
         let runtime = EditorRuntime(session: session)
         runtime.audioSessionManager = MockPreviewAudioSessionManager()
         runtime.bootForTesting(state: .timelinePreview)
-        // Inject a resolver that returns a fixture URL for the video asset (no disk dependency).
+        // Inject the sync resolver (legacy path-guess — must NOT be used for video-original) AND the
+        // mediaLocator fake (the visual-path URL canonical video-original MUST use). The locator fake records
+        // that it was called and returns the fixture URL.
+        let recorder = self.locatorCalls
         let planSource = RuntimeCanonicalAudioPlanSource(
-            runtime: runtime, resolveURL: { _, _, _ in URL(fileURLWithPath: "/tmp/fixture.mov") })
+            runtime: runtime,
+            resolveURL: { _, _, _ in URL(fileURLWithPath: "/tmp/SHOULD-NOT-BE-USED-for-video-original.mov") },
+            mediaLocatorURL: { [mediaLocatorFixtureURL] mediaRef, _ in
+                recorder.record(mediaRef.assetId)
+                return mediaLocatorFixtureURL
+            })
         return (runtime, planSource)
     }
+
+    /// Records mediaLocator resolutions so tests can prove the locator (not defaultResolveURL) was used.
+    private final class LocatorCallRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _assetIds: [ProjectAssetID] = []
+        var assetIds: [ProjectAssetID] { lock.lock(); defer { lock.unlock() }; return _assetIds }
+        func record(_ id: ProjectAssetID) { lock.lock(); _assetIds.append(id); lock.unlock() }
+    }
+    private let locatorCalls = LocatorCallRecorder()
 
     /// #1: with `item.id != payloadId`, a VIDEO-ONLY project produces a NON-EMPTY plan with a videoLayer
     /// segment. (Under the old `payloadId` keying this returned nil/silent — the regression guard.)
@@ -168,11 +191,57 @@ final class RuntimeCanonicalAudioPlanSourceTests: XCTestCase {
         // RETAIN the runtime through the whole call: `RuntimeCanonicalAudioPlanSource.runtime` is `weak`, so
         // discarding it would let it deallocate before `currentAudioPlan()` (→ `guard let runtime` → nil).
         let (runtime, planSource) = try await makeRuntimeWithVideoBlock(visibility: true)
+        // Stage-9.2: video-original is FAIL-CLOSED without a warmed mediaLocator URL + real duration. Seed
+        // the warm mirror via the test seam (the mediaLocator URL + a real track length, e.g. 3 s).
+        planSource._setVideoOriginalWarmForTesting(
+            assetId: lastVideoAssetId, url: mediaLocatorFixtureURL, seconds: 3.0)
         let plan = try planSource.currentAudioPlan()
         let segments = try XCTUnwrap(plan).segments
         XCTAssertFalse(segments.isEmpty, "video-only project (item.id keying) must produce a non-empty plan")
         XCTAssertTrue(segments.contains { $0.role == .videoLayer }, "a videoLayer segment is present")
         withExtendedLifetime(runtime) {}   // keep `runtime` alive until after the plan evaluation above
+    }
+
+    // MARK: - Stage-9.2: video-original uses the mediaLocator URL (== visual path), not defaultResolveURL
+
+    /// (1) The warm-up calls the injected mediaLocator for the video asset (NOT `defaultResolveURL`).
+    func test_S92_warmUp_callsMediaLocator_notDefaultResolve() async throws {
+        let (runtime, planSource) = try await makeRuntimeWithVideoBlock(visibility: true)
+        await planSource.warmUpVideoOriginalDurations()
+        XCTAssertTrue(locatorCalls.assetIds.contains(lastVideoAssetId),
+                      "warm-up must resolve the video URL via the injected mediaLocator")
+        withExtendedLifetime(runtime) {}
+    }
+
+    /// (2)+(3) After a real warm-up, the plan's resolved source URL for the video-original equals the
+    /// mediaLocator URL (NOT the defaultResolveURL path-guess), and that is the SAME URL the duration probe
+    /// used. (The probe of the synthetic URL returns nil, so the plan stays fail-closed/empty — but the test
+    /// seam lets us assert the URL identity deterministically.)
+    func test_S92_resolvedSourceURL_equalsMediaLocatorURL_sameAsProbeURL() async throws {
+        let (runtime, planSource) = try await makeRuntimeWithVideoBlock(visibility: true)
+        // Seed the warm mirror exactly as a completed warm-up would: mediaLocator URL + real seconds.
+        planSource._setVideoOriginalWarmForTesting(
+            assetId: lastVideoAssetId, url: mediaLocatorFixtureURL, seconds: 3.0)
+        let plan = try XCTUnwrap(try planSource.currentAudioPlan())
+        let seg = try XCTUnwrap(plan.segments.first { $0.role == .videoLayer })
+        let resolved = try XCTUnwrap(planSource.resolvedSource(for: seg.sourceID))
+        XCTAssertEqual(resolved.url, mediaLocatorFixtureURL,
+                       "resolvedSourcesByID URL == mediaLocator URL (the SAME URL the probe used), not defaultResolveURL")
+        XCTAssertNotEqual(resolved.url, URL(fileURLWithPath: "/tmp/SHOULD-NOT-BE-USED-for-video-original.mov"),
+                          "must NOT use the sync defaultResolveURL path for video-original")
+        withExtendedLifetime(runtime) {}
+    }
+
+    /// (4) Missing warm (no URL/duration) fails closed for video-original — no winEnd, no path-guess fallback.
+    func test_S92_missingWarm_failsClosedNoFallback() async throws {
+        let (runtime, planSource) = try await makeRuntimeWithVideoBlock(visibility: true)
+        // Do NOT seed the warm mirror → build must fail closed.
+        XCTAssertThrowsError(try planSource.currentAudioPlan()) { error in
+            guard case .audioAssetUnresolvable? = error as? AppRealtimeAudioIntegrationError else {
+                return XCTFail("missing warm must fail closed (audioAssetUnresolvable), got \(error)")
+            }
+        }
+        withExtendedLifetime(runtime) {}
     }
 
     /// #2: a HIDDEN video slot contributes NO audio (no videoLayer clip/segment) → silent.

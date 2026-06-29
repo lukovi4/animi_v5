@@ -349,6 +349,7 @@
 		CBF27E1AB8624033769776B6 /* AudioDomainContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3207AE90CEE8E077AD59D86 /* AudioDomainContractTests.swift */; };
 		CC06AC77DBA6E10D00B88CCF /* ExportVideoFrameProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1244C22C36801F4B52AFE62 /* ExportVideoFrameProvider.swift */; };
 		CC20D98CF2C2D50F0579DDAF /* AudioWriterPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 931F43B88D909958DFAB035F /* AudioWriterPump.swift */; };
+		CC5452EC853FAEA70BFDF16F /* VideoOriginalAudioDurationProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = EACA3DAFDDC3C6852822919C /* VideoOriginalAudioDurationProbe.swift */; };
 		CC62193D7045BFAB9A361E4F /* BackgroundTextureServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D8FD07F0B8C742066EB95E2 /* BackgroundTextureServiceTests.swift */; };
 		CD61B65F7DE81CF119E00FA4 /* ExportResourceBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE555E6A0E60C9501F521ACB /* ExportResourceBudgetTests.swift */; };
 		CDE6395801758EB0D01738DD /* NextPreviewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51B5C34A62EED112E73D2702 /* NextPreviewController.swift */; };
@@ -861,6 +862,7 @@
 		E8A312578573884238F5DE30 /* TextOverlayTransformSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayTransformSessionTests.swift; sourceTree = "<group>"; };
 		E9FD7B1EB8C2C6A0371901CE /* AVFoundationPCMAssetDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVFoundationPCMAssetDecoder.swift; sourceTree = "<group>"; };
 		EA6B4123EBE49C0BB87644ED /* TimelinePlaybackSyncController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePlaybackSyncController.swift; sourceTree = "<group>"; };
+		EACA3DAFDDC3C6852822919C /* VideoOriginalAudioDurationProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoOriginalAudioDurationProbe.swift; sourceTree = "<group>"; };
 		EC988E2962541BF5A737F72D /* EditorRuntimeRenderSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorRuntimeRenderSource.swift; sourceTree = "<group>"; };
 		EE9AE31087D0406319F01CC4 /* SaveExportCleanSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaveExportCleanSessionTests.swift; sourceTree = "<group>"; };
 		EED71BBEB9CFAA68C4CBD44B /* ExportPreviewRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportPreviewRestoreTests.swift; sourceTree = "<group>"; };
@@ -1566,6 +1568,7 @@
 				EF2294FE72E75C0F4457BDA5 /* RealtimeAudioSessionEventMapping.swift */,
 				74F4F924DD97A0AD31C631F7 /* RuntimeCanonicalAudioPlanSource.swift */,
 				D5348578D9A6C5E42B2EBD73 /* Slice005TickProjection.swift */,
+				EACA3DAFDDC3C6852822919C /* VideoOriginalAudioDurationProbe.swift */,
 			);
 			path = Realtime;
 			sourceTree = "<group>";
@@ -2102,6 +2105,7 @@
 				3AD7D1CE8DDFDFE3AC546ABF /* VideoExportDefinitions.swift in Sources */,
 				F69A4CE0C87E4F294A365892 /* VideoExporter.swift in Sources */,
 				634873BF88B7C4366E03297A /* VideoFrameProvider.swift in Sources */,
+				CC5452EC853FAEA70BFDF16F /* VideoOriginalAudioDurationProbe.swift in Sources */,
 				331800CDE8433BC1216EE58E /* VideoPosterCache.swift in Sources */,
 				44736526D6B8BD9CD38F6F1C /* VideoPreparePipeline.swift in Sources */,
 				F653D833B1BEF170450E8524 /* VideoTimelineTimeMapper.swift in Sources */,

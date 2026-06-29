@@ -27,10 +27,26 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
     /// The most recent source-URL map produced by `currentAudioPlan`, consumed by the render pipeline.
     private(set) var resolvedSourcesByID: [String: CanonicalResolvedAudioSource] = [:]
 
+    /// Stage-9.2: the async app-side probe for the REAL audio-track duration of a video-original source.
+    private let durationProbe = VideoOriginalAudioDurationProbe()
+    /// Stage-9.2: MainActor mirror of the warm-up result for video-original sources, keyed by the asset id.
+    /// Holds BOTH the mediaLocator-resolved URL (the SAME URL the visual preview uses) AND the real
+    /// audio-track duration (seconds). `currentAudioPlan()` reads ONLY this for video-original — never the
+    /// sync `defaultResolveURL` path-guess — so the probe URL and `resolvedSourcesByID` URL are identical.
+    private var videoOriginalWarmByAsset: [ProjectAssetID: (url: URL, seconds: Double)] = [:]
+    /// Stage-9.2: injectable async URL resolver (production = `session.mediaLocator.absoluteURL`, the visual
+    /// path). Tests inject a fake to assert the locator URL — not `defaultResolveURL` — is used.
+    private let mediaLocatorURL: (_ mediaRef: MediaRef, _ registry: ProjectAssetRegistry) async throws -> URL
+
     init(
         runtime: EditorRuntime?,
-        resolveURL: @escaping (_ assetId: ProjectAssetID, _ fallbackStoragePath: String, _ registry: ProjectAssetRegistry) -> URL? = RuntimeCanonicalAudioPlanSource.defaultResolveURL
+        resolveURL: @escaping (_ assetId: ProjectAssetID, _ fallbackStoragePath: String, _ registry: ProjectAssetRegistry) -> URL? = RuntimeCanonicalAudioPlanSource.defaultResolveURL,
+        mediaLocatorURL: ((_ mediaRef: MediaRef, _ registry: ProjectAssetRegistry) async throws -> URL)? = nil
     ) {
+        self.mediaLocatorURL = mediaLocatorURL ?? { [weak runtime] mediaRef, registry in
+            guard let runtime else { throw AppRealtimeAudioIntegrationError.mediaUnavailable(sourceRaw: mediaRef.assetId.rawValue.uuidString) }
+            return try await runtime.session.mediaLocator.absoluteURL(for: mediaRef, registry: registry)
+        }
         self.runtime = runtime
         self.resolveURL = resolveURL
     }
@@ -55,6 +71,39 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
             .appendingPathComponent(FileProjectPersistenceStore.projectsDirectoryName)
             .appendingPathComponent(relativePath)
     }
+
+    /// Stage-9.2: warm up the REAL audio-track durations for the current project's video-original sources by
+    /// resolving each block's URL and awaiting the async probe, then mirroring the results onto the MainActor.
+    /// Call this BEFORE `currentAudioPlan()` so the first build has the real durations (video-original is
+    /// fail-closed without them). Safe to call repeatedly (cached). No-op when nothing is loaded.
+    func warmUpVideoOriginalDurations() async {
+        guard let runtime, let state = runtime.session.state else { return }
+        let timeline = state.canonicalTimeline
+        let registry = runtime.selfHealedRegistry()
+        // Collect distinct video MediaRefs (by asset id) for visible video slots.
+        var refs: [ProjectAssetID: MediaRef] = [:]
+        for item in timeline.sceneItems {
+            guard let sceneState = state.draft.sceneInstanceStates[item.id],
+                  let slots = sceneState.mediaSlotsByBlockId else { continue }
+            for (_, slot) in slots where slot.visibility && slot.mediaRef.mediaKind == .video {
+                refs[slot.mediaRef.assetId] = slot.mediaRef
+            }
+        }
+        for (assetId, mediaRef) in refs where videoOriginalWarmByAsset[assetId] == nil {
+            // SAME URL the visual preview uses (mediaLocator), then probe the real audio-track duration by it.
+            guard let url = try? await mediaLocatorURL(mediaRef, registry) else { continue }
+            guard let seconds = await durationProbe.seconds(for: url) else { continue }
+            videoOriginalWarmByAsset[assetId] = (url: url, seconds: seconds)
+        }
+    }
+
+    #if DEBUG
+    /// Test seam: directly seed the warm mirror (URL + seconds) for an asset, so a synchronous
+    /// `currentAudioPlan()` build in a unit test uses a known URL/duration without a live probe.
+    func _setVideoOriginalWarmForTesting(assetId: ProjectAssetID, url: URL, seconds: Double) {
+        videoOriginalWarmByAsset[assetId] = (url: url, seconds: seconds)
+    }
+    #endif
 
     /// Resolve one source for the renderer/cache (set by the last `currentAudioPlan`).
     func resolvedSource(for sourceID: AudioSourceID) -> CanonicalResolvedAudioSource? {
@@ -200,10 +249,24 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
                 // contract (NextExportInputsBuilder throws `blockHidden`; ExportMediaSnapshot skips hidden).
                 guard slot.visibility else { continue }
                 guard slot.mediaRef.mediaKind == .video, let win = slot.videoWindow else { continue }
-                // Resolve the video file URL synchronously (same registry storagePath path as imported audio).
-                guard let url = resolveURL(slot.mediaRef.assetId, slot.mediaRef.storagePath, registry) else {
-                    throw AppRealtimeAudioIntegrationError.mediaUnavailable(sourceRaw: blockID)
+                // STAGE-9.2: use ONLY the warm mirror (mediaLocator URL + real probed duration) for
+                // video-original — the SAME URL the visual preview uses. On a miss, kick the async warm-up and
+                // FAIL CLOSED for this block (no `defaultResolveURL` path-guess, no `winEnd` fallback); the
+                // canonical start path awaits warm-up first, so a normal Play has it.
+                guard let warm = videoOriginalWarmByAsset[slot.mediaRef.assetId] else {
+                    let probe = durationProbe
+                    let resolve = mediaLocatorURL
+                    let mediaRef = slot.mediaRef
+                    let assetId = slot.mediaRef.assetId
+                    Task { [weak self] in
+                        guard let url = try? await resolve(mediaRef, registry),
+                              let s = await probe.seconds(for: url) else { return }
+                        await MainActor.run { self?.videoOriginalWarmByAsset[assetId] = (url: url, seconds: s) }
+                    }
+                    throw AppRealtimeAudioIntegrationError.audioAssetUnresolvable(
+                        detail: "video-original \(blockID): mediaLocator URL/real duration not warmed yet (fail-closed)")
                 }
+                let url = warm.url
                 // AUDIO-INTERNAL media reference (NOT claimed equal to the visual `cp4-`/`cp5-s<i>-` ref):
                 // it only needs to be consistent between the clip's `.videoLayerMedia(media)` and the layer's
                 // `VideoBinding.media`, which the evaluator asserts. Namespaced per scene+block, unique.
@@ -219,6 +282,8 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
                 // Checked, fail-closed (see `cumulativeSceneDestinationTicks`); `i` is a valid index here.
                 let sStartTicks = sceneSpans[i].start
                 let sEndTicks = sceneSpans[i].end
+                // STAGE-9.2: the REAL audio-track duration comes from the SAME warm entry as `url` (probed by
+                // the mediaLocator URL) — descriptor duration and `resolvedURL` share one URL, no split paths.
                 let built = try AppVideoOriginalAudioBridge.build(.init(
                     blockID: blockID,
                     sceneInstanceIDRaw: sceneInstanceIDRaw,
@@ -227,6 +292,7 @@ final class RuntimeCanonicalAudioPlanSource: ProductionPreviewAudioPlanSource {
                     volume: win.volume, isMuted: win.isMuted,
                     sceneStartUs: sceneStartUs, sceneDurationUs: sceneDurationUs,
                     sceneStartTicks: sStartTicks, sceneEndTicks: sEndTicks,
+                    realAudioTrackDurationSeconds: warm.seconds,
                     blockStartUsInScene: blockStartUsInScene, blockEndUsInScene: blockEndUsInScene))
                 out.append(BuiltVideoOriginal(built: built, sourceRaw: built.sourceRaw, resolvedURL: url))
             }

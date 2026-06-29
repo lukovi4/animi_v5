@@ -56,6 +56,12 @@ enum AppVideoOriginalAudioBridge {
         /// `nil` keeps the legacy µs-projection path (single-scene / callers that do not supply ticks).
         var sceneStartTicks: Int64? = nil
         var sceneEndTicks: Int64? = nil
+        /// Stage-9.2 fix: the REAL audio-track duration of the source (seconds), probed app-side via
+        /// AVFoundation. When set, the canonical descriptor's `sourceDuration` uses THIS exact track length
+        /// (so `segment.sourceEnd` ≤ the real track and the renderer's Stage-8.1 clamp bounds the decode
+        /// correctly). `nil` is FAIL-CLOSED for video-original (no silent `winEnd` lower-bound fallback) —
+        /// `build` throws so the caller probes + retries rather than short-reading on device.
+        var realAudioTrackDurationSeconds: Double? = nil
         /// The block's ACTIVE interval WITHIN the scene, microseconds `[blockStartUs, blockEndUs)` relative
         /// to the scene start. THIS STAGE SUPPORTS ONLY A SCENE-FILLING BLOCK: `blockStartUs == 0` and
         /// `blockEndUs == sceneDurationUs`; any other value is FAIL-CLOSED (typed `mediaUnsupported`). Reason:
@@ -165,19 +171,32 @@ enum AppVideoOriginalAudioBridge {
             isMuted: input.isMuted,
             playbackPolicy: .once)
 
-        // Descriptor source duration: the descriptor's `sourceDuration` describes the SOURCE material, not
-        // the trimmed slice. We do NOT have a synchronous exact source duration on the app side
-        // (`PersistedVideoSelection` carries only trim/volume/mute; AVAsset duration is async). The trim
-        // window's END (`winEnd`) is an EXACT LOWER BOUND on the source duration — a half-open trim
-        // `[winStart, winEnd)` cannot exceed the source, so `sourceDuration >= winEnd`. Using `winEnd` (not
-        // the trim *length* `winEnd − winStart`) is the defensible exact lower bound: the source is at least
-        // `winEnd` long. The evaluator bounds the audible slice to `sourceTrim ⊆ [0, sourceDuration)`, and
-        // `winEnd == trimRange.end` so the slice fits exactly. Pinned by the descriptor-duration test.
-        let sourceDurationUs = trimEndUs   // exact lower bound on the real source duration (≥ winEnd)
+        // Descriptor source duration — STAGE-9.2 FIX: use the REAL audio-track duration probed app-side,
+        // NOT the `winEnd` lower bound. Previously `sourceDuration = winEnd` (an exact LOWER bound), which is
+        // ≥ the trim end but can EXCEED the real audio track when a stretched scene maps a chunk past it →
+        // the renderer's Stage-8.1 `sourceEnd` clamp could not bound the decode and the device short-read
+        // (S9.2). The real track length makes `segment.sourceEnd` ≤ the actual audio, so the clamp works.
+        // FAIL-CLOSED: no probed duration → throw (the caller probes + retries); never silently use `winEnd`.
+        guard let realSeconds = input.realAudioTrackDurationSeconds else {
+            throw AppRealtimeAudioIntegrationError.audioAssetUnresolvable(
+                detail: "video-original \(input.blockID): real audio-track duration not probed yet (fail-closed; no winEnd fallback)")
+        }
+        guard realSeconds.isFinite, realSeconds > 0 else {
+            throw AppRealtimeAudioIntegrationError.invalidSourceTrim(
+                itemIndex: 0, trimStartUs: trimStartUs, trimEndUs: trimEndUs)
+        }
+        // Convert the probed seconds to an EXACT rational at µs resolution (checked, integer-only after the
+        // single rounding of the probe's seconds). The probe seconds come from AVFoundation CMTime; here we
+        // normalize to µs to match the trim/destination µs grid the rest of the bridge uses.
+        let realDurationUs = Int64((realSeconds * Double(microsPerSecond)).rounded())
+        guard realDurationUs > 0 else {
+            throw AppRealtimeAudioIntegrationError.invalidSourceTrim(
+                itemIndex: 0, trimStartUs: trimStartUs, trimEndUs: trimEndUs)
+        }
         let descriptor = ResolvedAudioSourceDescriptor(
             sourceID: sourceID,
             streamIdentity: try AudioStreamIdentity("stream:\(sourceRaw)"),
-            sourceDuration: try RationalSourceTime(numerator: max(1, sourceDurationUs), denominator: microsPerSecond),
+            sourceDuration: try RationalSourceTime(numerator: realDurationUs, denominator: microsPerSecond),
             sampleRate: 48_000,
             channelLayout: .mono)
 

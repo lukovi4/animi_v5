@@ -65,6 +65,7 @@ final class VideoOriginalAudioPlanTests: XCTestCase {
             blockID: blockID, sceneInstanceIDRaw: sceneIDRaw, mediaReferenceRaw: "audio.videoLayer:0:\(blockID)",
             winStart: 0, winEnd: 3, volume: 1, isMuted: false,
             sceneStartUs: 0, sceneDurationUs: sceneDurationUs,
+            realAudioTrackDurationSeconds: 1000,
             blockStartUsInScene: 0, blockEndUsInScene: sceneDurationUs))
     }
 
@@ -127,11 +128,13 @@ final class VideoOriginalAudioPlanTests: XCTestCase {
         let a = try AppVideoOriginalAudioBridge.build(.init(
             blockID: "block_01", sceneInstanceIDRaw: sceneA, mediaReferenceRaw: "audio.videoLayer:0:block_01",
             winStart: 0, winEnd: 3, volume: 1, isMuted: false,
-            sceneStartUs: 0, sceneDurationUs: 3_000_000, blockStartUsInScene: 0, blockEndUsInScene: 3_000_000))
+            sceneStartUs: 0, sceneDurationUs: 3_000_000, realAudioTrackDurationSeconds: 1000,
+            blockStartUsInScene: 0, blockEndUsInScene: 3_000_000))
         let b = try AppVideoOriginalAudioBridge.build(.init(
             blockID: "block_01", sceneInstanceIDRaw: sceneB, mediaReferenceRaw: "audio.videoLayer:1:block_01",
             winStart: 0, winEnd: 3, volume: 1, isMuted: false,
-            sceneStartUs: 3_000_000, sceneDurationUs: 3_000_000, blockStartUsInScene: 0, blockEndUsInScene: 3_000_000))
+            sceneStartUs: 3_000_000, sceneDurationUs: 3_000_000, realAudioTrackDurationSeconds: 1000,
+            blockStartUsInScene: 0, blockEndUsInScene: 3_000_000))
 
         // Distinct ids despite identical blockID.
         XCTAssertNotEqual(a.source.id, b.source.id, "two scenes' video sources must have distinct AudioSourceID")
@@ -167,7 +170,8 @@ final class VideoOriginalAudioPlanTests: XCTestCase {
         let built = try AppVideoOriginalAudioBridge.build(.init(
             blockID: "b", sceneInstanceIDRaw: sceneIDRaw, mediaReferenceRaw: "audio.videoLayer:1:b",
             winStart: 2, winEnd: 5, volume: 1, isMuted: false,
-            sceneStartUs: 3_000_000, sceneDurationUs: 3_000_000, blockStartUsInScene: 0, blockEndUsInScene: 3_000_000))
+            sceneStartUs: 3_000_000, sceneDurationUs: 3_000_000, realAudioTrackDurationSeconds: 1000,
+            blockStartUsInScene: 0, blockEndUsInScene: 3_000_000))
         // Single-scene doc whose scene starts at project 3s (a leading empty scene shifts it).
         let lead = try makeDocument(sceneDurationUs: 3_000_000, layers: [], sceneIDRaw: "scene-0-lead", payloadIDRaw: "payload-lead")
         let main = try makeDocument(sceneDurationUs: 3_000_000, layers: [built.layer], sceneIDRaw: sceneIDRaw, payloadIDRaw: "payload-1")

@@ -1158,6 +1158,17 @@ final class EditorRuntime {
                 return
             }
 
+            // Stage-9.2: warm up canonical video-original real audio-track durations + mediaLocator URLs
+            // BEFORE the display link / video start (so the first-frame signal cannot precede a built
+            // canonical plan). No-op when the canonical toggle is OFF or the controller is not canonical;
+            // does not start audio or build any pipeline.
+            await self.previewAudio.warmUpCanonicalAudioForPlaybackIfNeeded()
+
+            guard !Task.isCancelled else {
+                self.playbackStartTask = nil
+                return
+            }
+
             // Compute start project time from compressed frame
             let mapper = self.session.state?.makePlayheadMapper() ?? .empty
             let startProjectTimeUs = mapper.nominalTimeUs(forCompressedFrame: compressedFrame)

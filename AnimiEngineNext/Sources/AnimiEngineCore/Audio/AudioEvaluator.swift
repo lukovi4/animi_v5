@@ -73,8 +73,15 @@ public enum AudioEvaluator {
         //    first end (the earlier of activeDest.end and the trim-end crossing).
         let trim = clip.sourceTrim
         let audibleSrcLo = maxRational(srcAtStart, trim.start)
-        let audibleSrcHi = minRational(srcAtEnd, trim.end)
-        // Empty audible source window → silent here → zero segments.
+        // Stage-9.2 fix: the audible source upper bound is the 3-way min of the mapped end, the trim end,
+        // AND the source's REAL duration (`descriptor.sourceDuration`). A clip whose destination/trim maps
+        // past the real audio track (e.g. a stretched video-original scene) must STOP at the real source
+        // end, not read past it — otherwise the renderer's `segment.sourceEnd`-based clamp over-requests and
+        // the decoder short-reads (S9.2). Because every downstream value (`destHiTick`, the final
+        // `sourceEnd`) is derived from `audibleSrcHi`, clamping it here bounds `segment.sourceEnd` ≤
+        // `sourceDuration` by construction. Exact rational; no validation loosened.
+        let audibleSrcHi = minRational(minRational(srcAtEnd, trim.end), clip.sourceDescriptor.sourceDuration)
+        // Empty audible source window (incl. a requested range entirely past `sourceDuration`) → zero segments.
         guard audibleSrcLo < audibleSrcHi else { return nil }
 
         // 5. Invert the audible source bounds back to EXACT project ticks to clip the destination.

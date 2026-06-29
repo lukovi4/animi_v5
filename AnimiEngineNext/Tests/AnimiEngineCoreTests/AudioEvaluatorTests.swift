@@ -344,6 +344,56 @@ final class AudioEvaluatorTests: XCTestCase {
         }
     }
 
+    // MARK: - Stage-9.2: source-duration clamps the audible source window
+
+    /// `descriptor.sourceDuration` (3 s) is shorter than the trim end (600 s) AND the destination/project
+    /// range (5 s). The evaluated segment must STOP at `sourceDuration` (3 s): `sourceEnd == 3 s`, and the
+    /// destination is clipped to the project tick where the source reaches 3 s. (Global map is 1/1, so source
+    /// seconds == project seconds.) Guards the S9.2 stretched-video-original short-read.
+    func test_S92_sourceDurationClampsSourceEndAndDestination() throws {
+        let shortDesc = try descriptor("s1")   // base
+        let clampedDesc = ResolvedAudioSourceDescriptor(
+            sourceID: try AudioSourceID("s1"), streamIdentity: try AudioStreamIdentity("stream"),
+            sourceDuration: try RationalSourceTime(numerator: 3, denominator: 1),   // REAL track = 3 s
+            sampleRate: shortDesc.sampleRate, channelLayout: shortDesc.channelLayout)
+        // dest [0, 5 s) = [0, 1_200_000) ticks; trim end 600 s; coverage/project 5 s.
+        let w = try window(
+            coverage: (0, 1_200_000), projectDuration: 1_200_000,
+            tracks: [try track("t1", .music, order: 0)],
+            clips: [try globalClip("c1", dest: (0, 1_200_000), trimEndSeconds: 600, descriptor: clampedDesc)])
+        let plan = try AudioEvaluator.evaluate(window: w, range: try range(0, 1_200_000))
+        XCTAssertEqual(plan.segments.count, 1)
+        let seg = plan.segments[0]
+        XCTAssertEqual(seg.sourceEnd, try RationalSourceTime(numerator: 3, denominator: 1),
+                       "sourceEnd clamped to the real sourceDuration (3 s), not trim end / mapped 5 s")
+        // No segment's sourceEnd may exceed the descriptor's sourceDuration.
+        for s in plan.segments {
+            XCTAssertFalse(try RationalSourceTime(numerator: 3, denominator: 1) < s.sourceEnd,
+                           "no segment.sourceEnd may exceed sourceDuration")
+        }
+        // Destination is clipped to the project tick where source reaches 3 s → 3 s = 720_000 ticks.
+        XCTAssertEqual(seg.destinationSamples.end,
+                       try AudioSampleRange.from(projectTicks: try range(0, 720_000)).end,
+                       "destination clipped to where the source reaches sourceDuration")
+    }
+
+    /// A requested range that starts AFTER `sourceDuration` yields ZERO segments (empty audible window),
+    /// not an error and not a segment past the real track.
+    func test_S92_requestedRangeAfterSourceDurationYieldsZeroSegments() throws {
+        let clampedDesc = ResolvedAudioSourceDescriptor(
+            sourceID: try AudioSourceID("s1"), streamIdentity: try AudioStreamIdentity("stream"),
+            sourceDuration: try RationalSourceTime(numerator: 2, denominator: 1),   // REAL track = 2 s
+            sampleRate: 48_000, channelLayout: .stereo)
+        // Clip dest [0, 5 s); but evaluate ONLY the [3 s, 5 s) range — entirely past the 2 s source.
+        let w = try window(
+            coverage: (0, 1_200_000), projectDuration: 1_200_000,
+            tracks: [try track("t1", .music, order: 0)],
+            clips: [try globalClip("c1", dest: (0, 1_200_000), trimEndSeconds: 600, descriptor: clampedDesc)])
+        let plan = try AudioEvaluator.evaluate(window: w, range: try range(720_000, 1_200_000))  // [3 s, 5 s)
+        XCTAssertTrue(plan.segments.isEmpty,
+                      "a range entirely past sourceDuration produces zero segments (nil, not error)")
+    }
+
     // MARK: - Helpers
 
     private func range(_ s: Int64, _ e: Int64) throws -> ProjectTimeRange {

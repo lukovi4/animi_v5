@@ -20,6 +20,11 @@ internal final class EditorRuntimePreviewAudioCoordinator {
     var controller: PreviewAudioControlling = EnginePreviewAudioPlaybackController()
 
     #if DEBUG
+    /// Stage-9.2: the canonical plan source backing the installed canonical controller, retained so the
+    /// canonical start path can warm up video-original real audio-track durations (+ mediaLocator URLs)
+    /// BEFORE `startPlayback`, so the first synchronous `currentAudioPlan()` build has them.
+    private var canonicalPlanSource: RuntimeCanonicalAudioPlanSource?
+
     /// Set when a test injects a controller via `setPreviewAudioController` — suppresses toggle-driven
     /// reselection so mocks are never clobbered. Production never sets this.
     private var controllerWasExplicitlyInjected = false
@@ -49,8 +54,10 @@ internal final class EditorRuntimePreviewAudioCoordinator {
         #if DEBUG
         if NextPreviewAudioEngineToggles.previewAudioWithNextEngine {
             MemoryDiagnostics.event("preview.audio.canonical.selected", "toggle=ON controller=CanonicalPreviewAudioController")
+            let planSource = RuntimeCanonicalAudioPlanSource(runtime: runtime)
+            self.canonicalPlanSource = planSource   // Stage-9.2: retain for pre-start duration/URL warm-up.
             let canonical = CanonicalPreviewAudioControllerFactory.makeProductionController(
-                planSource: RuntimeCanonicalAudioPlanSource(runtime: runtime))
+                planSource: planSource)
             // Surface canonical audio start telemetry on device.
             canonical.onDiagnostic = { event, detail in
                 MemoryDiagnostics.event(event, detail)
@@ -213,6 +220,19 @@ internal final class EditorRuntimePreviewAudioCoordinator {
 
     // MARK: - Playback Integration
 
+    /// Stage-9.2: pre-play warm-up of video-original real audio-track durations + mediaLocator URLs. Called
+    /// from `EditorRuntime.startPlayback()` BEFORE the display link / video start (so the first-frame signal
+    /// cannot precede a built canonical plan). No-op when the canonical toggle is OFF or the installed
+    /// controller is not canonical. Does NOT start audio, build a legacy pipeline, or touch first-frame state.
+    func warmUpCanonicalAudioForPlaybackIfNeeded() async {
+        #if DEBUG
+        guard NextPreviewAudioEngineToggles.previewAudioWithNextEngine,
+              controller is CanonicalPreviewAudioController,
+              let planSource = canonicalPlanSource else { return }
+        await planSource.warmUpVideoOriginalDurations()
+        #endif
+    }
+
     func startForTimelinePlayback() {
         guard let runtime else { return }
         guard runtime.state == .timelinePreview else { return }
@@ -242,6 +262,11 @@ internal final class EditorRuntimePreviewAudioCoordinator {
             MemoryDiagnostics.event("preview.audio.canonical.startPlayback.call",
                 "seconds=\(seconds)")
             dirty = false
+            // Stage-9.2: `startPlayback` stays SYNCHRONOUS w.r.t. the first-frame barrier (wrapping it in an
+            // async Task dropped the first-frame signal before `pendingSession` existed → silence). The
+            // video-original duration/URL warm-up runs EARLIER, via `warmUpCanonicalAudioForPlaybackIfNeeded()`
+            // called from `EditorRuntime.startPlayback()` BEFORE the display link / video start, so the
+            // synchronous `currentAudioPlan()` build here already has the real duration + mediaLocator URL.
             controller.startPlayback(fromSeconds: seconds, hostTime: runtime.playbackCurrentHostTime)
             return
         }

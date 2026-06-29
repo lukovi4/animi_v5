@@ -23,6 +23,7 @@ final class AppVideoOriginalAudioBridgeParityTests: XCTestCase {
             mediaReferenceRaw: "audio.videoLayer:0:block_01",
             winStart: winStart, winEnd: winEnd, volume: volume, isMuted: isMuted,
             sceneStartUs: 0, sceneDurationUs: 5_000_000,
+            realAudioTrackDurationSeconds: 1000,   // large real duration so the descriptor never fails closed
             blockStartUsInScene: 0, blockEndUsInScene: 5_000_000))
         guard case let .video(binding) = built.layer.content else {
             throw XCTSkip("expected a .video layer")
@@ -139,6 +140,7 @@ final class AppVideoOriginalAudioBridgeParityTests: XCTestCase {
             blockID: "b", sceneInstanceIDRaw: "scene-0-x", mediaReferenceRaw: "audio.videoLayer:0:b",
             winStart: 0, winEnd: 5, volume: 0.5, isMuted: true,
             sceneStartUs: 0, sceneDurationUs: 5_000_000,
+            realAudioTrackDurationSeconds: 1000,
             blockStartUsInScene: 0, blockEndUsInScene: 5_000_000))
         XCTAssertTrue(built.clip.isMuted)
         XCTAssertEqual(built.clip.gain.raw, 500_000, "volume 0.5 → gain 500000")
@@ -183,6 +185,7 @@ final class AppVideoOriginalAudioBridgeParityTests: XCTestCase {
             blockID: "b", sceneInstanceIDRaw: "scene-1-x", mediaReferenceRaw: "audio.videoLayer:1:b",
             winStart: 0, winEnd: 5, volume: 1, isMuted: false,
             sceneStartUs: 2_000_000, sceneDurationUs: 5_000_000,
+            realAudioTrackDurationSeconds: 1000,
             blockStartUsInScene: 0, blockEndUsInScene: 5_000_000))
         XCTAssertEqual(built.clip.destination.start.ticks, 480_000, "dest start = scene start (2s)")
         XCTAssertEqual(built.clip.destination.end.ticks, 1_680_000, "dest end = scene end (7s)")
@@ -190,21 +193,61 @@ final class AppVideoOriginalAudioBridgeParityTests: XCTestCase {
         XCTAssertEqual(built.layer.activeRange.end.ticks, 1_200_000, "activeRange spans the scene (5s)")
     }
 
-    // MARK: - Source descriptor duration (#5): exact lower bound (winEnd), NOT the trim length
+    // MARK: - Source descriptor duration (Stage-9.2): REAL probed audio-track duration, NOT winEnd
 
-    func test_sourceDescriptorDuration_isWinEndLowerBound_notTrimLength() throws {
+    /// Stage-9.2: the descriptor's `sourceDuration` is the REAL probed audio-track duration, not the `winEnd`
+    /// lower bound. Here the real track is 8.5 s while winEnd is 8 s → sourceDuration must be 8.5, not 8.
+    func test_S92_sourceDescriptorDuration_isRealProbedDuration_notWinEnd() throws {
         let built = try AppVideoOriginalAudioBridge.build(.init(
             blockID: "b", sceneInstanceIDRaw: "scene-0-x", mediaReferenceRaw: "audio.videoLayer:0:b",
             winStart: 2, winEnd: 8, volume: 1, isMuted: false,
             sceneStartUs: 0, sceneDurationUs: 9_000_000,
+            realAudioTrackDurationSeconds: 8.5,
             blockStartUsInScene: 0, blockEndUsInScene: 9_000_000))
-        // sourceDuration must be winEnd (8s), the exact lower bound — NOT the trim length (8−2=6s).
         let d = Double(built.descriptor.sourceDuration.numerator) / Double(built.descriptor.sourceDuration.denominator)
-        XCTAssertEqual(d, 8.0, accuracy: 1e-12, "sourceDuration = winEnd lower bound")
-        XCTAssertNotEqual(d, 6.0, accuracy: 1e-9, "must NOT be the trim window length")
-        // The trim end never exceeds the declared source duration (slice ⊆ source).
-        let trimEnd = Double(built.descriptor.sourceDuration.numerator) / Double(built.descriptor.sourceDuration.denominator)
-        XCTAssertGreaterThanOrEqual(trimEnd, 8.0 - 1e-9, "trim end ≤ sourceDuration")
+        XCTAssertEqual(d, 8.5, accuracy: 1e-9, "sourceDuration = REAL probed track duration (8.5 s), not winEnd (8 s)")
+        XCTAssertNotEqual(d, 8.0, accuracy: 1e-9, "must NOT be the winEnd lower bound")
+    }
+
+    /// Stage-9.2: when the real track is SHORTER than winEnd (the S9.2 device case — a stretched scene maps
+    /// past the real audio), the descriptor uses the real (shorter) duration so segment.sourceEnd ≤ real
+    /// track and the renderer's Stage-8.1 clamp can bound the decode. Here winEnd=12 but real track=11.9.
+    func test_S92_realTrackShorterThanWinEnd_descriptorUsesRealDuration() throws {
+        let built = try AppVideoOriginalAudioBridge.build(.init(
+            blockID: "b", sceneInstanceIDRaw: "scene-0-x", mediaReferenceRaw: "audio.videoLayer:0:b",
+            winStart: 0, winEnd: 12, volume: 1, isMuted: false,
+            sceneStartUs: 0, sceneDurationUs: 12_000_000,
+            realAudioTrackDurationSeconds: 11.9,
+            blockStartUsInScene: 0, blockEndUsInScene: 12_000_000))
+        let d = Double(built.descriptor.sourceDuration.numerator) / Double(built.descriptor.sourceDuration.denominator)
+        XCTAssertEqual(d, 11.9, accuracy: 1e-9, "real track (11.9 s) shorter than winEnd (12 s) → descriptor 11.9")
+        XCTAssertLessThan(d, 12.0, "sourceDuration must be the real (shorter) track, not winEnd")
+    }
+
+    /// Stage-9.2: a missing probed duration FAILS CLOSED (typed) — never silently falls back to winEnd.
+    func test_S92_missingRealDuration_failsClosed() {
+        XCTAssertThrowsError(try AppVideoOriginalAudioBridge.build(.init(
+            blockID: "b", sceneInstanceIDRaw: "scene-0-x", mediaReferenceRaw: "audio.videoLayer:0:b",
+            winStart: 0, winEnd: 5, volume: 1, isMuted: false,
+            sceneStartUs: 0, sceneDurationUs: 5_000_000,
+            realAudioTrackDurationSeconds: nil,
+            blockStartUsInScene: 0, blockEndUsInScene: 5_000_000))) { error in
+            guard case .audioAssetUnresolvable? = error as? AppRealtimeAudioIntegrationError else {
+                return XCTFail("missing real duration must fail closed (audioAssetUnresolvable), got \(error)")
+            }
+        }
+    }
+
+    /// Stage-9.2: an invalid (≤ 0 / non-finite) probed duration FAILS CLOSED.
+    func test_S92_invalidRealDuration_failsClosed() {
+        for bad in [0.0, -1.0, Double.nan, Double.infinity] {
+            XCTAssertThrowsError(try AppVideoOriginalAudioBridge.build(.init(
+                blockID: "b", sceneInstanceIDRaw: "scene-0-x", mediaReferenceRaw: "audio.videoLayer:0:b",
+                winStart: 0, winEnd: 5, volume: 1, isMuted: false,
+                sceneStartUs: 0, sceneDurationUs: 5_000_000,
+                realAudioTrackDurationSeconds: bad,
+                blockStartUsInScene: 0, blockEndUsInScene: 5_000_000)), "duration \(bad) must fail closed")
+        }
     }
 
     // MARK: - Stage-7 S6: destination.start must equal the media-active domain.start (no floor(Σµs) drift)
@@ -233,6 +276,7 @@ final class AppVideoOriginalAudioBridgeParityTests: XCTestCase {
             winStart: 0, winEnd: 5, volume: 1, isMuted: false,
             sceneStartUs: 8_766_667, sceneDurationUs: 5_000_000,
             sceneStartTicks: scene1DomainStart, sceneEndTicks: scene1DomainEnd,
+            realAudioTrackDurationSeconds: 1000,
             blockStartUsInScene: 0, blockEndUsInScene: 5_000_000))
 
         XCTAssertEqual(built.clip.destination.start.ticks, scene1DomainStart,
@@ -254,6 +298,7 @@ final class AppVideoOriginalAudioBridgeParityTests: XCTestCase {
             winStart: 0, winEnd: 5, volume: 1, isMuted: false,
             sceneStartUs: 5_000_000, sceneDurationUs: 5_000_000,
             sceneStartTicks: scene0SpanTicks, sceneEndTicks: scene0SpanTicks + Slice005TickProjection.ceilTicks(5_000_000)!,
+            realAudioTrackDurationSeconds: 1000,
             blockStartUsInScene: 0, blockEndUsInScene: 5_000_000))
         XCTAssertEqual(built.clip.destination.start.ticks, 1_200_000, "5s start, tick-aligned")
         XCTAssertEqual(built.clip.destination.end.ticks, 2_400_000, "10s end")
